@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-import round_logger as rlog
+from utils import load_round_history
 
 
 # ── Risk / ML output paths ────────────────────────────────────────────────
@@ -33,7 +33,7 @@ def compute_stats(rounds: Optional[List[dict]] = None) -> dict:
     (or from the global store if ``None``).
     """
     if rounds is None:
-        rounds = rlog.get_all_rounds()
+        rounds = load_round_history()
 
     if not rounds:
         return {
@@ -129,7 +129,7 @@ def prepare_ml_features(rounds: Optional[List[dict]] = None) -> list:
     Extend this method with your own engineered features.
     """
     if rounds is None:
-        rounds = rlog.get_all_rounds()
+        rounds = load_round_history()
     if not rounds:
         return []
 

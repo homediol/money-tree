@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aviator ML · Enterprise Platform</title>
+    <link rel="stylesheet" href="/static/css/style.css" />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <!-- Chart.js ecosystem -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js" defer></script>
+</head>
+<body>
+<!-- ═══════════════════════════════════════════════════════════ SIDEBAR -->
+<aside class="sidebar" id="sidebar">
+    <div class="brand">
+        <div class="brand-logo">✈</div>
+        <div class="brand-text">
+            <span class="brand-title">AVIATOR ML</span>
+            <span class="brand-sub">Enterprise Platform</span>
+        </div>
+    </div>
+    <nav class="nav" id="nav-menu">
+        <a class="nav-item active" data-section="overview" href="#overview"><i class="ni">◈</i>Overview</a>
+        <a class="nav-item" data-section="prediction" href="#prediction"><i class="ni">⊕</i>Live Prediction</a>
+        <a class="nav-item" data-section="performance" href="#performance"><i class="ni">◎</i>Performance</a>
+        <a class="nav-item" data-section="curves" href="#curves"><i class="ni">∿</i>Eval Curves</a>
+        <a class="nav-item" data-section="models" href="#models"><i class="ni">⬡</i>Models</a>
+        <a class="nav-item" data-section="training" href="#training"><i class="ni">⚙</i>Training</a>
+        <a class="nav-item" data-section="features" href="#features"><i class="ni">◻</i>Features</a>
+        <a class="nav-item" data-section="drift" href="#drift"><i class="ni">≋</i>Drift</a>
+        <a class="nav-item" data-section="explainability" href="#explainability"><i class="ni">◇</i>Explain</a>
+        <a class="nav-item" data-section="system" href="#system"><i class="ni">⬢</i>System</a>
+    </nav>
+    <div class="sidebar-footer">
+        <div class="health-indicator" id="health-indicator">
+            <span class="health-dot" id="health-dot"></span>
+            <span class="health-label">Health</span>
+            <span class="health-value" id="health-score">--</span>
+        </div>
+        <div class="ws-indicator">
+            <span class="ws-dot" id="ws-dot"></span>
+            <span id="ws-label">WebSocket</span>
+        </div>
+    </div>
+</aside>
+
+<!-- ═══════════════════════════════════════════════════════════ MAIN -->
+<div class="layout">
+<main class="main" id="main-content">
+
+<!-- TOPBAR -->
+<header class="topbar">
+    <div class="topbar-left">
+        <button class="menu-toggle" id="menu-toggle" aria-label="Toggle sidebar">☰</button>
+        <h1 class="page-title" id="page-title">Overview</h1>
+    </div>
+    <div class="topbar-center">
+        <div class="status-strip" id="status-strip">
+            <span class="ss-item"><span class="ss-label">Model</span><strong id="ss-model">--</strong></span>
+            <span class="ss-sep">·</span>
+            <span class="ss-item"><span class="ss-label">Ver</span><strong id="ss-version">--</strong></span>
+            <span class="ss-sep">·</span>
+            <span class="ss-item"><span class="ss-label">Trained</span><strong id="ss-trained">--</strong></span>
+            <span class="ss-sep">·</span>
+            <span class="ss-item"><span class="ss-label">Next</span><strong id="ss-next">--</strong></span>
+            <span class="ss-sep">·</span>
+            <span class="ss-item"><span class="ss-label">Latency</span><strong id="ss-latency">--</strong></span>
+        </div>
+    </div>
+    <div class="topbar-right">
+        <button class="btn btn-primary" id="btn-predict">⊕ Predict</button>
+        <button class="btn btn-ghost" id="btn-refresh" title="Refresh all">↻</button>
+        <div class="export-menu">
+            <button class="btn btn-ghost export-toggle">↓ Export</button>
+            <div class="export-dropdown" id="export-dropdown">
+                <button data-export="csv">CSV</button>
+                <button data-export="excel">Excel</button>
+                <button data-export="json">JSON</button>
+                <button data-export="pdf">PDF</button>
+            </div>
+        </div>
+    </div>
+</header>
+
+<!-- ══════════════════════════════════════ SECTION: OVERVIEW -->
+<section id="section-overview" class="section active">
+    <div class="kpi-row" id="kpi-row">
+        <div class="kpi" id="kpi-active-model"><div class="kpi-l">Active Model</div><div class="kpi-v" id="v-model">--</div><div class="kpi-s" id="v-model-ver">--</div></div>
+        <div class="kpi" id="kpi-best"><div class="kpi-l">Best Model</div><div class="kpi-v" id="v-best">--</div><div class="kpi-s" id="v-best-f1">F1 --</div></div>
+        <div class="kpi"><div class="kpi-l">Total Predictions</div><div class="kpi-v" id="v-total">0</div><div class="kpi-s" id="v-pending">0 pending</div></div>
+        <div class="kpi"><div class="kpi-l">Resolved</div><div class="kpi-v" id="v-resolved">0</div><div class="kpi-s" id="v-accuracy">-- acc</div></div>
+        <div class="kpi"><div class="kpi-l">Health Score</div><div class="kpi-v accent" id="v-health">--</div><div class="kpi-s" id="v-health-sub">--</div></div>
+        <div class="kpi"><div class="kpi-l">Drift Score</div><div class="kpi-v" id="v-drift">--</div><div class="kpi-s" id="v-drift-sub">--</div></div>
+        <div class="kpi"><div class="kpi-l">Dataset</div><div class="kpi-v" id="v-dataset">--</div><div class="kpi-s" id="v-features">-- features</div></div>
+        <div class="kpi"><div class="kpi-l">Latency</div><div class="kpi-v" id="v-latency">--</div><div class="kpi-s">ms avg</div></div>
+    </div>
+    <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>Accuracy Trend</h3><span class="badge badge-live">LIVE</span></div><div class="card-body"><canvas id="chart-accuracy-trend"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Precision · Recall · F1</h3><span class="badge badge-live">LIVE</span></div><div class="card-body"><canvas id="chart-metrics-trend"></canvas></div></div>
+    </div>
+    <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>Confidence Histogram</h3></div><div class="card-body"><canvas id="chart-confidence-hist"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Probability Distribution</h3></div><div class="card-body"><canvas id="chart-prob-dist"></canvas></div></div>
+    </div>
+    <div class="grid-3">
+        <div class="card"><div class="card-head"><h3>Rolling Performance</h3></div><div class="card-body"><canvas id="chart-rolling-perf"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Class Distribution</h3></div><div class="card-body"><canvas id="chart-class-dist-ov"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Model Metrics</h3></div><div class="card-body"><div class="metrics-grid" id="metrics-grid-ov"></div></div></div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════ SECTION: LIVE PREDICTION -->
+<section id="section-prediction" class="section">
+    <div class="pred-layout">
+        <div class="card card-hero">
+            <div class="card-head"><h3>Live Prediction</h3><span class="badge badge-live" id="pred-ts">--</span></div>
+            <div class="pred-main">
+                <div class="pred-class" id="pred-class">--</div>
+                <div class="pred-ring-wrap">
+                    <svg class="pred-ring" viewBox="0 0 140 140">
+                        <circle cx="70" cy="70" r="58" class="ring-bg"/>
+                        <circle cx="70" cy="70" r="58" class="ring-fill" id="ring-fill" stroke-dasharray="364" stroke-dashoffset="364"/>
+                        <defs>
+                            <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1">
+                                <stop offset="0%" stop-color="#22d3ee"/>
+                                <stop offset="100%" stop-color="#a78bfa"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <div class="pred-conf-val" id="pred-conf">--</div>
+                </div>
+                <div class="pred-meta">
+                    <div class="meta-row"><span>Risk</span><span class="risk-tag" id="pred-risk">--</span></div>
+                    <div class="meta-row"><span>Signal</span><strong class="reco-tag" id="pred-reco">--</strong></div>
+                    <div class="meta-row"><span>Uncertainty</span><span id="pred-unc">--</span></div>
+                    <div class="meta-row"><span>Model</span><span id="pred-model">--</span></div>
+                    <div class="meta-row"><span>Latency</span><span id="pred-latency">--ms</span></div>
+                </div>
+                <div class="prob-bars" id="prob-bars"></div>
+            </div>
+        </div>
+        <div class="pred-sidebar">
+            <div class="card">
+                <div class="card-head"><h3>Resolve Round</h3></div>
+                <div class="card-body">
+                    <label class="field-label">Actual Multiplier</label>
+                    <input type="number" id="resolve-mult" step="0.01" min="1.0" placeholder="e.g. 2.34" class="field-input" />
+                    <button class="btn btn-primary btn-block mt8" id="btn-resolve">Resolve</button>
+                    <div id="resolve-msg" class="resolve-msg"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-head"><h3>Quick Train</h3></div>
+                <div class="card-body">
+                    <select id="quick-model" class="field-input">
+                        <option value="xgboost">XGBoost</option>
+                        <option value="lightgbm">LightGBM</option>
+                        <option value="random_forest">Random Forest</option>
+                        <option value="catboost">CatBoost</option>
+                        <option value="ensemble">Ensemble</option>
+                    </select>
+                    <button class="btn btn-primary btn-block mt8" id="btn-quick-train">Train Model</button>
+                    <div class="progress-wrap mt8" id="train-progress" style="display:none">
+                        <div class="progress"><div class="progress-bar" id="train-bar"></div></div>
+                        <div class="progress-status" id="train-status">Initialising...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-head">
+            <h3>Real-time Prediction Log</h3>
+            <span class="badge" id="log-badge">0</span>
+            <button class="btn btn-ghost btn-sm" id="btn-clear-log">Clear</button>
+        </div>
+        <div class="card-body p0">
+            <div class="table-scroll">
+                <table class="dt" id="pred-log-table">
+                    <thead><tr>
+                        <th>Time</th><th>ID</th><th>Class</th><th>Conf</th><th>Risk</th>
+                        <th>Signal</th><th>Model</th><th>Ver</th><th>Actual</th><th>✓</th>
+                    </tr></thead>
+                    <tbody id="pred-log-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════ SECTION: PERFORMANCE -->
+<section id="section-performance" class="section">
+    <div class="card">
+        <div class="card-head"><h3>Comprehensive Evaluation Metrics</h3></div>
+        <div class="card-body"><div class="eval-metrics-grid" id="eval-metrics-full"></div></div>
+    </div>
+    <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>Confusion Matrix</h3></div><div class="card-body"><canvas id="chart-confusion"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Per-Class Performance</h3></div><div class="card-body"><canvas id="chart-per-class"></canvas></div></div>
+    </div>
+    <div class="card">
+        <div class="card-head"><h3>Rolling Metrics (window)</h3></div>
+        <div class="card-body"><canvas id="chart-rolling-metrics"></canvas></div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════ SECTION: EVAL CURVES -->
+<section id="section-curves" class="section">
+    <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>ROC Curve (OvR)</h3></div><div class="card-body"><canvas id="chart-roc"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Precision-Recall Curve</h3></div><div class="card-body"><canvas id="chart-pr"></canvas></div></div>
+    </div>
+    <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>Calibration Curve</h3></div><div class="card-body"><canvas id="chart-calibration"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Reliability Diagram</h3></div><div class="card-body"><canvas id="chart-reliability"></canvas></div></div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════ SECTION: MODELS -->
+<section id="section-models" class="section">
+    <div class="card">
+        <div class="card-head">
+            <h3>Model Registry</h3>
+            <button class="btn btn-ghost btn-sm" id="btn-refresh-registry">↻ Refresh</button>
+        </div>
+        <div class="card-body p0">
+            <div class="table-scroll">
+                <table class="dt" id="model-table">
+                    <thead><tr>
+                        <th>Model</th><th>Version</th><th>Active</th>
+                        <th>Accuracy</th><th>Bal Acc</th><th>F1 Macro</th>
+                        <th>MCC</th><th>Kappa</th><th>LogLoss</th>
+                        <th>ROC-AUC</th><th>PR-AUC</th><th>Brier</th>
+                        <th>Created</th><th>Action</th>
+                    </tr></thead>
+                    <tbody id="model-table-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-head"><h3>Model Comparison</h3></div>
+        <div class="card-body"><canvas id="chart-model-compare"></canvas></div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════ SECTION: TRAINING -->
+<section id="section-training" class="section">
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-head"><h3>Training Curves</h3></div>
+            <div class="card-body"><canvas id="chart-train-history"></canvas></div>
+        </div>
+        <div class="card">
+            <div class="card-head"><h3>Learning Curve</h3></div>
+            <div class="card-body"><canvas id="chart-learning-curve"></canvas></div>
+        </div>
+    </div>
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-head"><h3>Loss Curve</h3></div>
+            <div class="card-body"><canvas id="chart-loss-curve"></canvas></div>
+        </div>
+        <div class="card">
+            <div class="card-head"><h3>Validation Curve</h3></div>
+            <div class="card-body"><canvas id="chart-validation-curve"></canvas></div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-head"><h3>Train New Model</h3></div>
+        <div class="card-body">
+            <div class="train-form">
+                <div class="form-row">
+                    <div class="form-field">
+                        <label>Model</label>
+                        <select id="train-model-name" class="field-input">
+                            <option value="random_forest">Random Forest</option>
+                            <option value="xgboost" selected>XGBoost</option>
+                            <option value="lightgbm">LightGBM</option>
+                            <option value="catboost">CatBoost</option>
+                            <option value="logistic_regression">Logistic Regression</option>
+                            <option value="neural_network">Neural Network</option>
+                            <option value="lstm">LSTM</option>
+                            <option value="transformer">Transformer</option>
+                            <option value="ensemble">Ensemble</option>
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label>Imbalance Strategy</label>
+                        <select id="train-imbalance" class="field-input">
+                            <option value="class_weight" selected>Class Weight</option>
+                            <option value="smote">SMOTE</option>
+                            <option value="none">None</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <label class="check-label"><input type="checkbox" id="train-optimize" /> Optuna optimization</label>
+                    <label class="check-label"><input type="checkbox" id="train-cv" checked /> Cross-validate (5-fold)</label>
+                    <label class="check-label"><input type="checkbox" id="train-calibrate" checked /> Calibrate probabilities</label>
+                </div>
+                <button class="btn btn-primary" id="btn-train-submit">Start Training</button>
+            </div>
+            <div class="progress-wrap mt8" id="train-progress-full" style="display:none">
+                <div class="progress"><div class="progress-bar animate" id="train-bar-full"></div></div>
+                <div class="progress-status" id="train-status-full">Initialising...</div>
+            </div>
+            <div id="train-result" class="train-result"></div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-head"><h3>Continuous Learning</h3><span class="badge" id="cl-badge">stopped</span></div>
+        <div class="card-body">
+            <div class="cl-controls">
+                <label class="check-label"><input type="checkbox" id="cl-enabled" checked /> Enabled</label>
+                <label class="inline-label">Interval: <input type="number" id="cl-interval" value="3600" min="60" class="field-input inline" />s</label>
+                <button class="btn btn-primary btn-sm" id="btn-cl-start">Start</button>
+                <button class="btn btn-ghost btn-sm" id="btn-cl-stop">Stop</button>
+            </div>
+            <div class="table-scroll mt8">
+                <table class="dt" id="cl-history-table">
+                    <thead><tr><th>Time</th><th>Model</th><th>Version</th><th>F1</th><th>Drift</th><th>Promoted</th></tr></thead>
+                    <tbody id="cl-history-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════ SECTION: FEATURES -->
+<section id="section-features" class="section">
+    <div class="card">
+        <div class="card-head"><h3>Feature Importance (Top 20)</h3></div>
+        <div class="card-body"><canvas id="chart-feature-importance"></canvas></div>
+    </div>
+    <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>Class Distribution</h3></div><div class="card-body"><canvas id="chart-class-dist"></canvas></div></div>
+        <div class="card">
+            <div class="card-head"><h3>Dataset Statistics</h3></div>
+            <div class="card-body">
+                <div class="stat-kpi-row" id="dataset-kpi-row"></div>
+                <div class="stat-table-wrap" id="dataset-stats-body"></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════ SECTION: DRIFT -->
+<section id="section-drift" class="section">
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-head">
+                <h3>Data Drift (PSI)</h3>
+                <span class="badge" id="drift-status-badge">--</span>
+            </div>
+            <div class="card-body"><canvas id="chart-drift-score"></canvas></div>
+        </div>
+        <div class="card">
+            <div class="card-head"><h3>Prediction Drift</h3></div>
+            <div class="card-body"><canvas id="chart-pred-drift"></canvas></div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-head"><h3>Top Drifted Features</h3></div>
+        <div class="card-body p0">
+            <div class="table-scroll">
+                <table class="dt" id="drift-feat-table">
+                    <thead><tr><th>Feature</th><th>PSI Score</th><th>Status</th></tr></thead>
+                    <tbody id="drift-feat-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════ SECTION: EXPLAINABILITY -->
+<section id="section-explainability" class="section">
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-head"><h3>Latest SHAP Explanation</h3></div>
+            <div class="card-body" id="explain-body">
+                <div class="explain-placeholder">Run a prediction to view SHAP explanation</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-head"><h3>Decision Reasoning</h3></div>
+            <div class="card-body" id="reasoning-body">
+                <div class="reasoning-summary" id="reasoning-summary">--</div>
+                <div class="reasoning-rules">
+                    <div class="rule"><span class="rule-icon">→</span> Classifies the next round into 5 buckets: <strong>VERY_LOW, LOW, MEDIUM, HIGH, VERY_HIGH</strong></div>
+                    <div class="rule"><span class="rule-icon">→</span> Returns calibrated probabilities with uncertainty estimation via predictive entropy</div>
+                    <div class="rule"><span class="rule-icon">→</span> Risk level is <span class="risk-tag risk-high">HIGH</span> for HIGH/VERY_HIGH outcomes, adjusted by confidence</div>
+                    <div class="rule"><span class="rule-icon">→</span> Signal is <span class="reco-tag reco-bet">BET</span> at ≥70% confidence on safe targets; <span class="reco-tag reco-skip">SKIP</span> below 40%</div>
+                    <div class="rule"><span class="rule-icon">→</span> Low-confidence predictions (&lt;min_confidence) are marked non-actionable and filtered</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-head"><h3>SHAP Top Features (Current Prediction)</h3></div>
+        <div class="card-body" id="shap-features-body"><div class="explain-placeholder">No prediction yet</div></div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════ SECTION: SYSTEM -->
+<section id="section-system" class="section">
+    <div class="kpi-row">
+        <div class="kpi"><div class="kpi-l">CPU</div><div class="kpi-v" id="sys-cpu">--</div><div class="kpi-s">%</div></div>
+        <div class="kpi"><div class="kpi-l">Memory</div><div class="kpi-v" id="sys-mem">--</div><div class="kpi-s">%</div></div>
+        <div class="kpi"><div class="kpi-l">Disk</div><div class="kpi-v" id="sys-disk">--</div><div class="kpi-s">%</div></div>
+        <div class="kpi"><div class="kpi-l">GPU</div><div class="kpi-v" id="sys-gpu">--</div><div class="kpi-s">%</div></div>
+        <div class="kpi"><div class="kpi-l">Uptime</div><div class="kpi-v" id="sys-uptime">--</div><div class="kpi-s">s</div></div>
+        <div class="kpi"><div class="kpi-l">Error Rate</div><div class="kpi-v" id="sys-err">--</div><div class="kpi-s">%</div></div>
+        <div class="kpi"><div class="kpi-l">Avg Latency</div><div class="kpi-v" id="sys-latency">--</div><div class="kpi-s">ms</div></div>
+        <div class="kpi"><div class="kpi-l">Dataset Ver</div><div class="kpi-v" id="sys-ds-ver">--</div><div class="kpi-s">--</div></div>
+    </div>
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-head"><h3>Resource Usage</h3></div>
+            <div class="card-body"><canvas id="chart-resource-usage"></canvas></div>
+        </div>
+        <div class="card">
+            <div class="card-head"><h3>Latency Distribution</h3></div>
+            <div class="card-body"><canvas id="chart-latency-dist"></canvas></div>
+        </div>
+    </div>
+</section>
+
+</main><!-- /main -->
+</div><!-- /layout -->
+
+<!-- TOAST CONTAINER -->
+<div class="toast-stack" id="toast-stack"></div>
+
+<!-- MODAL -->
+<div class="modal-backdrop" id="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <h3 id="modal-title">--</h3>
+            <button class="icon-btn" id="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+    </div>
+</div>
+
+<script src="/static/js/api.js" defer></script>
+<script src="/static/js/charts.js" defer></script>
+<script src="/static/js/app.js" defer></script>
+</body>
+</html>

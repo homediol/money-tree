@@ -1,4 +1,6 @@
 flask>=3.0
 numpy>=1.26
 gunicorn>=21.2
+fastapi>=0.100
+uvicorn>=0.20
 

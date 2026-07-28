@@ -1,0 +1,59 @@
+# ============================================================================
+# Aviator ML Enterprise Platform - Production Requirements
+# ============================================================================
+
+# --- Core API ---
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.4
+pydantic-settings==2.3.4
+python-multipart==0.0.9
+websockets==12.0
+
+# --- Data & Numerics ---
+numpy==1.26.4
+pandas==2.2.2
+scipy==1.13.1
+
+# --- ML Core ---
+scikit-learn==1.5.0
+joblib==1.4.2
+
+# --- Gradient Boosting ---
+xgboost==2.0.3
+lightgbm==4.3.0
+catboost==1.2.5
+
+# --- Deep Learning (PyTorch - lighter than TF, enterprise-ready) ---
+torch==2.3.1
+
+# --- Hyperparameter Optimization ---
+optuna==3.6.1
+
+# --- Class Imbalance ---
+imbalanced-learn==0.12.3
+
+# --- Explainability ---
+
+# --- Drift Detection ---
+
+# --- Monitoring ---
+psutil==5.9.8
+prometheus-client==0.20.0
+
+# --- Export ---
+openpyxl==3.1.4
+reportlab==4.2.0
+
+# --- Utilities ---
+python-dotenv==1.0.1
+structlog==24.2.0
+orjson==3.10.3
+tenacity==8.3.0
+tqdm==4.66.4
+
+# --- Testing ---
+pytest==8.2.2
+pytest-asyncio==0.23.7
+httpx==0.27.0
+

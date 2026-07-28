@@ -74,23 +74,52 @@ def _threshold(engine: str) -> float:
     return _MIN_CONF_STAT if "statistical" in engine else _MIN_CONF_TF
 
 
+def confidence_band(confidence: float) -> str:
+    """
+    Classify confidence into actionable bands.
+    Calibrated for statistical_ensemble engine (max ~40%) and TF engine (max ~70%).
+
+    90–100% = STRONG_BET   (very rare, TF only)
+    55–89%  = STRONG_BET
+    40–54%  = BET
+    28–39%  = WEAK_BET
+    Below 28% = SKIP
+    """
+    try:
+        from utils import CONF_BAND_STRONG, CONF_BAND_BET, CONF_BAND_WEAK
+    except ImportError:
+        CONF_BAND_STRONG, CONF_BAND_BET, CONF_BAND_WEAK = 55.0, 40.0, 28.0
+
+    if confidence >= CONF_BAND_STRONG:  return "STRONG_BET"
+    if confidence >= CONF_BAND_BET:     return "BET"
+    if confidence >= CONF_BAND_WEAK:    return "WEAK_BET"
+    return "SKIP"
+
+
 def bet_fraction(category: str, confidence: float, engine: str = "") -> float:
-    """Suggested bankroll fraction. Returns 0 if confidence below threshold."""
-    thr = _threshold(engine)
-    if confidence < thr:
+    """
+    Suggested bankroll fraction scaled by confidence band.
+    STRONG_BET → 100% of base fraction
+    BET        →  75%
+    WEAK_BET   →  40%
+    SKIP       →   0%
+    """
+    band = confidence_band(confidence)
+    if band == "SKIP":
         return 0.0
-    base        = _BET_FRACTION.get(category, 0.03)
-    conf_factor = (confidence - thr) / max(100.0 - thr, 1.0)
-    return round(base * (0.5 + 0.5 * conf_factor), 4)
+    base  = _BET_FRACTION.get(category, 0.03)
+    scale = {"STRONG_BET": 1.0, "BET": 0.75, "WEAK_BET": 0.40}.get(band, 0.0)
+    return round(base * scale, 4)
 
 
 def action(category: str, confidence: float, engine: str = "") -> str:
-    """BET or SKIP (raw, before skip guard)."""
-    thr = _threshold(engine)
-    if confidence < thr:
+    """BET / WEAK_BET / SKIP based on confidence band."""
+    band = confidence_band(confidence)
+    if band == "SKIP":
         return "SKIP"
-    if category == "VERY_LOW" and confidence < thr + 5:
-        return "SKIP"
+    if band == "WEAK_BET":
+        # Only take WEAK_BET on safer categories
+        return "BET" if category in ("VERY_LOW", "LOW") else "SKIP"
     return "BET"
 
 

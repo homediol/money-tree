@@ -1,37 +1,77 @@
 {
-  "status": "idle",
+  "status": "stopped",
   "phone": "783752954",
   "headless": false,
-  "pid": 43136,
-  "started_at": "2026-06-18T19:37:21.924Z",
-  "updated_at": "2026-06-20T01:35:53.360242+00:00",
+  "pid": 12474,
+  "started_at": "2026-07-28T13:14:16.498Z",
+  "updated_at": "2026-07-28T13:17:33.138Z",
   "rounds_seen": 0,
   "last_round": null,
-  "error": null,
+  "error": "Auth error: page.waitForTimeout: Target page, context or browser has been closed",
   "steps": [
     {
       "step": 1,
       "action": "Starting bot",
       "status": "running",
       "details": "Starting bot",
-      "timestamp": "2026-06-18T19:37:21.925Z"
+      "timestamp": "2026-07-28T13:14:16.499Z"
     },
     {
       "step": 2,
       "action": "Launching browser session",
       "status": "running",
       "details": "Launching browser session",
-      "timestamp": "2026-06-18T19:37:22.266Z"
+      "timestamp": "2026-07-28T13:14:16.768Z"
     },
     {
       "step": 3,
+      "action": "Browser ready",
+      "status": "success",
+      "details": "Browser ready",
+      "timestamp": "2026-07-28T13:15:55.039Z"
+    },
+    {
+      "step": 4,
+      "action": "Opening browser page",
+      "status": "running",
+      "details": "Opening browser page",
+      "timestamp": "2026-07-28T13:15:58.325Z"
+    },
+    {
+      "step": 5,
+      "action": "Page tab ready",
+      "status": "running",
+      "details": "Page tab ready",
+      "timestamp": "2026-07-28T13:15:59.160Z"
+    },
+    {
+      "step": 6,
+      "action": "Checking login state",
+      "status": "running",
+      "details": "Checking login state",
+      "timestamp": "2026-07-28T13:16:03.039Z"
+    },
+    {
+      "step": 7,
+      "action": "Authenticating",
+      "status": "running",
+      "details": "Authenticating",
+      "timestamp": "2026-07-28T13:17:19.263Z"
+    },
+    {
+      "step": 8,
+      "action": "Error occurred",
+      "status": "failed",
+      "details": "Auth error: page.waitForTimeout: Target page, context or browser has been closed",
+      "timestamp": "2026-07-28T13:17:28.369Z"
+    },
+    {
+      "step": 9,
       "action": "Bot stopped",
       "status": "success",
-      "details": "Bot stopped",
-      "timestamp": "2026-06-18T19:38:04.307Z"
+      "details": "Auth error: page.waitForTimeout: Target page, context or browser has been closed",
+      "timestamp": "2026-07-28T13:17:33.138Z"
     }
   ],
-  "step_details": "Headless: false",
-  "pid_alive": false,
-  "running": false
+  "step_details": "page.waitForTimeout: Target page, context or browser has been closed"
 }

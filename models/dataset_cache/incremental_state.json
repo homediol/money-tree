@@ -1,0 +1,84 @@
+{
+  "rounds_at_last_train": 7011,
+  "train_count": 1,
+  "last_metrics": {
+    "validation_accuracy": 42.25,
+    "per_class": {
+      "VERY_LOW": {
+        "precision": 0.4638,
+        "recall": 0.1855,
+        "f1": 0.265,
+        "support": 2366
+      },
+      "LOW": {
+        "precision": 0.3055,
+        "recall": 0.4541,
+        "f1": 0.3652,
+        "support": 1134
+      },
+      "MEDIUM": {
+        "precision": 0.4812,
+        "recall": 0.3879,
+        "f1": 0.4295,
+        "support": 2080
+      },
+      "HIGH": {
+        "precision": 0.3333,
+        "recall": 0.5254,
+        "f1": 0.4079,
+        "support": 930
+      },
+      "VERY_HIGH": {
+        "precision": 0.5702,
+        "recall": 0.8466,
+        "f1": 0.6815,
+        "support": 481
+      }
+    },
+    "confusion_matrix": [
+      [
+        64,
+        86,
+        67,
+        90,
+        38
+      ],
+      [
+        16,
+        84,
+        36,
+        27,
+        22
+      ],
+      [
+        41,
+        73,
+        128,
+        57,
+        31
+      ],
+      [
+        12,
+        27,
+        32,
+        93,
+        13
+      ],
+      [
+        5,
+        5,
+        3,
+        12,
+        138
+      ]
+    ],
+    "bias_detected": false,
+    "train_accuracy": 41.75,
+    "training_time_s": 1888.9,
+    "epochs_run": 13,
+    "engine": "tensorflow_lstm_seq",
+    "samples": 6795,
+    "seq_len": 20,
+    "seq_feats": 8
+  }
+}

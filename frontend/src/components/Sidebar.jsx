@@ -1,4 +1,4 @@
-import { Activity, BarChart3, PieChart, TrendingUp, History, RefreshCw, Brain, Bot, ExternalLink, Plane, LogOut, ClipboardList, Cpu } from 'lucide-react';
+import { Activity, BarChart3, PieChart, TrendingUp, History, RefreshCw, Brain, Bot, ExternalLink, LogOut, ClipboardList, Cpu, LayoutDashboard } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { logout, getSession } from '../auth.js';
 
@@ -11,15 +11,15 @@ const navItems = [
   { id: 'intelligence', label: 'Intelligence',  icon: Cpu         },
 ];
 
-const GAME_PATH = '/game';
 const PREDICTIONS_PATH = '/predictions';
+const ML_DASH_PATH     = '/ml-dashboard';
 
 export default function Sidebar({ activeTab, onTabChange, onRefresh, loading, onTrain, training }) {
   const location = useLocation();
   const navigate = useNavigate();
   const isBotPage         = location.pathname === '/bot';
-  const isGamePage        = location.pathname === GAME_PATH;
   const isPredictionsPage = location.pathname === PREDICTIONS_PATH;
+  const isMLDashPage      = location.pathname === ML_DASH_PATH;
 
   return (
     <aside className="hidden w-64 shrink-0 border-r border-line bg-panel/50 backdrop-blur lg:flex lg:flex-col">
@@ -43,11 +43,11 @@ export default function Sidebar({ activeTab, onTabChange, onRefresh, loading, on
           <button
             key={id}
             onClick={() => {
-              if (isBotPage || isPredictionsPage) navigate('/');
+              if (isBotPage || isPredictionsPage || isMLDashPage) navigate('/');
               onTabChange(id);
             }}
             className={`flex w-full items-center gap-3 rounded-lg px-4 py-2.5 text-sm font-semibold transition-all duration-200 ${
-              !isBotPage && !isPredictionsPage && activeTab === id
+              !isBotPage && !isPredictionsPage && !isMLDashPage && activeTab === id
                 ? id === 'intelligence'
                   ? 'bg-violet-500/10 text-violet-400 shadow-[inset_0_0_0_1px_rgba(139,92,246,0.25)]'
                   : 'bg-cyan/10 text-cyan shadow-[inset_0_0_0_1px_rgba(53,212,255,0.25)]'
@@ -75,20 +75,17 @@ export default function Sidebar({ activeTab, onTabChange, onRefresh, loading, on
           Predictions
         </button>
 
-        {/* Separator */}
-        <div className="my-3 border-t border-line" />
-
-        {/* Live Game nav */}
+        {/* ML Performance Dashboard */}
         <button
-          onClick={() => navigate(GAME_PATH)}
+          onClick={() => navigate(ML_DASH_PATH)}
           className={`flex w-full items-center gap-3 rounded-lg px-4 py-2.5 text-sm font-semibold transition-all duration-200 ${
-            isGamePage
-              ? 'bg-rose-500/10 text-rose-400 shadow-[inset_0_0_0_1px_rgba(244,63,94,0.25)]'
+            isMLDashPage
+              ? 'bg-violet-500/10 text-violet-400 shadow-[inset_0_0_0_1px_rgba(139,92,246,0.25)]'
               : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'
           }`}
         >
-          <Plane className="h-4 w-4" />
-          Live Game
+          <LayoutDashboard className="h-4 w-4" />
+          ML Dashboard
         </button>
 
         {/* Separator */}

@@ -56,11 +56,15 @@ class RFPredictor:
             return False
         try:
             import joblib
-            self._model = joblib.load(RF_MODEL_PATH)
+            # Prefer calibrated model (isotonic) over raw RF
+            cal_path = MODELS_DIR / "rf_calibrated.joblib"
+            model_path = cal_path if cal_path.exists() else RF_MODEL_PATH
+            self._model = joblib.load(model_path)
             with open(RF_SCALER_PATH, "rb") as fh:
                 self._scaler = pickle.load(fh)
             self._loaded = True
-            log.info("RFPredictor loaded from %s", RF_MODEL_PATH)
+            label = "calibrated RF" if cal_path.exists() else "raw RF"
+            log.info("RFPredictor loaded %s from %s", label, model_path)
             return True
         except Exception as exc:
             log.error("Failed to load RF model: %s", exc)

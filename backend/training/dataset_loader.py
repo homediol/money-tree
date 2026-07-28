@@ -49,13 +49,12 @@ CACHE_DIR     = MODELS_DIR / "dataset_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 ROUND_HISTORY_FILES = [
-    DATA_DIR / "example.roundhistory.json",
-    DATA_DIR / "roundhistory.json",          # real scraper output
+    DATA_DIR / "roundhistory.json",          # collected by Playwright scraper
 ]
 
 CATEGORIES  = ["VERY_LOW", "LOW", "MEDIUM", "HIGH", "VERY_HIGH"]
 WINDOW_SIZE = 20
-FEATURE_DIM = 72   # must match feature_engineering.FEATURE_DIM
+FEATURE_DIM = 82   # must match feature_engineering.FEATURE_DIM
 NUM_CLASSES = len(CATEGORIES)
 
 # ── Validation helpers ────────────────────────────────────────────────────
@@ -258,10 +257,10 @@ class DatasetLoader:
                 seen_ids.add(rec["round_id"])
                 rounds_raw.append(rec)
 
-        # Also pull from live RoundStore (simulator — always current)
+        # Also pull from roundhistory.json (always current)
         try:
-            from round_logger import get_all_rounds
-            for raw in get_all_rounds():
+            from utils import load_round_history
+            for raw in load_round_history():
                 rec = _parse_record(raw, len(rounds_raw))
                 if rec is None or rec["round_id"] in seen_ids:
                     continue
@@ -648,3 +647,4 @@ class IncrementalUpdater:
         except Exception as exc:
             log.error("Incremental retrain failed: %s", exc)
             return None
+

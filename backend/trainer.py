@@ -12,11 +12,7 @@ class TrainingService:
         self.predictor = get_predictor()
 
     def _get_multipliers(self):
-        """Always prefer the live game-loop store; fall back to static history."""
-        from round_logger import get_all_rounds
-        live = get_all_rounds()
-        if len(live) >= 20:
-            return [r["multiplier"] for r in live], len(live)
+        """Load multipliers from roundhistory.json."""
         history = load_round_history()
         return [r["multiplier"] for r in history], len(history)
 
@@ -93,14 +89,14 @@ class TrainingService:
         actual_multiplier + correct fields so accuracy can be measured.
         Returns number of decisions updated.
         """
-        from round_logger import get_all_rounds
         from utils import multiplier_to_category
 
         decisions = read_json(DECISIONS_PATH, [])
         if not isinstance(decisions, list) or not decisions:
             return 0
 
-        rounds_by_id = {r["round_id"]: r for r in get_all_rounds()}
+        rounds = load_round_history()
+        rounds_by_id = {r["round_id"]: r for r in rounds}
         updated = 0
 
         for d in decisions:

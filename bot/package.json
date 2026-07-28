@@ -7,7 +7,8 @@
   "main": "runner.js",
   "scripts": {
     "start": "node runner.js",
-    "test": "node runner.js --dry-run"
+    "test": "node runner.js --dry-run",
+    "collector": "node roundhistory-collector.js"
   },
   "dependencies": {
     "playwright": "^1.52.0",
@@ -15,3 +16,4 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }
+

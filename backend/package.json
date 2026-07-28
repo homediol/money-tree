@@ -1,0 +1,12 @@
+{
+  "name": "aviator-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Python Flask backend launcher for the Aviator app",
+  "scripts": {
+    "start": "python3 run.py"
+  },
+  "dependencies": {
+    "fastapi": "^0.0.8"
+  }
+}

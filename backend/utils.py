@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 ARTIFACT_DIR = Path(__file__).resolve().parent / "artifacts"
-ROUND_HISTORY_PATH = DATA_DIR / "example.roundhistory.json"
+ROUND_HISTORY_PATH = DATA_DIR / "roundhistory.json"
 DECISIONS_PATH     = DATA_DIR / "decisions.json"
 LOG_PATH = Path(__file__).resolve().parent / "aviator-api.log"
 METADATA_PATH = ARTIFACT_DIR / "metadata.json"
@@ -37,8 +37,14 @@ CATEGORY_RANGES = {
 
 # Single source of truth for confidence thresholds
 MIN_CONFIDENCE = 70.0              # TF model: below this = low_confidence
-MIN_CONFIDENCE_TO_STORE = 25.0     # minimum to persist a decision (TF engine ~30-50%)
-MIN_CONFIDENCE_STATISTICAL = 22.0  # statistical_ensemble ceiling is lower (~25-35%)
+MIN_CONFIDENCE_TO_STORE = 15.0     # store ALL predictions above 15% — need 1000+ for accurate metrics
+MIN_CONFIDENCE_STATISTICAL = 22.0  # statistical_ensemble realistic ceiling
+
+# Confidence bands for BET quality
+CONF_BAND_STRONG  = 55.0   # 55-100% = Strong BET
+CONF_BAND_BET     = 40.0   # 40-54%  = BET
+CONF_BAND_WEAK    = 28.0   # 28-39%  = Weak BET
+# Below 28% = SKIP
 
 
 def setup_logging() -> None:
@@ -186,6 +192,7 @@ def append_decision(decision: Dict[str, Any]) -> None:
         decisions = []
     decisions.append(decision)
     write_json(DECISIONS_PATH, decisions[-250:])
+
 
 
 

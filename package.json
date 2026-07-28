@@ -1,13 +1,16 @@
 {
-  "name": "bot-orchestrator",
+  "name": "aviator-ml",
   "version": "1.0.0",
-  "description": "Unified bot orchestration system — Node.js + Python",
-  "main": "server.js",
+  "description": "Aviator ML — unified launcher",
   "scripts": {
-    "start": "node server.js"
+    "start":      "node scripts/start-all.js",
+    "collector":  "node bot/roundhistory-collector.js",
+    "flask":      "cd backend && .venv/bin/python3 app.py",
+    "bot-api":    "cd backend && .venv/bin/python3 bot_api.py",
+    "frontend":   "npm run dev --prefix frontend",
+    "enterprise": "node scripts/start-enterprise.js"
   },
   "dependencies": {
     "express": "^4.18.2"
   }
 }
-

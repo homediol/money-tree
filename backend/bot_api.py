@@ -1,3 +1,4 @@
+#!/home/diolo/winner predict/backend/.venv/bin/python3
 """
 FastAPI service for controlling the Playwright automation bot.
 

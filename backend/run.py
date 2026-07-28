@@ -18,7 +18,6 @@ import logging
 import sys
 from pathlib import Path
 
-# Ensure backend is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from utils import setup_logging, ensure_data_files
@@ -27,11 +26,6 @@ setup_logging()
 ensure_data_files()
 
 log = logging.getLogger("run")
-
-# ── Start game loop ───────────────────────────────────────────────────────
-from game_loop import start_loop
-start_loop()
-log.info("Crash simulator game loop started")
 
 # ── Import Flask app ──────────────────────────────────────────────────────
 from app import app, start_model_prewarm
@@ -51,12 +45,8 @@ try:
         engineio_logger=False,
     )
 
-    # Patch ws_server to use this sio instance
     import ws_server
     ws_server._sio = sio
-
-    # Start state broadcaster
-    ws_server.start_state_broadcaster()
     log.info("WebSocket server ready")
 
     WS_AVAILABLE = True

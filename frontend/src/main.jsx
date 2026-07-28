@@ -3,9 +3,9 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Dashboard   from './pages/Dashboard.jsx';
 import BotControl  from './pages/BotControl.jsx';
-import AviatorGame from './pages/AviatorGame.jsx';
 import Login       from './pages/Login.jsx';
 import Predictions from './pages/Predictions.jsx';
+import MLDashboard from './pages/MLDashboard.jsx';
 import { isAuthenticated } from './auth.js';
 import './styles/index.css';
 
@@ -20,8 +20,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         <Route path="/login"       element={<Login />} />
         <Route path="/"            element={<PrivateRoute><Dashboard /></PrivateRoute>} />
         <Route path="/bot"         element={<PrivateRoute><BotControl /></PrivateRoute>} />
-        <Route path="/game"        element={<PrivateRoute><AviatorGame /></PrivateRoute>} />
         <Route path="/predictions" element={<PrivateRoute><Predictions /></PrivateRoute>} />
+        <Route path="/ml-dashboard" element={<PrivateRoute><MLDashboard /></PrivateRoute>} />
         <Route path="*"            element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

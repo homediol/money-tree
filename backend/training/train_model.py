@@ -57,7 +57,7 @@ CATEGORIES  = ["VERY_LOW", "LOW", "MEDIUM", "HIGH", "VERY_HIGH"]
 NUM_CLASSES = len(CATEGORIES)
 SEQ_LEN     = 20   # sequence length (rounds per sample)
 SEQ_FEATS   = 8    # per-timestep features
-FEATURE_DIM = 72   # flat feature vector dim (kept for scaler/predictor compat)
+FEATURE_DIM = 82   # flat feature vector dim (kept for scaler/predictor compat)
 
 # Thresholds matching utils.py
 _THRESHOLDS = [1.50, 2.00, 5.00, 15.0]

@@ -20,7 +20,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-RETRAIN_INTERVAL = 5_000
+RETRAIN_INTERVAL    = 5_000
 MIN_ROUNDS_TO_TRAIN = 500
 
 log = logging.getLogger(__name__)
@@ -28,29 +28,31 @@ log = logging.getLogger(__name__)
 
 def should_retrain() -> bool:
     from training.dataset_loader import IncrementalUpdater
-    from round_logger import get_all_rounds
+    from utils import load_round_history
     updater = IncrementalUpdater(
         retrain_interval=RETRAIN_INTERVAL,
         min_rounds=MIN_ROUNDS_TO_TRAIN,
     )
-    return updater.should_retrain(len(get_all_rounds()))
+    return updater.should_retrain(len(load_round_history()))
 
 
 def retrain_if_needed(epochs: int = 100, batch_size: int = 256) -> Optional[dict]:
     """
     Returns training metrics if a retrain was triggered, else None.
-    Skips silently if TF or numpy is unavailable.
+
+    Uses actual imports (not find_spec) so it works correctly in both
+    venv and system Python contexts — if the library isn't importable
+    the ImportError is caught and logged cleanly.
     """
     try:
-        from round_logger import get_all_rounds
+        from utils import load_round_history
         from training.dataset_loader import IncrementalUpdater
-        import importlib
-        for lib in ("numpy", "sklearn"):
-            if importlib.util.find_spec(lib) is None:
-                log.warning("Auto-retrain skipped: '%s' not installed.", lib)
-                return None
 
-        current = len(get_all_rounds())
+        # Actual imports — will raise ImportError if not installed
+        import numpy   # noqa: F401
+        import sklearn  # noqa: F401
+
+        current = len(load_round_history())
         updater = IncrementalUpdater(
             retrain_interval=RETRAIN_INTERVAL,
             min_rounds=MIN_ROUNDS_TO_TRAIN,

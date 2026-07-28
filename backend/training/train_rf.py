@@ -58,37 +58,69 @@ def _setup_logging() -> None:
 
 def _load_data() -> Tuple[List, List]:
     """
-    Load multipliers from all sources and build the flat 72-feature matrix.
-    Returns (X, y) lists.
+    Load multipliers chronologically and build the flat 82-feature matrix.
+
+    Outliers capped at 100× inside compute_features (audit fix #2).
+    Rounds are sorted by round_id to guarantee chronological order —
+    critical for the temporal train/val split that follows.
+    Returns (X, y) lists in chronological order. Do NOT shuffle before split.
     """
     from training.dataset_loader import DatasetLoader
     from training.feature_engineering import build_feature_matrix
 
     loader = DatasetLoader()
     loader.load()
+
+    # Guarantee chronological order
+    loader._rounds.sort(key=lambda r: r.get("round_id", 0))
     multipliers = [r["multiplier"] for r in loader._rounds]
 
     if len(multipliers) < SEQ_LEN + 10:
         raise ValueError(f"Need at least {SEQ_LEN + 10} rounds, got {len(multipliers)}.")
 
-    log.info("Building feature matrix for %d rounds…", len(multipliers))
+    log.info("Building feature matrix for %d rounds (chronological, outliers capped)…",
+             len(multipliers))
     X, y = build_feature_matrix(multipliers, window_size=SEQ_LEN)
     log.info("Feature matrix: %d samples × %d features", len(X), len(X[0]) if X else 0)
     return X, y
 
 
 def _oversample(
-    X: List, y: List, min_ratio: float = 0.5
+    X: List, y: List, min_ratio: float = 0.7
 ) -> Tuple[List, List]:
-    """Duplicate minority classes to min_ratio × majority count."""
-    from collections import Counter
+    """
+    Oversample minority classes to min_ratio × majority count.
+    Uses SMOTE when imbalanced-learn is available, else random duplication.
+    min_ratio raised to 0.7 for more aggressive class balancing.
+    """
     import random
+    from collections import Counter
+
+    import numpy as np
+    X_np = np.array(X, dtype="float32")
+    y_np = np.array(y, dtype="int64")
+
+    try:
+        from imblearn.over_sampling import SMOTE
+        counts   = Counter(y)
+        majority = max(counts.values())
+        target   = int(majority * min_ratio)
+        strategy = {cls: max(counts[cls], target) for cls in counts}
+        k = min(5, min(counts.values()) - 1)
+        smote = SMOTE(sampling_strategy=strategy, k_neighbors=max(1, k), random_state=42)
+        X_res, y_res = smote.fit_resample(X_np, y_np)
+        log.info("SMOTE: %d → %d samples", len(y), len(y_res))
+        combined = list(zip(X_res.tolist(), y_res.tolist()))
+        random.shuffle(combined)
+        return [x for x, _ in combined], [yv for _, yv in combined]
+    except (ImportError, ValueError) as exc:
+        log.debug("SMOTE unavailable (%s) — using duplication", exc)
 
     counts   = Counter(y)
     majority = max(counts.values())
     target   = int(majority * min_ratio)
-
     X_out, y_out = list(X), list(y)
+
     for cls_idx in range(NUM_CLASSES):
         current = counts.get(cls_idx, 0)
         needed  = max(0, target - current)
@@ -103,7 +135,6 @@ def _oversample(
         log.info("Oversampled %-10s: %d → %d",
                  CATEGORIES[cls_idx], current, current + needed)
 
-    # Shuffle
     combined = list(zip(X_out, y_out))
     random.shuffle(combined)
     X_out, y_out = zip(*combined)
@@ -114,28 +145,29 @@ def _oversample(
 
 def build_rf_model(n_estimators: int = 300) -> "RandomForestClassifier":
     """
-    Build a RandomForestClassifier configured for imbalanced multi-class
-    prediction with probability output.
+    Optimised RandomForestClassifier.
 
-    Key settings:
-      n_estimators=300   — enough trees for stable probability estimates
-      max_depth=12        — prevents overfitting on a small dataset
-      min_samples_leaf=5  — smooths probability estimates
-      class_weight='balanced_subsample' — per-tree class balancing
-      n_jobs=-1           — parallel on all cores
+    Key improvements over v1:
+      - n_estimators=500: more trees → lower variance, more stable probabilities
+      - max_depth=None: let trees grow fully (RF handles this via randomness)
+      - min_samples_leaf=3: slightly less smoothing to capture minority classes
+      - max_features='sqrt': optimal for classification
+      - class_weight='balanced_subsample': per-tree reweighting for imbalance
+      - max_samples=0.8: subsample 80% per tree (reduces correlation between trees)
     """
     from sklearn.ensemble import RandomForestClassifier
 
     rf = RandomForestClassifier(
-        n_estimators=300,
-        max_depth=12,
-        min_samples_split=10,
-        min_samples_leaf=5,
-        max_features="sqrt",       # sqrt(72) ≈ 8 features per split
+        n_estimators=500,
+        max_depth=None,          # fully grown trees — RF variance is controlled by randomness
+        min_samples_split=8,
+        min_samples_leaf=3,
+        max_features="sqrt",
+        max_samples=0.8,         # row subsampling per tree
         class_weight="balanced_subsample",
         random_state=42,
         n_jobs=-1,
-        oob_score=True,            # out-of-bag accuracy estimate
+        oob_score=True,
         verbose=0,
     )
     return rf
@@ -149,16 +181,18 @@ def train(
     val_split: float = 0.15,
 ) -> Dict:
     """
-    Full RandomForest training pipeline.
+    Full RandomForest training pipeline with temporal train/val split.
 
     Steps:
-      1. Load rounds via DatasetLoader
-      2. Build 72-feature matrix
-      3. Oversample minority classes
-      4. StandardScaler fit+transform
-      5. Train RandomForestClassifier
-      6. Evaluate with per-class metrics + OOB score
-      7. Save model + scaler with joblib
+      1. Load rounds chronologically via DatasetLoader
+      2. Build 82-feature matrix (outliers capped at 100×)
+      3. Temporal split: last val_split% = validation (no shuffle)
+         → detects distribution shift that random shuffle would hide
+      4. Oversample minority classes in TRAIN only (not val)
+      5. StandardScaler fit on train, apply to val
+      6. Train RandomForestClassifier with sample weights
+      7. Isotonic calibration on val set
+      8. Evaluate + save model/scaler/calibrator
 
     Returns a metrics dict.
     """
@@ -170,25 +204,44 @@ def train(
     from collections import Counter
     from sklearn.preprocessing import StandardScaler
 
-    # ── 1. Load data ───────────────────────────────────────────────────
+    # ── 1. Load data (chronological order preserved) ─────────────────
     X_raw, y_raw = _load_data()
+    n_total = len(X_raw)
+    log.info("Total samples (chronological): %d", n_total)
 
-    # ── 2. Oversample ──────────────────────────────────────────────────
+    # ── 2. Temporal split BEFORE oversample ───────────────────────────
+    # Using the last val_split% as validation gives an honest estimate of
+    # how the model performs on future data (vs random shuffle which leaks future)
+    split  = max(1, int(n_total * (1 - val_split)))
+    X_tr_raw = X_raw[:split]   # chronologically earlier → train
+    y_tr_raw = y_raw[:split]
+    X_v      = X_raw[split:]   # chronologically later   → val
+    y_v      = y_raw[split:]
+    log.info("Temporal split: train=%d  val=%d  (last %.0f%% as val)",
+             len(X_tr_raw), len(X_v), val_split * 100)
+
+    val_dist = Counter(y_v)
+    log.info("Val distribution (unseen future data): %s",
+             {CATEGORIES[i]: val_dist.get(i, 0) for i in range(NUM_CLASSES)})
+
+    # ── 3. Oversample TRAIN only ──────────────────────────────────────
     if oversample:
-        X_raw, y_raw = _oversample(X_raw, y_raw)
+        X_tr_list, y_tr_list = _oversample(X_tr_raw, y_tr_raw)
+    else:
+        X_tr_list, y_tr_list = list(X_tr_raw), list(y_tr_raw)
 
-    # ── 3. Train / val split ───────────────────────────────────────────
-    n     = len(X_raw)
-    split = max(1, int(n * (1 - val_split)))
-    X_tr, X_v = X_raw[:split], X_raw[split:]
-    y_tr, y_v = y_raw[:split], y_raw[split:]
+    # Shuffle train (temporal order within train is not needed post-split)
+    import random as _random
+    combined = list(zip(X_tr_list, y_tr_list))
+    _random.shuffle(combined)
+    X_tr_list, y_tr_list = zip(*combined)
 
-    X_tr = np.array(X_tr, dtype="float32")
-    X_v  = np.array(X_v,  dtype="float32")
-    y_tr = np.array(y_tr, dtype="int64")
-    y_v  = np.array(y_v,  dtype="int64")
+    X_tr = np.array(X_tr_list, dtype="float32")
+    X_v  = np.array(X_v,       dtype="float32")
+    y_tr = np.array(y_tr_list, dtype="int64")
+    y_v  = np.array(y_v,       dtype="int64")
 
-    # ── 4. Scale ───────────────────────────────────────────────────────
+    # ── 4. Scale (fit on train only, transform both) ──────────────────
     scaler  = StandardScaler()
     X_tr_s  = scaler.fit_transform(X_tr)
     X_v_s   = scaler.transform(X_v)
@@ -197,12 +250,11 @@ def train(
         pickle.dump(scaler, fh)
     log.info("RF scaler saved → %s", RF_SCALER_PATH)
 
-    # Distribution
     counts_raw = Counter(y_tr.tolist())
     counts     = {CATEGORIES[i]: counts_raw.get(i, 0) for i in range(NUM_CLASSES)}
-    log.info("Train distribution: %s", counts)
+    log.info("Train distribution (after oversample): %s", counts)
 
-    # ── 5. Train ────────────────────────────────────────────────────────
+    # ── 5. Train ──────────────────────────────────────────────────────
     log.info("Training RandomForest (n_estimators=%d)…", n_estimators)
     rf = build_rf_model(n_estimators=n_estimators)
     t0 = time.time()
@@ -233,16 +285,30 @@ def train(
         "feature_importances_top15": top_feats,
     })
 
-    # ── 7. Save model ────────────────────────────────────────────────────
+    # ── 7. Save model + isotonic calibration ─────────────────────────────
     joblib.dump(rf, RF_MODEL_PATH, compress=3)
     log.info("RF model saved → %s  (%.1f KB)",
              RF_MODEL_PATH, RF_MODEL_PATH.stat().st_size / 1024)
+
+    # Isotonic calibration: fixes overconfidence at high-confidence bins
+    # Audit showed at 40% conf → actual accuracy only 16.7% (-23pp gap)
+    try:
+        from sklearn.calibration import CalibratedClassifierCV
+        log.info("Fitting isotonic probability calibration...")
+        cal_rf = CalibratedClassifierCV(rf, method="isotonic", cv="prefit")
+        cal_rf.fit(X_v_s, y_v_arr)
+        cal_path = MODELS_DIR / "rf_calibrated.joblib"
+        joblib.dump(cal_rf, cal_path, compress=3)
+        log.info("Calibrated RF saved → %s", cal_path)
+        metrics["calibration"] = "isotonic"
+    except Exception as exc:
+        log.warning("Calibration failed (%s) — raw RF used", exc)
+        metrics["calibration"] = "none"
 
     with open(LOGS_DIR / "last_rf_training.json", "w") as fh:
         json.dump(metrics, fh, indent=2)
 
     return metrics
-
 
 # ── Evaluation ────────────────────────────────────────────────────────────
 

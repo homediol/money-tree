@@ -164,30 +164,6 @@ export async function fetchRiskHistory(limit = 100) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// CRASH SIMULATOR ENDPOINTS
-// ═════════════════════════════════════════════════════════════════════════
-
-export async function fetchGameState() {
-  const { data } = await api.get('/state');
-  return data;
-}
-
-export async function fetchLatestRound() {
-  const { data } = await api.get('/latest');
-  return data;
-}
-
-export async function fetchRounds(limit = 20) {
-  const { data } = await api.get('/rounds', { params: { limit } });
-  return data;
-}
-
-export async function fetchCrashStats(n = 0) {
-  const { data } = await api.get('/stats', { params: n > 0 ? { n } : {} });
-  return data;
-}
-
-// ═════════════════════════════════════════════════════════════════════════
 // INTELLIGENCE ENDPOINTS (skip quality, VH guard, calibration, momentum)
 // ═════════════════════════════════════════════════════════════════════════
 

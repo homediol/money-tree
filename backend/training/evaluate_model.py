@@ -63,10 +63,10 @@ def evaluate(n_recent: int = 200) -> dict:
         scaler = pickle.load(f)
 
     # --- Load rounds ---
-    from round_logger import get_all_rounds
+    from utils import load_round_history
     from training.feature_engineering import build_feature_matrix
 
-    rounds = get_all_rounds()
+    rounds = load_round_history()
     if len(rounds) < 25:
         raise ValueError("Need at least 25 rounds to evaluate.")
 

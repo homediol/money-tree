@@ -3,7 +3,7 @@ round_logger.py
 Persistent JSON-backed round store.
 
 Thread-safe via a re-entrant lock.  Keeps the latest *MAX_ROUNDS* rounds
-in ``data/example.roundhistory.json`` so the file never grows unbounded.
+in ``data/roundhistory.json`` so the file never grows unbounded.
 """
 
 import json
@@ -15,7 +15,7 @@ from typing import List, Optional
 # ── Constants ──────────────────────────────────────────────────────────────
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-DATA_FILE = DATA_DIR / "example.roundhistory.json"
+DATA_FILE = DATA_DIR / "roundhistory.json"
 MAX_ROUNDS = 10_000
 
 
@@ -56,6 +56,10 @@ class RoundStore:
                 data = []
         except (json.JSONDecodeError, OSError):
             data = []
+        # Normalise: alias round_index -> round_id so last_round_id() works
+        for rec in data:
+            if "round_index" in rec and "round_id" not in rec:
+                rec["round_id"] = rec["round_index"]
         self._rounds = data[-self._max_rounds:]
 
     def _flush(self) -> None:
@@ -171,4 +175,6 @@ def get_last_round_id() -> Optional[int]:
 def round_count() -> int:
     """Convenience: return the number of stored rounds."""
     return get_store().count()
+
+
 
