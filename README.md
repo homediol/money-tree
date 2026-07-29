@@ -106,3 +106,4 @@ The backend also accepts a plain numeric array or an object with `rounds` or `hi
 `GET /predict` appends the newest prediction to `decisions.json`. `bot/playwright_bot.py` is a safe placeholder that reads the latest decision and prints it, ready for a permitted Playwright workflow.
 # my-job
 # money-tree
+# money-tree
