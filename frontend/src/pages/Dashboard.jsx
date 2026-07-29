@@ -8,6 +8,7 @@ import {
   fetchDecisions,
   fetchHistory,
   fetchPrediction,
+  fetchFastPrediction,
   fetchRiskOverview,
   fetchRiskHistory,
   fetchReadiness,
@@ -37,61 +38,79 @@ import RiskHistoryChart from '../components/RiskHistoryChart.jsx';
 import MultiplierChart from '../components/MultiplierChart.jsx';
 import DistributionChart from '../components/DistributionChart.jsx';
 import Sidebar from '../components/Sidebar.jsx';
-
-// ── NEW: Intelligence components ─────────────────────────────────────────
-import SkipQualityPanel  from '../components/SkipQualityPanel.jsx';
-import CalibrationPanel  from '../components/CalibrationPanel.jsx';
-import MomentumPanel     from '../components/MomentumPanel.jsx';
-import RiskTierPanel     from '../components/RiskTierPanel.jsx';
+import SkipQualityPanel from '../components/SkipQualityPanel.jsx';
+import CalibrationPanel from '../components/CalibrationPanel.jsx';
+import MomentumPanel from '../components/MomentumPanel.jsx';
+import RiskTierPanel from '../components/RiskTierPanel.jsx';
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('overview');
   const { connected: wsConnected, lastPrediction, lastRound, updatedDecisions } = useSocket();
 
-  // ── Data state ──────────────────────────────────────────────────────────
+  // ── Data state ────────────────────────────────────────────────────────────────────────
   const [prediction,   setPrediction]   = useState(null);
   const [history,      setHistory]      = useState([]);
   const [accuracy,     setAccuracy]     = useState(null);
   const [decisions,    setDecisions]    = useState([]);
   const [riskOverview, setRiskOverview] = useState(null);
   const [riskHistory,  setRiskHistory]  = useState([]);
-
-  // ── Intelligence state ──────────────────────────────────────────────────
   const [skipQuality,  setSkipQuality]  = useState(null);
   const [vhQuality,    setVhQuality]    = useState(null);
 
-  // ── UI state ────────────────────────────────────────────────────────────
+  // ── UI state ─────────────────────────────────────────────────────────────────────────
   const [loading,      setLoading]      = useState(false);
   const [training,     setTraining]     = useState(false);
   const [error,        setError]        = useState('');
   const [lastUpdated,  setLastUpdated]  = useState(null);
   const [modelReady,   setModelReady]   = useState(false);
-  const readyPollRef = useRef(null);
 
-  // ── Poll /ready ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    let cancelled = false;
-    async function waitForReady() {
-      while (!cancelled) {
-        try {
-          const { ready } = await fetchReadiness();
-          if (ready) { if (!cancelled) { setModelReady(true); refresh(); } return; }
-        } catch (_) {}
-        await new Promise(r => setTimeout(r, 2000));
+  // Debounce ref: prevent round events from firing overlapping fetches
+  const roundDebounceRef = useRef(null);
+  // Track in-flight prediction request to avoid parallel calls
+  const predInFlightRef  = useRef(false);
+
+  // ── Fetch cheap data (history + risk) ───────────────────────────────────────────
+  const refreshCharts = useCallback(async () => {
+    try {
+      const [h, r, rh] = await Promise.all([
+        fetchHistory(80),
+        fetchRiskOverview(),
+        fetchRiskHistory(80),
+      ]);
+      setHistory(h.rounds || []);
+      setRiskOverview(r);
+      setRiskHistory(rh.rounds || []);
+    } catch (_) {}
+  }, []);
+
+  // ── Fetch prediction independently (can be slow on cold start) ────────────────
+  const refreshPrediction = useCallback(async () => {
+    if (predInFlightRef.current) return;
+    predInFlightRef.current = true;
+    try {
+      const pred = await fetchPrediction();
+      setPrediction(pred);
+      setLastUpdated(new Date());
+      if (pred?.last_round_id != null) {
+        setDecisions(prev => {
+          const exists = prev.some(d => d.last_round_id === pred.last_round_id);
+          return exists ? prev : [pred, ...prev].slice(0, 100);
+        });
       }
-    }
-    waitForReady();
-    return () => { cancelled = true; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+      fetchAccuracy().then(setAccuracy).catch(() => {});
+      runBackfill().catch(() => {});
+    } catch (_) {}
+    finally { predInFlightRef.current = false; }
+  }, []);
 
-  // ── Full refresh ──────────────────────────────────────────────────────────
+  // ── Full manual refresh (button) ─────────────────────────────────────────────────
   const refresh = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const [predData, histData, accData, decData, riskData, riskHistData, sqData, vhData] =
+      // Fire cheap requests immediately in parallel
+      const [histData, accData, decData, riskData, riskHistData, sqData, vhData] =
         await Promise.all([
-          fetchPrediction(),
           fetchHistory(80),
           fetchAccuracy(),
           fetchDecisions(50),
@@ -100,8 +119,6 @@ export default function Dashboard() {
           fetchSkipQuality().catch(() => null),
           fetchVhQuality().catch(() => null),
         ]);
-      runBackfill().catch(() => {});
-      setPrediction(predData);
       setHistory(histData.rounds || []);
       setAccuracy(accData);
       setDecisions(decData.decisions || []);
@@ -110,21 +127,43 @@ export default function Dashboard() {
       if (sqData) setSkipQuality(sqData);
       if (vhData) setVhQuality(vhData);
       setLastUpdated(new Date());
+      // Prediction runs separately — doesn't block the UI
+      refreshPrediction();
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Refresh failed.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [refreshPrediction]);
 
-  // ── Fallback polling ──────────────────────────────────────────────────────
+  // ── Poll /ready then kick off initial load ───────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    async function waitForReady() {
+      while (!cancelled) {
+        try {
+          const { ready } = await fetchReadiness();
+          if (ready) {
+            if (!cancelled) { setModelReady(true); refresh(); }
+            return;
+          }
+        } catch (_) {}
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    waitForReady();
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Fallback polling — charts every 15s, prediction every 30s ────────────────
   useEffect(() => {
     if (!modelReady) return;
-    const timer = window.setInterval(refresh, wsConnected ? 30000 : 8000);
-    return () => window.clearInterval(timer);
-  }, [refresh, wsConnected, modelReady]);
+    const chartTimer = setInterval(refreshCharts, wsConnected ? 15000 : 10000);
+    const predTimer  = setInterval(refreshPrediction, wsConnected ? 30000 : 15000);
+    return () => { clearInterval(chartTimer); clearInterval(predTimer); };
+  }, [refreshCharts, refreshPrediction, wsConnected, modelReady]);
 
-  // ── WS: new prediction ────────────────────────────────────────────────────
+  // ── WS: new prediction pushed from backend ────────────────────────────────────
   useEffect(() => {
     if (!lastPrediction) return;
     setPrediction(lastPrediction);
@@ -132,36 +171,32 @@ export default function Dashboard() {
     if (lastPrediction.last_round_id != null) {
       setDecisions(prev => {
         const exists = prev.some(d => d.last_round_id === lastPrediction.last_round_id);
-        if (exists) return prev;
-        return [lastPrediction, ...prev].slice(0, 100);
+        return exists ? prev : [lastPrediction, ...prev].slice(0, 100);
       });
     }
     fetchAccuracy().then(setAccuracy).catch(() => {});
     runBackfill().catch(() => {});
   }, [lastPrediction]);
 
-  // ── WS: backfill complete — update Actual column in real-time ────────────
-  useEffect(() => {
-    if (!updatedDecisions?.length) return;
-    setDecisions(updatedDecisions);
-  }, [updatedDecisions]);
-
-  // ── WS: new round ─────────────────────────────────────────────────────────
+  // ── WS: new round — debounced chart refresh (avoid per-round hammering) ───────
   useEffect(() => {
     if (!lastRound) return;
-    Promise.all([fetchHistory(80), fetchRiskOverview(), fetchRiskHistory(80)])
-      .then(([h, r, rh]) => {
-        setHistory(h.rounds || []);
-        setRiskOverview(r);
-        setRiskHistory(rh.rounds || []);
-      })
-      .catch(() => {});
-  }, [lastRound]);
+    // Append new round to history immediately without a fetch
+    if (lastRound.multiplier != null) {
+      setHistory(prev => {
+        const exists = prev.some(r => r.round_id === lastRound.round_id);
+        if (exists) return prev;
+        return [...prev, lastRound].slice(-100);
+      });
+    }
+    // Debounce the expensive risk/chart refresh to at most once per 5s
+    clearTimeout(roundDebounceRef.current);
+    roundDebounceRef.current = setTimeout(refreshCharts, 5000);
+  }, [lastRound, refreshCharts]);
 
-  // ── WS: decisions_updated — Actual column fills in real-time ─────────────
+  // ── WS: backfill complete ────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!updatedDecisions || !updatedDecisions.length) return;
-    // Replace the full decisions list with the backfilled version from server
+    if (!updatedDecisions?.length) return;
     setDecisions(updatedDecisions);
   }, [updatedDecisions]);
 

@@ -1,6 +1,7 @@
 # === TOP: All imports ===
 import logging
 import threading
+import time
 
 from flask import Flask, jsonify, request
 from model import AviatorPredictor, TensorFlowUnavailable
@@ -18,12 +19,34 @@ ensure_data_files()
 # === Flask app ===
 app = Flask(__name__)
 
+# Enable gzip compression for all JSON responses
+try:
+    from flask_compress import Compress
+    Compress(app)
+except ImportError:
+    pass
+
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
+
+# ── In-memory cache for expensive endpoints ──────────────────────────────
+_cache: dict = {}
+
+def _cached(key: str, ttl: float, fn):
+    entry = _cache.get(key)
+    if entry and time.monotonic() - entry["ts"] < ttl:
+        return entry["data"]
+    data = fn()
+    _cache[key] = {"data": data, "ts": time.monotonic()}
+    return data
+
+def _bust(key: str):
+    _cache.pop(key, None)
+
 
 logger = logging.getLogger("aviator-api")
 trainer = TrainingService()
@@ -56,8 +79,6 @@ def json_error(message: str, status: int = 400):
     logger.warning(message)
     return jsonify({"error": message, "status": status}), status
 
-
-# ── Health ───────────────────────────────────────────────────────────
 
 @app.get("/")
 def health():
@@ -160,6 +181,7 @@ def predict():
             else:
                 decision["cached"] = True
 
+        _bust("accuracy")
         # Background retrain check
         try:
             from training.retrain import retrain_if_needed
@@ -205,10 +227,11 @@ def fast_predict():
 
 @app.get("/history")
 def history():
-    frame = _get_rounds()
     limit = int(request.args.get("limit", 100))
-    records = frame[-limit:]
-    return jsonify({"count": int(len(frame)), "rounds": records})
+    def _build():
+        frame = _get_rounds()
+        return {"count": int(len(frame)), "rounds": frame[-limit:]}
+    return jsonify(_cached(f"history_{limit}", 8.0, _build))
 
 
 # ── Accuracy ─────────────────────────────────────────────────────────
@@ -235,9 +258,10 @@ def accuracy():
 
 @app.post("/backfill")
 def backfill():
-    """Match past predictions to actual round outcomes."""
     try:
         updated = trainer.backfill_actual_results()
+        if updated:
+            _bust("accuracy")
         return jsonify({"updated": updated})
     except Exception as exc:
         logger.exception("Backfill failed")
@@ -351,23 +375,17 @@ def _get_rounds() -> list:
 
 @app.get("/risk/overview")
 def risk_overview():
-    """Composite risk dashboard data."""
     try:
-        rounds_capped = _get_rounds()          # last 500 for stats quality
-        rounds_all    = load_round_history()       # full store for real total count
-
-        multipliers = [r["multiplier"] for r in rounds_capped]
-        summary     = compute_round_summary(rounds_capped)
-
-        # Override total_rounds with the real count, not the capped 500
-        summary["total_rounds"]   = len(rounds_all)
-        summary["max_multiplier"] = round(max(r["multiplier"] for r in rounds_all), 2)
-        summary["min_multiplier"] = round(min(r["multiplier"] for r in rounds_all), 2)
-
-        return jsonify({
-            "summary": summary,
-            "risk": compute_risk_index(multipliers),
-        })
+        def _build():
+            rounds_capped = _get_rounds()
+            rounds_all    = load_round_history()
+            multipliers   = [r["multiplier"] for r in rounds_capped]
+            summary       = compute_round_summary(rounds_capped)
+            summary["total_rounds"]   = len(rounds_all)
+            summary["max_multiplier"] = round(max(r["multiplier"] for r in rounds_all), 2)
+            summary["min_multiplier"] = round(min(r["multiplier"] for r in rounds_all), 2)
+            return {"summary": summary, "risk": compute_risk_index(multipliers)}
+        return jsonify(_cached("risk_overview", 10.0, _build))
     except Exception as exc:
         logger.exception("Risk overview failed")
         return json_error(str(exc), 500)
@@ -408,35 +426,31 @@ def risk_moving_averages():
 
 @app.get("/risk/history")
 def risk_history():
-    """
-    Full history enriched with risk metrics per round (rolling).
-    Useful for charts that show risk evolution over time.
-    """
     try:
-        rounds = _get_rounds()
         limit = int(request.args.get("limit", 100))
-        records = rounds[-limit:]
-        multipliers = [r["multiplier"] for r in records]
-
-        enriched = []
-        for i in range(len(records)):
-            window = multipliers[: i + 1]
-            volatility = compute_volatility(window)
-            streaks = detect_streaks(window)
-            mas = compute_moving_averages(window)
-            risk = compute_risk_index(window)
-            enriched.append({
-                **records[i],
-                "volatility": volatility["recent_std"],
-                "streak_category": streaks["current_streak"]["category"],
-                "streak_length": streaks["current_streak"]["length"],
-                "sma_5": mas["sma_5"],
-                "sma_10": mas["sma_10"],
-                "risk_score": risk["risk_score"],
-                "risk_level": risk["risk_level"],
-            })
-
-        return jsonify({"count": len(enriched), "rounds": enriched})
+        def _build():
+            rounds  = _get_rounds()
+            records = rounds[-limit:]
+            mults   = [r["multiplier"] for r in records]
+            enriched = []
+            for i in range(len(records)):
+                window = mults[: i + 1]
+                vol    = compute_volatility(window)
+                stk    = detect_streaks(window)
+                mas    = compute_moving_averages(window)
+                risk   = compute_risk_index(window)
+                enriched.append({
+                    **records[i],
+                    "volatility":      vol["recent_std"],
+                    "streak_category": stk["current_streak"]["category"],
+                    "streak_length":   stk["current_streak"]["length"],
+                    "sma_5":           mas["sma_5"],
+                    "sma_10":          mas["sma_10"],
+                    "risk_score":      risk["risk_score"],
+                    "risk_level":      risk["risk_level"],
+                })
+            return {"count": len(enriched), "rounds": enriched}
+        return jsonify(_cached(f"risk_history_{limit}", 10.0, _build))
     except Exception as exc:
         logger.exception("Risk history failed")
         return json_error(str(exc), 500)

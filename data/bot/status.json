@@ -4,7 +4,7 @@
   "headless": false,
   "pid": 12474,
   "started_at": "2026-07-28T13:14:16.498Z",
-  "updated_at": "2026-07-28T13:17:33.138Z",
+  "updated_at": "2026-04-13T19:42:26.619489+00:00",
   "rounds_seen": 0,
   "last_round": null,
   "error": "Auth error: page.waitForTimeout: Target page, context or browser has been closed",
@@ -73,5 +73,7 @@
       "timestamp": "2026-07-28T13:17:33.138Z"
     }
   ],
-  "step_details": "page.waitForTimeout: Target page, context or browser has been closed"
+  "step_details": "page.waitForTimeout: Target page, context or browser has been closed",
+  "pid_alive": false,
+  "running": false
 }

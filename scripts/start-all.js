@@ -55,6 +55,10 @@ function findNode() {
 
 const PYTHON_BIN     = findPython(BACKEND);
 const NODE_BIN       = findNode();
+const NPM_BIN        = (() => {
+  const candidate = path.join(path.dirname(NODE_BIN), "npm");
+  return fs.existsSync(candidate) ? candidate : "npm";
+})();
 const ENTERPRISE_PY  = (() => {
   const candidates = [
     path.join(ENTERPRISE, ".venv-enterprise", "bin", "python3"),
@@ -98,7 +102,7 @@ const SERVICES = [
   },
   {
     name:    "frontend",
-    cmd:     "npm",
+    cmd:     NPM_BIN,
     args:    ["run", "dev"],
     cwd:     FRONTEND,
     color:   "\x1b[32m",   // green
@@ -194,6 +198,7 @@ function launch(svc) {
   console.log("\x1b[1m\x1b[37m╚══════════════════════════════════════╝\x1b[0m");
   console.log(`  Python  : ${PYTHON_BIN}`);
   console.log(`  Node    : ${NODE_BIN}`);
+  console.log(`  npm     : ${NPM_BIN}`);
   console.log(`  Ent. Py : ${ENTERPRISE_PY}`);
   console.log("");
 

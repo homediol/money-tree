@@ -1,17 +1,16 @@
 import axios from 'axios';
-import { io } from 'socket.io-client';
 
 // ── Main Prediction API (Flask, port 5000) ────────────────────────────────
 
 export const api = axios.create({
   baseURL: '/api',
-  timeout: 10000,  // 10s for most endpoints
+  timeout: 12000,
 });
 
 // Separate instance for /predict which can take up to 90s on cold start
 export const predictApi = axios.create({
   baseURL: '/api',
-  timeout: 95000,  // 95s — allows full TF model cold-load
+  timeout: 95000,
 });
 
 // ── Bot Control API (FastAPI, port 5001) ──────────────────────────────────
@@ -21,102 +20,47 @@ export const botApi = axios.create({
   timeout: 10000,
 });
 
-// ═════════════════════════════════════════════════════════════════════════
-// WEBSOCKET CLIENT (real-time, <50 ms latency)
-// Falls back to polling if socket.io is unavailable
-// ═════════════════════════════════════════════════════════════════════════
-
-let _socket = null;
-let _wsReady = false;
-
-/**
- * Connect to the Flask-SocketIO server.
- * Returns the socket instance (or null if socket.io-client not installed).
- */
-export function connectSocket() {
-  if (_socket) return _socket;
-  try {
-    _socket = io({
-      path: '/socket.io',
-      transports: ['websocket', 'polling'],
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 10,
-    });
-
-    _socket.on('connect', () => {
-      _wsReady = true;
-      console.log('[WS] Connected');
-    });
-    _socket.on('disconnect', () => {
-      _wsReady = false;
-      console.log('[WS] Disconnected');
-    });
-    _socket.on('connect_error', () => {
-      _wsReady = false;
-    });
-
-    return _socket;
-  } catch {
-    return null;
-  }
+// ── Simple response cache (TTL-based) ────────────────────────────────────
+const _cache = new Map();
+function cached(key, ttlMs, fn) {
+  const hit = _cache.get(key);
+  if (hit && Date.now() - hit.ts < ttlMs) return Promise.resolve(hit.data);
+  return fn().then(data => { _cache.set(key, { data, ts: Date.now() }); return data; });
 }
-
-export function isWsReady() { return _wsReady; }
-
-export function onPrediction(callback) {
-  const s = connectSocket();
-  if (s) s.on('prediction', callback);
-}
-
-export function onRoundComplete(callback) {
-  const s = connectSocket();
-  if (s) s.on('round_complete', callback);
-}
-
-export function onStateUpdate(callback) {
-  const s = connectSocket();
-  if (s) s.on('state', callback);
-}
-
-export function onDecisionsUpdated(callback) {
-  const s = connectSocket();
-  if (s) s.on('decisions_updated', callback);
-}
-
-export function disconnectSocket() {
-  if (_socket) { _socket.disconnect(); _socket = null; _wsReady = false; }
-}
+export function bustCache(key) { _cache.delete(key); }
 
 // ═════════════════════════════════════════════════════════════════════════
 // PREDICTION ENDPOINTS
 // ═════════════════════════════════════════════════════════════════════════
 
-/** Full prediction with storage — uses long timeout for cold TF model start */
 export async function fetchPrediction() {
   const { data } = await predictApi.get('/predict');
+  bustCache('history'); bustCache('riskOverview'); bustCache('riskHistory');
   return data;
 }
 
-/** Fast prediction — <50 ms, no disk write, for high-frequency polling */
 export async function fetchFastPrediction() {
-  const { data } = await predictApi.get('/fast-predict');
+  const { data } = await api.get('/fast-predict');
   return data;
 }
 
-/** Check if backend model is warmed up yet */
 export async function fetchReadiness() {
   const { data } = await api.get('/ready');
   return data;
 }
 
 export async function fetchHistory(limit = 80) {
-  const { data } = await api.get('/history', { params: { limit } });
-  return data;
+  return cached('history', 8000, async () => {
+    const { data } = await api.get('/history', { params: { limit } });
+    return data;
+  });
 }
 
 export async function fetchAccuracy() {
-  const { data } = await api.get('/accuracy');
-  return data;
+  return cached('accuracy', 15000, async () => {
+    const { data } = await api.get('/accuracy');
+    return data;
+  });
 }
 
 export async function fetchDecisions(limit = 50) {
@@ -131,6 +75,7 @@ export async function trainModel(epochs = 30) {
 
 export async function runBackfill() {
   const { data } = await api.post('/backfill');
+  bustCache('accuracy');
   return data;
 }
 
@@ -139,8 +84,10 @@ export async function runBackfill() {
 // ═════════════════════════════════════════════════════════════════════════
 
 export async function fetchRiskOverview() {
-  const { data } = await api.get('/risk/overview');
-  return data;
+  return cached('riskOverview', 10000, async () => {
+    const { data } = await api.get('/risk/overview');
+    return data;
+  });
 }
 
 export async function fetchRiskVolatility() {
@@ -159,22 +106,28 @@ export async function fetchRiskMovingAverages() {
 }
 
 export async function fetchRiskHistory(limit = 100) {
-  const { data } = await api.get('/risk/history', { params: { limit } });
-  return data;
+  return cached('riskHistory', 10000, async () => {
+    const { data } = await api.get('/risk/history', { params: { limit } });
+    return data;
+  });
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// INTELLIGENCE ENDPOINTS (skip quality, VH guard, calibration, momentum)
+// INTELLIGENCE ENDPOINTS
 // ═════════════════════════════════════════════════════════════════════════
 
 export async function fetchSkipQuality() {
-  const { data } = await api.get('/skip-quality');
-  return data;
+  return cached('skipQuality', 20000, async () => {
+    const { data } = await api.get('/skip-quality');
+    return data;
+  });
 }
 
 export async function fetchVhQuality() {
-  const { data } = await api.get('/vh-quality');
-  return data;
+  return cached('vhQuality', 20000, async () => {
+    const { data } = await api.get('/vh-quality');
+    return data;
+  });
 }
 
 export async function fetchCalibration() {
