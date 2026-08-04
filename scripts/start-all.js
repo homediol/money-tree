@@ -13,7 +13,7 @@
  * Usage:  npm start   (from project root)
  */
 
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -24,12 +24,16 @@ const BOT_DIR = path.join(ROOT, "bot");
 const FRONTEND = path.join(ROOT, "frontend");
 const ENTERPRISE = path.join(ROOT, "aviator_enterprise");
 
-// ── Resolve Python binary (prefers backend .venv) ─────────────────────────
-function findPython(baseDir) {
+// ── Resolve Python binary (prefers root .venv with TensorFlow) ────────────
+function findPython() {
   const candidates = [
-    path.join(baseDir, ".venv", "bin", "python3"),
-    path.join(baseDir, ".venv", "bin", "python"),
-    path.join(baseDir, ".venv", "Scripts", "python.exe"),
+    path.join(ROOT, ".venv", "bin", "python"),
+    path.join(ROOT, ".venv", "bin", "python3"),
+    path.join(ROOT, ".venv", "Scripts", "python.exe"),
+    path.join(BACKEND, ".venv", "bin", "python"),
+    path.join(BACKEND, ".venv", "bin", "python3"),
+    path.join(BACKEND, ".venv", "Scripts", "python.exe"),
+    "python3.11",
     "python3",
     "python",
   ];
@@ -53,7 +57,7 @@ function findNode() {
   return "node";
 }
 
-const PYTHON_BIN     = findPython(BACKEND);
+const PYTHON_BIN     = findPython();
 const NODE_BIN       = findNode();
 const NPM_BIN        = (() => {
   const candidate = path.join(path.dirname(NODE_BIN), "npm");
@@ -73,6 +77,33 @@ const ENTERPRISE_PY  = (() => {
   return PYTHON_BIN;
 })();
 
+function runSetup(cmd, args, cwd = ROOT) {
+  console.log(`\x1b[90m[runner]\x1b[0m setup: ${cmd} ${args.join(" ")}`);
+  const result = spawnSync(cmd, args, {
+    cwd,
+    env: process.env,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (result.status !== 0) {
+    process.exit(result.status || 1);
+  }
+}
+
+function ensureBackendEnvironment() {
+  const rootVenvPython = path.join(ROOT, ".venv", "bin", "python");
+  const rootVenvPythonWin = path.join(ROOT, ".venv", "Scripts", "python.exe");
+  const venvPython = process.platform === "win32" ? rootVenvPythonWin : rootVenvPython;
+
+  if (!fs.existsSync(venvPython)) {
+    runSetup("python3.11", ["-m", "venv", path.join(ROOT, ".venv")]);
+  }
+
+  runSetup(venvPython, ["-m", "pip", "install", "--upgrade", "pip"]);
+  runSetup(venvPython, ["-m", "pip", "install", "-r", path.join(BACKEND, "requirements.txt")]);
+  return venvPython;
+}
+
 // ── Service definitions ────────────────────────────────────────────────────
 const SERVICES = [
   {
@@ -87,7 +118,7 @@ const SERVICES = [
   {
     name:    "flask",
     cmd:     PYTHON_BIN,
-    args:    ["app.py"],
+    args:    ["run.py"],
     cwd:     BACKEND,
     color:   "\x1b[33m",   // yellow
     // Give Flask 3 s to start before launching bot_api
@@ -201,6 +232,13 @@ function launch(svc) {
   console.log(`  npm     : ${NPM_BIN}`);
   console.log(`  Ent. Py : ${ENTERPRISE_PY}`);
   console.log("");
+
+  const backendPython = ensureBackendEnvironment();
+  for (const svc of SERVICES) {
+    if (svc.name === "flask" || svc.name === "bot-api") {
+      svc.cmd = backendPython;
+    }
+  }
 
   for (const svc of SERVICES) {
     await launch(svc);

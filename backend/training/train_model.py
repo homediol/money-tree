@@ -205,22 +205,29 @@ def build_model(
 def _fit_seq_scaler(X_train_np):
     """
     Fit a StandardScaler on the flattened sequence features.
-    Saves to SCALER_PATH for inference.
+    Falls back to identity (no scaling) if sklearn is not installed.
     """
-    from sklearn.preprocessing import StandardScaler
-    import numpy as np
+    try:
+        from sklearn.preprocessing import StandardScaler
+        import numpy as np
 
-    # Reshape (N, 20, 8) → (N, 160) for scaler, then back
-    n, s, f = X_train_np.shape
-    flat     = X_train_np.reshape(n, s * f)
-    scaler   = StandardScaler()
-    flat_s   = scaler.fit_transform(flat)
-    X_scaled = flat_s.reshape(n, s, f).astype("float32")
+        n, s, f  = X_train_np.shape
+        flat     = X_train_np.reshape(n, s * f)
+        scaler   = StandardScaler()
+        flat_s   = scaler.fit_transform(flat)
+        X_scaled = flat_s.reshape(n, s, f).astype("float32")
 
-    with open(SCALER_PATH, "wb") as fh:
-        pickle.dump(scaler, fh)
-    log.info("Sequence scaler saved → %s", SCALER_PATH)
-    return scaler, X_scaled
+        with open(SCALER_PATH, "wb") as fh:
+            pickle.dump(scaler, fh)
+        log.info("Sequence scaler saved → %s", SCALER_PATH)
+        return scaler, X_scaled
+    except ImportError:
+        log.warning("sklearn not installed — skipping sequence scaling (install scikit-learn for better accuracy)")
+        # Return a no-op scaler object
+        class _IdentityScaler:
+            def transform(self, X):
+                return X
+        return _IdentityScaler(), X_train_np
 
 
 def _apply_seq_scaler(scaler, X_np):

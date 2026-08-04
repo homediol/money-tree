@@ -1,2001 +1,6 @@
 [
   {
     "prediction": "VERY_LOW",
-    "confidence": 23.89,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 24.65,
-      "LOW": 21.78,
-      "MEDIUM": 22.98,
-      "HIGH": 17.94,
-      "VERY_HIGH": 12.65
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 88.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0063,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.2216,
-      "magnitude": 0.5567,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0248,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 24.34,
-      "LOW": 18.25,
-      "MEDIUM": 21.35,
-      "HIGH": 20.16,
-      "VERY_HIGH": 15.9
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 16/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 23.89,
-    "conf_correction_factor": 0.969,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 24.6%\u219223.9%)",
-    "skip_override": "Skip accuracy 30.0% < 40% floor (last 20 decisions) \u2014 overriding to BET/LOW",
-    "skip_quality": {
-      "skip_success_rate": 0.3,
-      "consecutive_fails": 2,
-      "cooldown_remaining": 0,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.25,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:41:59.625421+00:00",
-    "source_round_count": 178,
-    "last_round_id": 178,
-    "last_multiplier": 1.35,
-    "last_round_ts": 1785235317.973,
-    "actual_multiplier": 1.47,
-    "actual_category": "VERY_LOW",
-    "actual_round_id": 179,
-    "actual_round_ts": 1785235327.157,
-    "correct": true
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 24.22,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 25.0,
-      "LOW": 21.48,
-      "MEDIUM": 22.96,
-      "HIGH": 17.92,
-      "VERY_HIGH": 12.64
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 88.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0073,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.1892,
-      "magnitude": 0.6216,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0254,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 24.88,
-      "LOW": 17.79,
-      "MEDIUM": 21.32,
-      "HIGH": 20.13,
-      "VERY_HIGH": 15.88
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 17/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 24.22,
-    "conf_correction_factor": 0.9687,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 25.0%\u219224.2%)",
-    "skip_override": "Cooldown active (4 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.3,
-      "consecutive_fails": 0,
-      "cooldown_remaining": 4,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2387,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:42:09.532513+00:00",
-    "source_round_count": 179,
-    "last_round_id": 179,
-    "last_multiplier": 1.47,
-    "last_round_ts": 1785235327.157,
-    "actual_multiplier": 8.41,
-    "actual_category": "HIGH",
-    "actual_round_id": 180,
-    "actual_round_ts": 1785235336.985,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 24.77,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 25.55,
-      "LOW": 21.94,
-      "MEDIUM": 22.67,
-      "HIGH": 18.09,
-      "VERY_HIGH": 11.75
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 88.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0104,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.2151,
-      "magnitude": 0.5698,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 25.73,
-      "LOW": 18.49,
-      "MEDIUM": 20.88,
-      "HIGH": 20.39,
-      "VERY_HIGH": 14.51
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 18/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 24.77,
-    "conf_correction_factor": 0.9693,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 25.6%\u219224.8%)",
-    "skip_override": "Cooldown active (2 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.35,
-      "consecutive_fails": 0,
-      "cooldown_remaining": 2,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.242,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:42:29.203821+00:00",
-    "source_round_count": 180,
-    "last_round_id": 180,
-    "last_multiplier": 8.41,
-    "last_round_ts": 1785235336.985,
-    "actual_multiplier": 85.02,
-    "actual_category": "VERY_HIGH",
-    "actual_round_id": 181,
-    "actual_round_ts": 1785235355.459,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 23.96,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 24.73,
-      "LOW": 21.83,
-      "MEDIUM": 23.05,
-      "HIGH": 18.49,
-      "VERY_HIGH": 11.9
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 88.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0086,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "WARM",
-      "raw_trend": "HOT",
-      "momentum_score": 0.7962,
-      "magnitude": 0.5924,
-      "downgrade_reason": "HOT downgraded to WARM: fail rate 66.7% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "warm",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 24.47,
-      "LOW": 18.32,
-      "MEDIUM": 21.47,
-      "HIGH": 21.0,
-      "VERY_HIGH": 14.74
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 20/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 23.96,
-    "conf_correction_factor": 0.969,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 24.7%\u219224.0%)",
-    "skip_override": "Cooldown active (1 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.35,
-      "consecutive_fails": 2,
-      "cooldown_remaining": 1,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2371,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:43:00.188042+00:00",
-    "source_round_count": 181,
-    "last_round_id": 181,
-    "last_multiplier": 85.02,
-    "last_round_ts": 1785235355.459,
-    "actual_multiplier": 4.89,
-    "actual_category": "MEDIUM",
-    "actual_round_id": 182,
-    "actual_round_ts": 1785235386.296,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 23.19,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 23.94,
-      "LOW": 21.1,
-      "MEDIUM": 23.57,
-      "HIGH": 18.58,
-      "VERY_HIGH": 12.81
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 88.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0063,
-    "streak": {
-      "category": "MEDIUM",
-      "length": 20,
-      "trend": "WARM",
-      "raw_trend": "HOT",
-      "momentum_score": 0.6753,
-      "magnitude": 0.3506,
-      "downgrade_reason": "HOT downgraded to WARM: fail rate 66.7% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "warm",
-    "seq_hit": false,
-    "action": "BET",
-    "bet_fraction": 0.025,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 23.26,
-      "LOW": 17.2,
-      "MEDIUM": 22.27,
-      "HIGH": 21.14,
-      "VERY_HIGH": 16.13
-    },
-    "recalibration_active": false,
-    "recalibration_reason": null,
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 23.19,
-    "conf_correction_factor": 0.9688,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 23.9%\u219223.2%)",
-    "skip_override": null,
-    "skip_quality": {
-      "skip_success_rate": 0.3,
-      "consecutive_fails": 0,
-      "cooldown_remaining": 4,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2325,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:43:14.898612+00:00",
-    "source_round_count": 182,
-    "last_round_id": 182,
-    "last_multiplier": 4.89,
-    "last_round_ts": 1785235386.296,
-    "actual_multiplier": 1.47,
-    "actual_category": "VERY_LOW",
-    "actual_round_id": 183,
-    "actual_round_ts": 1785235400.729,
-    "correct": true
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 23.3,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 24.06,
-      "LOW": 21.12,
-      "MEDIUM": 23.46,
-      "HIGH": 18.53,
-      "VERY_HIGH": 12.83
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 88.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0063,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "WARM",
-      "raw_trend": "WARM",
-      "momentum_score": 0.5526,
-      "magnitude": 0.1052,
-      "downgrade_reason": null
-    },
-    "trend": "warm",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0247,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 23.46,
-      "LOW": 17.23,
-      "MEDIUM": 22.1,
-      "HIGH": 21.05,
-      "VERY_HIGH": 16.16
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 1/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 23.3,
-    "conf_correction_factor": 0.9686,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 24.1%\u219223.3%)",
-    "skip_override": "Cooldown active (3 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.3,
-      "consecutive_fails": 1,
-      "cooldown_remaining": 3,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2331,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:43:23.658646+00:00",
-    "source_round_count": 183,
-    "last_round_id": 183,
-    "last_multiplier": 1.47,
-    "last_round_ts": 1785235400.729,
-    "actual_multiplier": 2.15,
-    "actual_category": "MEDIUM",
-    "actual_round_id": 184,
-    "actual_round_ts": 1785235410.391,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 30.67,
-    "recommended_cashout": 1.16,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 31.65,
-      "LOW": 26.63,
-      "MEDIUM": 19.52,
-      "HIGH": 15.07,
-      "VERY_HIGH": 7.13
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 88.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0719,
-    "streak": {
-      "category": "MEDIUM",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "NEUTRAL",
-      "momentum_score": 0.4601,
-      "magnitude": 0.0798,
-      "downgrade_reason": null
-    },
-    "trend": "neutral",
-    "seq_hit": true,
-    "action": "SKIP",
-    "bet_fraction": 0.028,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 35.14,
-      "LOW": 25.71,
-      "MEDIUM": 16.03,
-      "HIGH": 15.73,
-      "VERY_HIGH": 7.39
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 2/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 30.67,
-    "conf_correction_factor": 0.9692,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 31.6%\u219230.7%)",
-    "skip_override": "Cooldown active (2 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.3,
-      "consecutive_fails": 0,
-      "cooldown_remaining": 2,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2774,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:43:48.045366+00:00",
-    "source_round_count": 184,
-    "last_round_id": 184,
-    "last_multiplier": 2.15,
-    "last_round_ts": 1785235410.391,
-    "actual_multiplier": 1.29,
-    "actual_category": "VERY_LOW",
-    "actual_round_id": 185,
-    "actual_round_ts": 1785235429.081,
-    "correct": true
-  },
-  {
-    "prediction": "MEDIUM",
-    "confidence": 37.99,
-    "recommended_cashout": 2.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 15.93,
-      "LOW": 15.14,
-      "MEDIUM": 39.2,
-      "HIGH": 22.76,
-      "VERY_HIGH": 6.97
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 84.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.1642,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.3185,
-      "magnitude": 0.363,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": true,
-    "action": "SKIP",
-    "bet_fraction": 0.0308,
-    "bayes_weight": 0.35,
-    "raw_prediction": "MEDIUM",
-    "raw_probabilities": {
-      "VERY_LOW": 10.95,
-      "LOW": 8.02,
-      "MEDIUM": 46.3,
-      "HIGH": 27.57,
-      "VERY_HIGH": 7.16
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 6/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 37.99,
-    "conf_correction_factor": 0.9692,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 39.2%\u219238.0%)",
-    "skip_override": "Skip accuracy 25.0% < 40% floor (last 20 decisions) \u2014 overriding to BET/LOW",
-    "skip_quality": {
-      "skip_success_rate": 0.25,
-      "consecutive_fails": 0,
-      "cooldown_remaining": 0,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": "MEDIUM locked (accuracy 23.3% < 35% floor); Gate 1 fail: MEDIUM accuracy 23.3% < 35%; Gate 2 fail: multiplier spread 21.60\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.32 < 0.40",
-    "risk_confidence_score": 0.3213,
-    "medium_locked": true,
-    "medium_gates": {
-      "accuracy": {
-        "pass": false,
-        "value": 0.2333,
-        "window": 30
-      },
-      "spread": {
-        "pass": false,
-        "value": 21.6033,
-        "window": 15
-      },
-      "rcs": {
-        "pass": false,
-        "value": 0.3213
-      }
-    },
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:44:18.229902+00:00",
-    "source_round_count": 186,
-    "last_round_id": 186,
-    "last_multiplier": 1.8,
-    "last_round_ts": 1785235440.267,
-    "actual_multiplier": 5.01,
-    "actual_category": "HIGH",
-    "actual_round_id": 187,
-    "actual_round_ts": 1785235450.916,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 24.78,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 25.55,
-      "LOW": 21.94,
-      "MEDIUM": 22.67,
-      "HIGH": 18.09,
-      "VERY_HIGH": 11.75
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 84.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0104,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.2924,
-      "magnitude": 0.4153,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 25.73,
-      "LOW": 18.49,
-      "MEDIUM": 20.88,
-      "HIGH": 20.39,
-      "VERY_HIGH": 14.51
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 9/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 24.78,
-    "conf_correction_factor": 0.97,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.970 (over-confidence; 25.6%\u219224.8%)",
-    "skip_override": "Cooldown active (4 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.25,
-      "consecutive_fails": 1,
-      "cooldown_remaining": 4,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.242,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:44:31.711192+00:00",
-    "source_round_count": 187,
-    "last_round_id": 187,
-    "last_multiplier": 5.01,
-    "last_round_ts": 1785235450.916,
-    "actual_multiplier": 1.54,
-    "actual_category": "LOW",
-    "actual_round_id": 188,
-    "actual_round_ts": 1785235469.395,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 24.2,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 24.99,
-      "LOW": 22.14,
-      "MEDIUM": 22.25,
-      "HIGH": 18.73,
-      "VERY_HIGH": 11.89
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 86.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0088,
-    "streak": {
-      "category": "HIGH",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.2383,
-      "magnitude": 0.5235,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 24.89,
-      "LOW": 18.78,
-      "MEDIUM": 20.23,
-      "HIGH": 21.38,
-      "VERY_HIGH": 14.72
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 16/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 24.2,
-    "conf_correction_factor": 0.9683,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.968 (over-confidence; 25.0%\u219224.2%)",
-    "skip_override": "Cooldown active (3 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.2,
-      "consecutive_fails": 2,
-      "cooldown_remaining": 3,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2252,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:44:48.066354+00:00",
-    "source_round_count": 189,
-    "last_round_id": 189,
-    "last_multiplier": 5.3,
-    "last_round_ts": 1785235478.903,
-    "actual_multiplier": 1.07,
-    "actual_category": "VERY_LOW",
-    "actual_round_id": 190,
-    "actual_round_ts": 1785235494.697,
-    "correct": true
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 23.49,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 24.26,
-      "LOW": 21.81,
-      "MEDIUM": 22.65,
-      "HIGH": 18.61,
-      "VERY_HIGH": 12.67
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 86.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0057,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.1984,
-      "magnitude": 0.6031,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0252,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 23.77,
-      "LOW": 18.27,
-      "MEDIUM": 20.85,
-      "HIGH": 21.19,
-      "VERY_HIGH": 15.92
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 16/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 23.49,
-    "conf_correction_factor": 0.9683,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.968 (over-confidence; 24.3%\u219223.5%)",
-    "skip_override": "Cooldown active (2 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.2,
-      "consecutive_fails": 2,
-      "cooldown_remaining": 2,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2209,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:44:55.124681+00:00",
-    "source_round_count": 190,
-    "last_round_id": 190,
-    "last_multiplier": 1.07,
-    "last_round_ts": 1785235494.697,
-    "actual_multiplier": 2.34,
-    "actual_category": "MEDIUM",
-    "actual_round_id": 191,
-    "actual_round_ts": 1785235501.174,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 23.51,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 24.26,
-      "LOW": 21.52,
-      "MEDIUM": 22.98,
-      "HIGH": 18.59,
-      "VERY_HIGH": 12.65
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 86.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0061,
-    "streak": {
-      "category": "MEDIUM",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.1774,
-      "magnitude": 0.6452,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0252,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 23.76,
-      "LOW": 17.82,
-      "MEDIUM": 21.35,
-      "HIGH": 21.17,
-      "VERY_HIGH": 15.9
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 17/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 23.51,
-    "conf_correction_factor": 0.9689,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 24.3%\u219223.5%)",
-    "skip_override": "Cooldown active (1 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.25,
-      "consecutive_fails": 0,
-      "cooldown_remaining": 1,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2211,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:45:05.852950+00:00",
-    "source_round_count": 191,
-    "last_round_id": 191,
-    "last_multiplier": 2.34,
-    "last_round_ts": 1785235501.174,
-    "actual_multiplier": 1.04,
-    "actual_category": "VERY_LOW",
-    "actual_round_id": 192,
-    "actual_round_ts": 1785235512.637,
-    "correct": true
-  },
-  {
-    "prediction": "MEDIUM",
-    "confidence": 31.69,
-    "recommended_cashout": 2.04,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 21.98,
-      "LOW": 15.14,
-      "MEDIUM": 32.71,
-      "HIGH": 23.2,
-      "VERY_HIGH": 6.97
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 86.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.1056,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.1505,
-      "magnitude": 0.6991,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": true,
-    "action": "SKIP",
-    "bet_fraction": 0.029,
-    "bayes_weight": 0.35,
-    "raw_prediction": "MEDIUM",
-    "raw_probabilities": {
-      "VERY_LOW": 20.25,
-      "LOW": 8.02,
-      "MEDIUM": 36.31,
-      "HIGH": 28.26,
-      "VERY_HIGH": 7.16
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 18/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 31.69,
-    "conf_correction_factor": 0.9687,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 32.7%\u219231.7%)",
-    "skip_override": "Skip accuracy 20.0% < 40% floor (last 20 decisions) \u2014 overriding to BET/LOW",
-    "skip_quality": {
-      "skip_success_rate": 0.2,
-      "consecutive_fails": 1,
-      "cooldown_remaining": 0,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": "MEDIUM locked (accuracy 20.0% < 35% floor); Gate 1 fail: MEDIUM accuracy 20.0% < 35%; Gate 2 fail: multiplier spread 1.46\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.27 < 0.40",
-    "risk_confidence_score": 0.2701,
-    "medium_locked": true,
-    "medium_gates": {
-      "accuracy": {
-        "pass": false,
-        "value": 0.2,
-        "window": 30
-      },
-      "spread": {
-        "pass": false,
-        "value": 1.4593,
-        "window": 15
-      },
-      "rcs": {
-        "pass": false,
-        "value": 0.2701
-      }
-    },
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:45:13.178542+00:00",
-    "source_round_count": 192,
-    "last_round_id": 192,
-    "last_multiplier": 1.04,
-    "last_round_ts": 1785235512.637,
-    "actual_multiplier": 1.35,
-    "actual_category": "VERY_LOW",
-    "actual_round_id": 193,
-    "actual_round_ts": 1785235518.034,
-    "correct": false
-  },
-  {
-    "prediction": "MEDIUM",
-    "confidence": 28.2,
-    "recommended_cashout": 1.98,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 23.45,
-      "LOW": 14.99,
-      "MEDIUM": 29.1,
-      "HIGH": 25.52,
-      "VERY_HIGH": 6.94
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 86.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0995,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.1268,
-      "magnitude": 0.7463,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": true,
-    "action": "SKIP",
-    "bet_fraction": 0.0134,
-    "bayes_weight": 0.35,
-    "raw_prediction": "HIGH",
-    "raw_probabilities": {
-      "VERY_LOW": 22.5,
-      "LOW": 7.78,
-      "MEDIUM": 30.78,
-      "HIGH": 31.83,
-      "VERY_HIGH": 7.11
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 20/20 (triggered at 30.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 28.2,
-    "conf_correction_factor": 0.9691,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 29.1%\u219228.2%)",
-    "skip_override": "Skip accuracy 25.0% < 40% floor (last 20 decisions) \u2014 overriding to BET/LOW",
-    "skip_quality": {
-      "skip_success_rate": 0.25,
-      "consecutive_fails": 1,
-      "cooldown_remaining": 0,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": "MEDIUM locked (accuracy 20.0% < 35% floor); Gate 1 fail: MEDIUM accuracy 20.0% < 35%; Gate 2 fail: multiplier spread 1.46\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.25 < 0.40",
-    "risk_confidence_score": 0.2492,
-    "medium_locked": true,
-    "medium_gates": {
-      "accuracy": {
-        "pass": false,
-        "value": 0.2,
-        "window": 30
-      },
-      "spread": {
-        "pass": false,
-        "value": 1.4593,
-        "window": 15
-      },
-      "rcs": {
-        "pass": false,
-        "value": 0.2492
-      }
-    },
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:45:24.159555+00:00",
-    "source_round_count": 193,
-    "last_round_id": 193,
-    "last_multiplier": 1.35,
-    "last_round_ts": 1785235518.034,
-    "actual_multiplier": 5.16,
-    "actual_category": "HIGH",
-    "actual_round_id": 194,
-    "actual_round_ts": 1785235529.055,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 25.11,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 25.92,
-      "LOW": 21.63,
-      "MEDIUM": 22.65,
-      "HIGH": 18.06,
-      "VERY_HIGH": 11.74
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 86.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0116,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.142,
-      "magnitude": 0.716,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": false,
-    "action": "BET",
-    "bet_fraction": 0.0241,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 26.3,
-      "LOW": 18.01,
-      "MEDIUM": 20.85,
-      "HIGH": 20.35,
-      "VERY_HIGH": 14.49
-    },
-    "recalibration_active": false,
-    "recalibration_reason": null,
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 25.11,
-    "conf_correction_factor": 0.9689,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.969 (over-confidence; 25.9%\u219225.1%)",
-    "skip_override": null,
-    "skip_quality": {
-      "skip_success_rate": 0.25,
-      "consecutive_fails": 2,
-      "cooldown_remaining": 0,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2307,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:45:41.888668+00:00",
-    "source_round_count": 194,
-    "last_round_id": 194,
-    "last_multiplier": 5.16,
-    "last_round_ts": 1785235529.055,
-    "actual_multiplier": 2.09,
-    "actual_category": "MEDIUM",
-    "actual_round_id": 195,
-    "actual_round_ts": 1785235547.561,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 37.29,
-    "recommended_cashout": 1.17,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 46.83,
-      "LOW": 19.9,
-      "MEDIUM": 15.47,
-      "HIGH": 10.85,
-      "VERY_HIGH": 6.95
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 88.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.2311,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.1304,
-      "magnitude": 0.7392,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": true,
-    "action": "SKIP",
-    "bet_fraction": 0.0329,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 58.48,
-      "LOW": 15.34,
-      "MEDIUM": 9.79,
-      "HIGH": 9.26,
-      "VERY_HIGH": 7.13
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 2/20 (triggered at 25.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 37.29,
-    "conf_correction_factor": 0.7963,
-    "conf_inverted": false,
-    "conf_bin": "40-60",
-    "conf_reason": "correction \u00d70.796 (over-confidence; 46.8%\u219237.3%)",
-    "skip_override": "Cooldown active (4 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.25,
-      "consecutive_fails": 1,
-      "cooldown_remaining": 4,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.3037,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:45:54.313693+00:00",
-    "source_round_count": 195,
-    "last_round_id": 195,
-    "last_multiplier": 2.09,
-    "last_round_ts": 1785235547.561,
-    "actual_multiplier": 6.97,
-    "actual_category": "HIGH",
-    "actual_round_id": 196,
-    "actual_round_ts": 1785235557.604,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 24.55,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 25.36,
-      "LOW": 21.53,
-      "MEDIUM": 22.55,
-      "HIGH": 18.7,
-      "VERY_HIGH": 11.86
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 90.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0102,
-    "streak": {
-      "category": "HIGH",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.1592,
-      "magnitude": 0.6816,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 25.44,
-      "LOW": 17.85,
-      "MEDIUM": 20.69,
-      "HIGH": 21.34,
-      "VERY_HIGH": 14.68
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 5/20 (triggered at 25.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 24.55,
-    "conf_correction_factor": 0.9679,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.968 (over-confidence; 25.4%\u219224.5%)",
-    "skip_override": "Cooldown active (3 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.2,
-      "consecutive_fails": 0,
-      "cooldown_remaining": 3,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2273,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:46:08.436006+00:00",
-    "source_round_count": 196,
-    "last_round_id": 196,
-    "last_multiplier": 6.97,
-    "last_round_ts": 1785235557.604,
-    "actual_multiplier": 2.16,
-    "actual_category": "MEDIUM",
-    "actual_round_id": 197,
-    "actual_round_ts": 1785235575.866,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
-    "confidence": 23.47,
-    "recommended_cashout": 1.15,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 24.25,
-      "LOW": 21.22,
-      "MEDIUM": 23.31,
-      "HIGH": 18.58,
-      "VERY_HIGH": 12.64
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 90.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0067,
-    "streak": {
-      "category": "MEDIUM",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.1448,
-      "magnitude": 0.7104,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": false,
-    "action": "SKIP",
-    "bet_fraction": 0.0252,
-    "bayes_weight": 0.35,
-    "raw_prediction": "VERY_LOW",
-    "raw_probabilities": {
-      "VERY_LOW": 23.73,
-      "LOW": 17.37,
-      "MEDIUM": 21.86,
-      "HIGH": 21.15,
-      "VERY_HIGH": 15.89
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 6/20 (triggered at 25.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 23.47,
-    "conf_correction_factor": 0.9676,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.968 (over-confidence; 24.2%\u219223.5%)",
-    "skip_override": "Cooldown active (2 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.2,
-      "consecutive_fails": 1,
-      "cooldown_remaining": 2,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": null,
-    "risk_confidence_score": 0.2208,
-    "medium_locked": true,
-    "medium_gates": null,
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:46:20.366514+00:00",
-    "source_round_count": 197,
-    "last_round_id": 197,
-    "last_multiplier": 2.16,
-    "last_round_ts": 1785235575.866,
-    "actual_multiplier": 1.02,
-    "actual_category": "VERY_LOW",
-    "actual_round_id": 198,
-    "actual_round_ts": 1785235586.142,
-    "correct": true
-  },
-  {
-    "prediction": "MEDIUM",
-    "confidence": 29.73,
-    "recommended_cashout": 2.01,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 25.89,
-      "LOW": 19.96,
-      "MEDIUM": 30.73,
-      "HIGH": 16.45,
-      "VERY_HIGH": 6.97
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 88.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.0667,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.1244,
-      "magnitude": 0.7513,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": true,
-    "action": "SKIP",
-    "bet_fraction": 0.0282,
-    "bayes_weight": 0.35,
-    "raw_prediction": "MEDIUM",
-    "raw_probabilities": {
-      "VERY_LOW": 26.26,
-      "LOW": 15.42,
-      "MEDIUM": 33.29,
-      "HIGH": 17.87,
-      "VERY_HIGH": 7.16
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 7/20 (triggered at 25.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 29.73,
-    "conf_correction_factor": 0.9675,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.967 (over-confidence; 30.7%\u219229.7%)",
-    "skip_override": "Cooldown active (1 rounds remaining) after 3 consecutive skip failures",
-    "skip_quality": {
-      "skip_success_rate": 0.2,
-      "consecutive_fails": 2,
-      "cooldown_remaining": 1,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": "MEDIUM locked (accuracy 20.0% < 35% floor); Gate 1 fail: MEDIUM accuracy 20.0% < 35%; Gate 2 fail: multiplier spread 1.77\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.26 < 0.40",
-    "risk_confidence_score": 0.2584,
-    "medium_locked": true,
-    "medium_gates": {
-      "accuracy": {
-        "pass": false,
-        "value": 0.2,
-        "window": 30
-      },
-      "spread": {
-        "pass": false,
-        "value": 1.7707,
-        "window": 15
-      },
-      "rcs": {
-        "pass": false,
-        "value": 0.2584
-      }
-    },
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:46:26.450670+00:00",
-    "source_round_count": 198,
-    "last_round_id": 198,
-    "last_multiplier": 1.02,
-    "last_round_ts": 1785235586.142,
-    "actual_multiplier": 1.06,
-    "actual_category": "VERY_LOW",
-    "actual_round_id": 199,
-    "actual_round_ts": 1785235592.484,
-    "correct": false
-  },
-  {
-    "prediction": "MEDIUM",
-    "confidence": 28.6,
-    "recommended_cashout": 1.99,
-    "risk_level": "LOW",
-    "probabilities": {
-      "VERY_LOW": 23.07,
-      "LOW": 14.98,
-      "MEDIUM": 29.54,
-      "HIGH": 25.48,
-      "VERY_HIGH": 6.93
-    },
-    "engine": "statistical_ensemble",
-    "low_confidence": false,
-    "bias_warning": "Model bias detected: 'VERY_LOW' = 86.0% of last 50 predictions.",
-    "regime": "high",
-    "certainty": 0.101,
-    "streak": {
-      "category": "VERY_LOW",
-      "length": 20,
-      "trend": "NEUTRAL",
-      "raw_trend": "COLD",
-      "momentum_score": 0.1083,
-      "magnitude": 0.7835,
-      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 83.3% > 60% over last 6 predictions in high regime"
-    },
-    "trend": "neutral",
-    "seq_hit": true,
-    "action": "SKIP",
-    "bet_fraction": 0.0134,
-    "bayes_weight": 0.35,
-    "raw_prediction": "HIGH",
-    "raw_probabilities": {
-      "VERY_LOW": 21.92,
-      "LOW": 7.76,
-      "MEDIUM": 31.46,
-      "HIGH": 31.76,
-      "VERY_HIGH": 7.1
-    },
-    "recalibration_active": true,
-    "recalibration_reason": "Recalibration mode active \u2014 collecting data point 8/20 (triggered at 25.0% hit rate)",
-    "category_boundaries": {
-      "VERY_LOW": [
-        1.0,
-        1.4
-      ],
-      "LOW": [
-        1.4,
-        2.3
-      ],
-      "MEDIUM": [
-        2.3,
-        5.4
-      ],
-      "HIGH": [
-        5.4,
-        15.9
-      ],
-      "VERY_HIGH": [
-        15.9,
-        9999.0
-      ]
-    },
-    "conf_calibrated_conf": 28.6,
-    "conf_correction_factor": 0.968,
-    "conf_inverted": false,
-    "conf_bin": "20-40",
-    "conf_reason": "correction \u00d70.968 (over-confidence; 29.5%\u219228.6%)",
-    "skip_override": "Skip accuracy 20.0% < 40% floor (last 20 decisions) \u2014 overriding to BET/LOW",
-    "skip_quality": {
-      "skip_success_rate": 0.2,
-      "consecutive_fails": 0,
-      "cooldown_remaining": 0,
-      "skip_outcomes_window": 20
-    },
-    "vh_downgrade_reason": null,
-    "risk_tier_downgrade": "MEDIUM locked (accuracy 20.0% < 35% floor); Gate 1 fail: MEDIUM accuracy 20.0% < 35%; Gate 2 fail: multiplier spread 1.77\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.25 < 0.40",
-    "risk_confidence_score": 0.2516,
-    "medium_locked": true,
-    "medium_gates": {
-      "accuracy": {
-        "pass": false,
-        "value": 0.2,
-        "window": 30
-      },
-      "spread": {
-        "pass": false,
-        "value": 1.7707,
-        "window": 15
-      },
-      "rcs": {
-        "pass": false,
-        "value": 0.2516
-      }
-    },
-    "medium_params": {
-      "base": 1.5,
-      "top": 3.2,
-      "min_conf": 34.809611882010124
-    },
-    "created_at": "2026-07-28T10:46:33.513458+00:00",
-    "source_round_count": 199,
-    "last_round_id": 199,
-    "last_multiplier": 1.06,
-    "last_round_ts": 1785235592.484,
-    "actual_multiplier": 1.25,
-    "actual_category": "VERY_LOW",
-    "actual_round_id": 200,
-    "actual_round_ts": 1785235597.875,
-    "correct": false
-  },
-  {
-    "prediction": "VERY_LOW",
     "confidence": 24.17,
     "recommended_cashout": 1.15,
     "risk_level": "LOW",
@@ -24693,6 +22698,2050 @@
     "source_round_count": 500,
     "last_round_id": 532,
     "last_multiplier": 7.66,
-    "last_round_ts": "2026-07-28T15:06:05.490Z"
+    "last_round_ts": "2026-07-28T15:06:05.490Z",
+    "actual_multiplier": 4.75,
+    "actual_category": "MEDIUM",
+    "actual_round_id": 533,
+    "actual_round_ts": "2026-07-29T09:20:15.251Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 33.12,
+    "recommended_cashout": 1.17,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 33.97,
+      "LOW": 14.98,
+      "MEDIUM": 24.32,
+      "HIGH": 10.92,
+      "VERY_HIGH": 15.81
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.09,
+    "streak": {
+      "category": "MEDIUM",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.2625,
+      "magnitude": 0.4751,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0294,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 37.77,
+      "LOW": 8.28,
+      "MEDIUM": 23.66,
+      "HIGH": 9.41,
+      "VERY_HIGH": 20.88
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 33.12,
+    "conf_correction_factor": 0.9749,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.975 (over-confidence; 34.0%\u219233.1%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.3587,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "created_at": "2026-07-29T09:20:44.497948+00:00",
+    "source_round_count": 500,
+    "last_round_id": 533,
+    "last_multiplier": 4.75,
+    "last_round_ts": "2026-07-29T09:20:15.251Z",
+    "actual_multiplier": 25.91,
+    "actual_category": "VERY_HIGH",
+    "actual_round_id": 534,
+    "actual_round_ts": "2026-07-29T09:21:05.866Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 24.6,
+    "recommended_cashout": 1.4,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 25.24,
+      "LOW": 21.23,
+      "MEDIUM": 22.76,
+      "HIGH": 18.72,
+      "VERY_HIGH": 12.05
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.008,
+    "streak": {
+      "category": "MEDIUM",
+      "length": 20,
+      "trend": "NEUTRAL",
+      "raw_trend": "NEUTRAL",
+      "momentum_score": 0.5034,
+      "magnitude": 0.0069,
+      "downgrade_reason": null
+    },
+    "trend": "neutral",
+    "seq_hit": false,
+    "action": "BET",
+    "bet_fraction": 0.08,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 24.32,
+      "LOW": 17.91,
+      "MEDIUM": 21.26,
+      "HIGH": 21.41,
+      "VERY_HIGH": 15.1
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 24.6,
+    "conf_correction_factor": 0.9747,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.975 (over-confidence; 25.2%\u219224.6%)",
+    "skip_override": "Confidence 24.6% < 70% threshold required for SKIP",
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.3076,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "risk_override_category": "LOW",
+    "created_at": "2026-07-29T09:21:14.405024+00:00",
+    "source_round_count": 500,
+    "last_round_id": 534,
+    "last_multiplier": 25.91,
+    "last_round_ts": "2026-07-29T09:21:05.866Z",
+    "actual_multiplier": 1.94,
+    "actual_category": "LOW",
+    "actual_round_id": 535,
+    "actual_round_ts": "2026-07-29T09:21:29.989Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 24.31,
+    "recommended_cashout": 1.15,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 24.95,
+      "LOW": 21.33,
+      "MEDIUM": 22.95,
+      "HIGH": 17.93,
+      "VERY_HIGH": 12.84
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.0055,
+    "streak": {
+      "category": "MEDIUM",
+      "length": 20,
+      "trend": "COOL",
+      "raw_trend": "COOL",
+      "momentum_score": 0.4246,
+      "magnitude": 0.1507,
+      "downgrade_reason": null
+    },
+    "trend": "cool",
+    "seq_hit": false,
+    "action": "BET",
+    "bet_fraction": 0.0248,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 23.89,
+      "LOW": 18.06,
+      "MEDIUM": 21.56,
+      "HIGH": 20.19,
+      "VERY_HIGH": 16.3
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 24.31,
+    "conf_correction_factor": 0.9745,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.974 (over-confidence; 24.9%\u219224.3%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.3059,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "created_at": "2026-07-29T09:21:44.466080+00:00",
+    "source_round_count": 500,
+    "last_round_id": 535,
+    "last_multiplier": 1.94,
+    "last_round_ts": "2026-07-29T09:21:29.989Z",
+    "actual_multiplier": 2.6,
+    "actual_category": "MEDIUM",
+    "actual_round_id": 536,
+    "actual_round_ts": "2026-07-29T09:21:52.929Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 37.72,
+    "recommended_cashout": 1.18,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 38.72,
+      "LOW": 19.33,
+      "MEDIUM": 19.7,
+      "HIGH": 15.3,
+      "VERY_HIGH": 6.95
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.1139,
+    "streak": {
+      "category": "MEDIUM",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.3074,
+      "magnitude": 0.3853,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.031,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 45.06,
+      "LOW": 14.98,
+      "MEDIUM": 16.56,
+      "HIGH": 16.15,
+      "VERY_HIGH": 7.25
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 37.72,
+    "conf_correction_factor": 0.9743,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.974 (over-confidence; 38.7%\u219237.7%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.3863,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "created_at": "2026-07-29T09:22:14.459437+00:00",
+    "source_round_count": 500,
+    "last_round_id": 537,
+    "last_multiplier": 1.11,
+    "last_round_ts": "2026-07-29T09:22:07.647Z",
+    "actual_multiplier": 166.16,
+    "actual_category": "VERY_HIGH",
+    "actual_round_id": 538,
+    "actual_round_ts": "2026-07-29T09:23:20.406Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 32.46,
+    "recommended_cashout": 1.16,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 41.06,
+      "LOW": 14.83,
+      "MEDIUM": 26.26,
+      "HIGH": 10.98,
+      "VERY_HIGH": 6.87
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": "Model bias detected: 'VERY_LOW' = 100.0% of last 12 predictions.",
+    "regime": "high",
+    "certainty": 0.1815,
+    "streak": {
+      "category": "VERY_HIGH",
+      "length": 20,
+      "trend": "HOT",
+      "raw_trend": "HOT",
+      "momentum_score": 1.0,
+      "magnitude": 1.0,
+      "downgrade_reason": null
+    },
+    "trend": "hot",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0299,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 48.68,
+      "LOW": 8.06,
+      "MEDIUM": 26.64,
+      "HIGH": 9.5,
+      "VERY_HIGH": 7.12
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 32.46,
+    "conf_correction_factor": 0.7904,
+    "conf_inverted": false,
+    "conf_bin": "40-60",
+    "conf_reason": "correction \u00d70.790 (over-confidence; 41.1%\u219232.5%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.3548,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "created_at": "2026-07-29T09:23:41.801170+00:00",
+    "source_round_count": 500,
+    "last_round_id": 538,
+    "last_multiplier": 166.16,
+    "last_round_ts": "2026-07-29T09:23:20.406Z",
+    "actual_multiplier": 3.29,
+    "actual_category": "MEDIUM",
+    "actual_round_id": 539,
+    "actual_round_ts": "2026-07-29T09:23:56.237Z",
+    "correct": false
+  },
+  {
+    "prediction": "MEDIUM",
+    "confidence": 33.23,
+    "recommended_cashout": 2.06,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 16.14,
+      "LOW": 23.53,
+      "MEDIUM": 42.04,
+      "HIGH": 11.07,
+      "VERY_HIGH": 7.22
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": "Model bias detected: 'VERY_LOW' = 92.3% of last 13 predictions.",
+    "regime": "high",
+    "certainty": 0.1732,
+    "streak": {
+      "category": "MEDIUM",
+      "length": 20,
+      "trend": "HOT",
+      "raw_trend": "HOT",
+      "momentum_score": 1.0,
+      "magnitude": 1.0,
+      "downgrade_reason": null
+    },
+    "trend": "hot",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0327,
+    "bayes_weight": 0.35,
+    "raw_prediction": "MEDIUM",
+    "raw_probabilities": {
+      "VERY_LOW": 10.33,
+      "LOW": 21.45,
+      "MEDIUM": 50.92,
+      "HIGH": 9.65,
+      "VERY_HIGH": 7.65
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 33.23,
+    "conf_correction_factor": 0.7904,
+    "conf_inverted": false,
+    "conf_bin": "40-60",
+    "conf_reason": "correction \u00d70.790 (over-confidence; 42.0%\u219233.2%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": "MEDIUM locked (accuracy 40.0% < 35% floor); Gate 2 fail: multiplier spread 3.85\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.36 < 0.40",
+    "risk_confidence_score": 0.3594,
+    "medium_locked": true,
+    "medium_gates": {
+      "accuracy": {
+        "pass": true,
+        "value": 0.4,
+        "window": 30
+      },
+      "spread": {
+        "pass": false,
+        "value": 3.852,
+        "window": 15
+      },
+      "rcs": {
+        "pass": false,
+        "value": 0.3594
+      }
+    },
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "created_at": "2026-07-29T09:24:11.733270+00:00",
+    "source_round_count": 500,
+    "last_round_id": 539,
+    "last_multiplier": 3.29,
+    "last_round_ts": "2026-07-29T09:23:56.237Z",
+    "actual_multiplier": 21.55,
+    "actual_category": "VERY_HIGH",
+    "actual_round_id": 540,
+    "actual_round_ts": "2026-07-29T09:25:18.894Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 23.24,
+    "recommended_cashout": 1.39,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 23.87,
+      "LOW": 20.43,
+      "MEDIUM": 23.19,
+      "HIGH": 19.51,
+      "VERY_HIGH": 13.0
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": "Model bias detected: 'VERY_LOW' = 75.0% of last 16 predictions.",
+    "regime": "high",
+    "certainty": 0.0061,
+    "streak": {
+      "category": "VERY_HIGH",
+      "length": 20,
+      "trend": "HOT",
+      "raw_trend": "HOT",
+      "momentum_score": 1.0,
+      "magnitude": 1.0,
+      "downgrade_reason": null
+    },
+    "trend": "hot",
+    "seq_hit": false,
+    "action": "BET",
+    "bet_fraction": 0.08,
+    "bayes_weight": 0.35,
+    "raw_prediction": "HIGH",
+    "raw_probabilities": {
+      "VERY_LOW": 22.23,
+      "LOW": 16.68,
+      "MEDIUM": 21.91,
+      "HIGH": 22.63,
+      "VERY_HIGH": 16.55
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 23.24,
+    "conf_correction_factor": 0.9737,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.974 (over-confidence; 23.9%\u219223.2%)",
+    "skip_override": "Confidence 23.2% < 70% threshold required for SKIP",
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.2994,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "risk_override_category": "LOW",
+    "created_at": "2026-07-29T09:25:42.379637+00:00",
+    "source_round_count": 500,
+    "last_round_id": 540,
+    "last_multiplier": 21.55,
+    "last_round_ts": "2026-07-29T09:25:18.894Z",
+    "actual_multiplier": 1.56,
+    "actual_category": "LOW",
+    "actual_round_id": 541,
+    "actual_round_ts": "2026-07-29T09:26:12.881Z",
+    "correct": false
+  },
+  {
+    "prediction": "MEDIUM",
+    "confidence": 22.53,
+    "recommended_cashout": 1.39,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 23.09,
+      "LOW": 20.3,
+      "MEDIUM": 23.14,
+      "HIGH": 19.52,
+      "VERY_HIGH": 13.95
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.0044,
+    "streak": {
+      "category": "VERY_HIGH",
+      "length": 20,
+      "trend": "HOT",
+      "raw_trend": "HOT",
+      "momentum_score": 1.0,
+      "magnitude": 1.0,
+      "downgrade_reason": null
+    },
+    "trend": "hot",
+    "seq_hit": false,
+    "action": "BET",
+    "bet_fraction": 0.08,
+    "bayes_weight": 0.35,
+    "raw_prediction": "HIGH",
+    "raw_probabilities": {
+      "VERY_LOW": 21.03,
+      "LOW": 16.47,
+      "MEDIUM": 21.85,
+      "HIGH": 22.65,
+      "VERY_HIGH": 18.0
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 22.53,
+    "conf_correction_factor": 0.9734,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.973 (over-confidence; 23.1%\u219222.5%)",
+    "skip_override": "Confidence 22.5% < 70% threshold required for SKIP",
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": "MEDIUM locked (accuracy 36.7% < 35% floor); Gate 2 fail: multiplier spread 5.09\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.28 < 0.40",
+    "risk_confidence_score": 0.2818,
+    "medium_locked": true,
+    "medium_gates": {
+      "accuracy": {
+        "pass": true,
+        "value": 0.3667,
+        "window": 30
+      },
+      "spread": {
+        "pass": false,
+        "value": 5.0927,
+        "window": 15
+      },
+      "rcs": {
+        "pass": false,
+        "value": 0.2818
+      }
+    },
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "risk_override_category": "LOW",
+    "created_at": "2026-07-29T09:26:42.323903+00:00",
+    "source_round_count": 500,
+    "last_round_id": 541,
+    "last_multiplier": 1.56,
+    "last_round_ts": "2026-07-29T09:26:12.881Z",
+    "actual_multiplier": 6.43,
+    "actual_category": "HIGH",
+    "actual_round_id": 542,
+    "actual_round_ts": "2026-07-29T09:26:46.898Z",
+    "correct": false
+  },
+  {
+    "prediction": "MEDIUM",
+    "confidence": 29.43,
+    "recommended_cashout": 2.0,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 26.41,
+      "LOW": 19.84,
+      "MEDIUM": 30.24,
+      "HIGH": 16.37,
+      "VERY_HIGH": 7.14
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.0621,
+    "streak": {
+      "category": "MEDIUM",
+      "length": 20,
+      "trend": "HOT",
+      "raw_trend": "HOT",
+      "momentum_score": 0.7271,
+      "magnitude": 0.4542,
+      "downgrade_reason": null
+    },
+    "trend": "hot",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0279,
+    "bayes_weight": 0.35,
+    "raw_prediction": "MEDIUM",
+    "raw_probabilities": {
+      "VERY_LOW": 26.14,
+      "LOW": 15.77,
+      "MEDIUM": 32.76,
+      "HIGH": 17.8,
+      "VERY_HIGH": 7.53
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 29.43,
+    "conf_correction_factor": 0.9733,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.973 (over-confidence; 30.2%\u219229.4%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": "MEDIUM locked (accuracy 36.7% < 35% floor); Gate 2 fail: multiplier spread 5.09\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.32 < 0.40",
+    "risk_confidence_score": 0.3232,
+    "medium_locked": true,
+    "medium_gates": {
+      "accuracy": {
+        "pass": true,
+        "value": 0.3667,
+        "window": 30
+      },
+      "spread": {
+        "pass": false,
+        "value": 5.0927,
+        "window": 15
+      },
+      "rcs": {
+        "pass": false,
+        "value": 0.3232
+      }
+    },
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "created_at": "2026-07-29T09:27:47.568125+00:00",
+    "source_round_count": 500,
+    "last_round_id": 544,
+    "last_multiplier": 1.0,
+    "last_round_ts": "2026-07-29T09:27:25.210Z",
+    "actual_multiplier": 6.73,
+    "actual_category": "HIGH",
+    "actual_round_id": 545,
+    "actual_round_ts": "2026-07-29T09:28:00.425Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 36.55,
+    "recommended_cashout": 1.17,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 37.56,
+      "LOW": 14.64,
+      "MEDIUM": 19.96,
+      "HIGH": 10.81,
+      "VERY_HIGH": 17.03
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.1184,
+    "streak": {
+      "category": "VERY_LOW",
+      "length": 20,
+      "trend": "COOL",
+      "raw_trend": "COOL",
+      "momentum_score": 0.441,
+      "magnitude": 0.118,
+      "downgrade_reason": null
+    },
+    "trend": "cool",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0303,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 43.29,
+      "LOW": 7.77,
+      "MEDIUM": 16.95,
+      "HIGH": 9.25,
+      "VERY_HIGH": 22.74
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 36.55,
+    "conf_correction_factor": 0.9731,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.973 (over-confidence; 37.6%\u219236.6%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.3526,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "created_at": "2026-07-29T09:28:47.337025+00:00",
+    "source_round_count": 500,
+    "last_round_id": 547,
+    "last_multiplier": 1.17,
+    "last_round_ts": "2026-07-29T09:28:33.883Z",
+    "actual_multiplier": 4.88,
+    "actual_category": "MEDIUM",
+    "actual_round_id": 548,
+    "actual_round_ts": "2026-07-29T09:29:06.346Z",
+    "correct": false
+  },
+  {
+    "prediction": "MEDIUM",
+    "confidence": 26.81,
+    "recommended_cashout": 1.96,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 24.54,
+      "LOW": 22.52,
+      "MEDIUM": 27.56,
+      "HIGH": 16.04,
+      "VERY_HIGH": 9.34
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.0284,
+    "streak": {
+      "category": "VERY_LOW",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.3424,
+      "magnitude": 0.3152,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0269,
+    "bayes_weight": 0.35,
+    "raw_prediction": "MEDIUM",
+    "raw_probabilities": {
+      "VERY_LOW": 23.27,
+      "LOW": 19.89,
+      "MEDIUM": 28.65,
+      "HIGH": 17.28,
+      "VERY_HIGH": 10.91
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 26.81,
+    "conf_correction_factor": 0.9729,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.973 (over-confidence; 27.6%\u219226.8%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": "MEDIUM locked (accuracy 33.3% < 35% floor); Gate 1 fail: MEDIUM accuracy 33.3% < 35%; Gate 2 fail: multiplier spread 5.51\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.29 < 0.40",
+    "risk_confidence_score": 0.2942,
+    "medium_locked": true,
+    "medium_gates": {
+      "accuracy": {
+        "pass": false,
+        "value": 0.3333,
+        "window": 30
+      },
+      "spread": {
+        "pass": false,
+        "value": 5.514,
+        "window": 15
+      },
+      "rcs": {
+        "pass": false,
+        "value": 0.2942
+      }
+    },
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "created_at": "2026-07-29T09:29:27.547541+00:00",
+    "source_round_count": 500,
+    "last_round_id": 549,
+    "last_multiplier": 1.68,
+    "last_round_ts": "2026-07-29T09:29:25.677Z",
+    "actual_multiplier": 1.18,
+    "actual_category": "VERY_LOW",
+    "actual_round_id": 550,
+    "actual_round_ts": "2026-07-29T09:29:42.224Z",
+    "correct": false
+  },
+  {
+    "prediction": "MEDIUM",
+    "confidence": 32.67,
+    "recommended_cashout": 2.06,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 26.31,
+      "LOW": 14.94,
+      "MEDIUM": 41.33,
+      "HIGH": 10.62,
+      "VERY_HIGH": 6.8
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.1892,
+    "streak": {
+      "category": "VERY_LOW",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.2865,
+      "magnitude": 0.4271,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0323,
+    "bayes_weight": 0.35,
+    "raw_prediction": "MEDIUM",
+    "raw_probabilities": {
+      "VERY_LOW": 25.99,
+      "LOW": 8.23,
+      "MEDIUM": 49.83,
+      "HIGH": 8.94,
+      "VERY_HIGH": 7.01
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 32.67,
+    "conf_correction_factor": 0.7904,
+    "conf_inverted": false,
+    "conf_bin": "40-60",
+    "conf_reason": "correction \u00d70.790 (over-confidence; 41.3%\u219232.7%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": "MEDIUM locked (accuracy 33.3% < 35% floor); Gate 1 fail: MEDIUM accuracy 33.3% < 35%; Gate 2 fail: multiplier spread 5.51\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.33 < 0.40",
+    "risk_confidence_score": 0.3294,
+    "medium_locked": true,
+    "medium_gates": {
+      "accuracy": {
+        "pass": false,
+        "value": 0.3333,
+        "window": 30
+      },
+      "spread": {
+        "pass": false,
+        "value": 5.514,
+        "window": 15
+      },
+      "rcs": {
+        "pass": false,
+        "value": 0.3294
+      }
+    },
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "created_at": "2026-07-29T09:30:11.686065+00:00",
+    "source_round_count": 500,
+    "last_round_id": 550,
+    "last_multiplier": 1.18,
+    "last_round_ts": "2026-07-29T09:29:42.224Z",
+    "actual_multiplier": 1.0,
+    "actual_category": "VERY_LOW",
+    "actual_round_id": 551,
+    "actual_round_ts": "2026-07-29T12:14:36.459Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 31.37,
+    "recommended_cashout": 1.16,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 32.26,
+      "LOW": 23.41,
+      "MEDIUM": 17.92,
+      "HIGH": 17.39,
+      "VERY_HIGH": 9.02
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.0529,
+    "streak": {
+      "category": "MEDIUM",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.2749,
+      "magnitude": 0.4502,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0287,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 35.02,
+      "LOW": 21.37,
+      "MEDIUM": 13.82,
+      "HIGH": 19.36,
+      "VERY_HIGH": 10.43
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 31.37,
+    "conf_correction_factor": 0.9725,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.972 (over-confidence; 32.3%\u219231.4%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.3082,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "prediction_id": "0c0f5469",
+    "for_round": 690,
+    "created_at": "2026-07-29T12:48:03.871948+00:00",
+    "source_round_count": 500,
+    "last_round_id": 689,
+    "last_multiplier": 2.03,
+    "last_round_ts": "2026-07-29T12:47:58.275Z",
+    "actual_multiplier": 2.77,
+    "actual_category": "MEDIUM",
+    "actual_round_id": 690,
+    "actual_round_ts": "2026-07-29T12:48:21.855Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 29.96,
+    "recommended_cashout": 1.16,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 30.81,
+      "LOW": 21.62,
+      "MEDIUM": 23.01,
+      "HIGH": 17.79,
+      "VERY_HIGH": 6.77
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.0574,
+    "streak": {
+      "category": "MEDIUM",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.2697,
+      "magnitude": 0.4605,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0282,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 32.81,
+      "LOW": 18.62,
+      "MEDIUM": 21.64,
+      "HIGH": 19.97,
+      "VERY_HIGH": 6.96
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 29.96,
+    "conf_correction_factor": 0.9723,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.972 (over-confidence; 30.8%\u219230.0%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.2998,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "prediction_id": "61c4f7ed",
+    "for_round": 691,
+    "created_at": "2026-07-29T12:48:33.740527+00:00",
+    "source_round_count": 500,
+    "last_round_id": 690,
+    "last_multiplier": 2.77,
+    "last_round_ts": "2026-07-29T12:48:21.855Z",
+    "actual_multiplier": 1.0,
+    "actual_category": "VERY_LOW",
+    "actual_round_id": 691,
+    "actual_round_ts": "2026-07-29T12:48:34.439Z",
+    "correct": true
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 32.4,
+    "recommended_cashout": 1.16,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 33.33,
+      "LOW": 18.98,
+      "MEDIUM": 27.43,
+      "HIGH": 13.53,
+      "VERY_HIGH": 6.73
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.0929,
+    "streak": {
+      "category": "VERY_LOW",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.2127,
+      "magnitude": 0.5745,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0291,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 36.69,
+      "LOW": 14.56,
+      "MEDIUM": 28.44,
+      "HIGH": 13.41,
+      "VERY_HIGH": 6.9
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 32.4,
+    "conf_correction_factor": 0.9721,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.972 (over-confidence; 33.3%\u219232.4%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.3144,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "prediction_id": "9eafec88",
+    "for_round": 693,
+    "created_at": "2026-07-29T12:49:03.650880+00:00",
+    "source_round_count": 500,
+    "last_round_id": 692,
+    "last_multiplier": 1.44,
+    "last_round_ts": "2026-07-29T12:48:50.792Z",
+    "actual_multiplier": 1.95,
+    "actual_category": "LOW",
+    "actual_round_id": 693,
+    "actual_round_ts": "2026-07-29T12:49:09.836Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 31.44,
+    "recommended_cashout": 1.16,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 32.33,
+      "LOW": 17.36,
+      "MEDIUM": 30.44,
+      "HIGH": 13.12,
+      "VERY_HIGH": 6.75
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.1075,
+    "streak": {
+      "category": "VERY_LOW",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.2061,
+      "magnitude": 0.5878,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0289,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 35.15,
+      "LOW": 12.06,
+      "MEDIUM": 33.07,
+      "HIGH": 12.79,
+      "VERY_HIGH": 6.93
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 31.44,
+    "conf_correction_factor": 0.9726,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.973 (over-confidence; 32.3%\u219231.4%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.3086,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "prediction_id": "b6fce795",
+    "for_round": 694,
+    "created_at": "2026-07-29T12:49:33.776920+00:00",
+    "source_round_count": 500,
+    "last_round_id": 693,
+    "last_multiplier": 1.95,
+    "last_round_ts": "2026-07-29T12:49:09.836Z",
+    "actual_multiplier": 7.5,
+    "actual_category": "HIGH",
+    "actual_round_id": 694,
+    "actual_round_ts": "2026-07-29T12:49:44.461Z",
+    "correct": false
+  },
+  {
+    "prediction": "MEDIUM",
+    "confidence": 34.51,
+    "recommended_cashout": 2.09,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 32.05,
+      "LOW": 14.88,
+      "MEDIUM": 35.49,
+      "HIGH": 10.77,
+      "VERY_HIGH": 6.81
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.1646,
+    "streak": {
+      "category": "VERY_LOW",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.2613,
+      "magnitude": 0.4773,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.03,
+    "bayes_weight": 0.35,
+    "raw_prediction": "MEDIUM",
+    "raw_probabilities": {
+      "VERY_LOW": 34.71,
+      "LOW": 8.25,
+      "MEDIUM": 40.85,
+      "HIGH": 9.17,
+      "VERY_HIGH": 7.02
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 34.51,
+    "conf_correction_factor": 0.9723,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.972 (over-confidence; 35.5%\u219234.5%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": "MEDIUM locked (accuracy 30.0% < 35% floor); Gate 1 fail: MEDIUM accuracy 30.0% < 35%; Gate 2 fail: multiplier spread 5.54\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.33 < 0.40",
+    "risk_confidence_score": 0.3271,
+    "medium_locked": true,
+    "medium_gates": {
+      "accuracy": {
+        "pass": false,
+        "value": 0.3,
+        "window": 30
+      },
+      "spread": {
+        "pass": false,
+        "value": 5.5427,
+        "window": 15
+      },
+      "rcs": {
+        "pass": false,
+        "value": 0.3271
+      }
+    },
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "prediction_id": "4221b6a0",
+    "for_round": 696,
+    "created_at": "2026-07-29T12:50:03.721824+00:00",
+    "source_round_count": 500,
+    "last_round_id": 695,
+    "last_multiplier": 1.04,
+    "last_round_ts": "2026-07-29T12:50:03.011Z",
+    "actual_multiplier": 1.61,
+    "actual_category": "LOW",
+    "actual_round_id": 696,
+    "actual_round_ts": "2026-07-29T12:50:20.115Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 24.59,
+    "recommended_cashout": 1.15,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 25.3,
+      "LOW": 21.38,
+      "MEDIUM": 22.49,
+      "HIGH": 18.25,
+      "VERY_HIGH": 12.58
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.0062,
+    "streak": {
+      "category": "VERY_LOW",
+      "length": 20,
+      "trend": "NEUTRAL",
+      "raw_trend": "COLD",
+      "momentum_score": 0.2391,
+      "magnitude": 0.5219,
+      "downgrade_reason": "COLD downgraded to NEUTRAL: fail rate 80.0% > 60% over last 5 predictions in high regime"
+    },
+    "trend": "neutral",
+    "seq_hit": false,
+    "action": "BET",
+    "bet_fraction": 0.0248,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 24.34,
+      "LOW": 18.25,
+      "MEDIUM": 20.84,
+      "HIGH": 20.67,
+      "VERY_HIGH": 15.9
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 24.59,
+    "conf_correction_factor": 0.9721,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.972 (over-confidence; 25.3%\u219224.6%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.2675,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "prediction_id": "c6d1fa72",
+    "for_round": 697,
+    "created_at": "2026-07-29T12:50:33.707886+00:00",
+    "source_round_count": 500,
+    "last_round_id": 696,
+    "last_multiplier": 1.61,
+    "last_round_ts": "2026-07-29T12:50:20.115Z",
+    "actual_multiplier": 5.17,
+    "actual_category": "HIGH",
+    "actual_round_id": 697,
+    "actual_round_ts": "2026-07-29T12:50:50.408Z",
+    "correct": false
+  },
+  {
+    "prediction": "VERY_LOW",
+    "confidence": 31.52,
+    "recommended_cashout": 1.16,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 32.43,
+      "LOW": 22.69,
+      "MEDIUM": 27.51,
+      "HIGH": 10.59,
+      "VERY_HIGH": 6.78
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.0988,
+    "streak": {
+      "category": "VERY_LOW",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.3157,
+      "magnitude": 0.3685,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0288,
+    "bayes_weight": 0.35,
+    "raw_prediction": "VERY_LOW",
+    "raw_probabilities": {
+      "VERY_LOW": 35.21,
+      "LOW": 20.35,
+      "MEDIUM": 28.57,
+      "HIGH": 8.89,
+      "VERY_HIGH": 6.98
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 31.52,
+    "conf_correction_factor": 0.9719,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.972 (over-confidence; 32.4%\u219231.5%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": null,
+    "risk_confidence_score": 0.3091,
+    "medium_locked": true,
+    "medium_gates": null,
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "prediction_id": "67e705e1",
+    "for_round": 895,
+    "created_at": "2026-04-13T19:59:33.789915+00:00",
+    "source_round_count": 500,
+    "last_round_id": 894,
+    "last_multiplier": 1.43,
+    "last_round_ts": "2026-07-29T14:07:44.920Z",
+    "actual_multiplier": 2.83,
+    "actual_category": "MEDIUM",
+    "actual_round_id": 895,
+    "actual_round_ts": "2026-07-30T23:13:17.974Z",
+    "correct": false
+  },
+  {
+    "prediction": "MEDIUM",
+    "confidence": 29.95,
+    "recommended_cashout": 2.01,
+    "risk_level": "LOW",
+    "probabilities": {
+      "VERY_LOW": 21.75,
+      "LOW": 25.19,
+      "MEDIUM": 30.82,
+      "HIGH": 13.76,
+      "VERY_HIGH": 8.48
+    },
+    "engine": "statistical_ensemble",
+    "low_confidence": false,
+    "bias_warning": null,
+    "regime": "high",
+    "certainty": 0.0546,
+    "streak": {
+      "category": "MEDIUM",
+      "length": 20,
+      "trend": "COLD",
+      "raw_trend": "COLD",
+      "momentum_score": 0.2249,
+      "magnitude": 0.5503,
+      "downgrade_reason": null
+    },
+    "trend": "cold",
+    "seq_hit": true,
+    "action": "BET",
+    "bet_fraction": 0.0281,
+    "bayes_weight": 0.35,
+    "raw_prediction": "MEDIUM",
+    "raw_probabilities": {
+      "VERY_LOW": 18.68,
+      "LOW": 24.3,
+      "MEDIUM": 33.65,
+      "HIGH": 13.76,
+      "VERY_HIGH": 9.61
+    },
+    "recalibration_active": false,
+    "recalibration_reason": null,
+    "category_boundaries": {
+      "VERY_LOW": [
+        1.0,
+        1.5
+      ],
+      "LOW": [
+        1.5,
+        2.2
+      ],
+      "MEDIUM": [
+        2.2,
+        5.2
+      ],
+      "HIGH": [
+        5.2,
+        16.0
+      ],
+      "VERY_HIGH": [
+        16.0,
+        9999.0
+      ]
+    },
+    "conf_calibrated_conf": 29.95,
+    "conf_correction_factor": 0.9717,
+    "conf_inverted": false,
+    "conf_bin": "20-40",
+    "conf_reason": "correction \u00d70.972 (over-confidence; 30.8%\u219229.9%)",
+    "skip_override": null,
+    "skip_quality": {
+      "skip_success_rate": 0.5,
+      "consecutive_fails": 0,
+      "cooldown_remaining": 0,
+      "skip_outcomes_window": 20
+    },
+    "vh_downgrade_reason": null,
+    "risk_tier_downgrade": "MEDIUM locked (accuracy 30.0% < 35% floor); Gate 1 fail: MEDIUM accuracy 30.0% < 35%; Gate 2 fail: multiplier spread 4.50\u00d7 >= 0.5\u00d7 limit; Gate 3 fail: risk confidence score 0.30 < 0.40",
+    "risk_confidence_score": 0.2997,
+    "medium_locked": true,
+    "medium_gates": {
+      "accuracy": {
+        "pass": false,
+        "value": 0.3,
+        "window": 30
+      },
+      "spread": {
+        "pass": false,
+        "value": 4.5027,
+        "window": 15
+      },
+      "rcs": {
+        "pass": false,
+        "value": 0.2997
+      }
+    },
+    "medium_params": {
+      "base": 1.5,
+      "top": 3.2,
+      "min_conf": 34.809611882010124
+    },
+    "prediction_id": "f61048ba",
+    "for_round": 904,
+    "created_at": "2026-07-30T23:16:32.073211+00:00",
+    "source_round_count": 500,
+    "last_round_id": 903,
+    "last_multiplier": 2.47,
+    "last_round_ts": "2026-07-30T23:16:16.884Z"
   }
 ]

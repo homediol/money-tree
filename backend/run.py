@@ -9,9 +9,8 @@ Usage:
 Features enabled:
   - HTTP REST API on port 5000
   - WebSocket events on same port (via flask-socketio)
-  - Background crash simulator game loop
-  - WebSocket state broadcaster (100 ms live state push)
-  - Auto-retrain background thread
+  - Real-time sync pipeline (round → predict → backfill → emit)
+  - Model pre-warm in background thread
 """
 
 import logging
@@ -47,6 +46,7 @@ try:
 
     import ws_server
     ws_server._sio = sio
+    ws_server.register_sync_handlers(sio)
     log.info("WebSocket server ready")
 
     WS_AVAILABLE = True

@@ -5,8 +5,8 @@
   "scripts": {
     "start":      "node scripts/start-all.js",
     "collector":  "node bot/roundhistory-collector.js",
-    "flask":      "cd backend && .venv/bin/python3 app.py",
-    "bot-api":    "cd backend && .venv/bin/python3 bot_api.py",
+    "flask":      ".venv/bin/python backend/run.py",
+    "bot-api":    ".venv/bin/python backend/bot_api.py",
     "frontend":   "npm run dev --prefix frontend",
     "enterprise": "node scripts/start-enterprise.js"
   },

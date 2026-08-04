@@ -16,7 +16,7 @@ import sys
 import threading
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # Ensure backend root is on sys.path
 _BACKEND = Path(__file__).resolve().parent.parent
@@ -58,7 +58,7 @@ def _cat_index(v: float) -> int:
     return 4
 
 
-def _check_bias(prediction: str) -> str | None:
+def _check_bias(prediction: str) -> Optional[str]:
     _recent_preds.append(prediction)
     if len(_recent_preds) > _BIAS_WINDOW:
         _recent_preds.pop(0)
@@ -107,6 +107,10 @@ class AviatorPredictorV2:
                 self._loaded = True
                 log.info("AviatorPredictorV2 loaded model from %s", MODEL_PATH)
                 return True
+            except ImportError as exc:
+                log.warning("ML dependency missing (%s) — using statistical ensemble.", exc)
+                self._loaded = True
+                return False
             except Exception as exc:
                 log.error("Failed to load model: %s — using statistical ensemble.", exc)
                 self._loaded = True
@@ -117,15 +121,15 @@ class AviatorPredictorV2:
             raise ValueError(f"Need at least {WINDOW_SIZE} rounds.")
         if self._load():
             lstm_result = self._predict_tf(multipliers)
-            # RF is 2.7× more accurate than LSTM on validation (62% vs 23%)
-            # Weight heavily toward RF to avoid LSTM dilution
             try:
                 from prediction.rf_predictor import get_rf_predictor, blend_predictions
                 rf_result = get_rf_predictor().predict(multipliers)
-                return blend_predictions(lstm_result, rf_result,
-                                         lstm_weight=0.10, rf_weight=0.90)
-            except Exception:
-                return lstm_result
+                if rf_result is not None:
+                    return blend_predictions(lstm_result, rf_result,
+                                             lstm_weight=0.10, rf_weight=0.90)
+            except Exception as exc:
+                log.debug("RF blend skipped: %s", exc)
+            return lstm_result
         return self._predict_statistical(multipliers)
 
     # ── TF path ───────────────────────────────────────────────────────
@@ -255,7 +259,7 @@ class AviatorPredictorV2:
 
 # ── module-level singleton ────────────────────────────────────────────────
 
-_predictor: AviatorPredictorV2 | None = None
+_predictor: Optional[AviatorPredictorV2] = None
 
 
 def get_predictor() -> AviatorPredictorV2:

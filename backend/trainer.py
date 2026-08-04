@@ -102,16 +102,20 @@ class TrainingService:
         for d in decisions:
             if d.get("actual_multiplier") is not None:
                 continue
-            rid = d.get("last_round_id")
-            # The *next* round after last_round_id is the one the prediction is for
-            next_rid = (rid or 0) + 1
-            if next_rid in rounds_by_id:
-                actual = rounds_by_id[next_rid]["multiplier"]
+            # Support both new format (for_round) and legacy format (last_round_id + 1)
+            for_round = d.get("for_round")
+            if for_round is None:
+                rid = d.get("last_round_id")
+                if rid is None:
+                    continue
+                for_round = rid + 1
+            if for_round in rounds_by_id:
+                actual = rounds_by_id[for_round]["multiplier"]
                 actual_cat = multiplier_to_category(actual)
                 d["actual_multiplier"]  = actual
                 d["actual_category"]    = actual_cat
-                d["actual_round_id"]    = next_rid
-                d["actual_round_ts"]    = rounds_by_id[next_rid].get("timestamp")
+                d["actual_round_id"]    = for_round
+                d["actual_round_ts"]    = rounds_by_id[for_round].get("timestamp")
                 d["correct"]            = actual_cat == d.get("prediction")
                 updated += 1
 

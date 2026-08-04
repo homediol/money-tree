@@ -90,13 +90,17 @@ class RFPredictor:
 
         proba = self._model.predict_proba(X_s)[0]   # shape (5,)
 
-        # predict_proba respects class order of rf.classes_
-        # Map back to CATEGORIES order
+        # predict_proba returns columns in the order of self._model.classes_
+        # classes_ contains integer indices 0-4 matching CATEGORIES order
         classes = list(self._model.classes_)
         probs   = {}
         for i, cat in enumerate(CATEGORIES):
-            idx = classes.index(i) if i in classes else None
-            probs[cat] = round(float(proba[idx]) * 100, 2) if idx is not None else 0.0
+            # find where category index i sits in the model's classes_ array
+            if i in classes:
+                col_idx = classes.index(i)
+                probs[cat] = round(float(proba[col_idx]) * 100, 2)
+            else:
+                probs[cat] = 0.0
 
         # Fix rounding residual
         diff     = round(100.0 - sum(probs.values()), 2)

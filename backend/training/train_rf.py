@@ -295,8 +295,12 @@ def train(
     try:
         from sklearn.calibration import CalibratedClassifierCV
         log.info("Fitting isotonic probability calibration...")
-        cal_rf = CalibratedClassifierCV(rf, method="isotonic", cv="prefit")
-        cal_rf.fit(X_v_s, y_v_arr)
+        try:
+            cal_rf = CalibratedClassifierCV(rf, method="isotonic", cv="prefit")
+        except TypeError:
+            from sklearn.calibration import FrozenEstimator
+            cal_rf = CalibratedClassifierCV(FrozenEstimator(rf), method="isotonic")
+        cal_rf.fit(X_v_s, y_v)
         cal_path = MODELS_DIR / "rf_calibrated.joblib"
         joblib.dump(cal_rf, cal_path, compress=3)
         log.info("Calibrated RF saved → %s", cal_path)

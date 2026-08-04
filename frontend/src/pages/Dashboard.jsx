@@ -1,210 +1,136 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, TrendingUp, Wifi, WifiOff } from 'lucide-react';
-import useSocket from '../lib/useSocket.js';
+import useLiveSync from '../lib/useLiveSync.js';
 
 // API
 import {
   fetchAccuracy,
-  fetchDecisions,
-  fetchHistory,
-  fetchPrediction,
-  fetchFastPrediction,
-  fetchRiskOverview,
-  fetchRiskHistory,
-  fetchReadiness,
   fetchSkipQuality,
   fetchVhQuality,
   trainModel,
   runBackfill,
+  api,
 } from '../api/client.js';
 
 // Format
 import { formatMultiplier, formatPercent, predictionColor, riskColor, predictionLabel } from '../lib/format.js';
 
+// Live components
+import LiveStatusBar  from '../components/LiveStatusBar.jsx';
+import LiveTimeline   from '../components/LiveTimeline.jsx';
+
 // Prediction components
-import ConfidenceMeter from '../components/ConfidenceMeter.jsx';
-import PerformanceChart from '../components/PerformanceChart.jsx';
-import PredictionLog from '../components/PredictionLog.jsx';
-import MetricCard from '../components/MetricCard.jsx';
+import ConfidenceMeter      from '../components/ConfidenceMeter.jsx';
+import PerformanceChart     from '../components/PerformanceChart.jsx';
+import PredictionLog        from '../components/PredictionLog.jsx';
+import MetricCard           from '../components/MetricCard.jsx';
 
 // Risk components
-import RiskGauge from '../components/RiskGauge.jsx';
-import StatsGrid from '../components/StatsGrid.jsx';
-import StreakTracker from '../components/StreakTracker.jsx';
-import FactorBreakdown from '../components/FactorBreakdown.jsx';
-import MACrossoverChart from '../components/MACrossoverChart.jsx';
+import RiskGauge            from '../components/RiskGauge.jsx';
+import StatsGrid            from '../components/StatsGrid.jsx';
+import StreakTracker        from '../components/StreakTracker.jsx';
+import FactorBreakdown      from '../components/FactorBreakdown.jsx';
+import MACrossoverChart     from '../components/MACrossoverChart.jsx';
 import CategoryDistribution from '../components/CategoryDistribution.jsx';
-import RiskHistoryChart from '../components/RiskHistoryChart.jsx';
-import MultiplierChart from '../components/MultiplierChart.jsx';
-import DistributionChart from '../components/DistributionChart.jsx';
-import Sidebar from '../components/Sidebar.jsx';
-import SkipQualityPanel from '../components/SkipQualityPanel.jsx';
-import CalibrationPanel from '../components/CalibrationPanel.jsx';
-import MomentumPanel from '../components/MomentumPanel.jsx';
-import RiskTierPanel from '../components/RiskTierPanel.jsx';
+import RiskHistoryChart     from '../components/RiskHistoryChart.jsx';
+import MultiplierChart      from '../components/MultiplierChart.jsx';
+import DistributionChart    from '../components/DistributionChart.jsx';
+import Sidebar              from '../components/Sidebar.jsx';
+import SkipQualityPanel     from '../components/SkipQualityPanel.jsx';
+import CalibrationPanel     from '../components/CalibrationPanel.jsx';
+import MomentumPanel        from '../components/MomentumPanel.jsx';
+import RiskTierPanel        from '../components/RiskTierPanel.jsx';
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('overview');
-  const { connected: wsConnected, lastPrediction, lastRound, updatedDecisions } = useSocket();
 
-  // ── Data state ────────────────────────────────────────────────────────────────────────
-  const [prediction,   setPrediction]   = useState(null);
-  const [history,      setHistory]      = useState([]);
-  const [accuracy,     setAccuracy]     = useState(null);
-  const [decisions,    setDecisions]    = useState([]);
-  const [riskOverview, setRiskOverview] = useState(null);
-  const [riskHistory,  setRiskHistory]  = useState([]);
-  const [skipQuality,  setSkipQuality]  = useState(null);
-  const [vhQuality,    setVhQuality]    = useState(null);
+  // ── Single source of truth ────────────────────────────────────────────────
+  const {
+    connected,
+    currentRound,
+    prediction,       // always for NEXT round
+    timeline,
+    stats,
+    collectorStatus,
+    decisions,
+    history,
+    riskOverview,
+    riskHistory,
+    lastUpdated,
+    requestSync,
+  } = useLiveSync();
 
-  // ── UI state ─────────────────────────────────────────────────────────────────────────
-  const [loading,      setLoading]      = useState(false);
-  const [training,     setTraining]     = useState(false);
-  const [error,        setError]        = useState('');
-  const [lastUpdated,  setLastUpdated]  = useState(null);
-  const [modelReady,   setModelReady]   = useState(false);
+  // ── Supplemental state (not in live sync) ─────────────────────────────────
+  const [accuracy,    setAccuracy]    = useState(null);
+  const [skipQuality, setSkipQuality] = useState(null);
+  const [vhQuality,   setVhQuality]   = useState(null);
+  const [loading,     setLoading]     = useState(false);
+  const [training,    setTraining]    = useState(false);
+  const [error,       setError]       = useState('');
+  const [modelReady,  setModelReady]  = useState(false);
 
-  // Debounce ref: prevent round events from firing overlapping fetches
-  const roundDebounceRef = useRef(null);
-  // Track in-flight prediction request to avoid parallel calls
-  const predInFlightRef  = useRef(false);
-
-  // ── Fetch cheap data (history + risk) ───────────────────────────────────────────
-  const refreshCharts = useCallback(async () => {
-    try {
-      const [h, r, rh] = await Promise.all([
-        fetchHistory(80),
-        fetchRiskOverview(),
-        fetchRiskHistory(80),
-      ]);
-      setHistory(h.rounds || []);
-      setRiskOverview(r);
-      setRiskHistory(rh.rounds || []);
-    } catch (_) {}
-  }, []);
-
-  // ── Fetch prediction independently (can be slow on cold start) ────────────────
-  const refreshPrediction = useCallback(async () => {
-    if (predInFlightRef.current) return;
-    predInFlightRef.current = true;
-    try {
-      const pred = await fetchPrediction();
-      setPrediction(pred);
-      setLastUpdated(new Date());
-      if (pred?.last_round_id != null) {
-        setDecisions(prev => {
-          const exists = prev.some(d => d.last_round_id === pred.last_round_id);
-          return exists ? prev : [pred, ...prev].slice(0, 100);
-        });
-      }
-      fetchAccuracy().then(setAccuracy).catch(() => {});
-      runBackfill().catch(() => {});
-    } catch (_) {}
-    finally { predInFlightRef.current = false; }
-  }, []);
-
-  // ── Full manual refresh (button) ─────────────────────────────────────────────────
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      // Fire cheap requests immediately in parallel
-      const [histData, accData, decData, riskData, riskHistData, sqData, vhData] =
-        await Promise.all([
-          fetchHistory(80),
-          fetchAccuracy(),
-          fetchDecisions(50),
-          fetchRiskOverview(),
-          fetchRiskHistory(80),
-          fetchSkipQuality().catch(() => null),
-          fetchVhQuality().catch(() => null),
-        ]);
-      setHistory(histData.rounds || []);
-      setAccuracy(accData);
-      setDecisions(decData.decisions || []);
-      setRiskOverview(riskData);
-      setRiskHistory(riskHistData.rounds || []);
-      if (sqData) setSkipQuality(sqData);
-      if (vhData) setVhQuality(vhData);
-      setLastUpdated(new Date());
-      // Prediction runs separately — doesn't block the UI
-      refreshPrediction();
-    } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Refresh failed.');
-    } finally {
-      setLoading(false);
-    }
-  }, [refreshPrediction]);
-
-  // ── Poll /ready then kick off initial load ───────────────────────────────────────
+  // ── Model readiness probe ─────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
     async function waitForReady() {
       while (!cancelled) {
         try {
-          const { ready } = await fetchReadiness();
-          if (ready) {
-            if (!cancelled) { setModelReady(true); refresh(); }
+          const { data } = await api.get('/ready');
+          if (data?.ready) {
+            if (!cancelled) setModelReady(true);
             return;
           }
-        } catch (_) {}
+        } catch {}
         await new Promise(r => setTimeout(r, 2000));
       }
     }
     waitForReady();
     return () => { cancelled = true; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ── Fallback polling — charts every 15s, prediction every 30s ────────────────
+  // ── Load supplemental data once on mount ─────────────────────────────────
   useEffect(() => {
-    if (!modelReady) return;
-    const chartTimer = setInterval(refreshCharts, wsConnected ? 15000 : 10000);
-    const predTimer  = setInterval(refreshPrediction, wsConnected ? 30000 : 15000);
-    return () => { clearInterval(chartTimer); clearInterval(predTimer); };
-  }, [refreshCharts, refreshPrediction, wsConnected, modelReady]);
-
-  // ── WS: new prediction pushed from backend ────────────────────────────────────
-  useEffect(() => {
-    if (!lastPrediction) return;
-    setPrediction(lastPrediction);
-    setLastUpdated(new Date());
-    if (lastPrediction.last_round_id != null) {
-      setDecisions(prev => {
-        const exists = prev.some(d => d.last_round_id === lastPrediction.last_round_id);
-        return exists ? prev : [lastPrediction, ...prev].slice(0, 100);
-      });
-    }
     fetchAccuracy().then(setAccuracy).catch(() => {});
-    runBackfill().catch(() => {});
-  }, [lastPrediction]);
+    fetchSkipQuality().then(setSkipQuality).catch(() => {});
+    fetchVhQuality().then(setVhQuality).catch(() => {});
+  }, []);
 
-  // ── WS: new round — debounced chart refresh (avoid per-round hammering) ───────
+  // ── Refresh accuracy after each resolved prediction ───────────────────────
   useEffect(() => {
-    if (!lastRound) return;
-    // Append new round to history immediately without a fetch
-    if (lastRound.multiplier != null) {
-      setHistory(prev => {
-        const exists = prev.some(r => r.round_id === lastRound.round_id);
-        if (exists) return prev;
-        return [...prev, lastRound].slice(-100);
-      });
+    if (!decisions.length) return;
+    const resolved = decisions.filter(d => d.actual_multiplier != null);
+    if (resolved.length > 0) {
+      fetchAccuracy().then(setAccuracy).catch(() => {});
     }
-    // Debounce the expensive risk/chart refresh to at most once per 5s
-    clearTimeout(roundDebounceRef.current);
-    roundDebounceRef.current = setTimeout(refreshCharts, 5000);
-  }, [lastRound, refreshCharts]);
+  }, [decisions]);
 
-  // ── WS: backfill complete ────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!updatedDecisions?.length) return;
-    setDecisions(updatedDecisions);
-  }, [updatedDecisions]);
+  // ── Manual refresh ────────────────────────────────────────────────────────
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      requestSync();
+      const [accData, sqData, vhData] = await Promise.all([
+        fetchAccuracy(),
+        fetchSkipQuality().catch(() => null),
+        fetchVhQuality().catch(() => null),
+      ]);
+      setAccuracy(accData);
+      if (sqData) setSkipQuality(sqData);
+      if (vhData) setVhQuality(vhData);
+      runBackfill().catch(() => {});
+    } catch (err) {
+      setError(err.message || 'Refresh failed.');
+    } finally {
+      setLoading(false);
+    }
+  }, [requestSync]);
 
   const train = async () => {
     setTraining(true);
     setError('');
     try { await trainModel(30); await refresh(); }
-    catch (err) { setError(err.response?.data?.error || err.message || 'Training failed.'); }
+    catch (err) { setError(err.message || 'Training failed.'); }
     finally { setTraining(false); }
   };
 
@@ -220,23 +146,35 @@ export default function Dashboard() {
 
   const renderOverview = () => (
     <>
-      <StatsGrid summary={summary} risk={risk} />
-      <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_1.2fr]">
-        <div className="rounded-xl border border-line bg-panel/80 p-5 shadow-lg backdrop-blur">
-          <div className="mb-3 flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-bold text-white">Risk Index</h2>
-              <p className="text-xs text-slate-500">Composite risk assessment</p>
+      {/* Live status bar — always visible on overview */}
+      <LiveStatusBar
+        currentRound={currentRound}
+        prediction={prediction}
+        stats={stats}
+        collectorStatus={collectorStatus}
+        connected={connected}
+      />
+
+      <div className="grid gap-5 lg:grid-cols-[1fr_1.4fr]">
+        <LiveTimeline timeline={timeline} currentRoundId={currentRound?.round_id} />
+        <div className="space-y-5">
+          <StatsGrid summary={summary} risk={risk} />
+          <div className="rounded-xl border border-line bg-panel/80 p-5 shadow-lg backdrop-blur">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-white">Risk Index</h2>
+                <p className="text-xs text-slate-500">Composite risk assessment</p>
+              </div>
+              <div className={`rounded-full px-3 py-1 text-xs font-bold ${
+                riskLevel === 'HIGH'   ? 'bg-danger/10 text-danger' :
+                riskLevel === 'MEDIUM' ? 'bg-amber-300/10 text-amber-300' : 'bg-cyan/10 text-cyan'
+              }`}>{riskLevel}</div>
             </div>
-            <div className={`rounded-full px-3 py-1 text-xs font-bold ${
-              riskLevel === 'HIGH' ? 'bg-danger/10 text-danger' :
-              riskLevel === 'MEDIUM' ? 'bg-amber-300/10 text-amber-300' : 'bg-cyan/10 text-cyan'
-            }`}>{riskLevel}</div>
+            <RiskGauge score={riskScore} level={riskLevel} size={200} />
           </div>
-          <RiskGauge score={riskScore} level={riskLevel} size={240} />
         </div>
-        <FactorBreakdown factors={risk?.factors} />
       </div>
+
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
         <PerformanceChart rounds={history} />
         <RiskHistoryChart rounds={riskHistory} />
@@ -246,8 +184,27 @@ export default function Dashboard() {
 
   const renderPrediction = () => (
     <>
+      {/* Next round prediction — always for round N+1 */}
+      <div className="mb-4 rounded-xl border border-cyan/30 bg-cyan/5 px-5 py-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="text-xs font-semibold uppercase tracking-widest text-cyan">
+            Next Round Prediction
+          </div>
+          {prediction?.for_round && (
+            <div className="rounded-full bg-cyan/10 border border-cyan/30 px-3 py-0.5 text-xs font-bold text-cyan">
+              Round #{prediction.for_round}
+            </div>
+          )}
+          {currentRound?.round_id && (
+            <div className="text-xs text-slate-500">
+              Current: Round #{currentRound.round_id}
+            </div>
+          )}
+        </div>
+      </div>
+
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Next Round Prediction" value={predictionLabel(prediction?.prediction)}>
+        <MetricCard label={`Prediction (Round #${prediction?.for_round ?? '?'})`} value={predictionLabel(prediction?.prediction)}>
           <div className={`mt-1 h-2 rounded-full bg-gradient-to-r ${predictionColor(prediction?.prediction)}`} />
         </MetricCard>
         <MetricCard label="Confidence" value={formatPercent(prediction?.confidence)} accent="text-cyan">
@@ -275,7 +232,7 @@ export default function Dashboard() {
         </MetricCard>
       </section>
 
-      {/* Override / calibration notices */}
+      {/* Override notices */}
       {prediction?.skip_override && (
         <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/8 px-4 py-3 text-xs text-amber-400">
           ⚡ Skip override: {prediction.skip_override}
@@ -286,19 +243,9 @@ export default function Dashboard() {
           ↓ VH downgrade: {prediction.vh_downgrade_reason}
         </div>
       )}
-      {prediction?.risk_tier_downgrade && (
-        <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/8 px-4 py-3 text-xs text-amber-400">
-          🔒 Risk-tier: {prediction.risk_tier_downgrade}
-        </div>
-      )}
       {prediction?.recalibration_active && (
         <div className="mt-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-xs text-amber-300">
           🔄 {prediction.recalibration_reason}
-        </div>
-      )}
-      {prediction?.conf_inverted && (
-        <div className="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/8 px-4 py-3 text-xs text-rose-400">
-          ⟲ Confidence inverted: {prediction.conf_reason}
         </div>
       )}
 
@@ -394,36 +341,21 @@ export default function Dashboard() {
 
   const renderIntelligence = () => (
     <div className="space-y-5">
-      {/* Live prediction alert badges */}
       {prediction && (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
-            {
-              label: 'Action',
-              value: prediction.action ?? '—',
+            { label: 'Action',         value: prediction.action ?? '—',
               color: prediction.action === 'BET' ? 'text-lime-400' : 'text-amber-400',
-              bg:    prediction.action === 'BET' ? 'bg-lime-500/10 border-lime-500/20' : 'bg-amber-500/10 border-amber-500/20',
-            },
-            {
-              label: 'Effective Trend',
-              value: (prediction.streak?.trend || prediction.trend || '—').toUpperCase(),
-              color: 'text-violet-400', bg: 'bg-violet-500/10 border-violet-500/20',
-            },
-            {
-              label: 'Momentum Score',
-              value: prediction.streak?.momentum_score != null
-                ? `${Math.round(prediction.streak.momentum_score * 100)}`
-                : '—',
-              color: 'text-cyan-400', bg: 'bg-cyan-500/10 border-cyan-500/20',
-            },
-            {
-              label: 'Conf Correction',
-              value: prediction.conf_correction_factor != null
-                ? `×${Number(prediction.conf_correction_factor).toFixed(3)}`
-                : '—',
+              bg: prediction.action === 'BET' ? 'bg-lime-500/10 border-lime-500/20' : 'bg-amber-500/10 border-amber-500/20' },
+            { label: 'Effective Trend',value: (prediction.streak?.trend || prediction.trend || '—').toUpperCase(),
+              color: 'text-violet-400', bg: 'bg-violet-500/10 border-violet-500/20' },
+            { label: 'Momentum Score', value: prediction.streak?.momentum_score != null
+                ? `${Math.round(prediction.streak.momentum_score * 100)}` : '—',
+              color: 'text-cyan-400', bg: 'bg-cyan-500/10 border-cyan-500/20' },
+            { label: 'Conf Correction',value: prediction.conf_correction_factor != null
+                ? `×${Number(prediction.conf_correction_factor).toFixed(3)}` : '—',
               color: prediction.conf_inverted ? 'text-rose-400' : 'text-slate-300',
-              bg: prediction.conf_inverted ? 'bg-rose-500/10 border-rose-500/20' : 'bg-slate-800/40 border-line',
-            },
+              bg: prediction.conf_inverted ? 'bg-rose-500/10 border-rose-500/20' : 'bg-slate-800/40 border-line' },
           ].map(({ label, value, color, bg }) => (
             <div key={label} className={`rounded-xl border px-4 py-3 text-center ${bg}`}>
               <div className={`text-xl font-black ${color}`}>{value}</div>
@@ -432,28 +364,20 @@ export default function Dashboard() {
           ))}
         </div>
       )}
-
-      {/* Guard systems */}
       <SkipQualityPanel skipQuality={skipQuality} vhQuality={vhQuality} />
-
-      {/* Risk-tier validator */}
       <RiskTierPanel prediction={prediction} />
-
-      {/* Momentum & streak matrix */}
       <MomentumPanel prediction={prediction} />
-
-      {/* Calibration engine */}
       <CalibrationPanel />
     </div>
   );
 
   const tabContent = {
-    overview:      renderOverview,
-    performance:   renderPrediction,
-    distribution:  renderDistribution,
-    multipliers:   renderMultipliers,
-    logs:          renderLogs,
-    intelligence:  renderIntelligence,
+    overview:     renderOverview,
+    performance:  renderPrediction,
+    distribution: renderDistribution,
+    multipliers:  renderMultipliers,
+    logs:         renderLogs,
+    intelligence: renderIntelligence,
   };
 
   const tabTitles = {
@@ -469,7 +393,6 @@ export default function Dashboard() {
     <div className="flex min-h-screen bg-ink text-white">
       <Sidebar activeTab={activeTab} onTabChange={setActiveTab} onRefresh={refresh} loading={loading} onTrain={train} training={training} />
 
-      {/* Mobile nav */}
       <div className="fixed bottom-0 left-0 right-0 z-50 flex border-t border-line bg-panel/95 backdrop-blur lg:hidden">
         {['overview', 'performance', 'logs', 'intelligence'].map((tab) => (
           <button key={tab} onClick={() => setActiveTab(tab)}
@@ -486,7 +409,8 @@ export default function Dashboard() {
           <header className="mb-6 flex flex-col gap-4 border-b border-line pb-5 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.22em]">
-                {riskLevel === 'HIGH' ? <AlertTriangle className="h-3.5 w-3.5 text-danger" />
+                {riskLevel === 'HIGH'
+                  ? <AlertTriangle className="h-3.5 w-3.5 text-danger" />
                   : <TrendingUp className={`h-3.5 w-3.5 ${riskLevel === 'MEDIUM' ? 'text-amber-300' : 'text-cyan'}`} />}
                 <span className={riskLevel === 'HIGH' ? 'text-danger' : riskLevel === 'MEDIUM' ? 'text-amber-300' : 'text-cyan'}>
                   Aviator Risk Management
@@ -498,11 +422,11 @@ export default function Dashboard() {
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <span className={`flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-semibold ${
-                wsConnected ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                            : 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+                connected ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                          : 'border-amber-500/30 bg-amber-500/10 text-amber-400'
               }`}>
-                {wsConnected ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
-                {wsConnected ? 'Live' : 'Polling'}
+                {connected ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
+                {connected ? 'Live' : 'Polling'}
               </span>
               <span className="rounded-md border border-line px-3 py-2 text-sm text-slate-300">
                 {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : 'Waiting for data'}

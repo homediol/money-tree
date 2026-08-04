@@ -190,6 +190,9 @@ def append_decision(decision: Dict[str, Any]) -> None:
     decisions = read_json(DECISIONS_PATH, [])
     if not isinstance(decisions, list):
         decisions = []
+    # Backfill for_round if missing (legacy decisions)
+    if "for_round" not in decision and decision.get("last_round_id") is not None:
+        decision["for_round"] = decision["last_round_id"] + 1
     decisions.append(decision)
     write_json(DECISIONS_PATH, decisions[-250:])
 

@@ -64,7 +64,7 @@ def evaluate(n_recent: int = 200) -> dict:
 
     # --- Load rounds ---
     from utils import load_round_history
-    from training.feature_engineering import build_feature_matrix
+    from training.train_model import SEQ_LEN, build_sequence_matrix, _apply_seq_scaler
 
     rounds = load_round_history()
     if len(rounds) < 25:
@@ -72,10 +72,8 @@ def evaluate(n_recent: int = 200) -> dict:
 
     multipliers = [r["multiplier"] for r in rounds]
 
-    # Build features for the last n_recent rounds
-    window_size = 20
-    X_all, y_all = build_feature_matrix(multipliers, window_size=window_size)
-    # Each sample i corresponds to multipliers[window_size + i]
+    # Build the same (20, 8) sequence samples used by train_model/predictor.
+    X_all, y_all = build_sequence_matrix(multipliers, seq_len=SEQ_LEN)
     start_idx = len(multipliers) - len(X_all)
 
     # Take last n_recent
@@ -83,7 +81,8 @@ def evaluate(n_recent: int = 200) -> dict:
     y_recent = y_all[-n_recent:]
     rounds_recent = rounds[start_idx:][-n_recent:]
 
-    X_np = scaler.transform(np.array(X_recent, dtype="float32"))
+    X_raw = np.array(X_recent, dtype="float32")
+    X_np = _apply_seq_scaler(scaler, X_raw)
     probs = model.predict(X_np, verbose=0)
     preds = np.argmax(probs, axis=1)
 

@@ -157,8 +157,11 @@ def predict():
         current_round_id = rounds[-1]["round_id"] if rounds else None
         current_round_ts = rounds[-1].get("timestamp") if rounds else None
 
+        import uuid as _uuid
         decision = {
             **result,
+            "prediction_id":      str(_uuid.uuid4())[:8],
+            "for_round":          (current_round_id + 1) if current_round_id else None,
             "created_at":         utc_now(),
             "source_round_count": len(multipliers),
             "last_round_id":      current_round_id,
@@ -776,6 +779,7 @@ def model_metrics():
     })
 
 
+@app.get("/training-status")
 def training_status():
     """Return last training metrics + retrain state."""
     import json as _json
@@ -803,9 +807,9 @@ if __name__ == "__main__":
         import ws_server as _ws
         _sio = _SocketIO(app, cors_allowed_origins="*", async_mode="threading", logger=False, engineio_logger=False)
         _ws._sio = _sio
+        _ws.register_sync_handlers(_sio)
         logger.info("WebSocket ready on port 5000")
         _sio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
     except ImportError:
         logger.warning("flask-socketio not installed")
         app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
-
