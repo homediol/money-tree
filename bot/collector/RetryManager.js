@@ -4,7 +4,7 @@
  * Backoff sequence (seconds): 1, 2, 5, 10, 20, 30 (then capped at max).
  */
 
-import { log } from './Logger.js';
+import { log, formatError } from './Logger.js';
 
 const BACKOFF_STEPS = [1000, 2000, 5000, 10000, 20000, 30000];
 
@@ -41,7 +41,7 @@ export async function withRetry(fn, { maxAttempts = 6, label = 'op', signal } = 
       lastErr = err;
       if (signal?.aborted) throw err;
       const delay = backoffMs(attempt);
-      log.warn(`${label} failed (attempt ${attempt + 1}/${maxAttempts}): ${err.message} — retrying in ${delay}ms`);
+      log.warn(`${label} failed (attempt ${attempt + 1}/${maxAttempts}): ${formatError(err)} — retrying in ${delay}ms`);
       await sleep(delay, signal);
     }
   }
@@ -52,7 +52,7 @@ export async function withRetry(fn, { maxAttempts = 6, label = 'op', signal } = 
  * Classify an error as browser-fatal, page-recoverable, or frame-recoverable.
  */
 export function classifyError(err) {
-  const msg = String(err?.message || '').toLowerCase();
+  const msg = formatError(err).toLowerCase();
 
   const browserFatal = [
     'browser has been closed',

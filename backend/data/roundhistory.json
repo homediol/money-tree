@@ -1,0 +1,2757 @@
+[
+  {
+    "multiplier": 1.07,
+    "timestamp": "2026-07-28T13:37:37.587Z",
+    "round_index": 434
+  },
+  {
+    "multiplier": 1.02,
+    "timestamp": "2026-07-28T13:37:44.933Z",
+    "round_index": 435
+  },
+  {
+    "multiplier": 2.24,
+    "timestamp": "2026-07-28T13:38:05.202Z",
+    "round_index": 436
+  },
+  {
+    "multiplier": 1.21,
+    "timestamp": "2026-07-28T13:38:19.789Z",
+    "round_index": 437
+  },
+  {
+    "multiplier": 15.41,
+    "timestamp": "2026-07-28T13:39:24.890Z",
+    "round_index": 438
+  },
+  {
+    "multiplier": 1.24,
+    "timestamp": "2026-07-28T13:39:29.398Z",
+    "round_index": 439
+  },
+  {
+    "multiplier": 1.95,
+    "timestamp": "2026-07-28T13:39:55.880Z",
+    "round_index": 440
+  },
+  {
+    "multiplier": 3.86,
+    "timestamp": "2026-07-28T13:40:12.025Z",
+    "round_index": 441
+  },
+  {
+    "multiplier": 1.16,
+    "timestamp": "2026-07-28T13:44:31.200Z",
+    "round_index": 442
+  },
+  {
+    "multiplier": 1.53,
+    "timestamp": "2026-07-28T13:44:47.138Z",
+    "round_index": 443
+  },
+  {
+    "multiplier": 1.19,
+    "timestamp": "2026-07-28T13:44:59.551Z",
+    "round_index": 444
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-28T13:45:10.412Z",
+    "round_index": 445
+  },
+  {
+    "multiplier": 3.23,
+    "timestamp": "2026-07-28T13:45:34.709Z",
+    "round_index": 446
+  },
+  {
+    "multiplier": 2.2,
+    "timestamp": "2026-07-28T13:45:58.801Z",
+    "round_index": 447
+  },
+  {
+    "multiplier": 5.41,
+    "timestamp": "2026-07-28T13:46:33.655Z",
+    "round_index": 448
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-28T13:46:42.596Z",
+    "round_index": 449
+  },
+  {
+    "multiplier": 1.74,
+    "timestamp": "2026-07-28T13:46:55.561Z",
+    "round_index": 450
+  },
+  {
+    "multiplier": 42.41,
+    "timestamp": "2026-07-28T13:47:50.583Z",
+    "round_index": 451
+  },
+  {
+    "multiplier": 1.62,
+    "timestamp": "2026-07-28T13:48:07.997Z",
+    "round_index": 452
+  },
+  {
+    "multiplier": 1.22,
+    "timestamp": "2026-07-28T13:48:22.133Z",
+    "round_index": 453
+  },
+  {
+    "multiplier": 1.54,
+    "timestamp": "2026-07-28T13:48:38.960Z",
+    "round_index": 454
+  },
+  {
+    "multiplier": 7.05,
+    "timestamp": "2026-07-28T13:49:14.105Z",
+    "round_index": 455
+  },
+  {
+    "multiplier": 1.04,
+    "timestamp": "2026-07-28T13:49:34.021Z",
+    "round_index": 456
+  },
+  {
+    "multiplier": 1.48,
+    "timestamp": "2026-07-28T13:49:47.453Z",
+    "round_index": 457
+  },
+  {
+    "multiplier": 104.63,
+    "timestamp": "2026-07-28T13:50:54.810Z",
+    "round_index": 458
+  },
+  {
+    "multiplier": 1.22,
+    "timestamp": "2026-07-28T13:51:17.241Z",
+    "round_index": 459
+  },
+  {
+    "multiplier": 1.28,
+    "timestamp": "2026-07-28T13:51:28.922Z",
+    "round_index": 460
+  },
+  {
+    "multiplier": 2.2,
+    "timestamp": "2026-07-28T13:51:46.488Z",
+    "round_index": 461
+  },
+  {
+    "multiplier": 1.87,
+    "timestamp": "2026-07-28T13:52:04.352Z",
+    "round_index": 462
+  },
+  {
+    "multiplier": 3.54,
+    "timestamp": "2026-07-28T13:52:29.898Z",
+    "round_index": 463
+  },
+  {
+    "multiplier": 1.06,
+    "timestamp": "2026-07-28T13:52:42.831Z",
+    "round_index": 464
+  },
+  {
+    "multiplier": 1.21,
+    "timestamp": "2026-07-28T13:52:56.519Z",
+    "round_index": 465
+  },
+  {
+    "multiplier": 1.94,
+    "timestamp": "2026-07-28T13:53:16.443Z",
+    "round_index": 466
+  },
+  {
+    "multiplier": 2.59,
+    "timestamp": "2026-07-28T13:53:39.052Z",
+    "round_index": 467
+  },
+  {
+    "multiplier": 12.78,
+    "timestamp": "2026-07-28T13:54:19.075Z",
+    "round_index": 468
+  },
+  {
+    "multiplier": 2.89,
+    "timestamp": "2026-07-28T13:54:43.433Z",
+    "round_index": 469
+  },
+  {
+    "multiplier": 1.06,
+    "timestamp": "2026-07-28T13:54:58.835Z",
+    "round_index": 470
+  },
+  {
+    "multiplier": 1.53,
+    "timestamp": "2026-07-28T13:55:15.202Z",
+    "round_index": 471
+  },
+  {
+    "multiplier": 2.69,
+    "timestamp": "2026-07-28T13:55:37.687Z",
+    "round_index": 472
+  },
+  {
+    "multiplier": 11.41,
+    "timestamp": "2026-07-28T13:56:17.533Z",
+    "round_index": 473
+  },
+  {
+    "multiplier": 1.83,
+    "timestamp": "2026-07-28T13:56:36.742Z",
+    "round_index": 474
+  },
+  {
+    "multiplier": 1.27,
+    "timestamp": "2026-07-28T13:56:52.092Z",
+    "round_index": 475
+  },
+  {
+    "multiplier": 1.23,
+    "timestamp": "2026-07-28T13:57:11.031Z",
+    "round_index": 476
+  },
+  {
+    "multiplier": 1.57,
+    "timestamp": "2026-07-28T13:57:26.998Z",
+    "round_index": 477
+  },
+  {
+    "multiplier": 1.05,
+    "timestamp": "2026-07-28T13:57:42.214Z",
+    "round_index": 478
+  },
+  {
+    "multiplier": 1.52,
+    "timestamp": "2026-07-28T13:58:11.055Z",
+    "round_index": 479
+  },
+  {
+    "multiplier": 3.41,
+    "timestamp": "2026-07-28T14:15:03.261Z",
+    "round_index": 480
+  },
+  {
+    "multiplier": 5.43,
+    "timestamp": "2026-07-28T14:15:35.949Z",
+    "round_index": 481
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-28T14:15:48.397Z",
+    "round_index": 482
+  },
+  {
+    "multiplier": 1.38,
+    "timestamp": "2026-07-28T14:16:04.909Z",
+    "round_index": 483
+  },
+  {
+    "multiplier": 1.11,
+    "timestamp": "2026-07-28T14:16:25.572Z",
+    "round_index": 484
+  },
+  {
+    "multiplier": 2.19,
+    "timestamp": "2026-07-28T14:16:45.751Z",
+    "round_index": 485
+  },
+  {
+    "multiplier": 4.97,
+    "timestamp": "2026-07-28T14:17:16.524Z",
+    "round_index": 486
+  },
+  {
+    "multiplier": 1.14,
+    "timestamp": "2026-07-28T14:17:36.286Z",
+    "round_index": 487
+  },
+  {
+    "multiplier": 1.17,
+    "timestamp": "2026-07-28T14:17:52.570Z",
+    "round_index": 488
+  },
+  {
+    "multiplier": 1.23,
+    "timestamp": "2026-07-28T14:18:07.140Z",
+    "round_index": 489
+  },
+  {
+    "multiplier": 2.02,
+    "timestamp": "2026-07-28T14:18:28.222Z",
+    "round_index": 490
+  },
+  {
+    "multiplier": 1.02,
+    "timestamp": "2026-07-28T14:18:45.005Z",
+    "round_index": 491
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-28T14:19:08.123Z",
+    "round_index": 492
+  },
+  {
+    "multiplier": 2.93,
+    "timestamp": "2026-07-28T14:19:27.790Z",
+    "round_index": 493
+  },
+  {
+    "multiplier": 2.26,
+    "timestamp": "2026-07-28T14:19:45.218Z",
+    "round_index": 494
+  },
+  {
+    "multiplier": 1.65,
+    "timestamp": "2026-07-28T14:19:57.267Z",
+    "round_index": 495
+  },
+  {
+    "multiplier": 1.05,
+    "timestamp": "2026-07-28T14:20:10.496Z",
+    "round_index": 496
+  },
+  {
+    "multiplier": 2.27,
+    "timestamp": "2026-07-28T14:20:32.158Z",
+    "round_index": 497
+  },
+  {
+    "multiplier": 11.29,
+    "timestamp": "2026-07-28T14:21:18.193Z",
+    "round_index": 498
+  },
+  {
+    "multiplier": 1.19,
+    "timestamp": "2026-07-28T14:22:00.102Z",
+    "round_index": 499
+  },
+  {
+    "multiplier": 2.31,
+    "timestamp": "2026-07-28T14:24:27.834Z",
+    "round_index": 500
+  },
+  {
+    "multiplier": 27.93,
+    "timestamp": "2026-07-28T14:25:39.919Z",
+    "round_index": 501
+  },
+  {
+    "multiplier": 1.23,
+    "timestamp": "2026-07-28T14:27:08.077Z",
+    "round_index": 502
+  },
+  {
+    "multiplier": 1.27,
+    "timestamp": "2026-07-28T14:27:36.540Z",
+    "round_index": 503
+  },
+  {
+    "multiplier": 1.15,
+    "timestamp": "2026-07-28T14:28:16.261Z",
+    "round_index": 504
+  },
+  {
+    "multiplier": 1.49,
+    "timestamp": "2026-07-28T14:28:55.673Z",
+    "round_index": 505
+  },
+  {
+    "multiplier": 3.04,
+    "timestamp": "2026-07-28T14:30:55.111Z",
+    "round_index": 506
+  },
+  {
+    "multiplier": 4.24,
+    "timestamp": "2026-07-28T14:56:27.511Z",
+    "round_index": 507
+  },
+  {
+    "multiplier": 1.83,
+    "timestamp": "2026-07-28T14:56:47.785Z",
+    "round_index": 508
+  },
+  {
+    "multiplier": 1.14,
+    "timestamp": "2026-07-28T14:57:08.969Z",
+    "round_index": 509
+  },
+  {
+    "multiplier": 3.08,
+    "timestamp": "2026-07-28T14:57:31.335Z",
+    "round_index": 510
+  },
+  {
+    "multiplier": 1.92,
+    "timestamp": "2026-07-28T14:57:55.916Z",
+    "round_index": 511
+  },
+  {
+    "multiplier": 2.35,
+    "timestamp": "2026-07-28T14:58:20.172Z",
+    "round_index": 512
+  },
+  {
+    "multiplier": 4.09,
+    "timestamp": "2026-07-28T14:58:52.544Z",
+    "round_index": 513
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-28T14:59:07.919Z",
+    "round_index": 514
+  },
+  {
+    "multiplier": 1.02,
+    "timestamp": "2026-07-28T14:59:11.203Z",
+    "round_index": 515
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-28T14:59:22.762Z",
+    "round_index": 516
+  },
+  {
+    "multiplier": 11.08,
+    "timestamp": "2026-07-28T14:59:53.684Z",
+    "round_index": 517
+  },
+  {
+    "multiplier": 1.02,
+    "timestamp": "2026-07-28T15:00:08.465Z",
+    "round_index": 518
+  },
+  {
+    "multiplier": 8.84,
+    "timestamp": "2026-07-28T15:00:44.425Z",
+    "round_index": 519
+  },
+  {
+    "multiplier": 1.25,
+    "timestamp": "2026-07-28T15:00:59.743Z",
+    "round_index": 520
+  },
+  {
+    "multiplier": 2.13,
+    "timestamp": "2026-07-28T15:01:19.686Z",
+    "round_index": 521
+  },
+  {
+    "multiplier": 1.13,
+    "timestamp": "2026-07-28T15:01:33.526Z",
+    "round_index": 522
+  },
+  {
+    "multiplier": 17.28,
+    "timestamp": "2026-07-28T15:02:18.077Z",
+    "round_index": 523
+  },
+  {
+    "multiplier": 1.07,
+    "timestamp": "2026-07-28T15:02:30.970Z",
+    "round_index": 524
+  },
+  {
+    "multiplier": 3.04,
+    "timestamp": "2026-07-28T15:02:55.301Z",
+    "round_index": 525
+  },
+  {
+    "multiplier": 2.07,
+    "timestamp": "2026-07-28T15:03:15.537Z",
+    "round_index": 526
+  },
+  {
+    "multiplier": 3.01,
+    "timestamp": "2026-07-28T15:03:41.750Z",
+    "round_index": 527
+  },
+  {
+    "multiplier": 6.21,
+    "timestamp": "2026-07-28T15:04:14.429Z",
+    "round_index": 528
+  },
+  {
+    "multiplier": 1.65,
+    "timestamp": "2026-07-28T15:04:32.703Z",
+    "round_index": 529
+  },
+  {
+    "multiplier": 5.27,
+    "timestamp": "2026-07-28T15:05:03.607Z",
+    "round_index": 530
+  },
+  {
+    "multiplier": 2.89,
+    "timestamp": "2026-07-28T15:05:29.387Z",
+    "round_index": 531
+  },
+  {
+    "multiplier": 7.66,
+    "timestamp": "2026-07-28T15:06:05.490Z",
+    "round_index": 532
+  },
+  {
+    "multiplier": 4.75,
+    "timestamp": "2026-07-29T09:20:15.251Z",
+    "round_index": 533
+  },
+  {
+    "multiplier": 25.91,
+    "timestamp": "2026-07-29T09:21:05.866Z",
+    "round_index": 534
+  },
+  {
+    "multiplier": 1.94,
+    "timestamp": "2026-07-29T09:21:29.989Z",
+    "round_index": 535
+  },
+  {
+    "multiplier": 2.6,
+    "timestamp": "2026-07-29T09:21:52.929Z",
+    "round_index": 536
+  },
+  {
+    "multiplier": 1.11,
+    "timestamp": "2026-07-29T09:22:07.647Z",
+    "round_index": 537
+  },
+  {
+    "multiplier": 166.16,
+    "timestamp": "2026-07-29T09:23:20.406Z",
+    "round_index": 538
+  },
+  {
+    "multiplier": 3.29,
+    "timestamp": "2026-07-29T09:23:56.237Z",
+    "round_index": 539
+  },
+  {
+    "multiplier": 21.55,
+    "timestamp": "2026-07-29T09:25:18.894Z",
+    "round_index": 540
+  },
+  {
+    "multiplier": 1.56,
+    "timestamp": "2026-07-29T09:26:12.881Z",
+    "round_index": 541
+  },
+  {
+    "multiplier": 6.43,
+    "timestamp": "2026-07-29T09:26:46.898Z",
+    "round_index": 542
+  },
+  {
+    "multiplier": 2.02,
+    "timestamp": "2026-07-29T09:27:11.969Z",
+    "round_index": 543
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T09:27:25.210Z",
+    "round_index": 544
+  },
+  {
+    "multiplier": 6.73,
+    "timestamp": "2026-07-29T09:28:00.425Z",
+    "round_index": 545
+  },
+  {
+    "multiplier": 1.03,
+    "timestamp": "2026-07-29T09:28:17.347Z",
+    "round_index": 546
+  },
+  {
+    "multiplier": 1.17,
+    "timestamp": "2026-07-29T09:28:33.883Z",
+    "round_index": 547
+  },
+  {
+    "multiplier": 4.88,
+    "timestamp": "2026-07-29T09:29:06.346Z",
+    "round_index": 548
+  },
+  {
+    "multiplier": 1.68,
+    "timestamp": "2026-07-29T09:29:25.677Z",
+    "round_index": 549
+  },
+  {
+    "multiplier": 1.18,
+    "timestamp": "2026-07-29T09:29:42.224Z",
+    "round_index": 550
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T12:14:36.459Z",
+    "round_index": 551
+  },
+  {
+    "multiplier": 1.44,
+    "timestamp": "2026-07-29T12:15:05.144Z",
+    "round_index": 552
+  },
+  {
+    "multiplier": 3.6,
+    "timestamp": "2026-07-29T12:15:19.362Z",
+    "round_index": 553
+  },
+  {
+    "multiplier": 12.89,
+    "timestamp": "2026-07-29T12:15:33.458Z",
+    "round_index": 554
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T12:15:33.458Z",
+    "round_index": 555
+  },
+  {
+    "multiplier": 1.21,
+    "timestamp": "2026-07-29T12:15:33.458Z",
+    "round_index": 556
+  },
+  {
+    "multiplier": 1.96,
+    "timestamp": "2026-07-29T12:15:33.458Z",
+    "round_index": 557
+  },
+  {
+    "multiplier": 3.72,
+    "timestamp": "2026-07-29T12:15:33.458Z",
+    "round_index": 558
+  },
+  {
+    "multiplier": 1.81,
+    "timestamp": "2026-07-29T12:15:33.458Z",
+    "round_index": 559
+  },
+  {
+    "multiplier": 3.01,
+    "timestamp": "2026-07-29T12:15:33.458Z",
+    "round_index": 560
+  },
+  {
+    "multiplier": 6.2,
+    "timestamp": "2026-07-29T12:15:33.458Z",
+    "round_index": 561
+  },
+  {
+    "multiplier": 1.29,
+    "timestamp": "2026-07-29T12:15:33.458Z",
+    "round_index": 562
+  },
+  {
+    "multiplier": 6.71,
+    "timestamp": "2026-07-29T12:15:33.459Z",
+    "round_index": 563
+  },
+  {
+    "multiplier": 1.24,
+    "timestamp": "2026-07-29T12:15:33.459Z",
+    "round_index": 564
+  },
+  {
+    "multiplier": 2.19,
+    "timestamp": "2026-07-29T12:15:33.459Z",
+    "round_index": 565
+  },
+  {
+    "multiplier": 4.44,
+    "timestamp": "2026-07-29T12:15:33.459Z",
+    "round_index": 566
+  },
+  {
+    "multiplier": 1.43,
+    "timestamp": "2026-07-29T12:15:33.459Z",
+    "round_index": 567
+  },
+  {
+    "multiplier": 1.88,
+    "timestamp": "2026-07-29T12:15:33.459Z",
+    "round_index": 568
+  },
+  {
+    "multiplier": 1.05,
+    "timestamp": "2026-07-29T12:15:33.459Z",
+    "round_index": 569
+  },
+  {
+    "multiplier": 8.53,
+    "timestamp": "2026-07-29T12:15:33.460Z",
+    "round_index": 570
+  },
+  {
+    "multiplier": 1.94,
+    "timestamp": "2026-07-29T12:15:33.460Z",
+    "round_index": 571
+  },
+  {
+    "multiplier": 2.14,
+    "timestamp": "2026-07-29T12:15:33.460Z",
+    "round_index": 572
+  },
+  {
+    "multiplier": 1.33,
+    "timestamp": "2026-07-29T12:15:33.460Z",
+    "round_index": 573
+  },
+  {
+    "multiplier": 3.52,
+    "timestamp": "2026-07-29T12:15:33.460Z",
+    "round_index": 574
+  },
+  {
+    "multiplier": 1.01,
+    "timestamp": "2026-07-29T12:15:33.460Z",
+    "round_index": 575
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T12:15:33.460Z",
+    "round_index": 576
+  },
+  {
+    "multiplier": 1.44,
+    "timestamp": "2026-07-29T12:15:33.460Z",
+    "round_index": 577
+  },
+  {
+    "multiplier": 3.6,
+    "timestamp": "2026-07-29T12:15:33.460Z",
+    "round_index": 578
+  },
+  {
+    "multiplier": 1.91,
+    "timestamp": "2026-07-29T12:15:43.258Z",
+    "round_index": 579
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 580
+  },
+  {
+    "multiplier": 1.21,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 581
+  },
+  {
+    "multiplier": 1.96,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 582
+  },
+  {
+    "multiplier": 3.72,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 583
+  },
+  {
+    "multiplier": 1.81,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 584
+  },
+  {
+    "multiplier": 3.01,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 585
+  },
+  {
+    "multiplier": 6.2,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 586
+  },
+  {
+    "multiplier": 1.29,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 587
+  },
+  {
+    "multiplier": 6.71,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 588
+  },
+  {
+    "multiplier": 1.24,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 589
+  },
+  {
+    "multiplier": 2.19,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 590
+  },
+  {
+    "multiplier": 4.44,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 591
+  },
+  {
+    "multiplier": 1.43,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 592
+  },
+  {
+    "multiplier": 1.88,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 593
+  },
+  {
+    "multiplier": 1.05,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 594
+  },
+  {
+    "multiplier": 8.53,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 595
+  },
+  {
+    "multiplier": 1.94,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 596
+  },
+  {
+    "multiplier": 2.14,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 597
+  },
+  {
+    "multiplier": 1.33,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 598
+  },
+  {
+    "multiplier": 3.52,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 599
+  },
+  {
+    "multiplier": 1.01,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 600
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 601
+  },
+  {
+    "multiplier": 1.44,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 602
+  },
+  {
+    "multiplier": 3.6,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 603
+  },
+  {
+    "multiplier": 1.91,
+    "timestamp": "2026-07-29T12:15:58.054Z",
+    "round_index": 604
+  },
+  {
+    "multiplier": 1.36,
+    "timestamp": "2026-07-29T12:15:58.311Z",
+    "round_index": 605
+  },
+  {
+    "multiplier": 1.03,
+    "timestamp": "2026-07-29T12:16:11.283Z",
+    "round_index": 606
+  },
+  {
+    "multiplier": 1.96,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 607
+  },
+  {
+    "multiplier": 3.72,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 608
+  },
+  {
+    "multiplier": 1.81,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 609
+  },
+  {
+    "multiplier": 3.01,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 610
+  },
+  {
+    "multiplier": 6.2,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 611
+  },
+  {
+    "multiplier": 1.29,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 612
+  },
+  {
+    "multiplier": 6.71,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 613
+  },
+  {
+    "multiplier": 1.24,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 614
+  },
+  {
+    "multiplier": 2.19,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 615
+  },
+  {
+    "multiplier": 4.44,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 616
+  },
+  {
+    "multiplier": 1.43,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 617
+  },
+  {
+    "multiplier": 1.88,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 618
+  },
+  {
+    "multiplier": 1.05,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 619
+  },
+  {
+    "multiplier": 8.53,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 620
+  },
+  {
+    "multiplier": 1.94,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 621
+  },
+  {
+    "multiplier": 2.14,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 622
+  },
+  {
+    "multiplier": 1.33,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 623
+  },
+  {
+    "multiplier": 3.52,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 624
+  },
+  {
+    "multiplier": 1.01,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 625
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 626
+  },
+  {
+    "multiplier": 1.44,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 627
+  },
+  {
+    "multiplier": 3.6,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 628
+  },
+  {
+    "multiplier": 1.91,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 629
+  },
+  {
+    "multiplier": 1.36,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 630
+  },
+  {
+    "multiplier": 1.03,
+    "timestamp": "2026-07-29T12:16:27.054Z",
+    "round_index": 631
+  },
+  {
+    "multiplier": 1.7,
+    "timestamp": "2026-07-29T12:16:27.387Z",
+    "round_index": 632
+  },
+  {
+    "multiplier": 1.56,
+    "timestamp": "2026-07-29T12:16:44.380Z",
+    "round_index": 633
+  },
+  {
+    "multiplier": 1.17,
+    "timestamp": "2026-07-29T12:17:33.707Z",
+    "round_index": 634
+  },
+  {
+    "multiplier": 1.33,
+    "timestamp": "2026-07-29T12:17:38.804Z",
+    "round_index": 635
+  },
+  {
+    "multiplier": 1.13,
+    "timestamp": "2026-07-29T12:18:15.975Z",
+    "round_index": 636
+  },
+  {
+    "multiplier": 2.01,
+    "timestamp": "2026-07-29T12:18:37.939Z",
+    "round_index": 637
+  },
+  {
+    "multiplier": 2.49,
+    "timestamp": "2026-07-29T12:19:26.033Z",
+    "round_index": 638
+  },
+  {
+    "multiplier": 1.02,
+    "timestamp": "2026-07-29T12:19:26.033Z",
+    "round_index": 639
+  },
+  {
+    "multiplier": 1.51,
+    "timestamp": "2026-07-29T12:19:26.033Z",
+    "round_index": 640
+  },
+  {
+    "multiplier": 2.52,
+    "timestamp": "2026-07-29T12:19:41.887Z",
+    "round_index": 641
+  },
+  {
+    "multiplier": 1.36,
+    "timestamp": "2026-07-29T12:30:05.091Z",
+    "round_index": 642
+  },
+  {
+    "multiplier": 1.92,
+    "timestamp": "2026-07-29T12:30:25.192Z",
+    "round_index": 643
+  },
+  {
+    "multiplier": 1.2,
+    "timestamp": "2026-07-29T12:30:38.451Z",
+    "round_index": 644
+  },
+  {
+    "multiplier": 1.37,
+    "timestamp": "2026-07-29T12:30:53.481Z",
+    "round_index": 645
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T12:31:04.988Z",
+    "round_index": 646
+  },
+  {
+    "multiplier": 1.45,
+    "timestamp": "2026-07-29T12:31:20.397Z",
+    "round_index": 647
+  },
+  {
+    "multiplier": 2.37,
+    "timestamp": "2026-07-29T12:31:41.468Z",
+    "round_index": 648
+  },
+  {
+    "multiplier": 2.79,
+    "timestamp": "2026-07-29T12:32:04.684Z",
+    "round_index": 649
+  },
+  {
+    "multiplier": 2.35,
+    "timestamp": "2026-07-29T12:32:26.877Z",
+    "round_index": 650
+  },
+  {
+    "multiplier": 65.34,
+    "timestamp": "2026-07-29T12:33:27.792Z",
+    "round_index": 651
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T12:33:42.456Z",
+    "round_index": 652
+  },
+  {
+    "multiplier": 1.38,
+    "timestamp": "2026-07-29T12:33:59.340Z",
+    "round_index": 653
+  },
+  {
+    "multiplier": 1.21,
+    "timestamp": "2026-07-29T12:34:17.164Z",
+    "round_index": 654
+  },
+  {
+    "multiplier": 2.98,
+    "timestamp": "2026-07-29T12:34:41.169Z",
+    "round_index": 655
+  },
+  {
+    "multiplier": 2.2,
+    "timestamp": "2026-07-29T12:35:03.885Z",
+    "round_index": 656
+  },
+  {
+    "multiplier": 1.29,
+    "timestamp": "2026-07-29T12:35:22.491Z",
+    "round_index": 657
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T12:35:34.817Z",
+    "round_index": 658
+  },
+  {
+    "multiplier": 1.78,
+    "timestamp": "2026-07-29T12:35:53.725Z",
+    "round_index": 659
+  },
+  {
+    "multiplier": 9.37,
+    "timestamp": "2026-07-29T12:36:31.419Z",
+    "round_index": 660
+  },
+  {
+    "multiplier": 1.06,
+    "timestamp": "2026-07-29T12:36:46.532Z",
+    "round_index": 661
+  },
+  {
+    "multiplier": 1.54,
+    "timestamp": "2026-07-29T12:37:03.039Z",
+    "round_index": 662
+  },
+  {
+    "multiplier": 1.81,
+    "timestamp": "2026-07-29T12:37:21.444Z",
+    "round_index": 663
+  },
+  {
+    "multiplier": 2.4,
+    "timestamp": "2026-07-29T12:37:43.169Z",
+    "round_index": 664
+  },
+  {
+    "multiplier": 1.48,
+    "timestamp": "2026-07-29T12:37:59.258Z",
+    "round_index": 665
+  },
+  {
+    "multiplier": 2,
+    "timestamp": "2026-07-29T12:38:18.648Z",
+    "round_index": 666
+  },
+  {
+    "multiplier": 8.42,
+    "timestamp": "2026-07-29T12:38:54.500Z",
+    "round_index": 667
+  },
+  {
+    "multiplier": 1.31,
+    "timestamp": "2026-07-29T12:39:10.980Z",
+    "round_index": 668
+  },
+  {
+    "multiplier": 5.32,
+    "timestamp": "2026-07-29T12:39:59.238Z",
+    "round_index": 669
+  },
+  {
+    "multiplier": 6.72,
+    "timestamp": "2026-07-29T12:40:17.594Z",
+    "round_index": 670
+  },
+  {
+    "multiplier": 1.1,
+    "timestamp": "2026-07-29T12:40:34.937Z",
+    "round_index": 671
+  },
+  {
+    "multiplier": 6.26,
+    "timestamp": "2026-07-29T12:41:06.935Z",
+    "round_index": 672
+  },
+  {
+    "multiplier": 1.08,
+    "timestamp": "2026-07-29T12:41:20.747Z",
+    "round_index": 673
+  },
+  {
+    "multiplier": 2.99,
+    "timestamp": "2026-07-29T12:41:45.463Z",
+    "round_index": 674
+  },
+  {
+    "multiplier": 2.59,
+    "timestamp": "2026-07-29T12:42:10.398Z",
+    "round_index": 675
+  },
+  {
+    "multiplier": 1.57,
+    "timestamp": "2026-07-29T12:42:28.356Z",
+    "round_index": 676
+  },
+  {
+    "multiplier": 12.94,
+    "timestamp": "2026-07-29T12:43:09.739Z",
+    "round_index": 677
+  },
+  {
+    "multiplier": 3.07,
+    "timestamp": "2026-07-29T12:43:35.662Z",
+    "round_index": 678
+  },
+  {
+    "multiplier": 1.12,
+    "timestamp": "2026-07-29T12:43:50.755Z",
+    "round_index": 679
+  },
+  {
+    "multiplier": 5.97,
+    "timestamp": "2026-07-29T12:44:23.526Z",
+    "round_index": 680
+  },
+  {
+    "multiplier": 18.66,
+    "timestamp": "2026-07-29T12:45:10.537Z",
+    "round_index": 681
+  },
+  {
+    "multiplier": 1.11,
+    "timestamp": "2026-07-29T12:45:26.021Z",
+    "round_index": 682
+  },
+  {
+    "multiplier": 2.63,
+    "timestamp": "2026-07-29T12:45:48.827Z",
+    "round_index": 683
+  },
+  {
+    "multiplier": 1.09,
+    "timestamp": "2026-07-29T12:46:02.057Z",
+    "round_index": 684
+  },
+  {
+    "multiplier": 3.91,
+    "timestamp": "2026-07-29T12:46:31.972Z",
+    "round_index": 685
+  },
+  {
+    "multiplier": 2.23,
+    "timestamp": "2026-07-29T12:46:55.569Z",
+    "round_index": 686
+  },
+  {
+    "multiplier": 1.37,
+    "timestamp": "2026-07-29T12:47:12.652Z",
+    "round_index": 687
+  },
+  {
+    "multiplier": 2.6,
+    "timestamp": "2026-07-29T12:47:35.336Z",
+    "round_index": 688
+  },
+  {
+    "multiplier": 2.03,
+    "timestamp": "2026-07-29T12:47:58.275Z",
+    "round_index": 689
+  },
+  {
+    "multiplier": 2.77,
+    "timestamp": "2026-07-29T12:48:21.855Z",
+    "round_index": 690
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T12:48:34.439Z",
+    "round_index": 691
+  },
+  {
+    "multiplier": 1.44,
+    "timestamp": "2026-07-29T12:48:50.792Z",
+    "round_index": 692
+  },
+  {
+    "multiplier": 1.95,
+    "timestamp": "2026-07-29T12:49:09.836Z",
+    "round_index": 693
+  },
+  {
+    "multiplier": 7.5,
+    "timestamp": "2026-07-29T12:49:44.461Z",
+    "round_index": 694
+  },
+  {
+    "multiplier": 1.04,
+    "timestamp": "2026-07-29T12:50:03.011Z",
+    "round_index": 695
+  },
+  {
+    "multiplier": 1.61,
+    "timestamp": "2026-07-29T12:50:20.115Z",
+    "round_index": 696
+  },
+  {
+    "multiplier": 5.17,
+    "timestamp": "2026-07-29T12:50:50.408Z",
+    "round_index": 697
+  },
+  {
+    "multiplier": 1.19,
+    "timestamp": "2026-07-29T12:51:11.885Z",
+    "round_index": 698
+  },
+  {
+    "multiplier": 1.18,
+    "timestamp": "2026-07-29T12:51:28.272Z",
+    "round_index": 699
+  },
+  {
+    "multiplier": 15.25,
+    "timestamp": "2026-07-29T12:52:10.617Z",
+    "round_index": 700
+  },
+  {
+    "multiplier": 44.53,
+    "timestamp": "2026-07-29T12:53:07.321Z",
+    "round_index": 701
+  },
+  {
+    "multiplier": 130.73,
+    "timestamp": "2026-07-29T12:54:17.138Z",
+    "round_index": 702
+  },
+  {
+    "multiplier": 1.01,
+    "timestamp": "2026-07-29T12:54:33.090Z",
+    "round_index": 703
+  },
+  {
+    "multiplier": 1.43,
+    "timestamp": "2026-07-29T12:54:48.750Z",
+    "round_index": 704
+  },
+  {
+    "multiplier": 3.82,
+    "timestamp": "2026-07-29T12:55:21.756Z",
+    "round_index": 705
+  },
+  {
+    "multiplier": 31.41,
+    "timestamp": "2026-07-29T12:56:08.699Z",
+    "round_index": 706
+  },
+  {
+    "multiplier": 2.16,
+    "timestamp": "2026-07-29T12:56:33.314Z",
+    "round_index": 707
+  },
+  {
+    "multiplier": 1.13,
+    "timestamp": "2026-07-29T12:56:52.549Z",
+    "round_index": 708
+  },
+  {
+    "multiplier": 1.6,
+    "timestamp": "2026-07-29T12:57:10.981Z",
+    "round_index": 709
+  },
+  {
+    "multiplier": 1.41,
+    "timestamp": "2026-07-29T12:57:29.753Z",
+    "round_index": 710
+  },
+  {
+    "multiplier": 2.79,
+    "timestamp": "2026-07-29T12:57:55.323Z",
+    "round_index": 711
+  },
+  {
+    "multiplier": 38.28,
+    "timestamp": "2026-07-29T12:58:51.351Z",
+    "round_index": 712
+  },
+  {
+    "multiplier": 1.06,
+    "timestamp": "2026-07-29T12:59:10.794Z",
+    "round_index": 713
+  },
+  {
+    "multiplier": 1.28,
+    "timestamp": "2026-07-29T12:59:25.644Z",
+    "round_index": 714
+  },
+  {
+    "multiplier": 113.32,
+    "timestamp": "2026-07-29T13:00:33.214Z",
+    "round_index": 715
+  },
+  {
+    "multiplier": 1.94,
+    "timestamp": "2026-07-29T13:00:55.279Z",
+    "round_index": 716
+  },
+  {
+    "multiplier": 2.01,
+    "timestamp": "2026-07-29T13:01:17.480Z",
+    "round_index": 717
+  },
+  {
+    "multiplier": 1.15,
+    "timestamp": "2026-07-29T13:01:35.708Z",
+    "round_index": 718
+  },
+  {
+    "multiplier": 7.06,
+    "timestamp": "2026-07-29T13:02:12.963Z",
+    "round_index": 719
+  },
+  {
+    "multiplier": 1.26,
+    "timestamp": "2026-07-29T13:02:29.303Z",
+    "round_index": 720
+  },
+  {
+    "multiplier": 19.11,
+    "timestamp": "2026-07-29T13:03:16.877Z",
+    "round_index": 721
+  },
+  {
+    "multiplier": 1.67,
+    "timestamp": "2026-07-29T13:03:36.929Z",
+    "round_index": 722
+  },
+  {
+    "multiplier": 1.47,
+    "timestamp": "2026-07-29T13:03:55.333Z",
+    "round_index": 723
+  },
+  {
+    "multiplier": 1.02,
+    "timestamp": "2026-07-29T13:04:10.053Z",
+    "round_index": 724
+  },
+  {
+    "multiplier": 6.95,
+    "timestamp": "2026-07-29T13:04:44.852Z",
+    "round_index": 725
+  },
+  {
+    "multiplier": 1.56,
+    "timestamp": "2026-07-29T13:05:06.060Z",
+    "round_index": 726
+  },
+  {
+    "multiplier": 1.65,
+    "timestamp": "2026-07-29T13:05:24.368Z",
+    "round_index": 727
+  },
+  {
+    "multiplier": 15.42,
+    "timestamp": "2026-07-29T13:06:08.426Z",
+    "round_index": 728
+  },
+  {
+    "multiplier": 4.75,
+    "timestamp": "2026-07-29T13:06:42.839Z",
+    "round_index": 729
+  },
+  {
+    "multiplier": 1.29,
+    "timestamp": "2026-07-29T13:06:59.192Z",
+    "round_index": 730
+  },
+  {
+    "multiplier": 2.96,
+    "timestamp": "2026-07-29T13:07:25.559Z",
+    "round_index": 731
+  },
+  {
+    "multiplier": 5.79,
+    "timestamp": "2026-07-29T13:07:59.076Z",
+    "round_index": 732
+  },
+  {
+    "multiplier": 6.23,
+    "timestamp": "2026-07-29T13:08:34.125Z",
+    "round_index": 733
+  },
+  {
+    "multiplier": 2.32,
+    "timestamp": "2026-07-29T13:08:58.716Z",
+    "round_index": 734
+  },
+  {
+    "multiplier": 2.47,
+    "timestamp": "2026-07-29T13:09:22.610Z",
+    "round_index": 735
+  },
+  {
+    "multiplier": 2.35,
+    "timestamp": "2026-07-29T13:09:46.342Z",
+    "round_index": 736
+  },
+  {
+    "multiplier": 2.25,
+    "timestamp": "2026-07-29T13:10:15.184Z",
+    "round_index": 737
+  },
+  {
+    "multiplier": 8.06,
+    "timestamp": "2026-07-29T13:10:54.277Z",
+    "round_index": 738
+  },
+  {
+    "multiplier": 1.19,
+    "timestamp": "2026-07-29T13:11:15.601Z",
+    "round_index": 739
+  },
+  {
+    "multiplier": 1.12,
+    "timestamp": "2026-07-29T13:11:32.767Z",
+    "round_index": 740
+  },
+  {
+    "multiplier": 1.72,
+    "timestamp": "2026-07-29T13:11:51.363Z",
+    "round_index": 741
+  },
+  {
+    "multiplier": 2.2,
+    "timestamp": "2026-07-29T13:12:12.321Z",
+    "round_index": 742
+  },
+  {
+    "multiplier": 2.08,
+    "timestamp": "2026-07-29T13:12:35.999Z",
+    "round_index": 743
+  },
+  {
+    "multiplier": 3.38,
+    "timestamp": "2026-07-29T13:13:04.368Z",
+    "round_index": 744
+  },
+  {
+    "multiplier": 1.51,
+    "timestamp": "2026-07-29T13:13:24.937Z",
+    "round_index": 745
+  },
+  {
+    "multiplier": 1.22,
+    "timestamp": "2026-07-29T13:13:42.687Z",
+    "round_index": 746
+  },
+  {
+    "multiplier": 9.98,
+    "timestamp": "2026-07-29T13:14:20.905Z",
+    "round_index": 747
+  },
+  {
+    "multiplier": 1.45,
+    "timestamp": "2026-07-29T13:14:39.326Z",
+    "round_index": 748
+  },
+  {
+    "multiplier": 6.49,
+    "timestamp": "2026-07-29T13:15:14.398Z",
+    "round_index": 749
+  },
+  {
+    "multiplier": 1.14,
+    "timestamp": "2026-07-29T13:15:33.766Z",
+    "round_index": 750
+  },
+  {
+    "multiplier": 2.37,
+    "timestamp": "2026-07-29T13:15:56.920Z",
+    "round_index": 751
+  },
+  {
+    "multiplier": 13.93,
+    "timestamp": "2026-07-29T13:16:42.098Z",
+    "round_index": 752
+  },
+  {
+    "multiplier": 2.03,
+    "timestamp": "2026-07-29T13:17:06.893Z",
+    "round_index": 753
+  },
+  {
+    "multiplier": 1.9,
+    "timestamp": "2026-07-29T13:17:27.078Z",
+    "round_index": 754
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T13:17:40.049Z",
+    "round_index": 755
+  },
+  {
+    "multiplier": 3.71,
+    "timestamp": "2026-07-29T13:18:07.658Z",
+    "round_index": 756
+  },
+  {
+    "multiplier": 1.97,
+    "timestamp": "2026-07-29T13:18:29.407Z",
+    "round_index": 757
+  },
+  {
+    "multiplier": 10.22,
+    "timestamp": "2026-07-29T13:19:09.263Z",
+    "round_index": 758
+  },
+  {
+    "multiplier": 1.2,
+    "timestamp": "2026-07-29T13:19:29.306Z",
+    "round_index": 759
+  },
+  {
+    "multiplier": 1.12,
+    "timestamp": "2026-07-29T13:19:49.789Z",
+    "round_index": 760
+  },
+  {
+    "multiplier": 2.35,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 761
+  },
+  {
+    "multiplier": 2.25,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 762
+  },
+  {
+    "multiplier": 8.06,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 763
+  },
+  {
+    "multiplier": 1.19,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 764
+  },
+  {
+    "multiplier": 1.12,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 765
+  },
+  {
+    "multiplier": 1.72,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 766
+  },
+  {
+    "multiplier": 2.2,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 767
+  },
+  {
+    "multiplier": 2.08,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 768
+  },
+  {
+    "multiplier": 3.38,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 769
+  },
+  {
+    "multiplier": 1.51,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 770
+  },
+  {
+    "multiplier": 1.22,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 771
+  },
+  {
+    "multiplier": 9.98,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 772
+  },
+  {
+    "multiplier": 1.45,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 773
+  },
+  {
+    "multiplier": 6.49,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 774
+  },
+  {
+    "multiplier": 1.14,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 775
+  },
+  {
+    "multiplier": 2.37,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 776
+  },
+  {
+    "multiplier": 13.93,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 777
+  },
+  {
+    "multiplier": 2.03,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 778
+  },
+  {
+    "multiplier": 1.9,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 779
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 780
+  },
+  {
+    "multiplier": 3.71,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 781
+  },
+  {
+    "multiplier": 1.97,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 782
+  },
+  {
+    "multiplier": 10.22,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 783
+  },
+  {
+    "multiplier": 1.2,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 784
+  },
+  {
+    "multiplier": 1.12,
+    "timestamp": "2026-07-29T13:20:20.821Z",
+    "round_index": 785
+  },
+  {
+    "multiplier": 10.86,
+    "timestamp": "2026-07-29T13:20:29.948Z",
+    "round_index": 786
+  },
+  {
+    "multiplier": 1.37,
+    "timestamp": "2026-07-29T13:20:52.468Z",
+    "round_index": 787
+  },
+  {
+    "multiplier": 13.37,
+    "timestamp": "2026-07-29T13:21:36.550Z",
+    "round_index": 788
+  },
+  {
+    "multiplier": 1.38,
+    "timestamp": "2026-07-29T13:21:55.028Z",
+    "round_index": 789
+  },
+  {
+    "multiplier": 1.06,
+    "timestamp": "2026-07-29T13:22:10.373Z",
+    "round_index": 790
+  },
+  {
+    "multiplier": 5.59,
+    "timestamp": "2026-07-29T13:23:17.521Z",
+    "round_index": 791
+  },
+  {
+    "multiplier": 1.05,
+    "timestamp": "2026-07-29T13:23:33.524Z",
+    "round_index": 792
+  },
+  {
+    "multiplier": 1.21,
+    "timestamp": "2026-07-29T13:23:54.317Z",
+    "round_index": 793
+  },
+  {
+    "multiplier": 1.63,
+    "timestamp": "2026-07-29T13:24:12.831Z",
+    "round_index": 794
+  },
+  {
+    "multiplier": 1.05,
+    "timestamp": "2026-07-29T13:24:28.195Z",
+    "round_index": 795
+  },
+  {
+    "multiplier": 10.59,
+    "timestamp": "2026-07-29T13:25:08.894Z",
+    "round_index": 796
+  },
+  {
+    "multiplier": 1.46,
+    "timestamp": "2026-07-29T13:25:29.896Z",
+    "round_index": 797
+  },
+  {
+    "multiplier": 1.15,
+    "timestamp": "2026-07-29T13:25:44.716Z",
+    "round_index": 798
+  },
+  {
+    "multiplier": 1.57,
+    "timestamp": "2026-07-29T13:26:02.113Z",
+    "round_index": 799
+  },
+  {
+    "multiplier": 1.33,
+    "timestamp": "2026-07-29T13:26:17.410Z",
+    "round_index": 800
+  },
+  {
+    "multiplier": 2.5,
+    "timestamp": "2026-07-29T13:26:41.246Z",
+    "round_index": 801
+  },
+  {
+    "multiplier": 2.71,
+    "timestamp": "2026-07-29T13:27:05.190Z",
+    "round_index": 802
+  },
+  {
+    "multiplier": 1.88,
+    "timestamp": "2026-07-29T13:27:29.089Z",
+    "round_index": 803
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T13:27:41.091Z",
+    "round_index": 804
+  },
+  {
+    "multiplier": 1542.12,
+    "timestamp": "2026-07-29T13:29:20.985Z",
+    "round_index": 805
+  },
+  {
+    "multiplier": 2.38,
+    "timestamp": "2026-07-29T13:29:44.367Z",
+    "round_index": 806
+  },
+  {
+    "multiplier": 1.25,
+    "timestamp": "2026-07-29T13:30:00.341Z",
+    "round_index": 807
+  },
+  {
+    "multiplier": 4.31,
+    "timestamp": "2026-07-29T13:30:31.380Z",
+    "round_index": 808
+  },
+  {
+    "multiplier": 3.3,
+    "timestamp": "2026-07-29T13:30:57.312Z",
+    "round_index": 809
+  },
+  {
+    "multiplier": 1.01,
+    "timestamp": "2026-07-29T13:31:11.340Z",
+    "round_index": 810
+  },
+  {
+    "multiplier": 2.06,
+    "timestamp": "2026-07-29T13:31:33.054Z",
+    "round_index": 811
+  },
+  {
+    "multiplier": 1.9,
+    "timestamp": "2026-07-29T13:31:51.676Z",
+    "round_index": 812
+  },
+  {
+    "multiplier": 1.81,
+    "timestamp": "2026-07-29T13:32:10.992Z",
+    "round_index": 813
+  },
+  {
+    "multiplier": 4.42,
+    "timestamp": "2026-07-29T13:32:39.510Z",
+    "round_index": 814
+  },
+  {
+    "multiplier": 1.51,
+    "timestamp": "2026-07-29T13:32:57.509Z",
+    "round_index": 815
+  },
+  {
+    "multiplier": 24.66,
+    "timestamp": "2026-07-29T13:33:45.920Z",
+    "round_index": 816
+  },
+  {
+    "multiplier": 3.1,
+    "timestamp": "2026-07-29T13:34:13.813Z",
+    "round_index": 817
+  },
+  {
+    "multiplier": 1.03,
+    "timestamp": "2026-07-29T13:34:28.444Z",
+    "round_index": 818
+  },
+  {
+    "multiplier": 1.77,
+    "timestamp": "2026-07-29T13:34:48.513Z",
+    "round_index": 819
+  },
+  {
+    "multiplier": 2.89,
+    "timestamp": "2026-07-29T13:35:12.471Z",
+    "round_index": 820
+  },
+  {
+    "multiplier": 1.36,
+    "timestamp": "2026-07-29T13:35:32.515Z",
+    "round_index": 821
+  },
+  {
+    "multiplier": 1.18,
+    "timestamp": "2026-07-29T13:35:46.489Z",
+    "round_index": 822
+  },
+  {
+    "multiplier": 3.37,
+    "timestamp": "2026-07-29T13:36:11.705Z",
+    "round_index": 823
+  },
+  {
+    "multiplier": 2.28,
+    "timestamp": "2026-07-29T13:36:33.418Z",
+    "round_index": 824
+  },
+  {
+    "multiplier": 4.14,
+    "timestamp": "2026-07-29T13:37:01.723Z",
+    "round_index": 825
+  },
+  {
+    "multiplier": 3.55,
+    "timestamp": "2026-07-29T13:37:28.820Z",
+    "round_index": 826
+  },
+  {
+    "multiplier": 1.35,
+    "timestamp": "2026-07-29T13:37:56.099Z",
+    "round_index": 827
+  },
+  {
+    "multiplier": 1.29,
+    "timestamp": "2026-07-29T13:38:03.577Z",
+    "round_index": 828
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T13:38:13.898Z",
+    "round_index": 829
+  },
+  {
+    "multiplier": 1.58,
+    "timestamp": "2026-07-29T13:38:30.177Z",
+    "round_index": 830
+  },
+  {
+    "multiplier": 1.99,
+    "timestamp": "2026-07-29T13:38:51.139Z",
+    "round_index": 831
+  },
+  {
+    "multiplier": 1.95,
+    "timestamp": "2026-07-29T13:39:11.576Z",
+    "round_index": 832
+  },
+  {
+    "multiplier": 1.48,
+    "timestamp": "2026-07-29T13:39:27.344Z",
+    "round_index": 833
+  },
+  {
+    "multiplier": 2.79,
+    "timestamp": "2026-07-29T13:39:53.118Z",
+    "round_index": 834
+  },
+  {
+    "multiplier": 2.45,
+    "timestamp": "2026-07-29T13:40:11.358Z",
+    "round_index": 835
+  },
+  {
+    "multiplier": 1.09,
+    "timestamp": "2026-07-29T13:40:28.937Z",
+    "round_index": 836
+  },
+  {
+    "multiplier": 4.2,
+    "timestamp": "2026-07-29T13:40:56.801Z",
+    "round_index": 837
+  },
+  {
+    "multiplier": 6.49,
+    "timestamp": "2026-07-29T13:41:30.214Z",
+    "round_index": 838
+  },
+  {
+    "multiplier": 2.97,
+    "timestamp": "2026-07-29T13:42:03.078Z",
+    "round_index": 839
+  },
+  {
+    "multiplier": 1.98,
+    "timestamp": "2026-07-29T13:42:16.361Z",
+    "round_index": 840
+  },
+  {
+    "multiplier": 3.28,
+    "timestamp": "2026-07-29T13:42:41.960Z",
+    "round_index": 841
+  },
+  {
+    "multiplier": 1.92,
+    "timestamp": "2026-07-29T13:43:04.870Z",
+    "round_index": 842
+  },
+  {
+    "multiplier": 1.17,
+    "timestamp": "2026-07-29T13:43:18.331Z",
+    "round_index": 843
+  },
+  {
+    "multiplier": 12.54,
+    "timestamp": "2026-07-29T13:44:00.400Z",
+    "round_index": 844
+  },
+  {
+    "multiplier": 76.1,
+    "timestamp": "2026-07-29T13:45:03.681Z",
+    "round_index": 845
+  },
+  {
+    "multiplier": 5.84,
+    "timestamp": "2026-07-29T13:45:45.205Z",
+    "round_index": 846
+  },
+  {
+    "multiplier": 1.13,
+    "timestamp": "2026-07-29T13:46:02.257Z",
+    "round_index": 847
+  },
+  {
+    "multiplier": 3.35,
+    "timestamp": "2026-07-29T13:46:28.323Z",
+    "round_index": 848
+  },
+  {
+    "multiplier": 1.05,
+    "timestamp": "2026-07-29T13:46:46.134Z",
+    "round_index": 849
+  },
+  {
+    "multiplier": 1.58,
+    "timestamp": "2026-07-29T13:47:14.574Z",
+    "round_index": 850
+  },
+  {
+    "multiplier": 2.2,
+    "timestamp": "2026-07-29T13:48:42.596Z",
+    "round_index": 851
+  },
+  {
+    "multiplier": 1.92,
+    "timestamp": "2026-07-29T13:48:42.596Z",
+    "round_index": 852
+  },
+  {
+    "multiplier": 1.67,
+    "timestamp": "2026-07-29T13:48:42.596Z",
+    "round_index": 853
+  },
+  {
+    "multiplier": 1.84,
+    "timestamp": "2026-07-29T13:48:42.596Z",
+    "round_index": 854
+  },
+  {
+    "multiplier": 1.37,
+    "timestamp": "2026-07-29T13:48:42.596Z",
+    "round_index": 855
+  },
+  {
+    "multiplier": 1.28,
+    "timestamp": "2026-07-29T13:48:54.698Z",
+    "round_index": 856
+  },
+  {
+    "multiplier": 2.32,
+    "timestamp": "2026-07-29T13:49:15.420Z",
+    "round_index": 857
+  },
+  {
+    "multiplier": 14.39,
+    "timestamp": "2026-07-29T13:49:57.984Z",
+    "round_index": 858
+  },
+  {
+    "multiplier": 2.2,
+    "timestamp": "2026-07-29T13:50:28.765Z",
+    "round_index": 859
+  },
+  {
+    "multiplier": 1.35,
+    "timestamp": "2026-07-29T13:50:46.479Z",
+    "round_index": 860
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T13:51:32.351Z",
+    "round_index": 861
+  },
+  {
+    "multiplier": 4.99,
+    "timestamp": "2026-07-29T13:52:02.648Z",
+    "round_index": 862
+  },
+  {
+    "multiplier": 1.1,
+    "timestamp": "2026-07-29T13:52:21.526Z",
+    "round_index": 863
+  },
+  {
+    "multiplier": 1.52,
+    "timestamp": "2026-07-29T13:52:37.798Z",
+    "round_index": 864
+  },
+  {
+    "multiplier": 5.81,
+    "timestamp": "2026-07-29T13:53:09.661Z",
+    "round_index": 865
+  },
+  {
+    "multiplier": 2.6,
+    "timestamp": "2026-07-29T13:53:32.964Z",
+    "round_index": 866
+  },
+  {
+    "multiplier": 1.92,
+    "timestamp": "2026-07-29T13:53:53.066Z",
+    "round_index": 867
+  },
+  {
+    "multiplier": 1.64,
+    "timestamp": "2026-07-29T13:54:12.622Z",
+    "round_index": 868
+  },
+  {
+    "multiplier": 4.51,
+    "timestamp": "2026-07-29T13:54:40.788Z",
+    "round_index": 869
+  },
+  {
+    "multiplier": 1.94,
+    "timestamp": "2026-07-29T13:55:00.415Z",
+    "round_index": 870
+  },
+  {
+    "multiplier": 14.07,
+    "timestamp": "2026-07-29T13:55:44.960Z",
+    "round_index": 871
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-29T13:55:57.657Z",
+    "round_index": 872
+  },
+  {
+    "multiplier": 1.75,
+    "timestamp": "2026-07-29T13:56:16.140Z",
+    "round_index": 873
+  },
+  {
+    "multiplier": 1.86,
+    "timestamp": "2026-07-29T13:56:35.452Z",
+    "round_index": 874
+  },
+  {
+    "multiplier": 14.43,
+    "timestamp": "2026-07-29T13:57:18.115Z",
+    "round_index": 875
+  },
+  {
+    "multiplier": 4.88,
+    "timestamp": "2026-07-29T13:57:49.152Z",
+    "round_index": 876
+  },
+  {
+    "multiplier": 2.45,
+    "timestamp": "2026-07-29T13:58:11.878Z",
+    "round_index": 877
+  },
+  {
+    "multiplier": 1.74,
+    "timestamp": "2026-07-29T13:58:30.284Z",
+    "round_index": 878
+  },
+  {
+    "multiplier": 1.3,
+    "timestamp": "2026-07-29T13:58:46.664Z",
+    "round_index": 879
+  },
+  {
+    "multiplier": 1.66,
+    "timestamp": "2026-07-29T13:59:02.895Z",
+    "round_index": 880
+  },
+  {
+    "multiplier": 7.93,
+    "timestamp": "2026-07-29T13:59:39.099Z",
+    "round_index": 881
+  },
+  {
+    "multiplier": 10.03,
+    "timestamp": "2026-07-29T14:00:20.792Z",
+    "round_index": 882
+  },
+  {
+    "multiplier": 1.15,
+    "timestamp": "2026-07-29T14:00:41.521Z",
+    "round_index": 883
+  },
+  {
+    "multiplier": 6.39,
+    "timestamp": "2026-07-29T14:01:15.837Z",
+    "round_index": 884
+  },
+  {
+    "multiplier": 2.93,
+    "timestamp": "2026-07-29T14:01:40.203Z",
+    "round_index": 885
+  },
+  {
+    "multiplier": 5.03,
+    "timestamp": "2026-07-29T14:02:13.279Z",
+    "round_index": 886
+  },
+  {
+    "multiplier": 73.22,
+    "timestamp": "2026-07-29T14:03:16.063Z",
+    "round_index": 887
+  },
+  {
+    "multiplier": 1.45,
+    "timestamp": "2026-07-29T14:03:46.353Z",
+    "round_index": 888
+  },
+  {
+    "multiplier": 1.28,
+    "timestamp": "2026-07-29T14:04:36.261Z",
+    "round_index": 889
+  },
+  {
+    "multiplier": 1.55,
+    "timestamp": "2026-07-29T14:04:57.706Z",
+    "round_index": 890
+  },
+  {
+    "multiplier": 1.72,
+    "timestamp": "2026-07-29T14:05:15.126Z",
+    "round_index": 891
+  },
+  {
+    "multiplier": 2.16,
+    "timestamp": "2026-07-29T14:05:51.663Z",
+    "round_index": 892
+  },
+  {
+    "multiplier": 1.13,
+    "timestamp": "2026-07-29T14:06:29.496Z",
+    "round_index": 893
+  },
+  {
+    "multiplier": 1.43,
+    "timestamp": "2026-07-29T14:07:44.920Z",
+    "round_index": 894
+  },
+  {
+    "multiplier": 2.83,
+    "timestamp": "2026-07-30T23:13:17.974Z",
+    "round_index": 895
+  },
+  {
+    "multiplier": 3.64,
+    "timestamp": "2026-07-30T23:13:44.024Z",
+    "round_index": 896
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-07-30T23:13:55.990Z",
+    "round_index": 897
+  },
+  {
+    "multiplier": 2.84,
+    "timestamp": "2026-07-30T23:14:18.701Z",
+    "round_index": 898
+  },
+  {
+    "multiplier": 15.38,
+    "timestamp": "2026-07-30T23:15:02.944Z",
+    "round_index": 899
+  },
+  {
+    "multiplier": 3.53,
+    "timestamp": "2026-07-30T23:15:28.904Z",
+    "round_index": 900
+  },
+  {
+    "multiplier": 1.38,
+    "timestamp": "2026-07-30T23:15:43.846Z",
+    "round_index": 901
+  },
+  {
+    "multiplier": 1.05,
+    "timestamp": "2026-07-30T23:15:55.166Z",
+    "round_index": 902
+  },
+  {
+    "multiplier": 2.47,
+    "timestamp": "2026-07-30T23:16:16.884Z",
+    "round_index": 903
+  },
+  {
+    "multiplier": 3.62,
+    "timestamp": "2026-07-30T23:16:43.366Z",
+    "round_index": 904
+  },
+  {
+    "multiplier": 4.29,
+    "timestamp": "2026-07-30T23:17:10.799Z",
+    "round_index": 905
+  },
+  {
+    "multiplier": 1.17,
+    "timestamp": "2026-08-04T09:47:34.405Z",
+    "round_index": 906
+  },
+  {
+    "multiplier": 1.22,
+    "timestamp": "2026-08-04T09:47:49.368Z",
+    "round_index": 907
+  },
+  {
+    "multiplier": 1.82,
+    "timestamp": "2026-08-04T09:48:10.514Z",
+    "round_index": 908
+  },
+  {
+    "multiplier": 2.43,
+    "timestamp": "2026-08-04T09:48:34.332Z",
+    "round_index": 909
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-08-04T09:48:47.569Z",
+    "round_index": 910
+  },
+  {
+    "multiplier": 1.06,
+    "timestamp": "2026-08-04T09:49:02.325Z",
+    "round_index": 911
+  },
+  {
+    "multiplier": 15.04,
+    "timestamp": "2026-08-04T09:49:49.092Z",
+    "round_index": 912
+  },
+  {
+    "multiplier": 1.68,
+    "timestamp": "2026-08-04T09:50:09.821Z",
+    "round_index": 913
+  },
+  {
+    "multiplier": 1.21,
+    "timestamp": "2026-08-04T09:50:30.879Z",
+    "round_index": 914
+  },
+  {
+    "multiplier": 393.08,
+    "timestamp": "2026-08-04T09:51:54.325Z",
+    "round_index": 915
+  },
+  {
+    "multiplier": 1.4,
+    "timestamp": "2026-08-04T09:52:14.395Z",
+    "round_index": 916
+  },
+  {
+    "multiplier": 2.74,
+    "timestamp": "2026-08-04T09:52:40.001Z",
+    "round_index": 917
+  },
+  {
+    "multiplier": 1.08,
+    "timestamp": "2026-08-04T09:52:55.490Z",
+    "round_index": 918
+  },
+  {
+    "multiplier": 3.01,
+    "timestamp": "2026-08-04T09:53:21.657Z",
+    "round_index": 919
+  },
+  {
+    "multiplier": 4.38,
+    "timestamp": "2026-08-04T09:53:52.112Z",
+    "round_index": 920
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-08-04T09:54:08.779Z",
+    "round_index": 921
+  },
+  {
+    "multiplier": 1.05,
+    "timestamp": "2026-09-06T08:07:47.008Z",
+    "round_index": 922
+  },
+  {
+    "multiplier": 13.95,
+    "timestamp": "2026-09-06T08:08:29.391Z",
+    "round_index": 923
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-09-06T08:08:41.427Z",
+    "round_index": 924
+  },
+  {
+    "multiplier": 1.81,
+    "timestamp": "2026-09-06T08:09:00.975Z",
+    "round_index": 925
+  },
+  {
+    "multiplier": 1.34,
+    "timestamp": "2026-09-06T08:09:16.047Z",
+    "round_index": 926
+  },
+  {
+    "multiplier": 3.05,
+    "timestamp": "2026-09-06T08:09:42.013Z",
+    "round_index": 927
+  },
+  {
+    "multiplier": 2.28,
+    "timestamp": "2026-09-06T08:10:04.699Z",
+    "round_index": 928
+  },
+  {
+    "multiplier": 1.01,
+    "timestamp": "2026-09-06T08:10:16.236Z",
+    "round_index": 929
+  },
+  {
+    "multiplier": 1.54,
+    "timestamp": "2026-09-06T08:10:33.079Z",
+    "round_index": 930
+  },
+  {
+    "multiplier": 1.18,
+    "timestamp": "2026-09-06T08:10:45.758Z",
+    "round_index": 931
+  },
+  {
+    "multiplier": 1.19,
+    "timestamp": "2026-09-06T08:10:58.523Z",
+    "round_index": 932
+  },
+  {
+    "multiplier": 2.1,
+    "timestamp": "2026-09-06T08:11:19.086Z",
+    "round_index": 933
+  },
+  {
+    "multiplier": 1.5,
+    "timestamp": "2026-09-06T08:35:52.491Z",
+    "round_index": 934
+  },
+  {
+    "multiplier": 20.99,
+    "timestamp": "2026-09-06T08:36:40.322Z",
+    "round_index": 935
+  },
+  {
+    "multiplier": 1.21,
+    "timestamp": "2026-09-06T08:36:56.139Z",
+    "round_index": 936
+  },
+  {
+    "multiplier": 1.16,
+    "timestamp": "2026-09-06T08:37:09.259Z",
+    "round_index": 937
+  },
+  {
+    "multiplier": 1.32,
+    "timestamp": "2026-09-06T08:37:23.582Z",
+    "round_index": 938
+  },
+  {
+    "multiplier": 3.79,
+    "timestamp": "2026-09-06T08:37:53.440Z",
+    "round_index": 939
+  },
+  {
+    "multiplier": 5.7,
+    "timestamp": "2026-09-06T08:38:25.417Z",
+    "round_index": 940
+  },
+  {
+    "multiplier": 6.9,
+    "timestamp": "2026-09-06T08:38:59.906Z",
+    "round_index": 941
+  },
+  {
+    "multiplier": 1.7,
+    "timestamp": "2026-09-06T08:39:18.057Z",
+    "round_index": 942
+  },
+  {
+    "multiplier": 3.67,
+    "timestamp": "2026-09-06T08:39:44.318Z",
+    "round_index": 943
+  },
+  {
+    "multiplier": 4.06,
+    "timestamp": "2026-09-06T08:40:13.213Z",
+    "round_index": 944
+  },
+  {
+    "multiplier": 2.26,
+    "timestamp": "2026-09-06T08:40:38.673Z",
+    "round_index": 945
+  },
+  {
+    "multiplier": 3.36,
+    "timestamp": "2026-09-06T08:41:04.751Z",
+    "round_index": 946
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-09-06T08:41:17.318Z",
+    "round_index": 947
+  },
+  {
+    "multiplier": 16.88,
+    "timestamp": "2026-09-06T08:42:03.605Z",
+    "round_index": 948
+  },
+  {
+    "multiplier": 4.57,
+    "timestamp": "2026-09-06T08:42:34.010Z",
+    "round_index": 949
+  },
+  {
+    "multiplier": 1.23,
+    "timestamp": "2026-09-06T08:42:50.680Z",
+    "round_index": 950
+  },
+  {
+    "multiplier": 36,
+    "timestamp": "2026-09-06T08:43:45.657Z",
+    "round_index": 951
+  },
+  {
+    "multiplier": 6.96,
+    "timestamp": "2026-09-06T08:44:20.118Z",
+    "round_index": 952
+  },
+  {
+    "multiplier": 2.86,
+    "timestamp": "2026-09-06T08:44:45.079Z",
+    "round_index": 953
+  },
+  {
+    "multiplier": 1.38,
+    "timestamp": "2026-09-06T08:45:02.428Z",
+    "round_index": 954
+  },
+  {
+    "multiplier": 1,
+    "timestamp": "2026-09-06T08:45:14.378Z",
+    "round_index": 955
+  },
+  {
+    "multiplier": 10.55,
+    "timestamp": "2026-09-06T08:46:05.316Z",
+    "round_index": 956
+  },
+  {
+    "multiplier": 1.17,
+    "timestamp": "2026-09-06T08:46:11.570Z",
+    "round_index": 957
+  },
+  {
+    "multiplier": 2.14,
+    "timestamp": "2026-09-06T08:46:35.360Z",
+    "round_index": 958
+  },
+  {
+    "multiplier": 1.11,
+    "timestamp": "2026-09-06T08:46:48.243Z",
+    "round_index": 959
+  },
+  {
+    "multiplier": 2.1,
+    "timestamp": "2026-09-06T09:11:07.323Z",
+    "round_index": 960
+  },
+  {
+    "multiplier": 2.36,
+    "timestamp": "2026-09-06T09:11:28.687Z",
+    "round_index": 961
+  },
+  {
+    "multiplier": 1.17,
+    "timestamp": "2026-09-06T09:11:41.779Z",
+    "round_index": 962
+  },
+  {
+    "multiplier": 2.64,
+    "timestamp": "2026-09-06T09:12:03.729Z",
+    "round_index": 963
+  },
+  {
+    "multiplier": 1.18,
+    "timestamp": "2026-09-06T09:12:20.897Z",
+    "round_index": 964
+  },
+  {
+    "multiplier": 1.44,
+    "timestamp": "2026-09-06T09:12:36.012Z",
+    "round_index": 965
+  },
+  {
+    "multiplier": 17.36,
+    "timestamp": "2026-09-06T09:13:22.133Z",
+    "round_index": 966
+  },
+  {
+    "multiplier": 8.59,
+    "timestamp": "2026-09-06T09:13:56.414Z",
+    "round_index": 967
+  },
+  {
+    "multiplier": 1.81,
+    "timestamp": "2026-09-06T09:14:15.171Z",
+    "round_index": 968
+  },
+  {
+    "multiplier": 2.67,
+    "timestamp": "2026-09-06T09:14:37.388Z",
+    "round_index": 969
+  },
+  {
+    "multiplier": 1.11,
+    "timestamp": "2026-09-06T09:14:53.158Z",
+    "round_index": 970
+  },
+  {
+    "multiplier": 2.21,
+    "timestamp": "2026-09-06T09:15:16.097Z",
+    "round_index": 971
+  },
+  {
+    "multiplier": 2.81,
+    "timestamp": "2026-09-06T09:15:38.279Z",
+    "round_index": 972
+  },
+  {
+    "multiplier": 3.91,
+    "timestamp": "2026-09-06T09:16:05.070Z",
+    "round_index": 973
+  },
+  {
+    "multiplier": 1.97,
+    "timestamp": "2026-09-06T09:16:25.408Z",
+    "round_index": 974
+  },
+  {
+    "multiplier": 3.14,
+    "timestamp": "2026-09-06T09:16:50.946Z",
+    "round_index": 975
+  },
+  {
+    "multiplier": 3.63,
+    "timestamp": "2026-09-06T09:17:17.714Z",
+    "round_index": 976
+  },
+  {
+    "multiplier": 1.38,
+    "timestamp": "2026-09-06T09:17:34.468Z",
+    "round_index": 977
+  },
+  {
+    "multiplier": 1.02,
+    "timestamp": "2026-09-06T09:17:47.197Z",
+    "round_index": 978
+  },
+  {
+    "multiplier": 1.14,
+    "timestamp": "2026-09-06T09:17:59.694Z",
+    "round_index": 979
+  },
+  {
+    "multiplier": 1.11,
+    "timestamp": "2026-09-06T09:18:11.961Z",
+    "round_index": 980
+  },
+  {
+    "multiplier": 1.49,
+    "timestamp": "2026-09-06T09:18:27.668Z",
+    "round_index": 981
+  },
+  {
+    "multiplier": 12.47,
+    "timestamp": "2026-09-06T09:19:07.675Z",
+    "round_index": 982
+  },
+  {
+    "multiplier": 1.2,
+    "timestamp": "2026-09-06T09:19:22.135Z",
+    "round_index": 983
+  },
+  {
+    "round_index": 984,
+    "multiplier": 8.57,
+    "timestamp": "2026-09-06T09:19:58.436Z"
+  }
+]

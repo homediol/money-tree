@@ -13,6 +13,7 @@ ROUND_HISTORY_PATH = DATA_DIR / "roundhistory.json"
 DECISIONS_PATH     = DATA_DIR / "decisions.json"
 LOG_PATH = Path(__file__).resolve().parent / "aviator-api.log"
 METADATA_PATH = ARTIFACT_DIR / "metadata.json"
+ROUND_HISTORY_TABLE = os.getenv("ROUND_HISTORY_TABLE", "aviator_rounds")
 
 # Per-file write locks — prevents race conditions when multiple threads write simultaneously
 _write_locks: Dict[str, threading.Lock] = {}
@@ -66,7 +67,7 @@ def utc_now() -> str:
 def ensure_data_files() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    if not ROUND_HISTORY_PATH.exists():
+    if not _postgres_round_history_configured() and not ROUND_HISTORY_PATH.exists():
         sample = [
             {"round_id": i + 1, "multiplier": float(v), "timestamp": utc_now()}
             for i, v in enumerate(
@@ -83,6 +84,70 @@ def ensure_data_files() -> None:
         write_json(ROUND_HISTORY_PATH, sample)
     if not DECISIONS_PATH.exists():
         write_json(DECISIONS_PATH, [])
+
+
+def _postgres_round_history_configured() -> bool:
+    return bool(
+        os.getenv("DATABASE_URL")
+        or os.getenv("POSTGRES_URL")
+        or os.getenv("WINNER_DATABASE_URL")
+        or os.getenv("PGHOST")
+        or os.getenv("PGDATABASE")
+        or os.getenv("PGUSER")
+    )
+
+
+def _quote_pg_identifier(name: str) -> str:
+    if not name.replace("_", "").isalnum() or not (name[0].isalpha() or name[0] == "_"):
+        raise ValueError(f"Invalid PostgreSQL identifier: {name}")
+    return f'"{name}"'
+
+
+def _postgres_connect_kwargs() -> Dict[str, Any]:
+    dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("WINNER_DATABASE_URL")
+    if dsn:
+        return {"dsn": dsn}
+
+    kwargs: Dict[str, Any] = {}
+    for env_name, key in (
+        ("PGHOST", "host"),
+        ("PGDATABASE", "dbname"),
+        ("PGUSER", "user"),
+        ("PGPASSWORD", "password"),
+        ("PGPORT", "port"),
+    ):
+        value = os.getenv(env_name)
+        if value:
+            kwargs[key] = int(value) if key == "port" else value
+    return kwargs
+
+
+def _load_round_history_from_postgres() -> List[Dict[str, Any]]:
+    import psycopg2
+    import psycopg2.extras
+
+    table = _quote_pg_identifier(ROUND_HISTORY_TABLE)
+    with psycopg2.connect(**_postgres_connect_kwargs()) as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT round_index AS round_id,
+                       multiplier::float8 AS multiplier,
+                       timestamp
+                FROM {table}
+                ORDER BY round_index ASC
+                """
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "round_id": int(row["round_id"]),
+            "multiplier": float(row["multiplier"]),
+            "timestamp": row["timestamp"].isoformat() if row.get("timestamp") else None,
+        }
+        for row in rows
+    ]
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -118,7 +183,14 @@ def write_json(path: Path, payload: Any) -> None:
 
 def load_round_history() -> List[Dict[str, Any]]:
     ensure_data_files()
-    raw = read_json(ROUND_HISTORY_PATH, [])
+    if _postgres_round_history_configured():
+        try:
+            raw = _load_round_history_from_postgres()
+        except Exception:
+            logging.exception("Cannot load round history from PostgreSQL; falling back to JSON")
+            raw = read_json(ROUND_HISTORY_PATH, [])
+    else:
+        raw = read_json(ROUND_HISTORY_PATH, [])
     if isinstance(raw, dict):
         raw = raw.get("rounds", raw.get("history", []))
 
@@ -195,7 +267,6 @@ def append_decision(decision: Dict[str, Any]) -> None:
         decision["for_round"] = decision["last_round_id"] + 1
     decisions.append(decision)
     write_json(DECISIONS_PATH, decisions[-250:])
-
 
 
 

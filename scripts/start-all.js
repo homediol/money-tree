@@ -5,10 +5,11 @@
  * Starts all services in the correct order:
  *
  *  1. bot/roundhistory-collector.js  — collects live round data → data/roundhistory.json
- *  2. backend/app.py                 — Flask prediction API (port 5000)
- *  3. backend/bot_api.py             — FastAPI bot control API (port 5001)
- *  4. frontend (vite dev)            — React dashboard (port 5173)
- *  5. aviator_enterprise/main.py     — Enterprise ML API (port 8000)
+ *  2. backend/app.py                 — legacy Flask prediction API (port 5000)
+ *  3. backend/bot_api.py             — legacy FastAPI bot control API (port 5001)
+ *  4. backend/main.py                — Winner Predict FastAPI API (port 8000)
+ *  5. frontend (vite dev)            — React dashboard (port 5173)
+ *  6. aviator_enterprise/main.py     — legacy Enterprise ML API (port 8002)
  *
  * Usage:  npm start   (from project root)
  */
@@ -17,6 +18,7 @@ const { spawn, spawnSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const net = require("net");
 
 const ROOT    = path.resolve(__dirname, "..");
 const BACKEND = path.join(ROOT, "backend");
@@ -77,6 +79,21 @@ const ENTERPRISE_PY  = (() => {
   return PYTHON_BIN;
 })();
 
+// Winner Predict backend Python (backend/.venv has the tested deps; falls
+// back to the root .venv that ensureBackendEnvironment() keeps up to date)
+const BACKEND_PY = (() => {
+  const candidates = [
+    path.join(BACKEND, ".venv", "bin", "python3"),
+    path.join(BACKEND, ".venv", "bin", "python"),
+    path.join(BACKEND, ".venv", "Scripts", "python.exe"),
+    PYTHON_BIN,
+  ];
+  for (const c of candidates) {
+    if (c.includes(path.sep) && fs.existsSync(c)) return c;
+  }
+  return PYTHON_BIN;
+})();
+
 function runSetup(cmd, args, cwd = ROOT) {
   console.log(`\x1b[90m[runner]\x1b[0m setup: ${cmd} ${args.join(" ")}`);
   const result = spawnSync(cmd, args, {
@@ -121,6 +138,7 @@ const SERVICES = [
     args:    ["run.py"],
     cwd:     BACKEND,
     color:   "\x1b[33m",   // yellow
+    port:    5000,
     // Give Flask 3 s to start before launching bot_api
     delayMs: 3000,
   },
@@ -130,6 +148,16 @@ const SERVICES = [
     args:    ["bot_api.py"],
     cwd:     BACKEND,
     color:   "\x1b[35m",   // magenta
+    port:    5001,
+  },
+  {
+    name:    "backend",
+    cmd:     BACKEND_PY,
+    args:    ["-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+    cwd:     BACKEND,
+    color:   "\x1b[96m",   // bright cyan
+    port:    8000,
+    // Winner Predict API — owns port 8000 (frontend defaults point here)
   },
   {
     name:    "frontend",
@@ -141,9 +169,11 @@ const SERVICES = [
   {
     name:    "enterprise",
     cmd:     ENTERPRISE_PY,
-    args:    ["-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+    // Legacy app — moved off 8000 so the Winner Predict backend owns it
+    args:    ["-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"],
     cwd:     ENTERPRISE,
     color:   "\x1b[34m",   // blue
+    port:    8002,
     optional: true,
   },
 ];
@@ -154,6 +184,22 @@ let shuttingDown = false;
 
 function label(svc) {
   return `${svc.color}[${svc.name}]\x1b[0m`;
+}
+
+function isPortInUse(port, host = "127.0.0.1") {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ port, host });
+    socket.setTimeout(800);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("error", () => resolve(false));
+  });
 }
 
 function prefixLines(svc, stream, writer) {
@@ -186,7 +232,15 @@ function stopAll(code = 0) {
 // ── Launch a single service (with optional delay) ─────────────────────────
 function launch(svc) {
   return new Promise((resolve) => {
-    setTimeout(() => {
+    setTimeout(async () => {
+      if (svc.port && await isPortInUse(svc.port)) {
+        console.warn(
+          `${label(svc)} port ${svc.port} is already in use; assuming an existing instance is running and reusing it.`
+        );
+        resolve(null);
+        return;
+      }
+
       console.log(`\x1b[90m[runner]\x1b[0m starting ${label(svc)}: ${svc.cmd} ${svc.args.join(" ")}`);
 
       const env = { ...process.env };

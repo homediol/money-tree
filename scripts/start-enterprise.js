@@ -25,7 +25,8 @@ function findPython() {
 }
 
 const pythonBin = findPython();
-const args = ['-m', 'uvicorn', 'main:app', '--host', '0.0.0.0', '--port', '8000'];
+// Legacy app — 8002 keeps it clear of the Winner Predict backend (8000)
+const args = ['-m', 'uvicorn', 'main:app', '--host', '0.0.0.0', '--port', '8002'];
 
 console.log(`[enterprise] starting ${pythonBin} ${args.join(' ')}`);
 const child = spawn(pythonBin, args, {
@@ -51,3 +52,4 @@ child.on('exit', (code, signal) => {
   }
   process.exit(code ?? 0);
 });
+

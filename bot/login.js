@@ -37,12 +37,20 @@ const log = createLogger('login');
 const BASE_URL    = 'https://winner.rw';
 const HOME_URL    = `${BASE_URL}`;
 const LOGIN_URL   = `${BASE_URL}/en/authentication/login`;
-const AVIATOR_URL = `${BASE_URL}/en/virtual/crash-games/aviator`;
 
 // Navigation link selectors — we click these from the homepage to bypass
 // Cloudflare's "Access Denied" on direct page navigation.
 const LOGIN_LINK_SELECTOR   = 'a#user-menu-login, a.login-btn, a[href*="/login"]';
 const AVIATOR_LINK_SELECTOR = 'a[href*="/aviator"], a[href*="crash-games"]';
+
+async function isAccessDeniedPage(page) {
+  try {
+    const bodyText = (await page.innerText('body', { timeout: 1000 })).toLowerCase();
+    return bodyText.includes('accessdenied') || bodyText.includes('access denied');
+  } catch {
+    return false;
+  }
+}
 
 // ── Indicators used by detectPageState ───────────────────────────────
 //
@@ -97,8 +105,9 @@ const LOGIN_FORM_SELECTORS = [
  */
 async function goViaHomepage(page, linkSelector, label) {
   const currentUrl = page.url();
-  // Only navigate to homepage if we're not already there
-  if (!currentUrl || currentUrl === 'about:blank' || !currentUrl.startsWith(BASE_URL)) {
+  const accessDenied = await isAccessDeniedPage(page);
+  // Reset through the homepage when the current document is blocked or external.
+  if (!currentUrl || currentUrl === 'about:blank' || !currentUrl.startsWith(BASE_URL) || accessDenied) {
     log.info(`Navigating to homepage to click "${label}" link...`);
     const ok = await safeNavigate(page, HOME_URL, 30000);
     if (!ok) {
@@ -511,23 +520,17 @@ export async function goToAviator(page) {
   const clicked = await goViaHomepage(page, AVIATOR_LINK_SELECTOR, 'Aviator');
 
   if (!clicked) {
-    // Fallback: direct navigation (may fail with Cloudflare)
-    log.warn('Could not click Aviator link — trying direct navigation...');
-    const ok = await safeNavigate(page, AVIATOR_URL, 60000);
-    if (!ok) {
-      // Final fallback: just go to homepage and try again
-      log.warn('Direct navigation failed — trying homepage then Aviator link...');
-      const homeOk = await safeNavigate(page, HOME_URL, 30000);
-      if (!homeOk) {
-        log.error('Could not load homepage');
-        return false;
-      }
-      await page.waitForTimeout(2000);
-      const retry = await goViaHomepage(page, AVIATOR_LINK_SELECTOR, 'Aviator');
-      if (!retry) {
-        log.error('Failed to reach Aviator page');
-        return false;
-      }
+    log.warn('Could not click Aviator link — resetting through homepage and retrying link click...');
+    const homeOk = await safeNavigate(page, HOME_URL, 30000);
+    if (!homeOk) {
+      log.error('Could not load homepage');
+      return false;
+    }
+    await page.waitForTimeout(2000);
+    const retry = await goViaHomepage(page, AVIATOR_LINK_SELECTOR, 'Aviator');
+    if (!retry) {
+      log.error('Failed to reach Aviator page through site navigation');
+      return false;
     }
   }
 
@@ -537,6 +540,11 @@ export async function goToAviator(page) {
 
   // Verify we're on a plausible game page using safe element check
   const currentUrl = page.url().toLowerCase();
+  if (await isAccessDeniedPage(page)) {
+    log.error('Aviator navigation reached an Access Denied page');
+    return false;
+  }
+
   if (currentUrl.includes('aviator') || currentUrl.includes('crash')) {
     log.info(`Aviator page loaded: ${currentUrl}`);
     return true;
@@ -550,8 +558,6 @@ export async function goToAviator(page) {
   log.error(`Unexpected URL after navigation: ${currentUrl}`);
   return false;
 }
-
-
 
 
 

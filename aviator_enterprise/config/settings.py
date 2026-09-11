@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # -- Server --
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8002  # 8000 now belongs to the Winner Predict backend
     workers: int = 4
     cors_origins: str = "*"
 
@@ -187,4 +187,5 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
 

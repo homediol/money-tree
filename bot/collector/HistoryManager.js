@@ -1,6 +1,6 @@
 /**
  * HistoryManager.js — All round data read/write/merge logic.
- * Atomic writes, deduplication, 500-round rolling window.
+ * Atomic writes, deduplication, full-history persistence.
  */
 
 import fs from 'fs';
@@ -11,7 +11,6 @@ import { log } from './Logger.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT               = path.resolve(__dirname, '..', '..');
 const ROUND_HISTORY_PATH = path.join(ROOT, 'data', 'roundhistory.json');
-const HISTORY_LIMIT      = 500;
 
 // ── Multiplier helpers ────────────────────────────────────────────────────────
 
@@ -87,11 +86,29 @@ export function readRoundHistory() {
     cleaned.push({ multiplier, timestamp, round_index: roundIdx });
   }
 
-  return cleaned.slice(-HISTORY_LIMIT);
+  return sortHistoryChronological(cleaned);
 }
 
 export function writeRoundHistory(records) {
-  writeJSON(ROUND_HISTORY_PATH, records.slice(-HISTORY_LIMIT));
+  writeJSON(ROUND_HISTORY_PATH, sortHistoryChronological(records));
+}
+
+function sortHistoryChronological(records) {
+  return [...records].sort((a, b) => {
+    const aIndex = Number(a.round_index);
+    const bIndex = Number(b.round_index);
+    if (Number.isFinite(aIndex) && Number.isFinite(bIndex) && aIndex !== bIndex) {
+      return aIndex - bIndex;
+    }
+
+    const aTime = Date.parse(a.timestamp || '');
+    const bTime = Date.parse(b.timestamp || '');
+    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+      return aTime - bTime;
+    }
+
+    return 0;
+  });
 }
 
 export function nextRoundIndex(history) {
@@ -144,5 +161,5 @@ export function appendRounds(history, newestFirst) {
     idx++;
   }
 
-  return { history: history.slice(-HISTORY_LIMIT), added };
+  return { history: sortHistoryChronological(history), added };
 }

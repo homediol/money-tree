@@ -31,6 +31,21 @@ function serialize(v) {
   catch { return String(v); }
 }
 
+export function formatError(err) {
+  if (!err) return 'Unknown error';
+  if (err instanceof AggregateError) {
+    const inner = err.errors?.map(formatError).filter(Boolean).join('; ');
+    return inner ? `${err.name}: ${inner}` : (err.message || err.name);
+  }
+  if (err instanceof Error) {
+    return err.stack || err.message || err.name;
+  }
+  if (typeof err === 'object') {
+    return serialize(err);
+  }
+  return String(err);
+}
+
 function rotatIfNeeded() {
   try {
     if (!fs.existsSync(LOG_FILE)) return;

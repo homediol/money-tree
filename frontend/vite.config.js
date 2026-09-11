@@ -9,7 +9,6 @@ export default defineConfig({
         manualChunks: {
           'vendor-react':   ['react', 'react-dom', 'react-router-dom'],
           'vendor-charts':  ['recharts'],
-          'vendor-socket':  ['socket.io-client'],
         },
       },
     },
@@ -36,3 +35,4 @@ export default defineConfig({
     },
   },
 });
+

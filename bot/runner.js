@@ -145,7 +145,7 @@ function writeStatus(payload) {
 
 const STEP_LABELS = {
   'starting': 'Starting bot',
-  'launching_browser': 'Launching browser session',
+  'launching_browser': 'Connecting to browser session',
   'browser_ready': 'Browser ready',
   'checking_session': 'Checking login state',
   'logging_in': 'Authenticating',
@@ -366,16 +366,16 @@ async function main() {
 
   const useStorageState = process.env.BOT_USE_STORAGE_STATE === 'true';
 
-  // ── Step 1 — Launch browser ─────────────────────────────────────
+  // ── Step 1 — Connect to existing browser ────────────────────────
   reportStep({
-    action: 'Launching browser session',
+    action: 'Connecting to browser session',
     status: 'running',
-    details: `Starting Playwright with system Chrome (headless=${headless})`,
+    details: 'Attaching to an existing Chrome instance through CDP',
   });
 
   try {
-    log.info('Launching browser...');
-    writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'launching_browser', updated_at: nowISO(), step_details: `Headless: ${headless}` });
+    log.info('Connecting to existing browser...');
+    writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'launching_browser', updated_at: nowISO(), step_details: 'Connecting to existing browser' });
 
     const launchOpts = { headless };
     if (useStorageState) {
@@ -386,19 +386,19 @@ async function main() {
     await launchBrowser(launchOpts);
 
     reportStep({
-      action: 'Launching browser session',
+      action: 'Connecting to browser session',
       status: 'success',
-      details: 'Browser session ready with Chrome profile + stealth mode',
+      details: 'Connected to existing browser session',
     });
     writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'browser_ready', updated_at: nowISO(), step_details: 'Browser ready' });
   } catch (err) {
-    log.error(`Failed to launch browser: ${err.message}`);
+    log.error(`Failed to connect to browser: ${err.message}`);
     reportStep({
-      action: 'Launching browser session',
+      action: 'Connecting to browser session',
       status: 'failed',
-      details: `Browser launch failed: ${err.message}. Check if Chrome is installed and profile is accessible.`,
+      details: `Browser connection failed: ${err.message}`,
     });
-    writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'error', error: 'Browser launch failed: ' + err.message, updated_at: nowISO(), step_details: err.message });
+    writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'error', error: 'Browser connection failed: ' + err.message, updated_at: nowISO(), step_details: err.message });
     process.exit(1);
   }
 
@@ -406,9 +406,9 @@ async function main() {
   reportStep({
     action: 'Opening browser page',
     status: 'running',
-    details: 'Creating new page tab in browser context',
+    details: 'Reusing Aviator tab or opening one tab in the existing browser',
   });
-  writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'opening_page', updated_at: nowISO(), step_details: 'Creating page tab' });
+  writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'opening_page', updated_at: nowISO(), step_details: 'Reusing or opening tab' });
 
   let page;
   try {
@@ -440,14 +440,21 @@ async function main() {
 
   try {
     writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'checking_session', updated_at: nowISO(), step_details: 'Checking session...' });
-    const { loggedIn } = await checkSession(page);
+    const onExistingAviatorTab = isAviatorUrl(page);
+    const { loggedIn } = onExistingAviatorTab
+      ? { loggedIn: true }
+      : await checkSession(page);
 
     if (loggedIn) {
-      printSuccess('Dashboard elements detected — user is authenticated');
+      printSuccess(onExistingAviatorTab
+        ? 'Existing Aviator tab detected — preserving current session'
+        : 'Dashboard elements detected — user is authenticated');
       reportStep({
         action: 'Checking login state',
         status: 'success',
-        details: 'User is already authenticated, skipping login page entirely',
+        details: onExistingAviatorTab
+          ? 'Reusing existing Aviator tab without navigating away'
+          : 'User is already authenticated, skipping login page entirely',
       });
       writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'login_success', updated_at: nowISO(), step_details: 'Already authenticated' });
     } else {
@@ -507,11 +514,11 @@ async function main() {
   try {
     log.info('Navigating to Aviator game...');
 
-    const aviatorOk = isAviatorUrl(page)
-      || await Promise.race([
-        goToAviator(page),
-        waitForManualAviator(page, 90000),
-      ]);
+    let aviatorOk = isAviatorUrl(page) || await goToAviator(page);
+    if (!aviatorOk) {
+      printInfo('Open the Aviator game manually in the connected Chrome window, then press the dashboard start button.');
+      aviatorOk = await waitForManualAviator(page, 90000);
+    }
     if (!aviatorOk) {
       log.error('Failed to reach Aviator page — aborting');
       reportStep({
@@ -640,5 +647,3 @@ async function main() {
 }
 
 main();
-
-

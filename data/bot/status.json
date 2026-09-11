@@ -1,18 +1,15 @@
 {
-  "collectorRunning": false,
+  "collectorRunning": true,
   "browserConnected": true,
-  "pageConnected": true,
-  "frameConnected": true,
-  "loggedIn": true,
-  "state": "COLLECTING",
-  "lastRoundTime": "2026-08-04T09:54:09.592Z",
-  "lastRecovery": {
-    "action": "FRAME_RECOVER",
-    "ts": "2026-08-04T09:51:56.499Z"
-  },
-  "recoveryCount": 2,
+  "pageConnected": false,
+  "frameConnected": false,
+  "loggedIn": false,
+  "state": "LOGIN",
+  "lastRoundTime": null,
+  "lastRecovery": null,
+  "recoveryCount": 0,
   "browserRestartCount": 0,
-  "loginCount": 1,
-  "totalRoundsSaved": 16,
-  "uptime": 526
+  "loginCount": 0,
+  "totalRoundsSaved": 0,
+  "uptime": 10388
 }

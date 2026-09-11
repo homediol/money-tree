@@ -9,7 +9,7 @@
  * Every recovery is logged with reason, duration, success, and retry count.
  */
 
-import { log } from './Logger.js';
+import { log, formatError } from './Logger.js';
 import { State } from './StateMachine.js';
 import { classifyError, sleep, backoffMs } from './RetryManager.js';
 
@@ -42,7 +42,7 @@ export class RecoveryManager {
     }
 
     this._recoveryInProgress = true;
-    const reason  = typeof errOrReason === 'string' ? errOrReason : errOrReason?.message ?? 'unknown';
+    const reason  = typeof errOrReason === 'string' ? errOrReason : formatError(errOrReason);
     const errClass = typeof errOrReason === 'string' ? 'FRAME_RECOVER' : classifyError(errOrReason);
     const start   = Date.now();
     let attempt   = 0;
@@ -70,7 +70,7 @@ export class RecoveryManager {
     } catch (err) {
       const duration = Date.now() - start;
       log.recovery(errClass, reason, duration, false, attempt);
-      log.error(`RecoveryManager: recovery failed — ${err.message}`);
+      log.error(`RecoveryManager: recovery failed — ${formatError(err)}`);
 
       // Escalate to browser restart as last resort
       if (errClass !== 'BROWSER_FATAL') {
@@ -79,7 +79,7 @@ export class RecoveryManager {
           page = await this._recoverBrowser(signal);
           return page;
         } catch (fatal) {
-          log.error(`RecoveryManager: browser restart also failed — ${fatal.message}`);
+          log.error(`RecoveryManager: browser restart also failed — ${formatError(fatal)}`);
           // Wait and let the outer loop retry
           await sleep(backoffMs(5), signal);
           throw fatal;
@@ -135,7 +135,7 @@ export class RecoveryManager {
       await this.login.ensureLoggedIn(page, signal);
       this.health.recordLogin();
     } catch (err) {
-      log.error(`RecoveryManager: re-login failed — ${err.message}`);
+      log.error(`RecoveryManager: re-login failed — ${formatError(err)}`);
       return this._recoverBrowser(signal);
     }
 

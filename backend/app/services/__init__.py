@@ -1,0 +1,2 @@
+"""Winner Predict service layer."""
+

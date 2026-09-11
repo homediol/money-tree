@@ -8,7 +8,7 @@
  */
 
 import { startCollector } from './collector/index.js';
-import { log }            from './collector/Logger.js';
+import { log, formatError } from './collector/Logger.js';
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
 
@@ -29,17 +29,17 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // They are here purely as a last-resort guard.
 
 process.on('uncaughtException', (err) => {
-  log.error(`[SAFETY NET] uncaughtException: ${err.message}`);
+  log.error(`[SAFETY NET] uncaughtException: ${formatError(err)}`);
   // Do NOT exit — let the collector's outer loop recover
 });
 
 process.on('unhandledRejection', (reason) => {
-  log.error(`[SAFETY NET] unhandledRejection: ${reason}`);
+  log.error(`[SAFETY NET] unhandledRejection: ${formatError(reason)}`);
   // Do NOT exit
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 startCollector(ac.signal).catch(err => {
-  log.error(`startCollector threw unexpectedly: ${err.message}`);
+  log.error(`startCollector threw unexpectedly: ${formatError(err)}`);
 });

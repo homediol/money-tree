@@ -15,9 +15,11 @@ Features enabled:
 
 import logging
 import sys
+import importlib.util
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+BACKEND_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BACKEND_DIR))
 
 from utils import setup_logging, ensure_data_files
 
@@ -27,7 +29,17 @@ ensure_data_files()
 log = logging.getLogger("run")
 
 # ── Import Flask app ──────────────────────────────────────────────────────
-from app import app, start_model_prewarm
+flask_app_path = BACKEND_DIR / "app.py"
+flask_app_spec = importlib.util.spec_from_file_location("winner_predict_flask_app", flask_app_path)
+if flask_app_spec is None or flask_app_spec.loader is None:
+    raise RuntimeError(f"Unable to load Flask app from {flask_app_path}")
+
+flask_app_module = importlib.util.module_from_spec(flask_app_spec)
+sys.modules[flask_app_spec.name] = flask_app_module
+flask_app_spec.loader.exec_module(flask_app_module)
+
+app = flask_app_module.app
+start_model_prewarm = flask_app_module.start_model_prewarm
 
 start_model_prewarm()
 log.info("Predictor pre-warm started in background")

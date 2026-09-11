@@ -1,0 +1,34 @@
+# Winner Predict full stack (FastAPI backend + React/Vite frontend).
+# The repo also contains a legacy Flask app (backend/utils.py era) and the
+# aviator_enterprise sibling app; those are NOT part of this compose file.
+#
+# Note: `npm start` runs the legacy aviator_enterprise app on port 8002, so
+# it no longer collides with this stack (8000 is owned by the backend).
+services:
+  backend:
+    image: python:3.11-slim
+    working_dir: /app/backend
+    volumes:
+      - .:/app
+    command: sh -c "pip install -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app/frontend
+    volumes:
+      - .:/app
+      # Keep host node_modules out of the container: the host may have built
+      # them against glibc while node:20-alpine uses musl.
+      - /app/frontend/node_modules
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8000/ws/live
+    depends_on:
+      - backend
+
+

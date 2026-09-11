@@ -1,9 +1,10 @@
 """
 Playwright automation bot for winner.rw Aviator game.
 
-Logs into https://winner.rw/en/authentication/login using phone + password,
-navigates to the Aviator crash game page, and reports round data back to
-the parent orchestrator via a status file or JSON output.
+Connects to an existing Chrome browser through CDP, logs into
+https://winner.rw/en/authentication/login when needed, navigates to the
+Aviator crash game page, and reports round data back to the parent
+orchestrator via a status file or JSON output.
 
 Architecture:
   - Runs as a subprocess managed by bot_runner.py
@@ -26,6 +27,7 @@ STATUS_DIR = ROOT_DIR / "data" / "bot"
 STATUS_PATH = STATUS_DIR / "status.json"
 CONFIG_PATH = ROOT_DIR / "data" / "bot" / "config.json"
 DECISIONS_PATH = ROOT_DIR / "decisions.json"
+HOME_URL = "https://winner.rw"
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -66,22 +68,133 @@ def log(msg: str) -> None:
 
 # ── Playwright helpers ─────────────────────────────────────────────────
 
+def _is_aviator_url(url: str) -> bool:
+    value = (url or "").lower()
+    return "aviator" in value or "crash-games" in value or "/crash" in value
+
+
+def _is_access_denied_page(page) -> bool:
+    try:
+        body = page.locator("body").inner_text(timeout=1000).lower()
+        return "accessdenied" in body or "access denied" in body
+    except Exception:
+        return False
+
+
+def _navigate(page, url: str, timeout: int = 30000) -> bool:
+    for wait_until in ("load", "domcontentloaded", "commit"):
+        try:
+            page.goto(url, wait_until=wait_until, timeout=timeout)
+            page.wait_for_selector("body", timeout=5000)
+            if _is_access_denied_page(page):
+                log(f"Navigation to {url} reached Access Denied")
+                return False
+            return True
+        except Exception as exc:
+            log(f"Navigation to {url} failed ({wait_until}): {exc}")
+    return False
+
+
+def _go_to_aviator_via_site(page) -> bool:
+    if _is_access_denied_page(page) or not page.url.startswith(HOME_URL):
+        if not _navigate(page, HOME_URL):
+            return False
+        page.wait_for_timeout(2000)
+
+    for _ in range(2):
+        link = page.query_selector("a[href*='/aviator'], a[href*='crash-games']")
+        if link:
+            link.click()
+            page.wait_for_timeout(4000)
+            return _is_aviator_url(page.url) and not _is_access_denied_page(page)
+
+        if not _navigate(page, HOME_URL):
+            return False
+        page.wait_for_timeout(2000)
+
+    return False
+
+
+def _devtools_endpoint_from_profile(profile_dir: Path) -> Optional[str]:
+    try:
+        port_file = profile_dir / "DevToolsActivePort"
+        if not port_file.exists():
+            return None
+        port = port_file.read_text(encoding="utf-8").splitlines()[0].strip()
+        return f"http://127.0.0.1:{port}" if port else None
+    except (IndexError, OSError):
+        return None
+
+
+def _devtools_endpoints_from_file(port_file: Path) -> list[str]:
+    try:
+        lines = port_file.read_text(encoding="utf-8").splitlines()
+        port = lines[0].strip()
+        browser_path = lines[1].strip() if len(lines) > 1 else ""
+        if not port:
+            return []
+        endpoints = [
+            f"http://127.0.0.1:{port}",
+            f"http://localhost:{port}",
+        ]
+        if browser_path:
+            endpoints.extend([
+                f"ws://127.0.0.1:{port}{browser_path}",
+                f"ws://localhost:{port}{browser_path}",
+            ])
+        return endpoints
+    except (IndexError, OSError):
+        return []
+
+
+def _find_devtools_files(root: Path, depth: int = 3) -> list[Path]:
+    if depth < 0:
+        return []
+    try:
+        found = []
+        for child in root.iterdir():
+            if child.is_file() and child.name == "DevToolsActivePort":
+                found.append(child)
+            elif child.is_dir():
+                found.extend(_find_devtools_files(child, depth - 1))
+        return found
+    except OSError:
+        return []
+
+
+def _cdp_endpoint_candidates() -> list[str]:
+    default_port = os.environ.get("BOT_CDP_PORT", "9222")
+    candidates = [
+        os.environ.get("BOT_CDP_ENDPOINT"),
+        _devtools_endpoint_from_profile(ROOT_DIR / "data" / "bot" / "chrome-profile-new-email"),
+        f"http://127.0.0.1:{default_port}" if os.environ.get("BOT_CDP_ENDPOINT") else None,
+        f"http://localhost:{default_port}" if os.environ.get("BOT_CDP_ENDPOINT") else None,
+    ]
+    return list(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
 def _start_playwright(headless: bool = False):
     """Lazy-import playright and start the sync API.
-    Returns a (Playwright, Browser) tuple with a launched Chromium instance.
+    Returns a (Playwright, Browser) tuple connected to an existing Chromium.
     """
     try:
         from playwright.sync_api import sync_playwright
         pw = sync_playwright().start()
-        browser = pw.chromium.launch(
-            headless=headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
+        for endpoint in _cdp_endpoint_candidates():
+            try:
+                log(f"Checking existing browser at {endpoint}")
+                browser = pw.chromium.connect_over_cdp(endpoint, timeout=2500)
+                return pw, browser
+            except Exception as exc:
+                log(f"No CDP browser at {endpoint}: {exc}")
+        pw.stop()
+        raise RuntimeError(
+            "No existing CDP browser found. Start Chrome with "
+            f"--remote-debugging-port={os.environ.get('BOT_CDP_PORT', '9222')} "
+            "and make sure it is listening, or set BOT_CDP_ENDPOINT "
+            "to the browser debugging URL. An ordinary open Chrome window "
+            "cannot be attached to unless it was started with CDP enabled."
         )
-        return pw, browser
     except ImportError:
         log("Playwright not installed. Run: pip install playwright && playwright install chromium")
         write_status({"status": "error", "error": "playwright_not_installed", "updated_at": now_iso()})
@@ -110,7 +223,7 @@ def run_bot(phone: str, password: str, headless: bool = False) -> None:
     """
     Main automation entrypoint.
 
-    1. Launches Chromium via Playwright
+    1. Connects to an existing Chromium via CDP
     2. Navigates to winner.rw login
     3. Fills phone + password and clicks login
     4. Waits for redirect / dashboard
@@ -131,16 +244,16 @@ def run_bot(phone: str, password: str, headless: bool = False) -> None:
     try:
         pw, browser = _start_playwright(headless=headless)
 
-        context = browser.new_context(
-            viewport={"width": 1366, "height": 768},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/125.0.0.0 Safari/537.36"
-            ),
+        context = next(
+            (ctx for ctx in browser.contexts if any(_is_aviator_url(page.url) for page in ctx.pages)),
+            browser.contexts[0] if browser.contexts else None,
         )
+        if context is None:
+            raise RuntimeError("Connected browser has no usable context")
 
-        page = context.new_page()
+        page = next((p for p in context.pages if _is_aviator_url(p.url)), None)
+        if page is None:
+            page = context.new_page()
 
         # ── Step 1: Navigate to login ──
         log("Navigating to login page...")
@@ -189,7 +302,6 @@ def run_bot(phone: str, password: str, headless: bool = False) -> None:
                 "error": f"Login failed. URL: {current_url}. Error: {error_text}",
                 "updated_at": now_iso(),
             })
-            browser.close()
             pw.stop()
             sys.exit(1)
 
@@ -199,8 +311,11 @@ def run_bot(phone: str, password: str, headless: bool = False) -> None:
         # ── Step 4: Navigate to Aviator ──
         log("Navigating to Aviator game page...")
         write_status({**read_json(STATUS_PATH, {}), "status": "navigating_aviator"})
-        page.goto("https://winner.rw/en/virtual/crash-games/aviator", wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(3000)
+        if not _go_to_aviator_via_site(page):
+            raise RuntimeError(
+                "Could not reach Aviator through site navigation. "
+                "Open Aviator manually in the connected Chrome window."
+            )
 
         log(f"On Aviator page. URL: {page.url}")
         write_status({
@@ -270,8 +385,8 @@ def run_bot(phone: str, password: str, headless: bool = False) -> None:
                         "updated_at": now_iso(),
                     })
                     # Navigate back
-                    page.goto("https://winner.rw/en/virtual/crash-games/aviator", wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_timeout(3000)
+                    if not _go_to_aviator_via_site(page):
+                        raise RuntimeError("Could not return to Aviator through site navigation")
                     write_status({**read_json(STATUS_PATH, {}), "status": "monitoring", "updated_at": now_iso()})
 
             except Exception as exc:
@@ -287,7 +402,6 @@ def run_bot(phone: str, password: str, headless: bool = False) -> None:
         # ── Clean shutdown ──
         log("Shutting down bot...")
         write_status({**read_json(STATUS_PATH, {}), "status": "stopped", "updated_at": now_iso()})
-        browser.close()
         pw.stop()
         log("Bot terminated cleanly.")
 
@@ -320,6 +434,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-

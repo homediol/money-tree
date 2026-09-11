@@ -17,6 +17,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createLogger } from './logger.js';
 import { reportStep, printInfo, printError, printSuccess } from './status.js';
+import { PostgresRoundStore } from './collector/PostgresRoundStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -24,6 +25,7 @@ const STATUS_PATH = path.join(ROOT, 'data', 'bot', 'status.json');
 const ROUND_HISTORY_PATH = path.join(ROOT, 'data', 'roundhistory.json');
 
 const log = createLogger('scraper');
+let postgresStorePromise = null;
 
 // ---------------------------------------------------------------------------
 // Selectors and tuning knobs
@@ -31,7 +33,6 @@ const log = createLogger('scraper');
 
 export const PAYOUT_SELECTOR = '.payouts-block .payout';
 
-const HISTORY_LIMIT = 500;
 const FRAME_WAIT_TIMEOUT_MS = Number(process.env.BOT_FRAME_WAIT_TIMEOUT || 120000);
 const PAYOUT_WAIT_TIMEOUT_MS = Number(process.env.BOT_PAYOUT_WAIT_TIMEOUT || 120000);
 const MUTATION_IDLE_TIMEOUT_MS = Number(process.env.BOT_MUTATION_IDLE_TIMEOUT || 90000);
@@ -170,7 +171,7 @@ function normalizeHistoryRecord(item, fallbackIndex) {
   };
 }
 
-function normalizeHistory(raw, limit = HISTORY_LIMIT) {
+function normalizeHistory(raw) {
   const rows = coerceHistoryArray(raw);
   const cleaned = [];
   const seenExactRecords = new Set();
@@ -187,15 +188,57 @@ function normalizeHistory(raw, limit = HISTORY_LIMIT) {
     cleaned.push(record);
   });
 
-  return cleaned.slice(-limit);
+  return sortHistoryChronological(cleaned);
 }
 
 function readRoundHistory() {
   return normalizeHistory(readJSON(ROUND_HISTORY_PATH, []));
 }
 
+function sortHistoryChronological(records) {
+  return [...records].sort((a, b) => {
+    const aIndex = Number(a.round_index);
+    const bIndex = Number(b.round_index);
+    if (Number.isFinite(aIndex) && Number.isFinite(bIndex) && aIndex !== bIndex) {
+      return aIndex - bIndex;
+    }
+
+    const aTime = Date.parse(a.timestamp || '');
+    const bTime = Date.parse(b.timestamp || '');
+    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+      return aTime - bTime;
+    }
+
+    return 0;
+  });
+}
+
 function writeRoundHistory(records) {
-  writeJSON(ROUND_HISTORY_PATH, records.slice(-HISTORY_LIMIT));
+  writeJSON(ROUND_HISTORY_PATH, sortHistoryChronological(records));
+}
+
+async function getPostgresRoundStore() {
+  if (!postgresStorePromise) {
+    postgresStorePromise = (async () => {
+      const store = new PostgresRoundStore();
+      await store.init();
+
+      const fileHistory = readRoundHistory();
+      if (fileHistory.length > 0) {
+        const { saved } = await store.importRounds(fileHistory);
+        log.info(`Imported ${saved} round(s) from data/roundhistory.json into PostgreSQL`);
+      }
+
+      return store;
+    })();
+  }
+
+  return postgresStorePromise;
+}
+
+async function loadPostgresRoundHistory() {
+  const store = await getPostgresRoundStore();
+  return store.loadRounds();
 }
 
 function nextRoundIndex(history) {
@@ -275,7 +318,7 @@ function appendRounds(history, newestFirstMultipliers) {
   }
 
   return {
-    history: history.slice(-HISTORY_LIMIT),
+    history: sortHistoryChronological(history),
     addedRecords,
   };
 }
@@ -669,14 +712,16 @@ export async function extractAndSave(page) {
   try {
     const result = await extractPayouts(page);
     if (result.error || !result.multipliers.length) {
+      const history = await loadPostgresRoundHistory().catch(() => readRoundHistory());
       return {
         added: 0,
-        total: readRoundHistory().length,
+        total: history.length,
         error: result.error || 'no_multipliers',
       };
     }
 
-    let history = readRoundHistory();
+    const store = await getPostgresRoundStore();
+    let history = await store.loadRounds();
     const recentSignature = snapshotSignature(history.slice(-result.multipliers.length).map(r => r.multiplier));
     const visibleChronological = [...result.multipliers].reverse();
     const visibleSignature = snapshotSignature(visibleChronological);
@@ -694,7 +739,7 @@ export async function extractAndSave(page) {
     history = merged;
 
     if (addedRecords.length > 0) {
-      writeRoundHistory(history);
+      await store.saveRounds(addedRecords, 'legacy_extract');
     }
 
     return {
@@ -705,9 +750,10 @@ export async function extractAndSave(page) {
     };
   } catch (err) {
     log.error(`extractAndSave failed: ${err.message}`);
+    const history = await loadPostgresRoundHistory().catch(() => readRoundHistory());
     return {
       added: 0,
-      total: readRoundHistory().length,
+      total: history.length,
       error: err.message,
     };
   }
@@ -727,7 +773,7 @@ export async function extractAndSave(page) {
 export async function monitorRounds(page, options = {}) {
   const signal = options.signal || null;
 
-  let history = readRoundHistory();
+  let history = await loadPostgresRoundHistory();
   let previousSnapshot = null;
   let previousSignature = null;
   let lastSavedSignature = null;
@@ -774,7 +820,7 @@ export async function monitorRounds(page, options = {}) {
         });
       } else if (currentSignature !== previousSignature) {
         const inferred = inferNewMultipliers(previousSnapshot, currentSnapshot);
-        const result = saveNewRoundsFromSnapshot({
+        const result = await saveNewRoundsFromSnapshot({
           history,
           newMultipliers: inferred,
           currentSnapshot,
@@ -819,7 +865,7 @@ export async function monitorRounds(page, options = {}) {
         }
 
         const inferred = inferNewMultipliers(previousSnapshot, currentSnapshot);
-        const result = saveNewRoundsFromSnapshot({
+        const result = await saveNewRoundsFromSnapshot({
           history,
           newMultipliers: inferred,
           currentSnapshot,
@@ -871,7 +917,7 @@ export async function monitorRounds(page, options = {}) {
   return { roundsSeen, totalAdded };
 }
 
-function saveNewRoundsFromSnapshot({
+async function saveNewRoundsFromSnapshot({
   history,
   newMultipliers,
   currentSnapshot,
@@ -896,7 +942,8 @@ function saveNewRoundsFromSnapshot({
   const nextHistory = appended.history;
 
   if (appended.addedRecords.length > 0) {
-    writeRoundHistory(nextHistory);
+    const store = await getPostgresRoundStore();
+    await store.saveRounds(appended.addedRecords, 'legacy_monitor');
     log.info(`History updated: ${nextHistory.length} rounds saved`);
     printSuccess(`History updated: ${nextHistory.length} rounds saved`);
   }
@@ -950,12 +997,12 @@ function isRecoverableFrameError(err) {
 // ---------------------------------------------------------------------------
 
 /**
- * Normalize the existing file and enforce the 500-round retention limit.
+ * Normalize the existing file without dropping older rounds.
  */
 export function cleanHistory() {
   const raw = readJSON(ROUND_HISTORY_PATH, []);
   const before = coerceHistoryArray(raw).length;
-  const afterRecords = normalizeHistory(raw, HISTORY_LIMIT);
+  const afterRecords = normalizeHistory(raw);
   const after = afterRecords.length;
 
   const currentText = JSON.stringify(coerceHistoryArray(raw), null, 2);

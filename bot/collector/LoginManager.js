@@ -12,7 +12,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const HOME_URL    = 'https://winner.rw';
 const LOGIN_URL   = 'https://winner.rw/en/authentication/login';
-const AVIATOR_URL = 'https://winner.rw/en/virtual/crash-games/aviator';
 
 // Selectors that indicate the user is logged in.
 // These are checked IN THE CURRENT PAGE without navigating away.
@@ -30,6 +29,15 @@ const LOGOUT_SIGNALS = [
   '[data-testid="login-button"]',
 ];
 
+async function isAccessDeniedPage(page) {
+  try {
+    const bodyText = (await page.locator('body').innerText({ timeout: 1000 })).toLowerCase();
+    return bodyText.includes('accessdenied') || bodyText.includes('access denied');
+  } catch {
+    return false;
+  }
+}
+
 export class LoginManager {
   constructor(credentials) {
     this.phone    = credentials.phone;
@@ -44,6 +52,10 @@ export class LoginManager {
       try {
         await page.goto(url, { waitUntil, timeout: 45000 });
         await page.waitForSelector('body', { timeout: 5000 }).catch(() => {});
+        if (await isAccessDeniedPage(page)) {
+          log.warn(`Navigation to ${url} reached Access Denied`);
+          return false;
+        }
         return true;
       } catch (err) {
         log.warn(`Navigation to ${url} failed (${waitUntil}): ${err.message}`);
@@ -62,6 +74,7 @@ export class LoginManager {
       if (!page || page.isClosed()) return false;
 
       const url = page.url().toLowerCase();
+      if (await isAccessDeniedPage(page)) return false;
 
       // On login/auth page = definitely not logged in
       if (url.includes('/login') || url.includes('/authentication')) return false;
@@ -195,20 +208,32 @@ export class LoginManager {
     return withRetry(async () => {
       if (signal?.aborted) throw new Error('Aborted');
 
-      // Try clicking the Aviator link from the current page
+      if (await isAccessDeniedPage(page)) {
+        await this._navigate(page, HOME_URL, signal);
+        await sleep(2000, signal);
+      }
+
+      // Try clicking the Aviator link from the current page or homepage.
       const aviatorLink = page.locator('a[href*="/aviator"], a[href*="crash-games"]').first();
-      const linkVisible = await aviatorLink.isVisible({ timeout: 3000 }).catch(() => false);
+      let linkVisible = await aviatorLink.isVisible({ timeout: 3000 }).catch(() => false);
+
+      if (!linkVisible) {
+        await this._navigate(page, HOME_URL, signal);
+        await sleep(2000, signal);
+        linkVisible = await aviatorLink.isVisible({ timeout: 5000 }).catch(() => false);
+      }
 
       if (linkVisible) {
         await aviatorLink.click();
         await sleep(4000, signal);
       } else {
-        const ok = await this._navigate(page, AVIATOR_URL, signal);
-        if (!ok) throw new Error('Could not navigate to Aviator page');
-        await sleep(3000, signal);
+        throw new Error('Could not find Aviator link on winner.rw homepage');
       }
 
       const url = page.url().toLowerCase();
+      if (await isAccessDeniedPage(page)) {
+        throw new Error('Aviator navigation reached Access Denied');
+      }
       if (url.includes('aviator') || url.includes('crash')) {
         log.info(`LoginManager: Aviator page loaded — ${page.url()}`);
         return true;

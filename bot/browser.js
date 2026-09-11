@@ -1,9 +1,9 @@
 /**
- * Browser Manager — launches and manages a persistent Chromium session.
+ * Browser Manager — launches or connects to a Chromium session.
  *
- * Supports two persistence modes:
- *   1. Chrome profile directory (via launchPersistentContext) — auto-saves cookies/localStorage
- *   2. storageState.json — explicit save/load of cookies+storage via non-persistent context
+ * It first tries to attach to a manually started Chrome CDP session so open
+ * tabs and login state can be reused. If none is available, it launches its
+ * own persistent Playwright browser profile.
  *
  * Exports robust waiting primitives:
  *   - waitForSelector   (with fallback to waitForTimeout)
@@ -23,8 +23,9 @@ import { createLogger } from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const DEFAULT_BOT_PROFILE   = path.join(ROOT, 'data', 'bot', 'chrome-profile');
+const DEFAULT_BOT_PROFILE   = path.join(ROOT, 'data', 'bot', 'chrome-profile-new-email');
 const DEFAULT_STORAGE_STATE = path.join(ROOT, 'data', 'bot', 'storageState.json');
+const DEFAULT_CDP_PORT = process.env.BOT_CDP_PORT || '9222';
 
 const log = createLogger('browser');
 
@@ -35,6 +36,242 @@ const log = createLogger('browser');
 let _browser = null;        // Browser instance
 let _context = null;        // BrowserContext
 let _page    = null;        // Active Page
+let _ownsBrowser = false;   // False when attached to an existing CDP browser
+let _lastLaunchOptions = {};
+
+function isAviatorPage(page) {
+  try {
+    const url = page.url().toLowerCase();
+    return url.includes('aviator') || url.includes('crash-games') || url.includes('/crash');
+  } catch {
+    return false;
+  }
+}
+
+function devToolsEndpointFromProfile(profileDir) {
+  try {
+    const file = path.join(profileDir, 'DevToolsActivePort');
+    if (!fs.existsSync(file)) return null;
+    const [port] = fs.readFileSync(file, 'utf-8').trim().split(/\r?\n/);
+    return port ? `http://127.0.0.1:${port}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function devToolsEndpointsFromFile(file) {
+  try {
+    if (!fs.existsSync(file)) return [];
+    const [port, browserPath] = fs.readFileSync(file, 'utf-8').trim().split(/\r?\n/);
+    if (!port) return [];
+    return [
+      `http://127.0.0.1:${port}`,
+      `http://localhost:${port}`,
+      browserPath ? `ws://127.0.0.1:${port}${browserPath}` : null,
+      browserPath ? `ws://localhost:${port}${browserPath}` : null,
+    ].filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function findDevToolsFiles(dir, depth = 3) {
+  if (depth < 0) return [];
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isFile() && entry.name === 'DevToolsActivePort') return [fullPath];
+      if (entry.isDirectory()) return findDevToolsFiles(fullPath, depth - 1);
+      return [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function cdpEndpointCandidates(userDataDir) {
+  const candidates = [
+    process.env.BOT_CDP_ENDPOINT,
+    devToolsEndpointFromProfile(userDataDir),
+    process.env.BOT_CDP_ENDPOINT ? `http://127.0.0.1:${DEFAULT_CDP_PORT}` : null,
+    process.env.BOT_CDP_ENDPOINT ? `http://localhost:${DEFAULT_CDP_PORT}` : null,
+  ].filter(Boolean);
+  return [...new Set(candidates)];
+}
+
+async function connectToExistingBrowser(userDataDir) {
+  for (const endpoint of cdpEndpointCandidates(userDataDir)) {
+    try {
+      log.info(`Checking existing browser at ${endpoint}`);
+      const browser = await chromium.connectOverCDP(endpoint, { timeout: 2500 });
+      if (!browser.isConnected()) continue;
+
+      const contexts = browser.contexts();
+      const context = contexts.find(ctx => ctx.pages().some(isAviatorPage)) || contexts[0];
+      if (!context) {
+        continue;
+      }
+
+      _browser = browser;
+      _context = context;
+      _page = context.pages().find(page => !page.isClosed() && isAviatorPage(page)) || null;
+      _ownsBrowser = false;
+
+      _browser.once('disconnected', () => {
+        log.warn('Existing browser CDP connection lost; will reconnect on next browser request');
+        _browser = null;
+        _context = null;
+        _page = null;
+        _ownsBrowser = false;
+      });
+
+      log.info(_page
+        ? `Connected to existing browser and reusing Aviator tab: ${_page.url()}`
+        : 'Connected to existing browser; Aviator tab not open');
+      return true;
+    } catch (err) {
+      log.info(`No CDP browser at ${endpoint}: ${err.message}`);
+    }
+  }
+  return false;
+}
+
+function buildLaunchOptions(headless, executablePath) {
+  const installedExecutable = executablePath || chromium.executablePath?.();
+  return {
+    executablePath: installedExecutable || undefined,
+    headless,
+    args: [
+      `--remote-debugging-port=${DEFAULT_CDP_PORT}`,
+      '--disable-blink-features=AutomationControlled',
+      '--disable-dev-shm-usage',
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+    ],
+  };
+}
+
+function buildContextOptions() {
+  return {
+    viewport: { width: 1366, height: 768 },
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+      'Chrome/125.0.0.0 Safari/537.36',
+    locale: 'en-US',
+    timezoneId: 'Africa/Kigali',
+    bypassCSP: true,
+    ignoreHTTPSErrors: false,
+  };
+}
+
+function pidIsAlive(pid) {
+  if (!pid || Number.isNaN(pid)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code !== 'ESRCH';
+  }
+}
+
+function pathExistsNoFollow(target) {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function singletonLockPid(lockPath) {
+  try {
+    const linkTarget = fs.readlinkSync(lockPath);
+    const match = linkTarget.match(/-(\d+)$/);
+    return match ? Number(match[1]) : null;
+  } catch (linkErr) {
+    try {
+      const content = fs.readFileSync(lockPath, 'utf-8').trim();
+      const match = content.match(/(?:^|[^\d])(\d+)(?:[^\d]|$)/);
+      return match ? Number(match[1]) : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function clearStaleProfileLocks(userDataDir) {
+  const lockPath = path.join(userDataDir, 'SingletonLock');
+  if (!pathExistsNoFollow(lockPath)) return;
+
+  const pid = singletonLockPid(lockPath);
+  if (!pid) {
+    throw new Error(`Chrome profile lock exists but PID could not be read: ${lockPath}`);
+  }
+  if (pidIsAlive(pid)) {
+    throw new Error(`Chrome profile is already in use by PID ${pid}`);
+  }
+
+  for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    const target = path.join(userDataDir, name);
+    try {
+      if (pathExistsNoFollow(target)) {
+        fs.rmSync(target, { force: true, recursive: true });
+        log.info(`Removed stale Chrome profile lock: ${target}`);
+      }
+    } catch (err) {
+      log.warn(`Could not remove stale Chrome profile lock ${target}: ${err.message}`);
+    }
+  }
+}
+
+async function launchManagedBrowser(options, userDataDir) {
+  const headless = options.headless === true;
+  const useStorageState = options.useStorageState === true;
+  const launchOpts = buildLaunchOptions(headless, options.executablePath);
+  const contextOpts = buildContextOptions();
+
+  fs.mkdirSync(userDataDir, { recursive: true });
+  clearStaleProfileLocks(userDataDir);
+  log.info(`Launching managed Chromium (headless=${headless}, persistence=${useStorageState ? 'storageState' : 'profile'})`);
+
+  if (useStorageState) {
+    const storageStatePath = options.storageStatePath || resolveStorageStatePath();
+    if (fs.existsSync(storageStatePath)) {
+      log.info(`Loading storage state from ${storageStatePath}`);
+      contextOpts.storageState = storageStatePath;
+    } else {
+      log.info('No storage state file found; starting with a fresh context');
+    }
+
+    _browser = await chromium.launch(launchOpts);
+    _context = await _browser.newContext(contextOpts);
+  } else {
+    _context = await chromium.launchPersistentContext(userDataDir, {
+      ...launchOpts,
+      ...contextOpts,
+    });
+    _browser = _context.browser();
+  }
+
+  const pages = _context.pages().filter(page => !page.isClosed());
+  _page = pages.find(isAviatorPage) || pages[0] || await _context.newPage();
+  _ownsBrowser = true;
+
+  _browser?.once?.('disconnected', () => {
+    log.warn('Managed browser disconnected');
+    _browser = null;
+    _context = null;
+    _page = null;
+    _ownsBrowser = false;
+  });
+
+  log.info('Managed Chromium launched successfully');
+  return { browser: _browser, context: _context, page: _page };
+}
 
 // ═════════════════════════════════════════════════════════════════════
 // Profile resolution
@@ -46,7 +283,7 @@ let _page    = null;        // Active Page
  * Priority:
  *   1. BOT_CHROME_USER_DATA env var
  *   2. User's existing Chrome profile (~/.config/google-chrome)
- *   3. A dedicated bot profile inside data/bot/chrome-profile
+ *   3. A dedicated bot profile inside data/bot/chrome-profile-new-email
  */
 function resolveUserDataDir() {
   const envDir = process.env.BOT_CHROME_USER_DATA;
@@ -76,7 +313,7 @@ function resolveStorageStatePath() {
 // ═════════════════════════════════════════════════════════════════════
 
 /**
- * Launch (or return the existing) Chromium session.
+ * Launch or connect to a Chromium session.
  *
  * @param {object}  options
  * @param {boolean} [options.headless=false]     Run headlessly
@@ -86,77 +323,19 @@ function resolveStorageStatePath() {
  * @returns {{ browser: Browser, context: BrowserContext, page: Page }}
  */
 export async function launchBrowser(options = {}) {
-  if (_browser && _page && !_page.isClosed()) {
+  _lastLaunchOptions = { ...options };
+  if (_browser?.isConnected?.() && _context && _page && !_page.isClosed()) {
     log.info('Reusing existing browser session');
     return { browser: _browser, context: _context, page: _page };
   }
 
-  const headless       = options.headless === true;
-  const useStorageState = options.useStorageState === true;
   const userDataDir    = options.userDataDir || resolveUserDataDir();
 
-  log.info(`Launching Chromium (headless=${headless}, persistence=${useStorageState ? 'storageState' : 'profile'})`);
-
-  fs.mkdirSync(userDataDir, { recursive: true });
-
-  const launchOpts = {
-    channel: 'chrome',
-    headless,
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-setuid-sandbox',
-      '--disable-web-security',
-      '--disable-features=IsolateOrigins,site-per-process',
-    ],
-    executablePath: options.executablePath || undefined,
-  };
-
-  const ctxOpts = {
-    viewport: { width: 1366, height: 768 },
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-      'Chrome/125.0.0.0 Safari/537.36',
-    locale: 'en-US',
-    timezoneId: 'Africa/Kigali',
-    bypassCSP: true,
-    ignoreHTTPSErrors: false,
-  };
-
-  try {
-    if (useStorageState) {
-      // Non-persistent context — load storage state from JSON file
-      const storageStatePath = options.storageStatePath || resolveStorageStatePath();
-      const hasState = fs.existsSync(storageStatePath);
-      if (hasState) {
-        log.info(`Loading storage state from ${storageStatePath}`);
-        ctxOpts.storageState = storageStatePath;
-      } else {
-        log.info('No storage state file found — starting fresh');
-      }
-
-      _browser = await chromium.launch(launchOpts);
-      _context = await _browser.newContext(ctxOpts);
-    } else {
-      // Persistent context — cookies/storage auto-saved in userDataDir
-      _context = await chromium.launchPersistentContext(userDataDir, {
-        ...launchOpts,
-        ...ctxOpts,
-      });
-    }
-
-    const pages = _context.pages();
-    _page = pages.length > 0 ? pages[0] : await _context.newPage();
-    _browser = useStorageState ? _browser : _context.browser();
-
-    log.info('Browser launched successfully');
-    return { browser: _browser, context: _context, page: _page };
-  } catch (err) {
-    log.error(`Failed to launch browser: ${err.message}`);
-    throw err;
+  if (await connectToExistingBrowser(userDataDir)) {
+    return { browser: _browser, context: _context, page: await getPage() };
   }
+
+  return launchManagedBrowser(options, userDataDir);
 }
 
 /**
@@ -186,8 +365,18 @@ export async function saveStorageState(filePath) {
  * Get the current active page. Creates one if none exists.
  */
 export async function getPage() {
-  if (_page && !_page.isClosed()) return _page;
+  if (!_context || (_browser && !_browser.isConnected?.())) {
+    await launchBrowser(_lastLaunchOptions);
+  }
   if (_context) {
+    const pages = _context.pages().filter(page => !page.isClosed());
+    const aviatorPage = pages.find(isAviatorPage);
+    if (aviatorPage) {
+      _page = aviatorPage;
+      await aviatorPage.bringToFront().catch(() => {});
+      return _page;
+    }
+    if (_page && !_page.isClosed()) return _page;
     _page = await _context.newPage();
     return _page;
   }
@@ -361,6 +550,11 @@ export async function safeNavigate(page, url, timeout = 60000) {
 
       // Check for browser error pages
       const pageText = (await page.innerText('body').catch(() => '')).toLowerCase();
+      if (pageText.includes('accessdenied') || pageText.includes('access denied')) {
+        log.warn(`Navigation reached an Access Denied page for ${url}`);
+        return false;
+      }
+
       if (pageText.includes('err_') || pageText.includes('this site can') ||
           pageText.includes('404') || pageText.includes('not found')) {
         log.warn(`Page may have an error: "${pageText.slice(0, 120)}"`);
@@ -433,8 +627,12 @@ export async function closeBrowser(options = {}) {
 
   if (_context) {
     try {
-      await _context.close();
-      log.info('Browser context closed');
+      if (_ownsBrowser) {
+        await _context.close();
+        log.info('Browser context closed');
+      } else {
+        log.info('Detached from existing browser context');
+      }
     } catch (err) {
       log.warn(`Error closing context: ${err.message}`);
     }
@@ -443,17 +641,18 @@ export async function closeBrowser(options = {}) {
 
   if (_browser) {
     try {
-      await _browser.close();
-      log.info('Browser process terminated');
+      if (_ownsBrowser) {
+        await _browser.close();
+        log.info('Browser process terminated');
+      } else {
+        log.info('Left existing browser process running');
+      }
     } catch (err) {
       log.warn(`Error closing browser: ${err.message}`);
     }
     _browser = null;
   }
+  _ownsBrowser = false;
 
   log.info('Browser resources released');
 }
-
-
-
-

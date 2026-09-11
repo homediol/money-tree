@@ -2,7 +2,7 @@
 Entry point for the Aviator ML Enterprise Platform.
 
 Run with:
-    uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
+    uvicorn main:app --host 0.0.0.0 --port 8002 --workers 1
 """
 from __future__ import annotations
 
@@ -32,4 +32,5 @@ if __name__ == "__main__":
         log_level=settings.log_level.lower(),
         workers=1 if settings.debug else settings.workers,
     )
+
 

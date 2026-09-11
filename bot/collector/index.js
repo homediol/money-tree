@@ -16,7 +16,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 
-import { log }             from './Logger.js';
+import { log, formatError } from './Logger.js';
 import { StateMachine, State } from './StateMachine.js';
 import { BrowserManager }  from './BrowserManager.js';
 import { LoginManager }    from './LoginManager.js';
@@ -25,9 +25,10 @@ import { Collector }       from './Collector.js';
 import { HealthMonitor }   from './HealthMonitor.js';
 import { RecoveryManager } from './RecoveryManager.js';
 import { Watchdog }        from './Watchdog.js';
+import { PostgresRoundStore } from './PostgresRoundStore.js';
 import { sleep, backoffMs } from './RetryManager.js';
 import {
-  readRoundHistory, writeRoundHistory,
+  readRoundHistory,
   inferNewMultipliers, appendRounds,
   snapshotSignature, fmt,
 } from './HistoryManager.js';
@@ -44,12 +45,14 @@ function loadCredentials() {
       phone:    process.env.WINNER_PHONE    || cfg.phone    || '',
       password: process.env.WINNER_PASSWORD || cfg.password || '',
       headless: (process.env.BOT_HEADLESS   || String(cfg.headless ?? 'false')).toLowerCase() === 'true',
+      databaseUrl: process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.WINNER_DATABASE_URL || cfg.databaseUrl || cfg.database_url || '',
     };
   } catch {
     return {
       phone:    process.env.WINNER_PHONE    || '',
       password: process.env.WINNER_PASSWORD || '',
       headless: false,
+      databaseUrl: process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.WINNER_DATABASE_URL || '',
     };
   }
 }
@@ -80,9 +83,10 @@ class AviatorCollector {
       health:        this.health,
       onUnhealthy:   (reason, page) => this._onWatchdogAlert(reason, page),
     });
+    this.roundStore = new PostgresRoundStore({ connectionString: credentials.databaseUrl || null });
 
     // Round history state
-    this._history     = readRoundHistory();
+    this._history     = [];
     this._prevSnapshot= null;
     this._prevSig     = null;
     this._lastSavedSig= null;
@@ -93,6 +97,19 @@ class AviatorCollector {
 
     // Watchdog recovery signal — set when watchdog fires, cleared after recovery
     this._watchdogReason = null;
+  }
+
+  async _initRoundStore() {
+    await this.roundStore.init();
+
+    const fileHistory = readRoundHistory();
+    if (fileHistory.length > 0) {
+      const { saved } = await this.roundStore.importRounds(fileHistory);
+      log.info(`Imported ${saved} round(s) into ${this.roundStore.backendName()}`);
+    }
+
+    this._history = await this.roundStore.loadRounds();
+    log.info(`Loaded ${this._history.length} round(s) from ${this.roundStore.backendName()}`);
   }
 
   async _onWatchdogAlert(reason, page) {
@@ -108,6 +125,9 @@ class AviatorCollector {
     this.sm.onTransition((state) => this.health.setState(state));
 
     log.info('=== Aviator Collector starting ===');
+
+    // ── Step 0: Prepare PostgreSQL round store ────────────────────────────
+    await this._initRoundStore();
 
     // ── Step 1: Launch browser ────────────────────────────────────────────
     await this.browser.launch(this.signal);
@@ -143,7 +163,7 @@ class AviatorCollector {
         this._watchdogReason = null;
         log.warn(`Collection loop: watchdog alert — ${reason}`);
         this._page = await this.recovery.recover(reason, this._page, this.signal).catch(err => {
-          log.error(`Recovery failed: ${err.message}`);
+          log.error(`Recovery failed: ${formatError(err)}`);
           return this._page;
         });
         this.watchdog.setPage(this._page);
@@ -157,12 +177,12 @@ class AviatorCollector {
       } catch (err) {
         if (this.signal?.aborted) break;
 
-        log.error(`Collection error: ${err.message}`);
+        log.error(`Collection error: ${formatError(err)}`);
         const delay = backoffMs(attempt++);
         log.warn(`Recovering in ${delay}ms (attempt ${attempt})`);
 
         this._page = await this.recovery.recover(err, this._page, this.signal).catch(recErr => {
-          log.error(`Recovery threw: ${recErr.message}`);
+          log.error(`Recovery threw: ${formatError(recErr)}`);
           return this._page;
         });
         this.watchdog.setPage(this._page);
@@ -174,6 +194,7 @@ class AviatorCollector {
     this.watchdog.stop();
     this.health.setCollectorRunning(false);
     this.health.stop();
+    await this.roundStore.close().catch(err => log.warn(`PostgreSQL close failed: ${formatError(err)}`));
     log.info(`=== Collector stopped. Total rounds saved: ${this._totalAdded} ===`);
   }
 
@@ -210,7 +231,7 @@ class AviatorCollector {
         const { history, added } = appendRounds(this._history, inferred);
         if (added.length > 0) {
           this._history = history;
-          writeRoundHistory(this._history);
+          await this.roundStore.saveRounds(added, 'collector_catchup');
           this._totalAdded += added.length;
           added.forEach(() => this.health.recordRound());
           log.info(`Catch-up: saved ${added.length} missed round(s)`);
@@ -276,7 +297,7 @@ class AviatorCollector {
           this._history      = history;
           this._lastSavedSig = currSig;
           this._totalAdded  += added.length;
-          writeRoundHistory(this._history);
+          await this.roundStore.saveRounds(added, 'collector');
           added.forEach(() => this.health.recordRound());
           log.info(`History updated: ${this._history.length} rounds saved`);
           process.stdout.write(`  ✔ History updated: ${this._history.length} rounds saved\n`);
@@ -310,7 +331,7 @@ export async function startCollector(signal) {
       await collector.run();
     } catch (err) {
       if (signal?.aborted) break;
-      log.error(`Outer loop error: ${err.message} — restarting in 10s`);
+      log.error(`Outer loop error: ${formatError(err)} — restarting in 10s`);
       await sleep(10000, signal);
     }
   }
