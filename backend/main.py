@@ -16,6 +16,7 @@ from app.core.logging import configure_logging, get_logger
 from app.services.app_state import AppState
 from app.services.monitoring_engine import MonitoringEngine
 from app.risk.engine import RiskManager
+from app.history_collector import HistoryCollectorManager
 
 configure_logging()
 log = get_logger("APP")
@@ -64,6 +65,11 @@ async def monitor_file(app: FastAPI):
                     "system_status": {"valid_rounds": int(len(app.state.wp.rounds))},
                 }
             )
+            history = app.state.history_collector
+            status = history.status()
+            await manager.broadcast({"type": "history:new_round", "round": status["latest"]})
+            await manager.broadcast({"type": "history:updated", "history": {"count": status["count"]}})
+            await manager.broadcast({"type": "history:stats", "stats": history.stats()})
 
 
 @asynccontextmanager
@@ -83,6 +89,8 @@ async def lifespan(app: FastAPI):
         broadcaster=manager.broadcast,
         betting_manager=betting_manager,
     )
+    app.state.history_collector = HistoryCollectorManager(settings.data_path, manager.broadcast)
+    await app.state.history_collector.start()
 
     task = asyncio.create_task(monitor_file(app))
     try:
@@ -94,6 +102,7 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
         await betting_manager.shutdown()
+        await app.state.history_collector.stop()
 
 
 app = FastAPI(title="Winner Predict", description="STATISTICAL PATTERN ANALYSIS platform for Aviator round history research.", version="1.0.0", lifespan=lifespan)

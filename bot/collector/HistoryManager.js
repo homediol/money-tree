@@ -54,8 +54,8 @@ function writeJSON(filepath, payload) {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export function readRoundHistory() {
-  let rows = readJSON(ROUND_HISTORY_PATH, []);
+export function readRoundHistory(filepath = ROUND_HISTORY_PATH) {
+  let rows = readJSON(filepath, []);
   if (!Array.isArray(rows)) {
     rows = rows.rounds ?? rows.history ?? [];
   }
@@ -80,17 +80,23 @@ export function readRoundHistory() {
       ? (item.timestamp ?? item.time ?? item.ts ?? null)
       : null;
 
-    const key = `${roundIdx}|${timestamp || ''}|${multiplier.toFixed(2)}`;
+    const suppliedId = typeof item === 'object' && item !== null
+      ? (item.round_id ?? item.id ?? null)
+      : null;
+    const roundId = suppliedId != null ? String(suppliedId) : String(roundIdx);
+    const key = suppliedId != null
+      ? `id:${roundId}`
+      : `${roundIdx}|${timestamp || ''}|${multiplier.toFixed(2)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    cleaned.push({ multiplier, timestamp, round_index: roundIdx });
+    cleaned.push({ round_id: roundId, multiplier, timestamp, round_index: roundIdx });
   }
 
   return sortHistoryChronological(cleaned);
 }
 
-export function writeRoundHistory(records) {
-  writeJSON(ROUND_HISTORY_PATH, sortHistoryChronological(records));
+export function writeRoundHistory(records, filepath = ROUND_HISTORY_PATH) {
+  writeJSON(filepath, sortHistoryChronological(records));
 }
 
 function sortHistoryChronological(records) {
@@ -155,7 +161,7 @@ export function appendRounds(history, newestFirst) {
   for (const mult of [...newestFirst].reverse()) {
     const normalized = normalizeMultiplier(mult);
     if (normalized === null || normalized < 1) continue;
-    const record = { multiplier: normalized, timestamp: new Date().toISOString(), round_index: idx };
+    const record = { round_id: String(idx), multiplier: normalized, timestamp: new Date().toISOString(), round_index: idx };
     history.push(record);
     added.push(record);
     idx++;

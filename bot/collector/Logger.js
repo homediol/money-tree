@@ -31,7 +31,7 @@ process.stdout.on('error', err => {
 });
 
 function ts() {
-  return new Date().toLocaleTimeString('en-US', { hour12: false });
+  return new Date().toISOString();
 }
 
 function serialize(v) {

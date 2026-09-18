@@ -124,15 +124,6 @@ function ensureBackendEnvironment() {
 // ── Service definitions ────────────────────────────────────────────────────
 const SERVICES = [
   {
-    name:    "collector",
-    cmd:     NODE_BIN,
-    args:    ["roundhistory-collector.js"],
-    cwd:     BOT_DIR,
-    color:   "\x1b[36m",   // cyan
-    // Collector is optional — don't kill everything if it exits
-    optional: true,
-  },
-  {
     name:    "flask",
     cmd:     PYTHON_BIN,
     args:    ["run.py"],

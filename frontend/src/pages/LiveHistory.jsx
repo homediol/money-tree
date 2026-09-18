@@ -1,53 +1,47 @@
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Clock3 } from 'lucide-react';
 import Card from '../components/Card.jsx';
 import Metric from '../components/Metric.jsx';
 import { useLiveData } from '../hooks/useLiveData.js';
-import { mult, pct } from '../utils/format.js';
+import { mult } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { EmptyState, ErrorState, LoadingState } from '../components/PageState.jsx';
 import DataFreshness from '../components/DataFreshness.jsx';
 
 export default function LiveHistory() {
-  const { history, stats, system, loading, error } = useLiveData();
+  const { history, historyStatus, historyStats, system, loading, error } = useLiveData();
   if (loading) return <LoadingState label="Loading round history…" />;
   if (error) return <ErrorState message={error} />;
   const rounds = history?.rounds || [];
   const latest = rounds.slice(-40).reverse();
-  const buckets = [
-    { bucket: '<1.2x', value: stats?.statistics?.pct_below_1_2 || 0 },
-    { bucket: '<1.5x', value: stats?.statistics?.pct_below_1_5 || 0 },
-    { bucket: '>=2x', value: stats?.statistics?.base_rate || 0 },
-    { bucket: '2-5x', value: stats?.statistics?.pct_between_2_5 || 0 },
-    { bucket: '>=5x', value: stats?.statistics?.pct_above_5 || 0 },
-  ];
+  const latestRound = historyStatus?.latest;
+  const previousRound = historyStatus?.previous;
   return (
     <div className="space-y-5">
       <PageHeader eyebrow="Live data" title="Round History" icon={Clock3}
-        description="Inspect recorded multipliers and the distribution of outcomes in the current dataset."
-        action={<DataFreshness timestamp={system?.dataset?.last_timestamp} records={history?.count} />} />
+        description="Live, deduplicated rounds observed by the independent history collector."
+        action={<DataFreshness timestamp={historyStatus?.last_update || system?.dataset?.last_timestamp} records={historyStatus?.count} />} />
       <section className="grid gap-4 md:grid-cols-4">
-        <Card><Metric label="2x Rate" value={pct(stats?.statistics?.base_rate)} /></Card>
-        <Card><Metric label="Mean" value={mult(stats?.statistics?.mean)} /></Card>
-        <Card><Metric label="Max" value={mult(stats?.statistics?.max)} /></Card>
-        <Card><Metric label="Std Dev" value={stats?.statistics?.std?.toFixed?.(2) || 'N/A'} /></Card>
+        <Card><Metric label="Collector" value={historyStatus?.status || 'WAITING'} /></Card>
+        <Card><Metric label="Latest" value={mult(latestRound?.multiplier)} /></Card>
+        <Card><Metric label="Previous" value={mult(previousRound?.multiplier)} /></Card>
+        <Card><Metric label="Round Count" value={historyStatus?.count ?? 0} /></Card>
       </section>
-      <Card title="Recent Distribution">
-        <div className="chart-surface">
-          <ResponsiveContainer>
-            <BarChart data={buckets}>
-              <CartesianGrid stroke="#27272a" />
-              <XAxis dataKey="bucket" stroke="#71717a" />
-              <YAxis stroke="#71717a" tickFormatter={(v) => `${Math.round(v * 100)}%`} />
-              <Tooltip formatter={(v) => pct(v)} contentStyle={{ background: '#18181b', border: '1px solid #3f3f46' }} />
-              <Bar dataKey="value" fill="#22c55e" />
-            </BarChart>
-          </ResponsiveContainer>
+      <section className="grid gap-4 md:grid-cols-4">
+        <Card><Metric label="Minimum" value={mult(historyStats?.min)} /></Card>
+        <Card><Metric label="Maximum" value={mult(historyStats?.max)} /></Card>
+        <Card><Metric label="Mean" value={mult(historyStats?.mean)} /></Card>
+        <Card><Metric label="Median" value={mult(historyStats?.median)} /></Card>
+      </section>
+      <Card title="Threshold Counts">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          {Object.entries(historyStats?.threshold_counts || {}).map(([label, value]) => (
+            <Metric key={label} label={label.replaceAll('_', ' ')} value={value} />
+          ))}
         </div>
       </Card>
       <Card title="Latest Multipliers">
         {latest.length === 0 ? <EmptyState title="No rounds recorded" description="The collector has not supplied round data yet." /> : <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-8">
-          {latest.map((r) => <div key={r.round_index} className={`rounded border p-2 text-center ${r.multiplier >= 2 ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-zinc-800 bg-zinc-950'}`}>
+          {latest.map((r) => <div key={r.round_id || r.round_index} className={`rounded border p-2 text-center ${r.multiplier >= 2 ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-zinc-800 bg-zinc-950'}`}>
             <div className="text-sm font-semibold">{mult(r.multiplier)}</div>
             <div className="text-xs text-zinc-500">#{r.round_index}</div>
           </div>)}

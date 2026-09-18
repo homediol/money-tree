@@ -38,6 +38,31 @@ export async function getHistory(limit = 250) {
   return data;
 }
 
+export async function getHistoryStatus() {
+  const { data } = await api.get('/api/history/status');
+  return data;
+}
+
+export async function getHistoryStats() {
+  const { data } = await api.get('/api/history/stats');
+  return data;
+}
+
+export async function getRecentHistory(limit = 25) {
+  const { data } = await api.get('/api/history/recent', { params: { limit } });
+  return data;
+}
+
+export async function startHistoryCollector() {
+  const { data } = await api.post('/api/history/start');
+  return data;
+}
+
+export async function stopHistoryCollector() {
+  const { data } = await api.post('/api/history/stop');
+  return data;
+}
+
 export async function getSignalHistory() {
   const { data } = await api.get('/api/signal/history');
   return data.signals || [];

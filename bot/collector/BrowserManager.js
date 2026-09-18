@@ -239,6 +239,7 @@ export class BrowserManager {
     this._context  = null;
     this._browser  = null;
     this._page     = null;
+    this._historyPage = null;
     this._ownsBrowser = false;
     this._profileDir = PROFILE_DIR;
     this._profileName = null;
@@ -362,6 +363,21 @@ export class BrowserManager {
     return this._page;
   }
 
+  /** Return a dedicated collector Page in the existing BrowserContext. */
+  async getHistoryPage() {
+    if (!this._context || !this.isAlive()) await this.launch();
+    if (this._historyPage && !this._historyPage.isClosed()) return this._historyPage;
+    const source = this._page && !this._page.isClosed()
+      ? this._page
+      : this._context.pages().find(page => !page.isClosed() && isAviatorPage(page));
+    this._historyPage = await this._context.newPage();
+    if (source && source.url() && source.url() !== 'about:blank') {
+      await this._historyPage.goto(source.url(), { waitUntil: 'domcontentloaded' });
+    }
+    log.info('BrowserManager: dedicated history page ready in existing context');
+    return this._historyPage;
+  }
+
   /** Close everything cleanly. */
   async _close() {
     if (this._context) {
@@ -377,6 +393,7 @@ export class BrowserManager {
       this._browser = null;
     }
     this._page = null;
+    this._historyPage = null;
     this._ownsBrowser = false;
   }
 
@@ -437,6 +454,7 @@ export class BrowserManager {
     });
     this._context = await this._browser.newContext(CTX_OPTS);
     this._page = await this._context.newPage();
+    this._historyPage = null;
     this._ownsBrowser = true;
     this.restartCount += 1;
 

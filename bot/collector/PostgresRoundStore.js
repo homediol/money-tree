@@ -29,6 +29,7 @@ function normalizeRound(record, index = 0) {
   if (!Number.isFinite(roundIndex) || roundIndex <= 0) return null;
 
   return {
+    round_id: String(Math.trunc(roundIndex)),
     round_index: Math.trunc(roundIndex),
     multiplier: Math.round(multiplier * 100) / 100,
     timestamp: normalizeTimestamp(record?.timestamp ?? record?.time ?? record?.ts),
@@ -104,6 +105,7 @@ export class PostgresRoundStore {
     `);
 
     return result.rows.map((row) => ({
+      round_id: String(row.round_index),
       round_index: Number(row.round_index),
       multiplier: Number(row.multiplier),
       timestamp: row.timestamp ? new Date(row.timestamp).toISOString() : null,
@@ -165,6 +167,15 @@ export class PostgresRoundStore {
       }
 
       await client.query('COMMIT');
+      // roundhistory.json remains the canonical cross-service feed even when
+      // PostgreSQL is enabled. Mirror committed rows with the same atomic
+      // writer used by file-fallback mode.
+      const existing = readRoundHistory();
+      const byIndex = new Map(existing.map((record) => [Number(record.round_index), record]));
+      for (const record of normalized) {
+        byIndex.set(record.round_index, { ...byIndex.get(record.round_index), ...record });
+      }
+      writeRoundHistory([...byIndex.values()]);
       return { saved };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});

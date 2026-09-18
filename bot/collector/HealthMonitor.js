@@ -11,6 +11,7 @@ import { log } from './Logger.js';
 const __dirname    = path.dirname(fileURLToPath(import.meta.url));
 const STATUS_PATH  = path.join(__dirname, '..', '..', 'data', 'bot', 'status.json');
 const FLUSH_INTERVAL_MS = 5000;
+const STALE_AFTER_MS = Number(process.env.HISTORY_STALE_AFTER_MS || 120000);
 
 export class HealthMonitor {
   constructor() {
@@ -59,8 +60,15 @@ export class HealthMonitor {
   // ── Getters ───────────────────────────────────────────────────────────────
 
   snapshot() {
+    let health = 'WAITING';
+    if (!this._metrics.collectorRunning) health = 'STOPPED';
+    else if (!this._metrics.browserConnected) health = 'CONNECTING';
+    else if (!this._metrics.frameConnected) health = 'DISCONNECTED';
+    else if (this._metrics.lastRoundTime && Date.now() - Date.parse(this._metrics.lastRoundTime) > STALE_AFTER_MS) health = 'STALE';
+    else if (this._metrics.state === 'COLLECTING') health = 'HEALTHY';
     return {
       ...this._metrics,
+      health,
       uptime: Math.floor((Date.now() - this._startTime) / 1000),
     };
   }

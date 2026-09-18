@@ -132,7 +132,7 @@ class AviatorCollector {
 
     // ── Step 1: Launch browser ────────────────────────────────────────────
     await this.browser.launch(this.signal);
-    this._page = await this.browser.getPage();
+    this._page = await this.browser.getHistoryPage();
     this.health.setBrowserConnected(true);
 
     // ── Step 2: Login ─────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ class AviatorCollector {
       log.warn(`Bot profile could not open Aviator; trying fresh incognito Chrome: ${formatError(err)}`);
       await this.browser.restartIncognito(this.signal);
       this._cleanFallbackUsed = true;
-      this._page = await this.browser.getPage();
+      this._page = await this.browser.getHistoryPage();
       await this.loginMgr.ensureLoggedIn(this._page, this.signal);
       await this.loginMgr.goToAviator(this._page, this.signal);
     }
@@ -205,7 +205,7 @@ class AviatorCollector {
           this.sm.transition(State.RECOVERING, 'iframe-timeout-incognito-fallback');
           try {
             await this.browser.restartIncognito(this.signal);
-            this._page = await this.browser.getPage();
+            this._page = await this.browser.getHistoryPage();
             // ensureLoggedIn always visits https://winner.rw/ before opening
             // the login page, which is required for Winner/Cloudflare.
             await this.loginMgr.ensureLoggedIn(this._page, this.signal);
