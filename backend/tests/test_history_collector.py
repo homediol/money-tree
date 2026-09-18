@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 
-import httpx
-
 from app.history_collector import HistoryCollectorManager
-from main import app
+from app.api.history import collector_status, latest, recent, stats
 
 
 def test_history_loading_validation_dedup_order_stats_and_creation(tmp_path):
@@ -63,17 +61,9 @@ def test_history_api_surface(tmp_path):
         {"round_id": "r2", "round_index": 2, "timestamp": "2026-01-01T00:01:00Z", "multiplier": 1.1},
     ]), encoding="utf-8")
 
-    async def run():
-        app.state.history_collector = HistoryCollectorManager(path)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            status = await client.get("/api/history/status")
-            latest = await client.get("/api/history/latest")
-            recent = await client.get("/api/history/recent?limit=1")
-            stats = await client.get("/api/history/stats")
-        return status, latest, recent, stats
-
-    status, latest, recent, stats = asyncio.run(run())
-    assert status.json()["count"] == 2
-    assert latest.json()["latest"]["round_id"] == "r2"
-    assert recent.json()["rounds"][0]["round_id"] == "r2"
-    assert stats.json()["total"] == 2
+    manager = HistoryCollectorManager(path)
+    request = type("Request", (), {"app": type("App", (), {"state": type("State", (), {"history_collector": manager})()})()})()
+    assert collector_status(request)["count"] == 2
+    assert latest(request)["latest"]["round_id"] == "r2"
+    assert recent(request, limit=1)["rounds"][0]["round_id"] == "r2"
+    assert stats(request)["total"] == 2
