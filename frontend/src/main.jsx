@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { ErrorBoundary } from 'react-error-boundary';
 import { Toaster } from 'sonner';
-import { Activity, BarChart3, Bot, Brain, History, LayoutDashboard, Settings, Signal } from 'lucide-react';
+import { Activity, BarChart3, Bot, Brain, GitBranch, History, LayoutDashboard, Settings, ShieldCheck, Signal } from 'lucide-react';
 import './styles/index.css';
 import Dashboard from './pages/Dashboard.jsx';
 import LiveHistory from './pages/LiveHistory.jsx';
@@ -14,6 +14,8 @@ import Betting from './pages/Betting.jsx';
 import SystemSettings from './pages/SystemSettings.jsx';
 import SystemHealth from './components/SystemHealth.jsx';
 import AppErrorFallback from './components/AppErrorFallback.jsx';
+import EvidenceExplorer from './pages/EvidenceExplorer.jsx';
+import DecisionEngine from './pages/DecisionEngine.jsx';
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -21,6 +23,8 @@ const nav = [
   { to: '/patterns', label: 'Patterns', icon: BarChart3 },
   { to: '/signals', label: 'Signals', icon: Signal },
   { to: '/models', label: 'Models', icon: Brain },
+  { to: '/evidence', label: 'Evidence', icon: ShieldCheck },
+  { to: '/decisions', label: 'Decisions', icon: GitBranch },
   { to: '/betting', label: 'Betting', icon: Bot },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
@@ -65,6 +69,8 @@ function Shell() {
             <Route path="/patterns" element={<PatternExplorer />} />
             <Route path="/signals" element={<SignalHistory />} />
             <Route path="/models" element={<ModelPerformance />} />
+            <Route path="/evidence" element={<EvidenceExplorer />} />
+            <Route path="/decisions" element={<DecisionEngine />} />
             <Route path="/betting" element={<Betting />} />
             <Route path="/settings" element={<SystemSettings />} />
             <Route path="*" element={<Navigate to="/" replace />} />

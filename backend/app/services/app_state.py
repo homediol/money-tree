@@ -9,20 +9,30 @@ from app.services.data_loader import RoundHistoryLoader
 from app.services.pattern_engine import PatternEngine
 from app.services.signal_engine import SignalEngine
 from app.services.statistics_service import statistics
+from app.services.dataset_service import DatasetService
+from app.services.evidence_engine import EvidenceEngine
 
 
 class AppState:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.loader = RoundHistoryLoader(settings.data_path)
+        self.dataset_service = DatasetService(
+            settings.data_path, settings.processed_data_dir, settings.features_data_dir,
+        )
         self.repository = Repository(settings.database_path)
-        self.model_registry = ModelRegistry(settings.target_multiplier)
         self._cache_lock = RLock()
         self._patterns_cache: list[dict] | None = None
+        self._pattern_report_cache: dict | None = None
         self._analysis_cache: dict | None = None
         self._statistics_cache: dict | None = None
         self.rounds, self.quality = self.loader.load()
+        self.dataset_service.build_training_dataset()
         self.repository.init()
+        self.model_registry = ModelRegistry(settings.target_multiplier, settings.model_dir, self.repository)
+        self.evidence_engine = EvidenceEngine(self.repository, self.model_registry,
+                                              target=settings.target_multiplier,
+                                              min_sample_size=settings.min_sample_size)
         self.sync_database()
 
     def sync_database(self) -> None:
@@ -41,9 +51,11 @@ class AppState:
 
     def reload(self) -> None:
         rounds, quality = self.loader.load()
+        self.dataset_service.process_incremental()
         with self._cache_lock:
             self.rounds, self.quality = rounds, quality
             self._patterns_cache = None
+            self._pattern_report_cache = None
             self._analysis_cache = None
             self._statistics_cache = None
         self.sync_database()
@@ -51,10 +63,19 @@ class AppState:
     def patterns(self) -> list[dict]:
         with self._cache_lock:
             if self._patterns_cache is None:
-                items = PatternEngine(self.settings.target_multiplier, self.settings.min_sample_size).discover(self.rounds)
+                report = PatternEngine(self.settings.target_multiplier, self.settings.min_sample_size).report(self.rounds)
+                items = report["patterns"]
                 self.repository.save_patterns(items)
                 self._patterns_cache = items
+                self._pattern_report_cache = report
             return self._patterns_cache
+
+    def pattern_report(self, target: float | None = None) -> dict:
+        selected = float(target or self.settings.target_multiplier)
+        if selected != float(self.settings.target_multiplier):
+            return PatternEngine(selected, self.settings.min_sample_size).report(self.rounds)
+        self.patterns()
+        return self._pattern_report_cache or {}
 
     def signal_engine(self) -> SignalEngine:
         return SignalEngine(
@@ -82,3 +103,6 @@ class AppState:
                     "statistics": statistics(self.rounds, self.settings.target_multiplier),
                 }
             return self._statistics_cache
+
+    def build_evidence(self, prediction: dict | None) -> dict | None:
+        return self.evidence_engine.build(prediction, self.dataset_service)

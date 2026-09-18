@@ -33,6 +33,11 @@ export async function getPatterns() {
   return data.patterns || [];
 }
 
+export async function getPatternReport(target = 2) {
+  const { data } = await api.get('/api/patterns/report', { params: { target } });
+  return data;
+}
+
 export async function getHistory(limit = 250) {
   const { data } = await api.get('/api/history', { params: { limit } });
   return data;
@@ -78,9 +83,74 @@ export async function getSystemStatus() {
   return data;
 }
 
-export async function trainModels() {
-  const { data } = await api.post('/api/models/train');
+export async function getDataStatus() {
+  const { data } = await api.get('/api/data/status');
   return data;
+}
+
+export async function getFeatureMetadata() {
+  const { data } = await api.get('/api/features');
+  return data;
+}
+
+export async function getLatestFeatures() {
+  const { data } = await api.get('/api/features/latest');
+  return data;
+}
+
+export async function getDatasetStatus() {
+  const { data } = await api.get('/api/dataset/status');
+  return data;
+}
+
+export async function trainModels() {
+  const { data } = await api.post('/api/ml/train');
+  return data;
+}
+
+export async function getMLStatus() {
+  const { data } = await api.get('/api/ml/status');
+  return data;
+}
+
+export async function getMLMetrics() {
+  const { data } = await api.get('/api/ml/metrics');
+  return data;
+}
+
+export async function getLatestMLPrediction() {
+  const { data } = await api.get('/api/ml/prediction/latest');
+  return data.prediction;
+}
+
+export async function getCurrentEvidence() {
+  const { data } = await api.get('/api/evidence/current');
+  return data.evidence;
+}
+
+export async function getRecentEvidence(limit = 25) {
+  const { data } = await api.get('/api/evidence/recent', { params: { limit } });
+  return data.evidence || [];
+}
+
+export async function getCurrentDecision() {
+  const { data } = await api.get('/api/decisions/current');
+  return data.decision;
+}
+
+export async function getRecentDecisions(limit = 25) {
+  const { data } = await api.get('/api/decisions/recent', { params: { limit } });
+  return data.decisions || [];
+}
+
+export async function getDecisionStatus() {
+  const { data } = await api.get('/api/decisions/status');
+  return data;
+}
+
+export async function evaluateDecision() {
+  const { data } = await api.post('/api/decisions/evaluate');
+  return data.decision;
 }
 
 

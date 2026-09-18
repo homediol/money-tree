@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 import httpx
@@ -197,6 +198,11 @@ def test_decision_api_routes_risk_approval_into_executor():
         app = FastAPI()
         app.state.betting = betting
         app.state.risk = risk
+        ready = {"status": "READY_FOR_EXECUTION", "decision_id": "pipeline-1",
+                 "target_round_id": "round-1", "profile": "PROFILE_A",
+                 "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+                 "risk_evaluation": {"approved": True, "approved_bet": 250}}
+        app.state.decision_engine = SimpleNamespace(current=lambda: ready)
         app.include_router(betting_api.router)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test",

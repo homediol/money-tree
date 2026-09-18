@@ -1,0 +1,51 @@
+{
+  "contract_version": "part8-v1",
+  "decision_id": "761e63877a6c42b3bbe14c4c42dd7d0a",
+  "idempotency_key": "5fc27dc8ebfd129e106216f82581c92751dd568037a7a9598c2da19a90f2eea5",
+  "status": "EXPIRED",
+  "created_at": "2026-09-18T04:31:55.828754Z",
+  "updated_at": "2026-09-18T04:31:55.829028Z",
+  "expires_at": "2026-09-18T04:32:25.828754Z",
+  "source_round_id": "5386",
+  "target_round_id": "5387",
+  "prediction_id": "ecb81075233d49dabcd3b3b197326a23",
+  "evidence_id": "0a7d502ceeb64208a17aad4fea4bf716",
+  "probability": 0.47717729985946167,
+  "confidence": "LOW",
+  "evidence_strength": "STRONG",
+  "profile": "PROFILE_A",
+  "requested_action": "NO_ACTION",
+  "risk_status": "BLOCKED",
+  "execution_status": "EXPIRED",
+  "reasons": [],
+  "block_reasons": [
+    "target_round_stale",
+    "probability_below_threshold",
+    "confidence_below_threshold",
+    "model_unhealthy",
+    "prediction_or_data_stale",
+    "automatic_mode_off"
+  ],
+  "prediction_created_at": "2026-09-18T03:25:49.897627Z",
+  "evidence_calculated_at": "2026-09-18T04:00:07.943428Z",
+  "model_version": "ml-20260918T032548Z-0ab7e2ed",
+  "feature_version": "part4-315dd0ed4603",
+  "risk_evaluation": null,
+  "transitions": [
+    {
+      "status": "CREATED",
+      "at": "2026-09-18T04:31:55.828754+00:00",
+      "reason": "prediction and evidence received"
+    },
+    {
+      "status": "VALIDATING",
+      "at": "2026-09-18T04:31:55.828954+00:00",
+      "reason": "validating qualification rules"
+    },
+    {
+      "status": "EXPIRED",
+      "at": "2026-09-18T04:31:55.829028+00:00",
+      "reason": "target round already passed"
+    }
+  ]
+}

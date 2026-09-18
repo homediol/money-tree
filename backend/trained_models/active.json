@@ -1,0 +1,5 @@
+{
+  "model_version": "ml-20260918T032548Z-0ab7e2ed",
+  "metadata_path": "backend/trained_models/ml-20260918T032548Z-0ab7e2ed/metadata.json",
+  "artifact_path": "backend/trained_models/ml-20260918T032548Z-0ab7e2ed/model.joblib"
+}

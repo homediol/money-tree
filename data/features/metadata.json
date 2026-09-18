@@ -1,0 +1,807 @@
+{
+  "buckets": {
+    "LOW": "<1.50",
+    "MEDIUM": "1.50-3.99",
+    "HIGH": ">=4.00"
+  },
+  "features": [
+    {
+      "name": "last_1",
+      "type": "numeric",
+      "window": 1,
+      "description": "Multiplier 1 round(s) before the target round",
+      "uses_future_data": false
+    },
+    {
+      "name": "last_2",
+      "type": "numeric",
+      "window": 2,
+      "description": "Multiplier 2 round(s) before the target round",
+      "uses_future_data": false
+    },
+    {
+      "name": "last_3",
+      "type": "numeric",
+      "window": 3,
+      "description": "Multiplier 3 round(s) before the target round",
+      "uses_future_data": false
+    },
+    {
+      "name": "last_4",
+      "type": "numeric",
+      "window": 4,
+      "description": "Multiplier 4 round(s) before the target round",
+      "uses_future_data": false
+    },
+    {
+      "name": "last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Multiplier 5 round(s) before the target round",
+      "uses_future_data": false
+    },
+    {
+      "name": "streak_below_1_5",
+      "type": "integer",
+      "window": null,
+      "description": "Consecutive prior rounds below 1.50x",
+      "uses_future_data": false
+    },
+    {
+      "name": "streak_below_2",
+      "type": "integer",
+      "window": null,
+      "description": "Consecutive prior rounds below 2.00x",
+      "uses_future_data": false
+    },
+    {
+      "name": "streak_below_3",
+      "type": "integer",
+      "window": null,
+      "description": "Consecutive prior rounds below 3.00x",
+      "uses_future_data": false
+    },
+    {
+      "name": "sequence_last_10",
+      "type": "categorical_sequence",
+      "window": 10,
+      "description": "LOW/MEDIUM/HIGH buckets for the prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "mean_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Mean of prior 5 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "median_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Median of prior 5 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "min_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Min of prior 5 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "max_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Max of prior 5 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "std_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Std of prior 5 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "variance_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Variance of prior 5 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "range_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Range of prior 5 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_below_1_5_last_5",
+      "type": "integer",
+      "window": 5,
+      "description": "Count below 1.50x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_below_1_5_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Rate below 1.50x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_1_5_last_5",
+      "type": "integer",
+      "window": 5,
+      "description": "Count equal to 1.50x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_1_5_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Rate equal to 1.50x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_2_0_last_5",
+      "type": "integer",
+      "window": 5,
+      "description": "Count equal to 2.00x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_2_0_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Rate equal to 2.00x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_3_0_last_5",
+      "type": "integer",
+      "window": 5,
+      "description": "Count equal to 3.00x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_3_0_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Rate equal to 3.00x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_5_0_last_5",
+      "type": "integer",
+      "window": 5,
+      "description": "Count equal to 5.00x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_5_0_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Rate equal to 5.00x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_10_0_last_5",
+      "type": "integer",
+      "window": 5,
+      "description": "Count equal to 10.00x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_10_0_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Rate equal to 10.00x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_2x_last_5",
+      "type": "integer",
+      "window": 5,
+      "description": "Count at least 2.00x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_2x_last_5",
+      "type": "numeric",
+      "window": 5,
+      "description": "Rate at least 2.00x in prior 5 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "mean_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Mean of prior 10 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "median_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Median of prior 10 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "min_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Min of prior 10 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "max_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Max of prior 10 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "std_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Std of prior 10 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "variance_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Variance of prior 10 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "range_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Range of prior 10 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_below_1_5_last_10",
+      "type": "integer",
+      "window": 10,
+      "description": "Count below 1.50x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_below_1_5_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Rate below 1.50x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_1_5_last_10",
+      "type": "integer",
+      "window": 10,
+      "description": "Count equal to 1.50x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_1_5_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Rate equal to 1.50x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_2_0_last_10",
+      "type": "integer",
+      "window": 10,
+      "description": "Count equal to 2.00x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_2_0_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Rate equal to 2.00x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_3_0_last_10",
+      "type": "integer",
+      "window": 10,
+      "description": "Count equal to 3.00x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_3_0_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Rate equal to 3.00x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_5_0_last_10",
+      "type": "integer",
+      "window": 10,
+      "description": "Count equal to 5.00x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_5_0_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Rate equal to 5.00x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_10_0_last_10",
+      "type": "integer",
+      "window": 10,
+      "description": "Count equal to 10.00x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_10_0_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Rate equal to 10.00x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_2x_last_10",
+      "type": "integer",
+      "window": 10,
+      "description": "Count at least 2.00x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_2x_last_10",
+      "type": "numeric",
+      "window": 10,
+      "description": "Rate at least 2.00x in prior 10 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "mean_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Mean of prior 25 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "median_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Median of prior 25 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "min_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Min of prior 25 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "max_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Max of prior 25 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "std_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Std of prior 25 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "variance_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Variance of prior 25 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "range_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Range of prior 25 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_below_1_5_last_25",
+      "type": "integer",
+      "window": 25,
+      "description": "Count below 1.50x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_below_1_5_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Rate below 1.50x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_1_5_last_25",
+      "type": "integer",
+      "window": 25,
+      "description": "Count equal to 1.50x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_1_5_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Rate equal to 1.50x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_2_0_last_25",
+      "type": "integer",
+      "window": 25,
+      "description": "Count equal to 2.00x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_2_0_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Rate equal to 2.00x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_3_0_last_25",
+      "type": "integer",
+      "window": 25,
+      "description": "Count equal to 3.00x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_3_0_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Rate equal to 3.00x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_5_0_last_25",
+      "type": "integer",
+      "window": 25,
+      "description": "Count equal to 5.00x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_5_0_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Rate equal to 5.00x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_10_0_last_25",
+      "type": "integer",
+      "window": 25,
+      "description": "Count equal to 10.00x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_10_0_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Rate equal to 10.00x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_2x_last_25",
+      "type": "integer",
+      "window": 25,
+      "description": "Count at least 2.00x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_2x_last_25",
+      "type": "numeric",
+      "window": 25,
+      "description": "Rate at least 2.00x in prior 25 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "mean_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Mean of prior 50 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "median_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Median of prior 50 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "min_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Min of prior 50 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "max_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Max of prior 50 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "std_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Std of prior 50 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "variance_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Variance of prior 50 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "range_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Range of prior 50 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_below_1_5_last_50",
+      "type": "integer",
+      "window": 50,
+      "description": "Count below 1.50x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_below_1_5_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Rate below 1.50x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_1_5_last_50",
+      "type": "integer",
+      "window": 50,
+      "description": "Count equal to 1.50x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_1_5_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Rate equal to 1.50x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_2_0_last_50",
+      "type": "integer",
+      "window": 50,
+      "description": "Count equal to 2.00x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_2_0_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Rate equal to 2.00x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_3_0_last_50",
+      "type": "integer",
+      "window": 50,
+      "description": "Count equal to 3.00x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_3_0_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Rate equal to 3.00x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_5_0_last_50",
+      "type": "integer",
+      "window": 50,
+      "description": "Count equal to 5.00x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_5_0_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Rate equal to 5.00x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_10_0_last_50",
+      "type": "integer",
+      "window": 50,
+      "description": "Count equal to 10.00x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_10_0_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Rate equal to 10.00x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_2x_last_50",
+      "type": "integer",
+      "window": 50,
+      "description": "Count at least 2.00x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_2x_last_50",
+      "type": "numeric",
+      "window": 50,
+      "description": "Rate at least 2.00x in prior 50 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "mean_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Mean of prior 100 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "median_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Median of prior 100 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "min_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Min of prior 100 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "max_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Max of prior 100 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "std_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Std of prior 100 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "variance_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Variance of prior 100 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "range_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Range of prior 100 multipliers",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_below_1_5_last_100",
+      "type": "integer",
+      "window": 100,
+      "description": "Count below 1.50x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_below_1_5_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Rate below 1.50x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_1_5_last_100",
+      "type": "integer",
+      "window": 100,
+      "description": "Count equal to 1.50x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_1_5_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Rate equal to 1.50x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_2_0_last_100",
+      "type": "integer",
+      "window": 100,
+      "description": "Count equal to 2.00x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_2_0_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Rate equal to 2.00x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_3_0_last_100",
+      "type": "integer",
+      "window": 100,
+      "description": "Count equal to 3.00x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_3_0_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Rate equal to 3.00x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_5_0_last_100",
+      "type": "integer",
+      "window": 100,
+      "description": "Count equal to 5.00x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_5_0_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Rate equal to 5.00x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_eq_10_0_last_100",
+      "type": "integer",
+      "window": 100,
+      "description": "Count equal to 10.00x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_eq_10_0_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Rate equal to 10.00x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "count_2x_last_100",
+      "type": "integer",
+      "window": 100,
+      "description": "Count at least 2.00x in prior 100 rounds",
+      "uses_future_data": false
+    },
+    {
+      "name": "rate_2x_last_100",
+      "type": "numeric",
+      "window": 100,
+      "description": "Rate at least 2.00x in prior 100 rounds",
+      "uses_future_data": false
+    }
+  ]
+}

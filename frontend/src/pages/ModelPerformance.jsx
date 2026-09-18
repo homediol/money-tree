@@ -1,69 +1,57 @@
 import { useState } from 'react';
+import { BrainCircuit, PlayCircle } from 'lucide-react';
 import Card from '../components/Card.jsx';
 import Metric from '../components/Metric.jsx';
 import StatusPill from '../components/StatusPill.jsx';
 import { useLiveData } from '../hooks/useLiveData.js';
 import { trainModels } from '../services/api.js';
 import { pct } from '../utils/format.js';
-import { BrainCircuit, PlayCircle } from 'lucide-react';
 import PageHeader from '../components/PageHeader.jsx';
-import { EmptyState, ErrorState, LoadingState } from '../components/PageState.jsx';
+import { ErrorState, LoadingState } from '../components/PageState.jsx';
 
 export default function ModelPerformance() {
-  const { models, refresh, loading, error } = useLiveData();
+  const { models, mlStatus, mlMetrics, mlPrediction, refresh, loading, error } = useLiveData();
   const [training, setTraining] = useState(false);
   async function train() {
     setTraining(true);
-    try {
-      await trainModels();
-      await refresh();
-    } finally {
-      setTraining(false);
-    }
+    try { await trainModels(); await refresh(); } finally { setTraining(false); }
   }
-  if (loading) return <LoadingState label="Loading model validation…" />;
+  if (loading) return <LoadingState label="Loading ML model state…" />;
   if (error) return <ErrorState message={error} onRetry={refresh} />;
-  const modelRows = Object.entries(models?.models || {});
-  const base = models?.baselines?.base_rate || {};
-  return (
-    <div className="space-y-5">
-      <PageHeader eyebrow="Validation workspace" title="Models" icon={BrainCircuit}
-        description="Review walk-forward validation and calibration metrics. Model outputs remain separate from risk approval and bet execution."
-        action={<button onClick={train} disabled={training} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 hover:bg-emerald-300 disabled:opacity-60"><PlayCircle size={17} />{training ? 'Training…' : 'Train models'}</button>} />
-      <Card title="Validation Status">
-        <div className="flex flex-wrap items-center gap-4">
-          <StatusPill status={models?.status || 'MODEL NOT TRAINED'} />
-          <span className="text-sm text-zinc-400">{models?.message || 'Run training to create walk-forward validation metrics.'}</span>
-        </div>
-      </Card>
-      <section className="grid gap-4 md:grid-cols-4">
-        <Card><Metric label="Dataset Examples" value={models?.dataset_size ?? 0} /></Card>
-        <Card><Metric label="Base Brier" value={base?.brier_score?.toFixed?.(3) || 'N/A'} /></Card>
-        <Card><Metric label="Base Rate" value={pct(models?.baselines?.historical_base_rate)} /></Card>
-        <Card><Metric label="Calibration" value={models?.calibration?.supported ? 'Supported' : 'Not supported'} /></Card>
-      </section>
-      <Card title="Walk-Forward Model Metrics">
-        {modelRows.length === 0 ? <EmptyState title="No validated models" description="Run training to generate walk-forward metrics." /> :
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-left text-sm">
-            <thead className="text-xs uppercase text-zinc-500">
-              <tr><th className="py-2">Model</th><th>Accuracy</th><th>Precision</th><th>Recall</th><th>ROC-AUC</th><th>Brier</th></tr>
-            </thead>
-            <tbody>
-              {modelRows.map(([name, m]) => (
-                <tr key={name} className="border-t border-zinc-800">
-                  <td className="py-3">{name.replaceAll('_', ' ')}</td>
-                  <td>{pct(m.accuracy)}</td>
-                  <td>{pct(m.precision)}</td>
-                  <td>{pct(m.recall)}</td>
-                  <td>{m.roc_auc?.toFixed?.(3)}</td>
-                  <td>{m.brier_score?.toFixed?.(3)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>}
-      </Card>
-    </div>
-  );
+  const validation = models?.validation_metrics || mlMetrics?.validation_metrics || {};
+  const test = models?.test_metrics || mlMetrics?.test_metrics || {};
+  const baseline = models?.baselines?.test?.base_rate_probability || mlMetrics?.baselines?.test?.base_rate_probability || {};
+  const calibration = models?.calibration || mlMetrics?.calibration || {};
+  return <div className="space-y-5">
+    <PageHeader eyebrow="Probability estimation" title="ML Model" icon={BrainCircuit}
+      description="Chronologically evaluated model estimates. Outputs are not guarantees or betting decisions."
+      action={<button onClick={train} disabled={training} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 disabled:opacity-60"><PlayCircle size={17} />{training ? 'Training…' : 'Train models'}</button>} />
+      <Card title="Model Health"><div className="flex flex-wrap items-center gap-4"><StatusPill status={mlStatus?.status || 'NOT_TRAINED'} /><span className="text-sm text-zinc-400">{models?.message || 'No active model.'}</span><span className={`rounded px-2 py-1 text-xs font-semibold ${mlStatus?.deployable ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>{mlStatus?.deployable ? 'LIVE INFERENCE ENABLED' : 'LIVE INFERENCE DISABLED — BELOW BASELINE'}</span></div></Card>
+    <section className="grid gap-4 md:grid-cols-4">
+      <Card><Metric label="Model Version" value={mlStatus?.model_version || 'N/A'} /></Card>
+      <Card><Metric label="Feature Version" value={mlStatus?.feature_version || 'N/A'} /></Card>
+      <Card><Metric label="Training Samples" value={models?.splits?.train ?? 0} /></Card>
+      <Card><Metric label="Test Samples" value={models?.splits?.test ?? 0} /></Card>
+    </section>
+    <Card title="Latest Prediction — Model Estimate">
+      <div className="grid gap-4 md:grid-cols-4">
+        <Metric label="Probability ≥2x" value={pct(mlPrediction?.probability_2x)} />
+        <Metric label="Source Round" value={mlPrediction?.source_round_id || 'N/A'} />
+        <Metric label="Created" value={mlPrediction?.created_at || 'N/A'} />
+        <Metric label="Freshness" value={mlPrediction ? (mlPrediction.usable && mlPrediction.fresh ? 'CURRENT' : 'NOT USABLE') : 'N/A'} />
+      </div>
+    </Card>
+    <Card title="Model Quality">
+      <div className="grid gap-4 md:grid-cols-4">
+        <Metric label="Baseline Test Brier" value={baseline?.brier_score?.toFixed?.(4) || 'N/A'} />
+        <Metric label="Validation Brier" value={validation?.brier_score?.toFixed?.(4) || 'N/A'} />
+        <Metric label="Test Brier" value={test?.brier_score?.toFixed?.(4) || 'N/A'} />
+        <Metric label="Calibration ECE" value={calibration?.expected_calibration_error?.toFixed?.(4) || 'N/A'} />
+        <Metric label="Test ROC-AUC" value={test?.roc_auc?.toFixed?.(4) || 'N/A'} />
+        <Metric label="Test PR-AUC" value={test?.pr_auc?.toFixed?.(4) || 'N/A'} />
+        <Metric label="Test F1" value={pct(test?.f1)} />
+        <Metric label="Baseline Outperformed" value={models?.overfitting_checks?.outperforms_validation_baseline ? 'YES' : 'NO'} />
+      </div>
+    </Card>
+  </div>;
 }

@@ -1,0 +1,14 @@
+{
+  "status": "READY",
+  "source": "/home/diolo/winner predict/data/roundhistory.json",
+  "processed_path": "/home/diolo/winner predict/data/processed/training_dataset.csv",
+  "feature_rows": 5070,
+  "feature_count": 114,
+  "last_processing_mode": "incremental",
+  "splits": {
+    "train": 3549,
+    "validation": 760,
+    "test": 761
+  },
+  "updated_at": "2026-09-18T04:36:08.855408+00:00"
+}

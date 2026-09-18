@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -451,11 +452,15 @@ class ApiHarness:
         )
         self._previous = None
         self._had_previous = False
+        self._previous_decision_engine = None
+        self._had_previous_decision_engine = False
 
     async def __aenter__(self):
         self._had_previous = hasattr(app.state, "betting")
         self._previous = getattr(app.state, "betting", None)
         app.state.betting = self.manager
+        self._had_previous_decision_engine = hasattr(app.state, "decision_engine")
+        self._previous_decision_engine = getattr(app.state, "decision_engine", None)
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -465,6 +470,17 @@ class ApiHarness:
             app.state.betting = self._previous
         elif hasattr(app.state, "betting"):
             delattr(app.state, "betting")
+        if self._had_previous_decision_engine:
+            app.state.decision_engine = self._previous_decision_engine
+        elif hasattr(app.state, "decision_engine"):
+            delattr(app.state, "decision_engine")
+
+    def authorize(self, decision_id, round_id, profile="PROFILE_A", amount=500):
+        record = {"status": "READY_FOR_EXECUTION", "decision_id": decision_id,
+                  "target_round_id": round_id, "profile": profile,
+                  "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+                  "risk_evaluation": {"approved": True, "approved_bet": amount}}
+        app.state.decision_engine = SimpleNamespace(current=lambda: record)
 
     async def get(self, path: str, **kw):
         return await self.client.get(path, **kw)
@@ -522,6 +538,7 @@ def test_api_decision_while_idle_conflict_409():
     payload = {"decision_id": "d-idle", "round_id": "round-idle", "profile": "PROFILE_A",
                "target_multiplier": 2.0}
     async def go(client):
+        client.authorize("d-idle", "round-idle")
         return await client.post("/api/betting/decisions", json=payload)
     r = _run(_api_call(go))
     assert r.status_code == 409
@@ -554,6 +571,8 @@ def test_api_sim_e2e_start_decide_resolve_stop():
         started = r.json()["status"]
         assert started["mode"] == "SIMULATION"
         assert started["simulated"] is True
+
+        client.authorize("d-api-1", "round-api-1")
 
         r = await client.post("/api/betting/decisions", json={
             "decision_id": "d-api-1", "round_id": "round-api-1", "profile": "PROFILE_A",
@@ -591,6 +610,7 @@ def test_api_duplicate_decision_conflict_409():
 
         payload = {"decision_id": "d-api-dup", "round_id": "round-api-dup", "profile": "PROFILE_A",
                    "target_multiplier": 2.0}
+        client.authorize("d-api-dup", "round-api-dup")
         assert (await client.post("/api/betting/decisions", json=payload)).status_code == 200
         r = await client.post("/api/betting/decisions", json=payload)
         assert r.status_code == 409

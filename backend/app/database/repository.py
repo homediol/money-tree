@@ -58,6 +58,33 @@ CREATE TABLE IF NOT EXISTS statistics (
   payload TEXT NOT NULL,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS ml_predictions (
+  prediction_id TEXT PRIMARY KEY,
+  source_round_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS prediction_evidence (
+  evidence_id TEXT PRIMARY KEY,
+  prediction_id TEXT UNIQUE NOT NULL,
+  source_round_id TEXT NOT NULL,
+  calculated_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decision_records (
+  decision_id TEXT PRIMARY KEY,
+  idempotency_key TEXT UNIQUE NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decision_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  decision_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
 """
 
 
@@ -137,3 +164,86 @@ class Repository:
             rows = conn.execute("SELECT * FROM model_versions ORDER BY id DESC").fetchall()
         return [{**dict(r), "metrics": json.loads(r["metrics"])} for r in rows]
 
+    def save_ml_prediction(self, prediction: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO ml_predictions(prediction_id, source_round_id, created_at, payload) VALUES(?, ?, ?, ?)",
+                (prediction["prediction_id"], prediction["source_round_id"], prediction["created_at"], json.dumps(prediction)),
+            )
+
+    def latest_ml_prediction(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM ml_predictions ORDER BY created_at DESC LIMIT 1").fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def list_ml_predictions(self, limit: int = 25) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM ml_predictions ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def save_evidence_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Persist once per prediction; an existing snapshot is never replaced."""
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO prediction_evidence
+                   (evidence_id, prediction_id, source_round_id, calculated_at, payload)
+                   VALUES(?, ?, ?, ?, ?)""",
+                (snapshot["evidence_id"], snapshot["prediction_id"], snapshot["source_round_id"],
+                 snapshot["calculated_at"], json.dumps(snapshot)),
+            )
+            row = conn.execute("SELECT payload FROM prediction_evidence WHERE prediction_id = ?",
+                               (snapshot["prediction_id"],)).fetchone()
+        return json.loads(row["payload"])
+
+    def evidence_for_prediction(self, prediction_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM prediction_evidence WHERE prediction_id = ?",
+                               (prediction_id,)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def latest_evidence(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM prediction_evidence ORDER BY calculated_at DESC LIMIT 1").fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def list_evidence(self, limit: int = 25) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM prediction_evidence ORDER BY calculated_at DESC LIMIT ?",
+                                (limit,)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def save_decision(self, decision: dict[str, Any]) -> None:
+        """Update the current record and append an immutable lifecycle audit row."""
+        payload = json.dumps(decision)
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO decision_records(decision_id, idempotency_key, created_at, updated_at, payload)
+                   VALUES(?, ?, ?, ?, ?)
+                   ON CONFLICT(decision_id) DO UPDATE SET updated_at=excluded.updated_at, payload=excluded.payload""",
+                (decision["decision_id"], decision["idempotency_key"], decision["created_at"],
+                 decision["updated_at"], payload),
+            )
+            conn.execute(
+                "INSERT INTO decision_audit(decision_id, status, recorded_at, payload) VALUES(?, ?, ?, ?)",
+                (decision["decision_id"], decision["status"], decision["updated_at"], payload),
+            )
+
+    def decision_by_key(self, key: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM decision_records WHERE idempotency_key = ?", (key,)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def latest_decision(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM decision_records ORDER BY updated_at DESC LIMIT 1").fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def list_decisions(self, limit: int = 25) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM decision_records ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def decision_audit(self, decision_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM decision_audit WHERE decision_id = ? ORDER BY id", (decision_id,)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]

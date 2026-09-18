@@ -27,8 +27,11 @@ class Settings(BaseSettings):
     # The Node collector writes the canonical live history at project-root
     # data/roundhistory.json. Keep one source of truth for collector + API.
     data_path: Path = Path(__file__).resolve().parents[3] / "data" / "roundhistory.json"
+    processed_data_dir: Path = Path(__file__).resolve().parents[3] / "data" / "processed"
+    features_data_dir: Path = Path(__file__).resolve().parents[3] / "data" / "features"
     database_path: Path = Path(__file__).resolve().parents[2] / "winner_predict.sqlite3"
     model_dir: Path = Path(__file__).resolve().parents[2] / "trained_models"
+    decision_path: Path = Path(__file__).resolve().parents[3] / "data" / "decision.json"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     api_key: str | None = Field(default=None, min_length=16)
 

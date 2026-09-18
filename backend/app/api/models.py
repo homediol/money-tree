@@ -17,9 +17,7 @@ def performance(request: Request):
 def train_models(request: Request, background_tasks: BackgroundTasks, background: bool = False):
     wp = request.app.state.wp
     if background:
-        background_tasks.add_task(wp.model_registry.train, wp.rounds)
-        return {"status": "TRAINING SCHEDULED", "dataset_size": int(len(wp.rounds))}
-    result = wp.model_registry.train(wp.rounds)
-    wp.repository.save_model_version(result.trained_at, "ensemble", None, result.model_dump())
+        background_tasks.add_task(wp.model_registry.train, wp.dataset_service)
+        return {"status": "TRAINING SCHEDULED", "dataset_size": int(len(wp.dataset_service.dataset))}
+    result = wp.model_registry.train(wp.dataset_service)
     return result.model_dump()
-

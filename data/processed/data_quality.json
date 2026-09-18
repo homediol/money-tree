@@ -1,0 +1,22 @@
+{
+  "total_rounds": 5170,
+  "valid_rounds": 5170,
+  "invalid_rounds": 0,
+  "duplicates": 0,
+  "date_range": {
+    "start": "2026-07-28T13:37:37.587000Z",
+    "end": "2026-09-18T04:35:54.071000Z"
+  },
+  "min": 1.0,
+  "max": 3834.33,
+  "mean": 10.959044487427466,
+  "median": 1.94,
+  "count_2x_plus": 2507,
+  "rate_2x_plus": 0.4849129593810445,
+  "missing_values": {
+    "round_id": 0,
+    "timestamp": 0,
+    "multiplier": 0
+  },
+  "chronological": true
+}

@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import analysis, betting as betting_api, history, models, patterns, risk as risk_api, signals, statistics
+from app.api import analysis, betting as betting_api, data, decisions, evidence, history, ml, models, patterns, risk as risk_api, signals, statistics
 from app.betting.config import get_betting_settings
 from app.betting.session import BettingManager, configure_default_manager
 from app.core.config import get_settings
@@ -17,6 +17,7 @@ from app.services.app_state import AppState
 from app.services.monitoring_engine import MonitoringEngine
 from app.risk.engine import RiskManager
 from app.history_collector import HistoryCollectorManager
+from app.decision.engine import DecisionEngine
 
 configure_logging()
 log = get_logger("APP")
@@ -47,6 +48,48 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def process_history_update(app: FastAPI):
+    """Process one Part 3 history event and publish dependent live views."""
+    await asyncio.to_thread(app.state.wp.reload)
+    analysis_payload = await asyncio.to_thread(app.state.wp.current_analysis)
+    await manager.broadcast(
+        {
+            "type": "updated_analysis",
+            "new_round": analysis_payload.get("recent_multipliers", [])[-1:],
+            "analysis": analysis_payload,
+            "system_status": {"valid_rounds": int(len(app.state.wp.rounds))},
+        }
+    )
+    history = app.state.history_collector
+    status = history.status()
+    await manager.broadcast({"type": "history:new_round", "round": status["latest"]})
+    await manager.broadcast({"type": "history:updated", "history": {"count": status["count"]}})
+    await manager.broadcast({"type": "history:stats", "stats": history.stats()})
+    dataset = app.state.wp.dataset_service
+    await manager.broadcast({"type": "data:updated", "quality": dataset.quality, "dataset": dataset.status()})
+    await manager.broadcast({"type": "features:updated", "features": dataset.latest_features()})
+    pattern_report = await asyncio.to_thread(app.state.wp.pattern_report)
+    await manager.broadcast({"type": "patterns:updated", "baseline": pattern_report["baseline"],
+                             "patterns": pattern_report["patterns"][:20]})
+    prediction = await asyncio.to_thread(app.state.wp.model_registry.predict_latest, dataset)
+    if prediction:
+        await manager.broadcast({"type": "prediction:new", "prediction": prediction})
+        snapshot = await asyncio.to_thread(app.state.wp.build_evidence, prediction)
+        if snapshot:
+            await manager.broadcast({"type": "prediction:evidence_updated", "evidence": snapshot})
+            betting_status = app.state.betting.status()
+            betting_status["emergency_stop"] = app.state.risk.emergency_latched
+            if not dataset.clean_rounds.empty:
+                betting_status["latest_history_round_id"] = str(dataset.clean_rounds.iloc[-1]["round_id"])
+            decision = await app.state.decision_engine.evaluate(
+                prediction, snapshot,
+                model_status=app.state.wp.model_registry.status(dataset),
+                betting_status=betting_status,
+                risk_manager=app.state.risk,
+            )
+            await manager.broadcast({"type": "decision:updated", "decision": decision})
+
+
 async def monitor_file(app: FastAPI):
     monitor = MonitoringEngine(app.state.wp.settings.data_path)
     while True:
@@ -55,21 +98,7 @@ async def monitor_file(app: FastAPI):
             # File parsing, database sync and statistical analysis are
             # synchronous/CPU-bound. Keep them off FastAPI's event loop so
             # health checks and UI requests remain responsive.
-            await asyncio.to_thread(app.state.wp.reload)
-            analysis_payload = await asyncio.to_thread(app.state.wp.current_analysis)
-            await manager.broadcast(
-                {
-                    "type": "updated_analysis",
-                    "new_round": analysis_payload.get("recent_multipliers", [])[-1:],
-                    "analysis": analysis_payload,
-                    "system_status": {"valid_rounds": int(len(app.state.wp.rounds))},
-                }
-            )
-            history = app.state.history_collector
-            status = history.status()
-            await manager.broadcast({"type": "history:new_round", "round": status["latest"]})
-            await manager.broadcast({"type": "history:updated", "history": {"count": status["count"]}})
-            await manager.broadcast({"type": "history:stats", "stats": history.stats()})
+            await process_history_update(app)
 
 
 @asynccontextmanager
@@ -88,6 +117,9 @@ async def lifespan(app: FastAPI):
     app.state.risk = RiskManager(
         broadcaster=manager.broadcast,
         betting_manager=betting_manager,
+    )
+    app.state.decision_engine = DecisionEngine(
+        settings.decision_path, app.state.wp.repository, broadcaster=manager.broadcast,
     )
     app.state.history_collector = HistoryCollectorManager(settings.data_path, manager.broadcast)
     await app.state.history_collector.start()
@@ -139,8 +171,12 @@ app.include_router(statistics.router)
 app.include_router(analysis.router)
 app.include_router(signals.router)
 app.include_router(history.router)
+app.include_router(data.router)
 app.include_router(patterns.router)
 app.include_router(models.router)
+app.include_router(ml.router)
+app.include_router(evidence.router)
+app.include_router(decisions.router)
 app.include_router(betting_api.router)
 app.include_router(risk_api.router)
 

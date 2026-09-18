@@ -9,10 +9,14 @@ import { mult, pct } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { ErrorState, LoadingState } from '../components/PageState.jsx';
 import DataFreshness from '../components/DataFreshness.jsx';
+import DecisionPanel from '../components/DecisionPanel.jsx';
 
 export default function Dashboard() {
-  const { loading, error, signal, stats, history, system } = useLiveData();
+  const { loading, error, signal, stats, history, system, dataStatus, latestFeatures, evidence, decision } = useLiveData();
   const analysis = signal?.analysis;
+  const quality = dataStatus?.quality || {};
+  const dataset = dataStatus?.dataset || {};
+  const features = latestFeatures?.features || {};
   const chart = (history?.rounds || []).slice(-80).map((r) => ({ round: r.round_index, multiplier: r.multiplier, target: r.target }));
 
   if (loading) return <LoadingState label="Loading statistical analysis…" />;
@@ -31,6 +35,20 @@ export default function Dashboard() {
         <Card><Database size={17} className="mb-4 text-violet-400" /><Metric label="Valid Rounds" value={stats?.data_quality?.valid_records ?? 0} /></Card>
         <Card><Radio size={17} className="mb-4 text-amber-400" /><Metric label="Latest Multiplier" value={mult(stats?.statistics?.latest_multiplier)} /></Card>
       </section>
+
+      <Card title="Data / Features">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <Metric label="Total / Valid Rounds" value={`${quality.total_rounds ?? 0} / ${quality.valid_rounds ?? 0}`} />
+          <Metric label="Historical 2x+ Rate" value={pct(quality.rate_2x_plus)} />
+          <Metric label="Current Low Streak" value={features.streak_below_1_5 ?? 0} />
+          <Metric label="Feature Status" value={`${dataset.status || 'WAITING'} · ${dataset.feature_rows ?? 0} rows`} />
+        </div>
+        <div className="mt-4 rounded border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-400">
+          <div>Date range: {quality.date_range?.start || 'N/A'} → {quality.date_range?.end || 'N/A'}</div>
+          <div className="mt-2">Latest sequence: {(features.sequence_last_10 || '').replaceAll('|', ' · ') || 'Insufficient history'}</div>
+          <div className="mt-2">Recent features: last 1 = {mult(features.last_1)}, mean 10 = {mult(features.mean_last_10)}, std 10 = {features.std_last_10?.toFixed?.(3) || 'N/A'}, 2x count 10 = {features.count_2x_last_10 ?? 'N/A'}</div>
+        </div>
+      </Card>
 
       <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
         <Card title="Multiplier History">
@@ -55,7 +73,8 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <EvidencePanel analysis={analysis} />
+      <EvidencePanel evidence={evidence} />
+      <DecisionPanel decision={decision} />
     </div>
   );
 }

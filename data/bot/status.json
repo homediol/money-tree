@@ -5,14 +5,15 @@
   "frameConnected": true,
   "loggedIn": true,
   "state": "COLLECTING",
-  "lastRoundTime": "2026-09-18T02:37:22.018Z",
+  "lastRoundTime": "2026-09-18T04:36:07.491Z",
   "lastRecovery": {
     "action": "FRAME_RECOVER",
-    "ts": "2026-09-18T02:30:35.855Z"
+    "ts": "2026-09-18T04:27:29.396Z"
   },
-  "recoveryCount": 21,
+  "recoveryCount": 20,
   "browserRestartCount": 0,
   "loginCount": 1,
-  "totalRoundsSaved": 371,
-  "uptime": 7756
+  "totalRoundsSaved": 162,
+  "uptime": 3620,
+  "health": "HEALTHY"
 }

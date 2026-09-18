@@ -541,7 +541,7 @@ class BettingSession:
             return
         entry.update(status=OutcomeStatus.DEFERRED.value,
                      reason=DecisionRejectReason.PLACEMENT_DRIVER_UNAVAILABLE.value,
-                     note="real placement driver is not implemented")
+                     note="Part 2 real placement driver is not implemented")
         self.deferred_count += 1
 
     # ── status ───────────────────────────────────────────────────────────────

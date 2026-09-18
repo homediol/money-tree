@@ -6,12 +6,13 @@ Lifecycle events are additionally pushed over /ws/live as flat dicts with
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.betting.browser_client import AviatorBrowserClient
-from app.betting.profiles import profile_keys
+from app.betting.profiles import get_profile, profile_keys
 from app.betting.schemas import (
     AutomaticStartRequest,
     DecisionIntent,
@@ -165,26 +166,35 @@ async def emergency_stop(request: Request):
 @router.post("/decisions")
 async def submit_decision(request: Request, body: DecisionIntent):
     manager = _betting(request)
-    risk = _risk(request)
+    decision_engine = getattr(request.app.state, "decision_engine", None)
     try:
-        risk_result = None
-        if risk:
-            risk_result = await risk.evaluate(body, manager.status())
-            if not risk_result.approved:
-                return {"ok": True, "risk": risk_result.public(), "entry": None}
-            # The executor receives only the risk-approved stake and centrally
-            # configured cashout; it never creates or alters a prediction.
-            body = body.model_copy(update={
-                "amount_bif": risk_result.approved_bet,
-                "bet_amount": risk_result.approved_bet,
-                "cashout": risk_result.cashout,
-                "target_multiplier": risk_result.cashout,
+        authorized = decision_engine.current() if decision_engine else None
+        if (not authorized or authorized.get("status") != "READY_FOR_EXECUTION"
+                or authorized.get("decision_id") != body.decision_id
+                or authorized.get("target_round_id") != body.round_id
+                or authorized.get("profile") != body.profile):
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": "decision_not_authorized",
+                "message": "Only the matching, unexpired Part 8 risk-approved decision may reach the executor",
             })
+        approved = authorized.get("risk_evaluation") or {}
+        if not approved.get("approved") or not approved.get("approved_bet"):
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": "risk_approval_missing",
+                "message": "Decision has no valid risk approval",
+            })
+        profile = get_profile(authorized["profile"])
+        body = body.model_copy(update={
+            "execute": True, "amount_bif": approved["approved_bet"],
+            "bet_amount": approved["approved_bet"], "cashout": profile.base_target,
+            "target_multiplier": profile.base_target,
+            "expires_at": datetime.fromisoformat(authorized["expires_at"]),
+        })
         entry = await manager.submit_decision(body)
     except BettingError as exc:
         return _conflict(exc)
     return {"ok": True,
-            "risk": risk_result.public() if risk_result else None,
+            "risk": authorized.get("risk_evaluation"),
             "entry": entry}
 
 
