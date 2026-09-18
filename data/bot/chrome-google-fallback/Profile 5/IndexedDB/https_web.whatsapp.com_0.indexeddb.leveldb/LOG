@@ -1,0 +1,36 @@
+2026/09/11-17:17:19.725 14183 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/09/11-17:17:19.725 14183 Recovering log #175
+2026/09/11-17:17:19.852 14183 Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/000175.log 
+2026/09/11-17:17:36.552 14183 Level-0 table #181: started
+2026/09/11-17:17:36.678 14183 Level-0 table #181: 1861464 bytes OK
+2026/09/11-17:17:36.714 14183 Delete type=0 #175
+2026/09/11-17:17:36.741 14183 Compacting 1@1 + 2@2 files
+2026/09/11-17:17:36.989 14183 Generated table #182@1: 54024 keys, 2253344 bytes
+2026/09/11-17:17:37.067 14183 Generated table #183@1: 6689 keys, 1068383 bytes
+2026/09/11-17:17:37.067 14183 Compacted 1@1 + 2@2 files => 3321727 bytes
+2026/09/11-17:17:37.110 14183 compacted to: files[ 0 0 2 0 0 0 0 ]
+2026/09/11-17:17:37.111 14183 Delete type=2 #178
+2026/09/11-17:17:37.111 14183 Delete type=2 #177
+2026/09/11-17:17:37.111 14183 Delete type=2 #181
+2026/09/11-17:17:57.636 14183 Level-0 table #185: started
+2026/09/11-17:17:57.763 14183 Level-0 table #185: 970110 bytes OK
+2026/09/11-17:17:57.819 14183 Delete type=0 #180
+2026/09/11-17:17:59.538 1419d Compacting 1@1 + 2@2 files
+2026/09/11-17:18:00.484 1419d Generated table #186@1: 54070 keys, 2252578 bytes
+2026/09/11-17:18:00.563 1419d Generated table #187@1: 6839 keys, 1088579 bytes
+2026/09/11-17:18:00.563 1419d Compacted 1@1 + 2@2 files => 3341157 bytes
+2026/09/11-17:18:00.617 1419d compacted to: files[ 0 0 2 0 0 0 0 ]
+2026/09/11-17:18:00.618 1419d Delete type=2 #185
+2026/09/11-17:18:00.618 1419d Delete type=2 #183
+2026/09/11-17:18:00.618 1419d Delete type=2 #182
+2026/09/11-17:19:32.462 14183 Level-0 table #189: started
+2026/09/11-17:19:32.569 14183 Level-0 table #189: 1139448 bytes OK
+2026/09/11-17:19:32.609 14183 Delete type=0 #184
+2026/09/11-17:19:43.044 14181 Compacting 1@1 + 2@2 files
+2026/09/11-17:19:43.774 14181 Generated table #190@1: 53893 keys, 2262698 bytes
+2026/09/11-17:19:43.861 14181 Generated table #191@1: 7173 keys, 1138424 bytes
+2026/09/11-17:19:43.861 14181 Compacted 1@1 + 2@2 files => 3401122 bytes
+2026/09/11-17:19:43.897 14181 compacted to: files[ 0 0 2 0 0 0 0 ]
+2026/09/11-17:19:43.897 14181 Delete type=2 #189
+2026/09/11-17:19:43.898 14181 Delete type=2 #187
+2026/09/11-17:19:43.898 14181 Delete type=2 #186

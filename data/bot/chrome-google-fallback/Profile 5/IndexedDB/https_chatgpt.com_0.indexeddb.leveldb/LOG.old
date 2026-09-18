@@ -1,0 +1,15 @@
+2026/09/11-17:06:55.358 9a6 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_chatgpt.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/09/11-17:06:55.359 9a6 Recovering log #23
+2026/09/11-17:06:55.464 9a6 Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_chatgpt.com_0.indexeddb.leveldb/000023.log 
+2026/09/11-17:07:23.761 9a7 Level-0 table #28: started
+2026/09/11-17:07:23.791 9a7 Level-0 table #28: 3141 bytes OK
+2026/09/11-17:07:23.831 9a7 Delete type=0 #23
+2026/09/11-17:07:23.831 9a7 Manual compaction at level-0 from (begin) .. (end); will stop at (end)
+2026/09/11-17:07:23.832 9a7 Manual compaction at level-1 from (begin) .. (end); will stop at '\x00\x01\x01\x02\x01\x0d\x00e\x00c\x00d\x00s\x00a\x00-\x00p\x002\x005\x006\x00:\x00v\x001' @ 1604 : 1
+2026/09/11-17:07:23.832 9a7 Compacting 1@1 + 1@2 files
+2026/09/11-17:07:23.903 9a7 Generated table #29@1: 100 keys, 65731 bytes
+2026/09/11-17:07:23.903 9a7 Compacted 1@1 + 1@2 files => 65731 bytes
+2026/09/11-17:07:23.942 9a7 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/09/11-17:07:23.942 9a7 Delete type=2 #25
+2026/09/11-17:07:23.942 9a7 Delete type=2 #28
+2026/09/11-17:07:23.943 9a7 Manual compaction at level-1 from '\x00\x01\x01\x02\x01\x0d\x00e\x00c\x00d\x00s\x00a\x00-\x00p\x002\x005\x006\x00:\x00v\x001' @ 1604 : 1 .. (end); will stop at (end)

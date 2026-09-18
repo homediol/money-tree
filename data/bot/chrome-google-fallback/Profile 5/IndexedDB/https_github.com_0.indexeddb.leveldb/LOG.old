@@ -1,0 +1,7 @@
+2026/07/12-14:18:56.784 146a6 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_github.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/12-14:18:56.784 146a6 Recovering log #3
+2026/07/12-14:18:56.784 146a6 Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_github.com_0.indexeddb.leveldb/000003.log 
+2026/07/12-14:21:02.249 146a9 Level-0 table #5: started
+2026/07/12-14:21:02.285 146a9 Level-0 table #5: 7281 bytes OK
+2026/07/12-14:21:02.338 146a9 Delete type=0 #3
+2026/07/12-14:21:02.365 146a9 Manual compaction at level-0 from (begin) .. (end); will stop at (end)

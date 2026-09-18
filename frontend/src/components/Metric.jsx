@@ -7,9 +7,8 @@ export default function Metric({ label, value, tone = 'default' }) {
   };
   return (
     <div>
-      <div className="text-xs uppercase tracking-wide text-zinc-500">{label}</div>
-      <div className={`mt-1 text-2xl font-semibold ${tones[tone]}`}>{value}</div>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">{label}</div>
+      <div className={`mt-2 text-2xl font-bold tracking-tight ${tones[tone]}`}>{value}</div>
     </div>
   );
 }
-

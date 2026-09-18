@@ -1,0 +1,13 @@
+2026/09/17-23:40:46.451 1ab2e Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/chrome-extension_cebmnlammjhancocbbnfcglifgdpfejc_0.indexeddb.leveldb/MANIFEST-000001
+2026/09/17-23:40:46.452 1ab2e Recovering log #664
+2026/09/17-23:40:46.453 1ab2e Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/chrome-extension_cebmnlammjhancocbbnfcglifgdpfejc_0.indexeddb.leveldb/000664.log 
+2026/09/17-23:40:46.631 1ab41 Level-0 table #669: started
+2026/09/17-23:40:46.706 1ab41 Level-0 table #669: 14396 bytes OK
+2026/09/17-23:40:46.749 1ab41 Delete type=0 #664
+2026/09/17-23:40:46.750 1ab2e Manual compaction at level-0 from '\x00\xaa\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\xab\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/09/17-23:40:49.563 1ab30 Compacting 1@1 + 1@2 files
+2026/09/17-23:40:49.627 1ab30 Generated table #670@1: 414 keys, 23220 bytes
+2026/09/17-23:40:49.627 1ab30 Compacted 1@1 + 1@2 files => 23220 bytes
+2026/09/17-23:40:49.760 1ab30 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/09/17-23:40:49.761 1ab30 Delete type=2 #666
+2026/09/17-23:40:49.761 1ab30 Delete type=2 #669

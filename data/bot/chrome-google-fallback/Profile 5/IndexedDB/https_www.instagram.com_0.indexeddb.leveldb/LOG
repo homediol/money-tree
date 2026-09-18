@@ -1,0 +1,7 @@
+2026/07/07-18:31:12.894 926 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.instagram.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/07-18:31:12.894 926 Recovering log #3
+2026/07/07-18:31:13.002 926 Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.instagram.com_0.indexeddb.leveldb/000003.log 
+2026/07/07-18:31:20.305 928 Level-0 table #5: started
+2026/07/07-18:31:20.432 928 Level-0 table #5: 200206 bytes OK
+2026/07/07-18:31:20.466 928 Delete type=0 #3
+2026/07/07-18:31:20.480 928 Manual compaction at level-0 from (begin) .. (end); will stop at (end)

@@ -66,4 +66,9 @@ class DecisionRejectReason(str, Enum):
     PLACEMENT_DISABLED = "real_placement_disabled"
     PLACEMENT_DRIVER_UNAVAILABLE = "placement_driver_not_implemented"
     INTERNAL_ERROR = "internal_error"
-
+    EXECUTION_NOT_AUTHORIZED = "execution_not_authorized"
+    INVALID_ROUND = "invalid_round"
+    EXPIRED_DECISION = "expired_decision"
+    PROFILE_MISMATCH = "profile_mismatch"
+    CASHOUT_MISMATCH = "cashout_mismatch"
+    BET_ALREADY_ACTIVE = "bet_already_active"

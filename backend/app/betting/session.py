@@ -128,10 +128,17 @@ class BettingSession:
         self.last_snapshot: dict = {}
         self.consecutive_read_errors = 0
         self._latest_crash: Optional[float] = None
+        self.starting_balance: Optional[float] = request.starting_balance
+        self.goal_balance: Optional[float] = request.goal_balance
+        self.current_bet: Optional[dict] = None
+        self.last_result: Optional[dict] = None
+        self.wins = 0
+        self.losses = 0
+        self.consecutive_losses = 0
 
         # Bookkeeping.
         self.ledger: list[dict] = []
-        self._seen_decisions: set[str] = set()
+        self._seen_decisions: set[tuple[str, str]] = set()
         self.cumulative_pnl: float = 0.0
         self.resolved_count = 0
         self.placed_count = 0
@@ -149,6 +156,11 @@ class BettingSession:
             await self.broadcaster(payload)
         except Exception:
             log.debug("broadcaster failed", exc_info=True)
+
+    def _event(self, kind: str, **extra: Any) -> None:
+        asyncio.ensure_future(self._emit({
+            "type": f"betting:{kind}", "session_id": self.session_id, **extra,
+        }))
 
     def _emit_state(self, **extra: Any) -> None:
         asyncio.ensure_future(self._emit(
@@ -192,7 +204,10 @@ class BettingSession:
         """
         self.started_at = _now()
         if self.mode == Mode.SIMULATION:
-            sim = SimulationBackend(round_every_s=self.settings.sim_round_every_s)
+            sim = SimulationBackend(
+                round_every_s=self.settings.sim_round_every_s,
+                initial_balance=self.starting_balance or 2000.0,
+            )
             self.backend = sim
             self.last_balance = sim.current_balance()
             self.last_balance_text = f"{sim.current_balance():.0f}BIF"
@@ -203,6 +218,8 @@ class BettingSession:
                 client, allow_real_placement=self.settings.allow_real_placement,
             )
         self._set_state(SessionState.STARTING, started_at=self.started_at)
+        self._event("started", status=self.status())
+        self._event("waiting")
 
     def request_stop(self, reason: str = "manual") -> None:
         """Ask the run loop to stop at the next safe point."""
@@ -211,6 +228,8 @@ class BettingSession:
             self.stop_reason = reason
         if self.state.is_active:
             self._set_state(SessionState.STOPPING, stop_reason=self.stop_reason)
+        if reason == "emergency":
+            self._event("emergency_stop")
 
     async def _finish(self, reason: str) -> None:
         self.stop_reason = reason
@@ -223,6 +242,7 @@ class BettingSession:
                 pass
         self._set_state(SessionState.STOPPED, stop_reason=reason,
                         stopped_at=self.stopped_at, summary=self.summary())
+        self._event("stopped", reason=reason, status=self.status())
 
     async def run(self) -> None:
         """Main loop. ``start()`` must be called first."""
@@ -259,6 +279,13 @@ class BettingSession:
         try:
             status = await self.backend.readiness()  # type: ignore[union-attr]
         except BrowserUnreachable as exc:
+            if self.state == SessionState.CONNECTED:
+                self._event("error", error=str(exc))
+                asyncio.ensure_future(self._emit({"type": "browser:disconnected",
+                                                   "session_id": self.session_id,
+                                                   "error": str(exc)}))
+                self.request_stop("browser_disconnected")
+                return
             self._mark_observe_failure(str(exc))
             await asyncio.sleep(self.settings.browser_recheck_s)
             return
@@ -286,6 +313,8 @@ class BettingSession:
         if self.state in (SessionState.STARTING, SessionState.NOT_CONNECTED,
                           SessionState.WAITING_FOR_BROWSER):
             self._set_state(SessionState.CONNECTED)
+            asyncio.ensure_future(self._emit({"type": "browser:connected",
+                                               "session_id": self.session_id}))
         self.consecutive_read_errors = 0
         snap = await self.backend.snapshot()  # type: ignore[union-attr]
         if not snap.get("ok"):
@@ -297,6 +326,9 @@ class BettingSession:
         self.last_ui_ready = bool(snap.get("ui_ready"))
         if snap.get("payouts_head"):
             self._latest_crash = snap["payouts_head"][0]
+        if self.last_balance is not None:
+            self._event("balance_updated", balance=self.last_balance)
+        self._goal_stop_check()
 
     def _mark_observe_failure(self, error: str) -> None:
         self.last_error = error
@@ -335,9 +367,18 @@ class BettingSession:
         target["round_label"] = item["round_label"]
         target["resolved_at"] = item["resolved_at"]
         target["note"] = "won" if item["won"] else "lost"
+        self.last_result = dict(target)
+        self.current_bet = None
+        if item["won"]:
+            self.wins += 1
+            self.consecutive_losses = 0
+        else:
+            self.losses += 1
+            self.consecutive_losses += 1
         self.resolved_count += 1
         self.cumulative_pnl = round(self.cumulative_pnl + item["pnl_bif"], 2)
         self._emit_ledger(target, "resolved")
+        self._event("bet_result", result=target)
 
     async def _refresh_sim_snapshot(self, sim: SimulationBackend) -> None:
         self.last_balance = sim.current_balance()
@@ -347,9 +388,21 @@ class BettingSession:
         self.last_ui_ready = True
         if snap.get("payouts_head"):
             self._latest_crash = snap["payouts_head"][0]
+        self._event("balance_updated", balance=self.last_balance)
+
+    def _goal_stop_check(self) -> bool:
+        if (self.goal_balance is not None and self.last_balance is not None
+                and self.last_balance >= self.goal_balance):
+            self.request_stop("goal_reached")
+            self._event("goal_reached", balance=self.last_balance,
+                        goal_balance=self.goal_balance)
+            return True
+        return False
 
     def _auto_stop_check(self) -> bool:
         req = self.request
+        if self._goal_stop_check():
+            return True
         if req.max_rounds is not None and self.resolved_count >= req.max_rounds:
             self.request_stop("max_rounds")
             return True
@@ -372,19 +425,48 @@ class BettingSession:
         if not self.state.is_active:
             raise SessionNotRunning(f"session {self.session_id} not active ({self.state.value})")
         async with self._lock:
-            if intent.decision_id in self._seen_decisions:
+            decision_key = (intent.decision_id, intent.round_id or "")
+            if decision_key in self._seen_decisions:
                 raise DuplicateDecision(intent.decision_id)
             entry = _mk_entry(intent, mode=self.mode.value,
                               simulated=self.mode == Mode.SIMULATION)
+            self._event("decision_received", decision=entry)
             try:
-                if self.mode == Mode.SIMULATION:
+                rejection = self._validate_contract(intent)
+                if rejection:
+                    reason, note = rejection
+                    entry.update(status=OutcomeStatus.REJECTED.value,
+                                 reason=reason, note=note)
+                    self.rejected_count += 1
+                elif self.mode == Mode.SIMULATION:
                     await self._exec_sim_decision(intent, entry)
                 else:
                     await self._exec_real_decision(intent, entry)
             finally:
-                self._seen_decisions.add(intent.decision_id)
+                self._seen_decisions.add(decision_key)
                 self._append_ledger(entry)
             return entry
+
+    def _validate_contract(self, intent: DecisionIntent) -> Optional[tuple[str, str]]:
+        if not intent.execute:
+            return (DecisionRejectReason.EXECUTION_NOT_AUTHORIZED.value,
+                    "decision execute flag is false")
+        if not intent.round_id or not intent.round_id.strip():
+            return (DecisionRejectReason.INVALID_ROUND.value,
+                    "round_id is required")
+        if intent.is_expired():
+            return (DecisionRejectReason.EXPIRED_DECISION.value,
+                    "decision has expired")
+        if intent.profile != self.profile.key:
+            return (DecisionRejectReason.PROFILE_MISMATCH.value,
+                    "decision profile does not match active session")
+        if round(float(intent.cashout), 2) != round(self.profile.base_target, 2):
+            return (DecisionRejectReason.CASHOUT_MISMATCH.value,
+                    f"cashout must equal {self.profile.base_target:.2f}x for {self.profile.key}")
+        if self.current_bet is not None:
+            return (DecisionRejectReason.BET_ALREADY_ACTIVE.value,
+                    "another bet is still active")
+        return None
 
     async def _exec_sim_decision(self, intent: DecisionIntent, entry: dict) -> None:
         backend: SimulationBackend = self.backend  # type: ignore[assignment]
@@ -411,6 +493,8 @@ class BettingSession:
         self.placed_count += 1
         entry.update(status=OutcomeStatus.PLACED.value, placed_at=_now(),
                      round_label=outcome.round_label, note=outcome.detail)
+        self.current_bet = entry
+        self._event("bet_placed", bet=entry)
 
     async def _exec_real_decision(self, intent: DecisionIntent, entry: dict) -> None:
         amount = intent.effective_amount()
@@ -443,10 +527,10 @@ class BettingSession:
         if not backend.allow_real_placement:
             entry.update(status=OutcomeStatus.DEFERRED.value,
                          reason=DecisionRejectReason.PLACEMENT_DISABLED.value,
-                         note="BETTING_ALLOW_REAL_PLACEMENT is off — placement deferred to Part 2")
+                         note="BETTING_ALLOW_REAL_PLACEMENT is off — real placement is disabled")
             self.deferred_count += 1
             return
-        # Master switch on: still no real driver in Part 1 — defer honestly.
+        # Master switch on: still no real driver — defer honestly.
         try:
             await backend.ensure_ready()
         except PlacementUnavailable as exc:
@@ -457,7 +541,7 @@ class BettingSession:
             return
         entry.update(status=OutcomeStatus.DEFERRED.value,
                      reason=DecisionRejectReason.PLACEMENT_DRIVER_UNAVAILABLE.value,
-                     note="real placement driver not yet implemented (Part 2)")
+                     note="real placement driver is not implemented")
         self.deferred_count += 1
 
     # ── status ───────────────────────────────────────────────────────────────
@@ -474,6 +558,9 @@ class BettingSession:
             "deferred_count": self.deferred_count,
             "rejected_count": self.rejected_count,
             "ledger_size": len(self.ledger),
+            "wins": self.wins,
+            "losses": self.losses,
+            "consecutive_losses": self.consecutive_losses,
         }
 
     def status(self) -> dict:
@@ -490,6 +577,9 @@ class BettingSession:
             "simulated": self.mode == Mode.SIMULATION,
             "profile": self.profile.key,
             "profile_label": self.profile.label,
+            "cashout": self.profile.base_target,
+            "enabled": self.state.is_active,
+            "automatic_enabled": self.state.is_active,
             "label": self.label,
             "started_at": self.started_at,
             "stopped_at": self.stopped_at,
@@ -497,10 +587,23 @@ class BettingSession:
             "stop_reason": self.stop_reason,
             "last_error": self.last_error,
             "last_balance_bif": self.last_balance,
+            "current_balance": self.last_balance,
+            "starting_balance": self.starting_balance,
+            "goal_balance": self.goal_balance,
             "last_balance_text": self.last_balance_text,
             "last_ui_ready": self.last_ui_ready,
             "latest_crash": self._latest_crash,
             "running_pnl_bif": self.cumulative_pnl,
+            "profit": ((self.last_balance - self.starting_balance)
+                       if self.last_balance is not None and self.starting_balance is not None
+                       else self.cumulative_pnl),
+            "current_round": self.last_snapshot.get("round_label"),
+            "current_bet": self.current_bet,
+            "last_result": self.last_result,
+            "total_bets": self.placed_count,
+            "wins": self.wins,
+            "losses": self.losses,
+            "consecutive_losses": self.consecutive_losses,
             "resolved_decisions": self.resolved_count,
             "placed_count": self.placed_count,
             "deferred_count": self.deferred_count,
@@ -569,15 +672,17 @@ class BettingManager:
                           "mode": session.mode.value})
         return session.status()
 
-    async def stop_session(self, *, emergency: bool = False) -> dict:
+    async def stop_session(self, *, emergency: bool = False,
+                           reason: Optional[str] = None) -> dict:
         async with self._lock:
             session = self.session
             if session is None or not session.state.is_active:
                 raise SessionNotRunning("no active session to stop")
-            session.request_stop("emergency" if emergency else "manual")
+            stop_reason = reason or ("emergency" if emergency else "manual")
+            session.request_stop(stop_reason)
         await self._emit({"type": "betting:session_stopping",
                           "session_id": session.session_id,
-                          "reason": "emergency" if emergency else "manual"})
+                          "reason": stop_reason})
         return session.status()
 
     async def submit_decision(self, intent: DecisionIntent) -> dict:
@@ -589,12 +694,29 @@ class BettingManager:
     # ── queries ──────────────────────────────────────────────────────────────
     def status(self) -> dict:
         if self.session is None:
-            return {"session_id": None, "state": SessionState.IDLE.value,
-                    "mode": None, "simulated": False, "session": None,
-                    "backend": {"managed": False},
-                    "ledger_size": 0}
+            return {
+                "session_id": None, "state": SessionState.IDLE.value,
+                "lifecycle_status": "idle", "enabled": False,
+                "automatic_enabled": False, "mode": None,
+                "simulated": False, "session": None,
+                "backend": {"managed": False}, "browser_status": "NOT_CONNECTED",
+                "starting_balance": None, "current_balance": None,
+                "goal_balance": None, "profit": 0.0, "profile": None,
+                "cashout": None, "current_round": None, "current_bet": None,
+                "last_result": None, "total_bets": 0, "wins": 0,
+                "losses": 0, "consecutive_losses": 0, "ledger_size": 0,
+            }
         out = self.session.status()
         out["session"] = {"id": out["session_id"]}
+        out["lifecycle_status"] = out["state"].lower()
+        out["browser_status"] = (
+            "CONNECTED" if out["state"] == SessionState.CONNECTED.value
+            else "SIMULATION" if out["simulated"]
+            else "WAITING_FOR_BROWSER" if out["state"] in {
+                SessionState.STARTING.value, SessionState.WAITING_FOR_BROWSER.value,
+            }
+            else "NOT_CONNECTED"
+        )
         return out
 
     def ledger(self, limit: int = 50) -> list[dict]:
@@ -626,5 +748,3 @@ def get_betting_manager() -> Optional[BettingManager]:
 def configure_default_manager(manager: BettingManager) -> None:
     global _default_manager
     _default_manager = manager
-
-

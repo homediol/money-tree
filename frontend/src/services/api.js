@@ -1,8 +1,21 @@
 import axios from 'axios';
+import { getApiToken } from '../auth.js';
+
+export function getApiBaseUrl() {
+  if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
+  if (typeof window === 'undefined') return 'http://localhost:8000';
+  return `${window.location.protocol}//${window.location.hostname}:8000`;
+}
 
 export const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
+  baseURL: getApiBaseUrl(),
   timeout: 20000,
+});
+
+api.interceptors.request.use((config) => {
+  const token = getApiToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
 });
 
 export async function getCurrentSignal() {
@@ -35,6 +48,11 @@ export async function getModelPerformance() {
   return data;
 }
 
+export async function getSystemStatus() {
+  const { data } = await api.get('/api/system/status');
+  return data;
+}
+
 export async function trainModels() {
   const { data } = await api.post('/api/models/train');
   return data;
@@ -61,12 +79,12 @@ export async function checkBettingBrowser(includeSnapshot = false) {
 }
 
 export async function startBettingSession(payload) {
-  const { data } = await api.post('/api/betting/session', { action: 'start', ...payload });
+  const { data } = await api.post('/api/betting/start', payload);
   return data;
 }
 
 export async function stopBettingSession() {
-  const { data } = await api.post('/api/betting/session', { action: 'stop' });
+  const { data } = await api.post('/api/betting/stop');
   return data;
 }
 
@@ -85,5 +103,29 @@ export async function getBettingLedger(params = {}) {
   return data;
 }
 
+// --- Risk management (Part 2) ---
 
+export async function getRiskStatus() {
+  const { data } = await api.get('/api/risk/status');
+  return data;
+}
 
+export async function getRiskProfiles() {
+  const { data } = await api.get('/api/risk/profiles');
+  return data;
+}
+
+export async function getRiskSession() {
+  const { data } = await api.get('/api/risk/session');
+  return data;
+}
+
+export async function setRiskProfile(profile) {
+  const { data } = await api.post('/api/risk/profile', { profile });
+  return data;
+}
+
+export async function resetRiskEmergency() {
+  const { data } = await api.post('/api/risk/reset-emergency');
+  return data;
+}

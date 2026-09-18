@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 
 from app.betting.browser_adapters import PlacementUnavailable, SimulationBackend
+from app.betting.browser_client import BrowserUnreachable
 from app.betting.config import BettingSettings
 from app.betting.events import betting_event, ledger_event, notice_event, state_event
 from app.betting.profiles import PROFILES, profile_keys
@@ -64,6 +66,8 @@ def real_request(**kw) -> SessionStartRequest:
 def decision(decision_id: str, target_multiplier: float = 2.0,
              **kw) -> DecisionIntent:
     return DecisionIntent(decision_id=decision_id,
+                          round_id=kw.pop("round_id", f"round-{decision_id}"),
+                          execute=kw.pop("execute", True),
                           profile=kw.pop("profile", "PROFILE_A"),
                           target_multiplier=target_multiplier, **kw)
 
@@ -209,17 +213,18 @@ def test_sim_session_win_accumulates_pnl():
         mgr = BettingManager(fast_settings())
         await mgr.start_session(sim_request(max_rounds=1))
         session = mgr.session
-        # Target 1.05 < 1.21 → round-0 crash cashes out for +25 BIF.
-        entry = await mgr.submit_decision(decision("d-win", 1.05))
+        session.backend.crash_sequence = [3.10]
+        # Profile A requires 2.00x; a 3.10x crash yields +500.
+        entry = await mgr.submit_decision(decision("d-win", 2.0))
         assert entry["status"] == OutcomeStatus.PLACED.value
         await _wait_task(session._task)
         st = session.status()
         assert st["state"] == SessionState.STOPPED.value
         assert st["stop_reason"] == "max_rounds"
-        assert st["running_pnl_bif"] == 25.0
+        assert st["running_pnl_bif"] == 500.0
         assert st["resolved_decisions"] == 1
         (e,) = session.ledger_slice()
-        assert e["pnl_bif"] == 25.0
+        assert e["pnl_bif"] == 500.0
         assert e["note"] == "won"
     _run(go())
 
@@ -227,14 +232,15 @@ def test_sim_session_win_accumulates_pnl():
 def test_auto_stop_target_profit():
     async def go():
         mgr = BettingManager(fast_settings())
-        # +25 profit crosses the +20 goal on the first resolution.
+        # +500 profit crosses the +20 goal on the first resolution.
         await mgr.start_session(sim_request(target_profit_bif=20))
         session = mgr.session
-        await mgr.submit_decision(decision("d-profit", 1.05))
+        session.backend.crash_sequence = [3.10]
+        await mgr.submit_decision(decision("d-profit", 2.0))
         await _wait_task(session._task)
         assert session.state == SessionState.STOPPED
         assert session.stop_reason == "target_profit"
-        assert session.status()["running_pnl_bif"] == 25.0
+        assert session.status()["running_pnl_bif"] == 500.0
     _run(go())
 
 
@@ -513,7 +519,7 @@ def test_api_decision_out_of_band_rejected_422():
 
 
 def test_api_decision_while_idle_conflict_409():
-    payload = {"decision_id": "d-idle", "profile": "PROFILE_A",
+    payload = {"decision_id": "d-idle", "round_id": "round-idle", "profile": "PROFILE_A",
                "target_multiplier": 2.0}
     async def go(client):
         return await client.post("/api/betting/decisions", json=payload)
@@ -550,7 +556,7 @@ def test_api_sim_e2e_start_decide_resolve_stop():
         assert started["simulated"] is True
 
         r = await client.post("/api/betting/decisions", json={
-            "decision_id": "d-api-1", "profile": "PROFILE_A",
+            "decision_id": "d-api-1", "round_id": "round-api-1", "profile": "PROFILE_A",
             "target_multiplier": 2.0})
         assert r.status_code == 200
         entry = r.json()["entry"]
@@ -583,7 +589,7 @@ def test_api_duplicate_decision_conflict_409():
         await client.post("/api/betting/session", json={
             "action": "start", "mode": "SIMULATION", "profile": "PROFILE_A"})
 
-        payload = {"decision_id": "d-api-dup", "profile": "PROFILE_A",
+        payload = {"decision_id": "d-api-dup", "round_id": "round-api-dup", "profile": "PROFILE_A",
                    "target_multiplier": 2.0}
         assert (await client.post("/api/betting/decisions", json=payload)).status_code == 200
         r = await client.post("/api/betting/decisions", json=payload)
@@ -595,3 +601,136 @@ def test_api_duplicate_decision_conflict_409():
         assert r.json()["status"]["state"] in ("STOPPING", "STOPPED")
         await _wait_task(client.manager.session._task)
     _run(_api_call(go))
+
+
+# ─── Authorized-decision and automatic-mode contract ─────────────────
+
+def test_expired_decision_is_rejected_without_placement():
+    async def go():
+        mgr = BettingManager(fast_settings())
+        await mgr.start_session(sim_request())
+        entry = await mgr.submit_decision(decision(
+            "expired", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
+        assert entry["status"] == "rejected"
+        assert entry["reason"] == "expired_decision"
+        assert mgr.session.placed_count == 0
+        await mgr.stop_session()
+        await _wait_task(mgr.session._task)
+    _run(go())
+
+
+def test_execute_false_and_missing_round_are_rejected():
+    async def go():
+        mgr = BettingManager(fast_settings())
+        await mgr.start_session(sim_request())
+        denied = await mgr.submit_decision(decision("no-exec", execute=False))
+        missing = DecisionIntent(decision_id="no-round", profile="PROFILE_A",
+                                 cashout=2.0)
+        missing_entry = await mgr.submit_decision(missing)
+        assert denied["reason"] == "execution_not_authorized"
+        assert missing_entry["reason"] == "invalid_round"
+        await mgr.stop_session()
+        await _wait_task(mgr.session._task)
+    _run(go())
+
+
+def test_profile_cashout_must_match_active_profile():
+    async def go():
+        mgr = BettingManager(fast_settings())
+        await mgr.start_session(sim_request())
+        mismatch = await mgr.submit_decision(decision("bad-cashout", 1.5))
+        assert mismatch["reason"] == "cashout_mismatch"
+        assert mgr.session.placed_count == 0
+        await mgr.stop_session()
+        await _wait_task(mgr.session._task)
+    _run(go())
+
+
+def test_goal_balance_reached_stops_and_emits_event():
+    async def go():
+        events = []
+        async def broadcast(event):
+            events.append(event)
+        mgr = BettingManager(fast_settings(), broadcaster=broadcast)
+        req = sim_request(starting_balance=1000, goal_balance=1400)
+        await mgr.start_session(req)
+        session = mgr.session
+        session.backend.crash_sequence = [3.10]
+        await mgr.submit_decision(decision("goal", 2.0, amount_bif=500))
+        await _wait_task(session._task)
+        await asyncio.sleep(0)
+        assert session.stop_reason == "goal_reached"
+        assert session.wins == 1 and session.losses == 0
+        assert any(e["type"] == "betting:goal_reached" for e in events)
+    _run(go())
+
+
+def test_emergency_stop_emits_event_and_stops():
+    async def go():
+        events = []
+        async def broadcast(event):
+            events.append(event)
+        mgr = BettingManager(fast_settings(), broadcaster=broadcast)
+        await mgr.start_session(sim_request())
+        session = mgr.session
+        await mgr.stop_session(emergency=True)
+        await _wait_task(session._task)
+        await asyncio.sleep(0)
+        assert session.stop_reason == "emergency"
+        assert any(e["type"] == "betting:emergency_stop" for e in events)
+    _run(go())
+
+
+def test_api_automatic_start_stop_balance_and_current_routes():
+    async def go(client):
+        start = await client.post("/api/betting/start", json={
+            "starting_balance": 5000, "goal_balance": 10000,
+            "profile": "profile_a",
+        })
+        balance = await client.get("/api/betting/balance")
+        current = await client.get("/api/betting/current")
+        stop = await client.post("/api/betting/stop")
+        await _wait_task(client.manager.session._task)
+        return start, balance, current, stop
+    start, balance, current, stop = _run(_api_call(go))
+    assert start.status_code == 200
+    assert start.json()["status"]["starting_balance"] == 5000
+    assert start.json()["status"]["goal_balance"] == 10000
+    assert balance.status_code == 200 and balance.json()["verified"] is False
+    assert current.json()["current_bet"] is None
+    assert stop.status_code == 200
+
+
+def test_named_realtime_events_cover_frontend_contract():
+    async def go():
+        events = []
+        async def broadcast(event):
+            events.append(event)
+        mgr = BettingManager(fast_settings(), broadcaster=broadcast)
+        await mgr.start_session(sim_request())
+        await mgr.submit_decision(decision("events"))
+        await asyncio.sleep(0)
+        await mgr.stop_session()
+        await _wait_task(mgr.session._task)
+        await asyncio.sleep(0)
+        names = {event["type"] for event in events}
+        assert {"betting:started", "betting:waiting",
+                "betting:decision_received", "betting:bet_placed",
+                "betting:stopped"}.issubset(names)
+    _run(go())
+
+
+def test_browser_disconnect_stops_connected_real_session():
+    class DisconnectedBackend:
+        async def readiness(self):
+            raise BrowserUnreachable("connection lost")
+
+    async def go():
+        session = _real_session(fast_settings())
+        session.state = SessionState.CONNECTED
+        session.backend = DisconnectedBackend()
+        await session._real_observe_cycle()
+        assert session._stop_requested is True
+        assert session.stop_reason == "browser_disconnected"
+        assert session.state == SessionState.STOPPING
+    _run(go())

@@ -97,6 +97,7 @@ class AviatorCollector {
 
     // Watchdog recovery signal — set when watchdog fires, cleared after recovery
     this._watchdogReason = null;
+    this._cleanFallbackUsed = false;
   }
 
   async _initRoundStore() {
@@ -143,7 +144,16 @@ class AviatorCollector {
     // ── Step 3: Navigate to Aviator ───────────────────────────────────────
     this.sm.transition(State.HOME, 'logged-in');
     this.sm.transition(State.GAME_LOADING, 'navigating');
-    await this.loginMgr.goToAviator(this._page, this.signal);
+    try {
+      await this.loginMgr.goToAviator(this._page, this.signal);
+    } catch (err) {
+      log.warn(`Bot profile could not open Aviator; trying fresh incognito Chrome: ${formatError(err)}`);
+      await this.browser.restartIncognito(this.signal);
+      this._cleanFallbackUsed = true;
+      this._page = await this.browser.getPage();
+      await this.loginMgr.ensureLoggedIn(this._page, this.signal);
+      await this.loginMgr.goToAviator(this._page, this.signal);
+    }
 
     // ── Step 4: Start watchdog ────────────────────────────────────────────
     this.watchdog.setPage(this._page);
@@ -151,6 +161,14 @@ class AviatorCollector {
 
     // ── Step 5: Infinite collection loop ─────────────────────────────────
     await this._collectionLoop();
+  }
+
+  async shutdown() {
+    this.watchdog.stop();
+    this.health.setCollectorRunning(false);
+    this.health.stop();
+    await this.roundStore.close().catch(err => log.warn(`Round store close failed: ${formatError(err)}`));
+    await this.browser.close().catch(err => log.warn(`Browser close failed: ${formatError(err)}`));
   }
 
   async _collectionLoop() {
@@ -178,6 +196,31 @@ class AviatorCollector {
         if (this.signal?.aborted) break;
 
         log.error(`Collection error: ${formatError(err)}`);
+
+        // If Winner opened the route but never created the game iframe, do
+        // not keep reloading that same broken bot-profile page. Switch once to
+        // a clean incognito browser, visit home, log in, and reopen Aviator.
+        if (!this._cleanFallbackUsed && /timed out waiting for aviator iframe/i.test(formatError(err))) {
+          log.warn('Aviator iframe missing; switching immediately to fresh incognito Chrome');
+          this.sm.transition(State.RECOVERING, 'iframe-timeout-incognito-fallback');
+          try {
+            await this.browser.restartIncognito(this.signal);
+            this._page = await this.browser.getPage();
+            // ensureLoggedIn always visits https://winner.rw/ before opening
+            // the login page, which is required for Winner/Cloudflare.
+            await this.loginMgr.ensureLoggedIn(this._page, this.signal);
+            this.sm.transition(State.GAME_LOADING, 'incognito-fallback');
+            await this.loginMgr.goToAviator(this._page, this.signal);
+            this._cleanFallbackUsed = true;
+            this.watchdog.setPage(this._page);
+            attempt = 0;
+            continue;
+          } catch (fallbackErr) {
+            log.error(`Incognito Chrome fallback failed: ${formatError(fallbackErr)}`);
+            throw fallbackErr;
+          }
+        }
+
         const delay = backoffMs(attempt++);
         log.warn(`Recovering in ${delay}ms (attempt ${attempt})`);
 
@@ -212,7 +255,14 @@ class AviatorCollector {
     }
 
     // Always get a fresh frame — never reuse a cached reference
-    const frame = await this.frameMgr.waitForFrame(this._page, { signal: this.signal });
+    const frame = await this.frameMgr.waitForFrame(this._page, {
+      signal: this.signal,
+      // Detect a bad dedicated-profile load quickly. Once on the user's
+      // clean fallback, allow the full configured game startup interval.
+      timeoutMs: this._cleanFallbackUsed
+        ? Number(process.env.BOT_FRAME_TIMEOUT || 120000)
+        : Number(process.env.BOT_INITIAL_FRAME_TIMEOUT || 30000),
+    });
     this.health.setFrameConnected(true);
 
     await this.frameMgr.waitForPayouts(frame, this.signal);
@@ -290,7 +340,6 @@ class AviatorCollector {
       if (currSig !== this._lastSavedSig) {
         const newest = inferred[0];
         log.info(`New round: ${fmt(newest)}`);
-        process.stdout.write(`  ✔ New round detected: ${fmt(newest)}\n`);
 
         const { history, added } = appendRounds(this._history, inferred);
         if (added.length > 0) {
@@ -300,7 +349,6 @@ class AviatorCollector {
           await this.roundStore.saveRounds(added, 'collector');
           added.forEach(() => this.health.recordRound());
           log.info(`History updated: ${this._history.length} rounds saved`);
-          process.stdout.write(`  ✔ History updated: ${this._history.length} rounds saved\n`);
         }
       }
 
@@ -323,16 +371,20 @@ export async function startCollector(signal) {
   const masked = creds.phone.slice(-4).padStart(creds.phone.length, '*');
   log.info(`Starting collector for ${masked} (headless=${creds.headless})`);
 
-  const collector = new AviatorCollector(creds, signal);
-
   // Infinite outer loop — never exits unless signal is aborted
   while (!signal?.aborted) {
+    // A failed run may leave its state machine in any state. Each outer retry
+    // therefore gets a clean lifecycle instead of attempting invalid backward
+    // transitions such as GAME_LOADING → LOGIN.
+    const collector = new AviatorCollector(creds, signal);
     try {
       await collector.run();
     } catch (err) {
       if (signal?.aborted) break;
       log.error(`Outer loop error: ${formatError(err)} — restarting in 10s`);
       await sleep(10000, signal);
+    } finally {
+      await collector.shutdown();
     }
   }
 

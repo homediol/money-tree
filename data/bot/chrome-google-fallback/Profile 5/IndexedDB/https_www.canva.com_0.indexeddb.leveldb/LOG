@@ -1,0 +1,7 @@
+2026/07/12-13:49:34.588 146a6 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.canva.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/12-13:49:34.589 146a6 Recovering log #3
+2026/07/12-13:49:34.638 146a6 Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.canva.com_0.indexeddb.leveldb/000003.log 
+2026/07/12-13:49:34.758 146bb Level-0 table #5: started
+2026/07/12-13:49:34.802 146bb Level-0 table #5: 137691 bytes OK
+2026/07/12-13:49:34.843 146bb Delete type=0 #3
+2026/07/12-13:49:34.843 146a9 Manual compaction at level-0 from '\x00\x03\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x04\x00\x00\x00' @ 0 : 0; will stop at (end)

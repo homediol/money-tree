@@ -1,34 +1,35 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Activity, Database, Gauge, Radio, Target } from 'lucide-react';
 import Card from '../components/Card.jsx';
 import EvidencePanel from '../components/EvidencePanel.jsx';
 import Metric from '../components/Metric.jsx';
 import StatusPill from '../components/StatusPill.jsx';
 import { useLiveData } from '../hooks/useLiveData.js';
 import { mult, pct } from '../utils/format.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { ErrorState, LoadingState } from '../components/PageState.jsx';
+import DataFreshness from '../components/DataFreshness.jsx';
 
 export default function Dashboard() {
-  const { loading, error, signal, stats, history } = useLiveData();
+  const { loading, error, signal, stats, history, system } = useLiveData();
   const analysis = signal?.analysis;
   const chart = (history?.rounds || []).slice(-80).map((r) => ({ round: r.round_index, multiplier: r.multiplier, target: r.target }));
 
-  if (loading) return <div className="text-zinc-400">Loading statistical analysis...</div>;
-  if (error) return <div className="rounded border border-rose-500/30 bg-rose-500/10 p-4 text-rose-200">{error}</div>;
+  if (loading) return <LoadingState label="Loading statistical analysis…" />;
+  if (error) return <ErrorState message={error} />;
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-col justify-between gap-3 md:flex-row md:items-end">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-emerald-300">STATISTICAL PATTERN ANALYSIS</div>
-          <h1 className="mt-1 text-3xl font-semibold tracking-normal">Current Signal</h1>
-        </div>
-        <StatusPill status={analysis?.status} />
-      </div>
+      <PageHeader eyebrow="Operations overview" title="Dashboard" icon={Activity}
+        description="Statistical context from the currently stored round dataset. Signals are analytical observations—not guaranteed outcomes."
+        badge={<StatusPill status={analysis?.status} />}
+        action={<DataFreshness timestamp={system?.dataset?.last_timestamp} records={system?.dataset?.valid_records} />} />
 
       <section className="grid gap-4 md:grid-cols-4">
-        <Card><Metric label="Final Probability" value={pct(analysis?.final_probability)} tone="good" /></Card>
-        <Card><Metric label="Confidence" value={analysis?.confidence || 'N/A'} /></Card>
-        <Card><Metric label="Valid Rounds" value={stats?.data_quality?.valid_records ?? 0} /></Card>
-        <Card><Metric label="Latest Round" value={mult(stats?.statistics?.latest_multiplier)} /></Card>
+        <Card><Target size={17} className="mb-4 text-emerald-400" /><Metric label="Observed Rate" value={pct(analysis?.final_probability)} tone="good" /></Card>
+        <Card><Gauge size={17} className="mb-4 text-sky-400" /><Metric label="Evidence Confidence" value={analysis?.confidence || 'N/A'} /></Card>
+        <Card><Database size={17} className="mb-4 text-violet-400" /><Metric label="Valid Rounds" value={stats?.data_quality?.valid_records ?? 0} /></Card>
+        <Card><Radio size={17} className="mb-4 text-amber-400" /><Metric label="Latest Multiplier" value={mult(stats?.statistics?.latest_multiplier)} /></Card>
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
@@ -44,9 +45,9 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </div>
         </Card>
-        <Card title="Current Pattern">
+        <Card title="Evidence snapshot">
           <div className="space-y-4">
-            <p className="text-lg font-medium text-zinc-100">{analysis?.current_pattern?.label}</p>
+            <p className="text-lg font-semibold text-zinc-100">{analysis?.current_pattern?.label || 'No active pattern'}</p>
             <Metric label="Historical Matches" value={analysis?.historical_evidence?.matches ?? 0} />
             <Metric label="Historical Rate" value={pct(analysis?.historical_evidence?.historical_rate)} />
             <p className="text-sm text-zinc-500">Target: {analysis?.target}. No output is guaranteed.</p>
@@ -58,4 +59,3 @@ export default function Dashboard() {
     </div>
   );
 }
-

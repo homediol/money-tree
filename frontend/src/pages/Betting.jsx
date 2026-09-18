@@ -3,12 +3,12 @@ import {
   AlertTriangle, Bot, CheckCircle2, Circle, OctagonX, Play, Radio, Send, Square, Zap,
 } from 'lucide-react';
 import Card from '../components/Card.jsx';
+import { getWebSocketUrl } from '../auth.js';
 import {
   checkBettingBrowser, emergencyStopBetting, getBettingLedger, getBettingProfiles,
-  getBettingStatus, startBettingSession, stopBettingSession, submitBettingDecision,
+  getBettingStatus, getRiskProfiles, getRiskStatus, resetRiskEmergency,
+  setRiskProfile, startBettingSession, stopBettingSession, submitBettingDecision,
 } from '../services/api.js';
-
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/live';
 
 // Distinct visual language per state — CONNECTED (real) is emerald,
 // SIMULATION is amber, browser problems are red/orange.
@@ -62,17 +62,16 @@ export default function Betting() {
   const [profiles, setProfiles] = useState(null);
   const [ledger, setLedger] = useState([]);
   const [browser, setBrowser] = useState(null);
+  const [risk, setRisk] = useState(null);
+  const [riskProfiles, setRiskProfiles] = useState(null);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
 
-  const [mode, setMode] = useState('SIMULATION');
   const [profileKey, setProfileKey] = useState('PROFILE_A');
-  const [label, setLabel] = useState('');
-  const [targetProfit, setTargetProfit] = useState('');
-  const [maxLoss, setMaxLoss] = useState('');
-  const [maxRounds, setMaxRounds] = useState('');
+  const [startingBalance, setStartingBalance] = useState('5000');
+  const [goalBalance, setGoalBalance] = useState('10000');
 
   const [demoId, setDemoId] = useState('');
   const [demoMult, setDemoMult] = useState('2.0');
@@ -88,10 +87,15 @@ export default function Betting() {
 
   const refresh = useCallback(async () => {
     try {
-      const [s, p, l] = await Promise.all([getBettingStatus(), getBettingProfiles(), getBettingLedger(50)]);
+      const [s, p, l, r, rp] = await Promise.all([
+        getBettingStatus(), getBettingProfiles(), getBettingLedger(50),
+        getRiskStatus(), getRiskProfiles(),
+      ]);
       setStatus(s);
       setProfiles(p);
       setLedger(l?.entries || []);
+      setRisk(r?.status || null);
+      setRiskProfiles(rp?.profiles || null);
       setError(null);
     } catch (e) {
       setError(errMsg(e));
@@ -102,26 +106,22 @@ export default function Betting() {
     let closed = false;
     let retryTimer = null;
     let attempts = 0;
-    const poll = window.setInterval(() => {
-      if (!closed) refresh();
-    }, 4000);
-
     function connect() {
       if (closed) return;
-      const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(getWebSocketUrl());
       wsRef.current = ws;
       ws.onopen = () => { attempts = 0; };
       ws.onmessage = (event) => {
         if (closed) return;
         try {
           const msg = JSON.parse(event.data);
-          if (!msg?.type || !msg.type.startsWith('betting:')) return; // ignore other /ws/live traffic
+          if (!msg?.type || (!msg.type.startsWith('betting:') && !msg.type.startsWith('browser:') && !msg.type.startsWith('risk:'))) return;
           if (msg.type === 'betting:state') {
             setStatus((prev) => ({ ...prev, status: { ...(prev?.status || {}), ...msg } }));
             refresh();
           } else if (msg.type === 'betting:ledger') {
             refresh();
-          }
+          } else refresh();
         } catch (err) { /* ignore malformed frames */ }
       };
       ws.onerror = () => {};
@@ -137,7 +137,6 @@ export default function Betting() {
     connect();
     return () => {
       closed = true;
-      window.clearInterval(poll);
       if (retryTimer) window.clearTimeout(retryTimer);
       if (wsRef.current) wsRef.current.close();
     };
@@ -149,14 +148,14 @@ export default function Betting() {
     setError(null);
     try {
       if (action === 'start') {
-        const payload = { action: 'start', mode, profile: profileKey };
-        if (label.trim()) payload.label = label.trim();
-        if (targetProfit !== '') payload.target_profit_bif = Number(targetProfit);
-        if (maxLoss !== '') payload.max_loss_bif = Number(maxLoss);
-        if (maxRounds !== '') payload.max_rounds = Number(maxRounds);
+        const payload = {
+          starting_balance: Number(startingBalance),
+          goal_balance: Number(goalBalance),
+          profile: profileKey,
+        };
         const res = await startBettingSession(payload);
         setStatus(res);
-        setNotice(mode === 'SIMULATION' ? 'Simulation session started — no real bets are placed.' : 'Session start requested.');
+        setNotice('Automatic betting started. Waiting for browser verification and an authorized decision.');
         refresh();
       } else if (action === 'stop') {
         await stopBettingSession();
@@ -188,15 +187,21 @@ export default function Betting() {
     try {
       const body = {
         decision_id: demoId || `manual-${Date.now()}`,
+        round_id: `manual-round-${Date.now()}`,
+        execute: true,
         profile: profileKey,
         target_multiplier: Number(demoMult),
+        cashout: Number(demoMult),
+        expires_at: new Date(Date.now() + 30000).toISOString(),
         bet_slot: demoSlot,
         source: 'manual-demo',
       };
-      if (demoAmount !== '') body.amount_bif = Number(demoAmount);
+      if (demoAmount !== '') body.bet_amount = Number(demoAmount);
       const res = await submitBettingDecision(body);
       const e = res?.entry || {};
-      const text = e.status === 'deferred'
+      const text = res?.risk && !res.risk.approved
+        ? `Risk blocked ${res.risk.decision_id}: ${res.risk.reason}`
+        : e.status === 'deferred'
         ? `Decision ${e.decision_id}: deferred — ${e.reason} (${e.note})`
         : e.status === 'rejected'
           ? `Decision ${e.decision_id}: rejected — ${e.reason} (${e.note})`
@@ -214,17 +219,37 @@ export default function Betting() {
   const browserReady = browser?.browser;
   const snap = browser?.snapshot;
 
+  async function chooseProfile(key) {
+    setProfileKey(key);
+    if (active) return;
+    try {
+      await setRiskProfile(key);
+      await refresh();
+    } catch (e) {
+      setError(errMsg(e));
+    }
+  }
+
+  async function resetEmergency() {
+    try {
+      await resetRiskEmergency();
+      setNotice('Emergency-stop latch reset. Automatic betting remains off until explicitly started.');
+      await refresh();
+    } catch (e) { setError(errMsg(e)); }
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-300">
-            <Bot size={14} /> Betting Automation · Part 1 (read-only)
+            <Bot size={14} /> Execution &amp; Risk Control
           </div>
           <h1 className="mt-1 flex items-center gap-3 text-3xl font-semibold">
-            Aviator Betting
+            Aviator Betting · Risk Managed
             <StateBadge state={state} simulated={st.simulated} />
           </h1>
+          <p className="mt-2 max-w-2xl text-sm text-zinc-400">Control automatic execution, inspect browser readiness, and monitor bankroll safety. No bet is placed without an external authorized decision and risk approval.</p>
           {st.session_id && (
             <div className="mt-1 text-xs text-zinc-500">
               session {st.session_id} · mode {st.mode} · profile {st.profile}
@@ -266,83 +291,85 @@ export default function Betting() {
       {/* Metrics */}
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Card>
-          <div className="text-xs uppercase tracking-wide text-zinc-500">Game balance (observed)</div>
+          <div className="text-xs uppercase tracking-wide text-zinc-500">Current Balance (verified)</div>
           <div className="mt-1 text-2xl font-semibold">{s.last_balance_text || '—'}</div>
           <div className="text-xs text-zinc-500">{s.simulated ? 'simulated' : 'read-only from live browser'}</div>
         </Card>
         <Card>
-          <div className="text-xs uppercase tracking-wide text-zinc-500">Running P&L (BIF)</div>
+          <div className="text-xs uppercase tracking-wide text-zinc-500">Profit / Loss (RWF)</div>
           <div className={`mt-1 text-2xl font-semibold ${(s.running_pnl_bif || 0) >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
             {s.running_pnl_bif == null ? '—' : s.running_pnl_bif > 0 ? `+${s.running_pnl_bif}` : s.running_pnl_bif}
           </div>
           <div className="text-xs text-zinc-500">{s.resolved_decisions ?? 0} resolved decisions</div>
         </Card>
         <Card>
-          <div className="text-xs uppercase tracking-wide text-zinc-500">Placement ledger</div>
-          <div className="mt-1 text-2xl font-semibold">{s.ledger_size ?? 0}</div>
+          <div className="text-xs uppercase tracking-wide text-zinc-500">Bets / Wins / Losses</div>
+          <div className="mt-1 text-2xl font-semibold">{s.total_bets ?? 0} / {s.wins ?? 0} / {s.losses ?? 0}</div>
           <div className="text-xs text-zinc-500">
-            {s.placed_count ?? 0} placed · {s.deferred_count ?? 0} deferred · {s.rejected_count ?? 0} rejected
+            {s.deferred_count ?? 0} deferred · {s.rejected_count ?? 0} rejected
           </div>
         </Card>
         <Card>
           <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-zinc-500">
-            UI readiness {s.last_ui_ready ? <CheckCircle2 size={14} className="text-emerald-400" /> : <Circle size={14} className="text-zinc-500" />}
+            Browser {s.browser_status || state} {s.last_ui_ready ? <CheckCircle2 size={14} className="text-emerald-400" /> : <Circle size={14} className="text-zinc-500" />}
           </div>
           <div className="mt-1 text-2xl font-semibold">{s.last_ui_ready ? 'Ready' : 'Not visible'}</div>
-          <div className="text-xs text-zinc-500">latest crash {s.latest_crash != null ? `${s.latest_crash}x` : '—'}</div>
+          <div className="text-xs text-zinc-500">round {s.current_round || '—'} · cashout {s.cashout || '—'}x</div>
         </Card>
       </section>
 
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Card><div className="text-xs text-zinc-500">Starting Balance</div><div className="text-lg font-semibold">{s.starting_balance ?? '—'} RWF</div></Card>
+        <Card><div className="text-xs text-zinc-500">Goal</div><div className="text-lg font-semibold">{s.goal_balance ?? '—'} RWF</div></Card>
+        <Card><div className="text-xs text-zinc-500">Selected Profile</div><div className="text-lg font-semibold">{s.profile_label || s.profile || '—'}</div></Card>
+        <Card><div className="text-xs text-zinc-500">Current Bet / Last Result</div><div className="truncate text-sm font-semibold">{s.current_bet?.decision_id || 'No active bet'} / {s.last_result?.note || '—'}</div></Card>
+      </section>
+
+      {s.stop_reason === 'goal_reached' && <div className="rounded border border-emerald-400 bg-emerald-500/15 p-4 text-xl font-bold text-emerald-200">🎯 Goal Reached</div>}
+
+      <Card title="Risk Management · Part 2" action={
+        risk?.emergency_stop ? <button onClick={resetEmergency} className="rounded border border-amber-500/40 px-3 py-1 text-xs text-amber-200">Reset emergency latch</button> : null
+      }>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Risk Profile</div><div className="font-semibold">{risk?.profile_name || '—'}</div><div className="text-xs text-zinc-500">cashout {risk?.cashout ?? '—'}x</div></div>
+          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Risk Level</div><div className={`font-semibold ${risk?.risk_level === 'BLOCKED' ? 'text-rose-300' : 'text-emerald-300'}`}>{risk?.risk_level || 'BLOCKED'}</div><div className="text-xs text-zinc-500">{risk?.risk_status || 'BLOCKED'}</div></div>
+          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Current / Maximum Bet</div><div className="font-semibold">{risk?.current_bet_size ?? 0} / {risk?.maximum_bet ?? '—'} RWF</div><div className="text-xs text-zinc-500">max {(100 * (risk?.maximum_balance_percentage || 0)).toFixed(0)}% of balance</div></div>
+          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Session Loss / Maximum</div><div className="font-semibold">{risk?.session_loss ?? 0} / {risk?.maximum_session_loss ?? '—'} RWF</div><div className="text-xs text-zinc-500">P/L {risk?.profit_loss == null ? '—' : `${risk.profit_loss} RWF`}</div></div>
+          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Consecutive Losses</div><div className="font-semibold">{risk?.consecutive_losses ?? 0} / {risk?.maximum_consecutive_losses ?? '—'}</div><div className="text-xs text-zinc-500">available {risk?.available_balance ?? '—'} RWF</div></div>
+        </div>
+        <div className={`mt-3 rounded border p-3 text-sm ${risk?.risk_status === 'APPROVED' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-rose-500/30 bg-rose-500/10 text-rose-200'}`}>
+          Risk Status: {risk?.risk_status || 'BLOCKED'} · {risk?.reason || 'Awaiting authorized decision'}
+          {risk?.emergency_stop && ' · Emergency stop is latched; no new bets can be approved.'}
+        </div>
+      </Card>
+
       <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
         {/* Session controls */}
-        <Card title="Session">
+        <Card title="Betting Control">
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block text-sm">
-              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Mode</span>
-              <select value={mode} onChange={(e) => setMode(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm">
-                <option value="SIMULATION">Simulation (no real bets)</option>
-                <option value="REAL">Real (read-only verification)</option>
-              </select>
-              <span className="mt-1 block text-[11px] leading-tight text-zinc-500">
-                {mode === 'REAL'
-                  ? 'Connects read-only to the live Aviator browser. Part 1 never places a real bet: valid decisions are deferred.'
-                  : 'Deterministic demo against a scripted game loop. Clearly marked, never presented as a real bet.'}
-              </span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Starting Balance (RWF)</span>
+              <input type="number" min="0" value={startingBalance} onChange={(e) => setStartingBalance(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
             </label>
             <label className="block text-sm">
-              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Profile</span>
-              <select value={profileKey} onChange={(e) => setProfileKey(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm">
-                {(profiles?.keys || ['PROFILE_A', 'PROFILE_B']).map((k) => (
-                  <option key={k} value={k}>{k}</option>
+              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Goal Balance (RWF)</span>
+              <input type="number" min="1" value={goalBalance} onChange={(e) => setGoalBalance(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
+            </label>
+            <fieldset className="sm:col-span-2">
+              <legend className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Betting Profile</legend>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                {(profiles?.keys || ['PROFILE_A', 'PROFILE_B']).map((key) => (
+                  <label key={key} className={`cursor-pointer rounded border p-3 ${profileKey === key ? 'border-emerald-500 bg-emerald-500/10' : 'border-zinc-700 bg-zinc-900'}`}>
+                    <input type="radio" className="mr-2" checked={profileKey === key} onChange={() => chooseProfile(key)} />
+                    {riskProfiles?.[key]?.name || profiles?.profiles?.[key]?.name || key}
+                  </label>
                 ))}
-              </select>
-              {profiles?.profiles?.[profileKey] && (
-                <span className="mt-1 block text-[11px] leading-tight text-zinc-500">
-                  {profiles.profiles[profileKey].label} · base {profiles.profiles[profileKey].base_target}x ·
-                  default stake {profiles.profiles[profileKey].default_amount_bif} BIF
-                </span>
-              )}
-            </label>
-            <label className="block text-sm sm:col-span-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Label (optional)</span>
-              <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. weekend-live" className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
-            </label>
-            <label className="block text-sm">
-              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Target profit BIF</span>
-              <input type="number" min="0" value={targetProfit} onChange={(e) => setTargetProfit(e.target.value)} placeholder="none" className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
-            </label>
-            <label className="block text-sm">
-              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Max loss BIF</span>
-              <input type="number" min="0" value={maxLoss} onChange={(e) => setMaxLoss(e.target.value)} placeholder="none" className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
-            </label>
-            <label className="block text-sm sm:col-span-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Max rounds</span>
-              <input type="number" min="1" value={maxRounds} onChange={(e) => setMaxRounds(e.target.value)} placeholder="none (run until stopped)" className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
-            </label>
+              </div>
+            </fieldset>
           </div>
           <p className="mt-3 flex items-center gap-2 text-[11px] text-zinc-500">
             <Radio size={12} className={active ? 'text-emerald-400' : ''} />
-            Auto-stop goals only trigger after a round resolves (simulation). A REAL session is read-only in Part 1 and produces no resolutions.
+            Automatic mode: {active ? 'ON' : 'OFF'}. The goal is a stopping target, never a guarantee.
           </p>
         </Card>
 
@@ -465,5 +492,3 @@ export default function Betting() {
     </div>
   );
 }
-
-

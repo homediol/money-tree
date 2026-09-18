@@ -1,0 +1,6 @@
+2026/04/08-17:30:29.513 8ea Creating DB /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.zapium.com_0.indexeddb.leveldb since it was missing.
+2026/04/08-17:30:29.614 8ea Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.zapium.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/08-17:33:47.067 8ec Level-0 table #5: started
+2026/04/08-17:33:47.111 8ec Level-0 table #5: 826 bytes OK
+2026/04/08-17:33:47.148 8ec Delete type=0 #3
+2026/04/08-17:33:47.148 8ec Manual compaction at level-0 from (begin) .. (end); will stop at (end)

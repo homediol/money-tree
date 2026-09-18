@@ -76,8 +76,11 @@ backend/artifacts/
 # Chrome profile and cache
 # =========================
 data/bot/chrome-profile/
+data/bot/chrome-profile-*/
+browser_profiles/
 Cache/
 Cache_Data/
+aviator_enterprise/.venv-enterprise/
 
 # =========================
 # Playwright

@@ -93,8 +93,8 @@ function cdpEndpointCandidates(userDataDir) {
   const candidates = [
     process.env.BOT_CDP_ENDPOINT,
     devToolsEndpointFromProfile(userDataDir),
-    process.env.BOT_CDP_ENDPOINT ? `http://127.0.0.1:${DEFAULT_CDP_PORT}` : null,
-    process.env.BOT_CDP_ENDPOINT ? `http://localhost:${DEFAULT_CDP_PORT}` : null,
+    `http://127.0.0.1:${DEFAULT_CDP_PORT}`,
+    `http://localhost:${DEFAULT_CDP_PORT}`,
   ].filter(Boolean);
   return [...new Set(candidates)];
 }

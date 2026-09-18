@@ -1,0 +1,29 @@
+2026/09/17-22:14:10.585 5 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/Local Storage/leveldb/MANIFEST-000001
+2026/09/17-22:14:10.615 5 Recovering log #1103
+2026/09/17-22:14:10.616 5 Reusing old log /home/diolo/.config/google-chrome/Profile 5/Local Storage/leveldb/001103.log 
+2026/09/17-22:37:23.028 5 Level-0 table #1109: started
+2026/09/17-22:37:23.234 5 Level-0 table #1109: 19147 bytes OK
+2026/09/17-22:37:23.638 5 Delete type=0 #1103
+2026/09/17-23:32:59.057 7 Level-0 table #1111: started
+2026/09/17-23:32:59.121 7 Level-0 table #1111: 179601 bytes OK
+2026/09/17-23:32:59.193 7 Delete type=0 #1108
+2026/09/17-23:34:58.211 7 Level-0 table #1113: started
+2026/09/17-23:34:58.364 7 Level-0 table #1113: 98154 bytes OK
+2026/09/17-23:34:58.562 7 Delete type=0 #1110
+2026/09/17-23:36:58.219 5 Level-0 table #1115: started
+2026/09/17-23:36:58.501 5 Level-0 table #1115: 88699 bytes OK
+2026/09/17-23:36:58.592 5 Delete type=0 #1112
+2026/09/17-23:36:58.595 7 Compacting 4@0 + 2@1 files
+2026/09/17-23:37:00.228 7 Generated table #1116@0: 912 keys, 2605850 bytes
+2026/09/17-23:37:00.517 7 Generated table #1117@0: 11487 keys, 1022262 bytes
+2026/09/17-23:37:00.517 7 Compacted 4@0 + 2@1 files => 3628112 bytes
+2026/09/17-23:37:00.688 7 compacted to: files[ 0 2 1 0 0 0 0 ]
+2026/09/17-23:37:00.691 7 Delete type=2 #1109
+2026/09/17-23:37:00.691 7 Delete type=2 #1115
+2026/09/17-23:37:00.691 7 Delete type=2 #1105
+2026/09/17-23:37:00.691 7 Delete type=2 #1106
+2026/09/17-23:37:00.691 7 Delete type=2 #1113
+2026/09/17-23:37:00.691 7 Delete type=2 #1111
+2026/09/17-23:38:23.084 5 Level-0 table #1119: started
+2026/09/17-23:38:23.173 5 Level-0 table #1119: 90389 bytes OK
+2026/09/17-23:38:23.351 5 Delete type=0 #1114

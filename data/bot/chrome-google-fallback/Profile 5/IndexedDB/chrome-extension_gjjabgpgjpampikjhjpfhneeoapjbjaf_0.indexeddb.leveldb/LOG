@@ -1,0 +1,6 @@
+2026/06/09-04:25:46.420 2ecf Creating DB /home/diolo/.config/google-chrome/Profile 5/IndexedDB/chrome-extension_gjjabgpgjpampikjhjpfhneeoapjbjaf_0.indexeddb.leveldb since it was missing.
+2026/06/09-04:25:48.296 2ecf Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/chrome-extension_gjjabgpgjpampikjhjpfhneeoapjbjaf_0.indexeddb.leveldb/MANIFEST-000001
+2026/06/09-04:30:51.151 2ecf Level-0 table #5: started
+2026/06/09-04:30:51.231 2ecf Level-0 table #5: 1077 bytes OK
+2026/06/09-04:30:51.291 2ecf Delete type=0 #3
+2026/06/09-04:30:51.293 2ecf Manual compaction at level-0 from (begin) .. (end); will stop at (end)

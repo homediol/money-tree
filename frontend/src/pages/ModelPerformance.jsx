@@ -5,6 +5,9 @@ import StatusPill from '../components/StatusPill.jsx';
 import { useLiveData } from '../hooks/useLiveData.js';
 import { trainModels } from '../services/api.js';
 import { pct } from '../utils/format.js';
+import { BrainCircuit, PlayCircle } from 'lucide-react';
+import PageHeader from '../components/PageHeader.jsx';
+import { EmptyState, ErrorState, LoadingState } from '../components/PageState.jsx';
 
 export default function ModelPerformance() {
   const { models, refresh, loading, error } = useLiveData();
@@ -18,18 +21,15 @@ export default function ModelPerformance() {
       setTraining(false);
     }
   }
-  if (loading) return <div className="text-zinc-400">Loading model performance...</div>;
-  if (error) return <div className="text-rose-300">{error}</div>;
+  if (loading) return <LoadingState label="Loading model validation…" />;
+  if (error) return <ErrorState message={error} onRetry={refresh} />;
   const modelRows = Object.entries(models?.models || {});
   const base = models?.baselines?.base_rate || {};
   return (
     <div className="space-y-5">
-      <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
-        <h1 className="text-3xl font-semibold">Model Performance</h1>
-        <button onClick={train} disabled={training} className="rounded bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 disabled:opacity-60">
-          {training ? 'Training...' : 'Train Models'}
-        </button>
-      </div>
+      <PageHeader eyebrow="Validation workspace" title="Models" icon={BrainCircuit}
+        description="Review walk-forward validation and calibration metrics. Model outputs remain separate from risk approval and bet execution."
+        action={<button onClick={train} disabled={training} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 hover:bg-emerald-300 disabled:opacity-60"><PlayCircle size={17} />{training ? 'Training…' : 'Train models'}</button>} />
       <Card title="Validation Status">
         <div className="flex flex-wrap items-center gap-4">
           <StatusPill status={models?.status || 'MODEL NOT TRAINED'} />
@@ -43,6 +43,7 @@ export default function ModelPerformance() {
         <Card><Metric label="Calibration" value={models?.calibration?.supported ? 'Supported' : 'Not supported'} /></Card>
       </section>
       <Card title="Walk-Forward Model Metrics">
+        {modelRows.length === 0 ? <EmptyState title="No validated models" description="Run training to generate walk-forward metrics." /> :
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="text-xs uppercase text-zinc-500">
@@ -59,12 +60,10 @@ export default function ModelPerformance() {
                   <td>{m.brier_score?.toFixed?.(3)}</td>
                 </tr>
               ))}
-              {modelRows.length === 0 && <tr><td className="py-4 text-zinc-500" colSpan="6">No validated model metrics yet.</td></tr>}
             </tbody>
           </table>
-        </div>
+        </div>}
       </Card>
     </div>
   );
 }
-

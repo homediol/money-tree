@@ -24,13 +24,15 @@ class Settings(BaseSettings):
     min_sample_size: int = Field(default=30, ge=1)
     signal_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
     strong_signal_threshold: float = Field(default=0.68, ge=0.0, le=1.0)
-    data_path: Path = Path(__file__).resolve().parents[2] / "data" / "roundhistory.json"
+    # The Node collector writes the canonical live history at project-root
+    # data/roundhistory.json. Keep one source of truth for collector + API.
+    data_path: Path = Path(__file__).resolve().parents[3] / "data" / "roundhistory.json"
     database_path: Path = Path(__file__).resolve().parents[2] / "winner_predict.sqlite3"
     model_dir: Path = Path(__file__).resolve().parents[2] / "trained_models"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    api_key: str | None = Field(default=None, min_length=16)
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

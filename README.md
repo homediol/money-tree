@@ -74,6 +74,12 @@ and edit if you need different paths, thresholds, or CORS origins. Defaults
 point at `backend/data/`, `backend/trained_models/`, and
 `backend/winner_predict.sqlite3`.
 
+For any deployment reachable by other machines, set `API_KEY` to a random
+value of at least 16 characters. The backend will then require that value as a
+Bearer token for every `/api/*` endpoint and for `/ws/live`. Enter the same
+value on the dashboard's Settings page; it is kept only in session storage.
+Keep `CORS_ORIGINS` restricted to the exact dashboard origins.
+
 > Python 3.13 note: `requirements.txt` uses version ranges so the newest
 > NumPy/Pandas/scikit-learn wheels install on 3.13. The pinned legacy versions
 > (`numpy 1.24`, `pandas 2.1`) have no 3.13 wheels.
@@ -93,6 +99,27 @@ The frontend talks to the backend directly at
 `ws://localhost:8000/ws/live` (`VITE_WS_URL`). Override both at dev/build time
 with environment variables if the backend runs elsewhere.
 
+### Browser profile fallback
+
+The collector normally uses `data/bot/chrome-profile-new-email`. If that
+profile cannot navigate to Aviator, it retries with the last-used Google Chrome
+profile under `~/.config/google-chrome`. Set `BOT_GOOGLE_PROFILE` (for example,
+`Profile 5`) to select a specific profile. When normal Chrome already owns that
+profile, either close Chrome before starting the collector or launch Chrome
+with remote debugging enabled on `BOT_CDP_PORT` (default `9222`); the collector
+will attach to it and will not remove a live profile lock.
+
+When the selected Google profile is already open without remote debugging, the
+collector creates an isolated snapshot at `data/bot/chrome-google-fallback`
+containing only authentication/application state. It never removes the live
+profile lock or launches a second process against the active profile.
+
+If the dedicated profile cannot open Aviator, or opens the URL without a game
+iframe for `BOT_INITIAL_FRAME_TIMEOUT` (default 30 seconds), the collector
+launches a fresh incognito-style Chrome context. It visits `https://winner.rw/`
+first, signs in using the configured collector credentials, and then opens the
+direct Aviator route. This avoids live-profile locks and stale browser state.
+
 ### 3. Tests
 
 ```bash
@@ -100,6 +127,9 @@ cd backend
 . .venv/bin/activate
 pytest tests/          # or just: pytest
 ```
+
+The included root `pytest.ini` also makes `pytest` work from the repository
+root when the backend dependencies are installed in the active environment.
 
 The suite covers the API routes, data loading, pattern discovery, signal
 fusion, sequence similarity, and walk-forward model validation.
@@ -193,5 +223,3 @@ Aviator multiplier sequences may be random or adversarially generated.
 Historical relationships can disappear. Small samples are unreliable. The
 project is designed for transparent research and monitoring, not guaranteed
 outcome prediction.
-
-

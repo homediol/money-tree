@@ -1,0 +1,18 @@
+2026/08/11-13:10:56.751 994 Creating DB /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_ai.blaze.today_0.indexeddb.leveldb since it was missing.
+2026/08/11-13:10:56.949 994 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_ai.blaze.today_0.indexeddb.leveldb/MANIFEST-000001
+2026/08/11-13:10:57.328 932 Level-0 table #5: started
+2026/08/11-13:10:57.487 932 Level-0 table #5: 1322 bytes OK
+2026/08/11-13:10:57.538 932 Delete type=0 #3
+2026/08/11-13:10:57.538 932 Manual compaction at level-0 from '\x00\x01\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x02\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/08/11-13:13:00.423 932 Level-0 table #7: started
+2026/08/11-13:13:00.522 932 Level-0 table #7: 6526 bytes OK
+2026/08/11-13:13:00.616 932 Delete type=0 #4
+2026/08/11-13:13:00.616 932 Manual compaction at level-0 from (begin) .. (end); will stop at (end)
+2026/08/11-13:13:00.617 932 Manual compaction at level-1 from (begin) .. (end); will stop at '\x00\x03\x01\x02\x01\x13\x00[\x00D\x00E\x00F\x00A\x00U\x00L\x00T\x00]\x00!\x00u\x00n\x00d\x00e\x00f\x00i\x00n\x00e\x00d' @ 104 : 1
+2026/08/11-13:13:00.617 932 Compacting 1@1 + 1@2 files
+2026/08/11-13:13:00.656 932 Generated table #8@1: 35 keys, 2724 bytes
+2026/08/11-13:13:00.657 932 Compacted 1@1 + 1@2 files => 2724 bytes
+2026/08/11-13:13:00.693 932 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/08/11-13:13:00.694 932 Delete type=2 #7
+2026/08/11-13:13:00.694 932 Delete type=2 #5
+2026/08/11-13:13:00.694 932 Manual compaction at level-1 from '\x00\x03\x01\x02\x01\x13\x00[\x00D\x00E\x00F\x00A\x00U\x00L\x00T\x00]\x00!\x00u\x00n\x00d\x00e\x00f\x00i\x00n\x00e\x00d' @ 104 : 1 .. (end); will stop at (end)

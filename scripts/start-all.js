@@ -204,16 +204,26 @@ function isPortInUse(port, host = "127.0.0.1") {
 
 function prefixLines(svc, stream, writer) {
   let buf = "";
+  let writable = true;
+  writer.on?.("error", (err) => {
+    if (err?.code === "EPIPE") writable = false;
+  });
+  const write = (value) => {
+    if (!writable || writer.destroyed || !writer.writable) return;
+    try { writer.write(value); } catch (err) {
+      if (err?.code === "EPIPE") writable = false;
+    }
+  };
   stream.on("data", (chunk) => {
     buf += chunk.toString();
     const lines = buf.split(/\r?\n/);
     buf = lines.pop() ?? "";
     for (const line of lines) {
-      if (line.trim()) writer.write(`${label(svc)} ${line}\n`);
+      if (line.trim()) write(`${label(svc)} ${line}\n`);
     }
   });
   stream.on("end", () => {
-    if (buf.trim()) writer.write(`${label(svc)} ${buf}\n`);
+    if (buf.trim()) write(`${label(svc)} ${buf}\n`);
   });
 }
 

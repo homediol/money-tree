@@ -1,0 +1,22 @@
+2026/07/21-18:07:10.677 8e8 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.facebook.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/21-18:07:10.677 8e8 Recovering log #975
+2026/07/21-18:07:10.707 8e8 Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.facebook.com_0.indexeddb.leveldb/000975.log 
+2026/07/21-18:07:20.563 8fb Compacting 1@1 + 6@2 files
+2026/07/21-18:07:22.303 8fb Generated table #978@1: 4893 keys, 2120800 bytes
+2026/07/21-18:07:23.322 8fb Generated table #979@1: 60597 keys, 2211290 bytes
+2026/07/21-18:07:23.507 8fb Level-0 table #982: started
+2026/07/21-18:07:24.789 8fb Level-0 table #982: 5806 bytes OK
+2026/07/21-18:07:25.342 8fb Delete type=0 #975
+2026/07/21-18:07:26.702 8fb Generated table #980@1: 11413 keys, 2141295 bytes
+2026/07/21-18:07:28.900 8fb Generated table #983@1: 21502 keys, 2154075 bytes
+2026/07/21-18:07:29.153 8fb Generated table #984@1: 25407 keys, 2170738 bytes
+2026/07/21-18:07:29.506 8fb Generated table #985@1: 21261 keys, 1852241 bytes
+2026/07/21-18:07:29.506 8fb Compacted 1@1 + 6@2 files => 12650439 bytes
+2026/07/21-18:07:29.739 8fb compacted to: files[ 1 0 6 0 0 0 0 ]
+2026/07/21-18:07:29.739 8fb Manual compaction at level-0 from '\x00\xbd\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\xbe\x00\x00\x00' @ 0 : 0; will stop at '\x00\xbd\x00\x00\xc8\x0a\x00r\x00e\x00e\x00l\x00_\x00d\x00r\x00a\x00f\x00t' @ 3335343 : 1
+2026/07/21-18:07:29.739 8fb Compacting 1@0 + 0@1 files
+2026/07/21-18:07:29.850 8fb Generated table #986@0: 93 keys, 2003 bytes
+2026/07/21-18:07:29.850 8fb Compacted 1@0 + 0@1 files => 2003 bytes
+2026/07/21-18:07:30.004 8fb compacted to: files[ 0 1 6 0 0 0 0 ]
+2026/07/21-18:07:30.005 8fb Delete type=2 #982
+2026/07/21-18:07:30.007 8fb Manual compaction at level-0 from '\x00\xbd\x00\x00\xc8\x0a\x00r\x00e\x00e\x00l\x00_\x00d\x00r\x00a\x00f\x00t' @ 3335343 : 1 .. '\x00\xbe\x00\x00\x00' @ 0 : 0; will stop at (end)

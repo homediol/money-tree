@@ -1,0 +1,12 @@
+2026/07/19-11:30:07.667 139a5 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.youtube.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/19-11:30:07.668 139a5 Recovering log #144
+2026/07/19-11:30:07.801 139a5 Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.youtube.com_0.indexeddb.leveldb/000144.log 
+2026/07/19-11:43:16.571 139a7 Level-0 table #149: started
+2026/07/19-11:43:16.660 139a7 Level-0 table #149: 1491194 bytes OK
+2026/07/19-11:43:16.697 139a7 Delete type=0 #144
+2026/07/19-11:54:06.229 139a7 Compacting 1@1 + 1@2 files
+2026/07/19-11:54:06.352 139a7 Generated table #150@1: 1326 keys, 80442 bytes
+2026/07/19-11:54:06.352 139a7 Compacted 1@1 + 1@2 files => 80442 bytes
+2026/07/19-11:54:06.416 139a7 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/07/19-11:54:06.416 139a7 Delete type=2 #146
+2026/07/19-11:54:06.417 139a7 Delete type=2 #149

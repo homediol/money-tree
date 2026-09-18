@@ -1,0 +1,13 @@
+2026/08/11-22:49:10.461 a015 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_ai.blaze.today_0.indexeddb.leveldb/MANIFEST-000001
+2026/08/11-22:49:10.461 a015 Recovering log #6
+2026/08/11-22:49:10.461 a015 Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_ai.blaze.today_0.indexeddb.leveldb/000006.log 
+2026/08/11-22:49:10.717 a013 Level-0 table #11: started
+2026/08/11-22:49:10.762 a013 Level-0 table #11: 831 bytes OK
+2026/08/11-22:49:10.804 a013 Delete type=0 #6
+2026/08/11-22:49:10.804 a013 Manual compaction at level-0 from '\x00\x04\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x05\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/08/11-22:50:46.743 a013 Compacting 1@1 + 1@2 files
+2026/08/11-22:50:46.784 a013 Generated table #12@1: 41 keys, 2873 bytes
+2026/08/11-22:50:46.784 a013 Compacted 1@1 + 1@2 files => 2873 bytes
+2026/08/11-22:50:46.816 a013 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/08/11-22:50:46.816 a013 Delete type=2 #11
+2026/08/11-22:50:46.817 a013 Delete type=2 #8

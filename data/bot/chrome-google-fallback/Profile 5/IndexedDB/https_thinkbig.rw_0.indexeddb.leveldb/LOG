@@ -1,0 +1,6 @@
+2026/07/11-11:20:09.194 d563 Creating DB /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_thinkbig.rw_0.indexeddb.leveldb since it was missing.
+2026/07/11-11:20:09.294 d563 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_thinkbig.rw_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/11-11:21:52.390 d563 Level-0 table #5: started
+2026/07/11-11:21:52.434 d563 Level-0 table #5: 12196 bytes OK
+2026/07/11-11:21:52.470 d563 Delete type=0 #3
+2026/07/11-11:21:52.471 d563 Manual compaction at level-0 from (begin) .. (end); will stop at (end)

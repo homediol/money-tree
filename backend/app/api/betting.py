@@ -12,7 +12,12 @@ from fastapi.responses import JSONResponse
 
 from app.betting.browser_client import AviatorBrowserClient
 from app.betting.profiles import profile_keys
-from app.betting.schemas import DecisionIntent, SessionStartRequest, profile_choices
+from app.betting.schemas import (
+    AutomaticStartRequest,
+    DecisionIntent,
+    SessionStartRequest,
+    profile_choices,
+)
 from app.betting.session import BettingError
 
 log = logging.getLogger("betting.api")
@@ -24,6 +29,10 @@ def _betting(request: Request):
     if manager is None:
         raise BettingError("betting manager not initialised")
     return manager
+
+
+def _risk(request: Request):
+    return getattr(request.app.state, "risk", None)
 
 
 def _conflict(exc: BettingError) -> JSONResponse:
@@ -44,6 +53,51 @@ async def status(request: Request):
 async def profiles(request: Request):
     return {"ok": True, "profiles": profile_choices(),
             "keys": profile_keys()}
+
+
+@router.post("/start")
+async def start_automatic(request: Request, body: AutomaticStartRequest):
+    """Start REAL automatic mode; no prediction is created here."""
+    try:
+        risk = _risk(request)
+        if risk and risk.emergency_latched:
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": "emergency_stop_latched",
+                "message": "Reset emergency stop before starting a new session",
+            })
+        status = await _betting(request).start_session(body.as_session_request())
+        if risk:
+            await risk.on_session_start(body.profile)
+        return {"ok": True, "status": status}
+    except BettingError as exc:
+        return _conflict(exc)
+
+
+@router.post("/stop")
+async def stop_automatic(request: Request):
+    try:
+        status = await _betting(request).stop_session(emergency=False)
+        return {"ok": True, "status": status}
+    except BettingError as exc:
+        return _conflict(exc)
+
+
+@router.get("/balance")
+async def balance(request: Request):
+    status = _betting(request).status()
+    return {
+        "ok": True,
+        "verified": status.get("current_balance") is not None,
+        "current_balance": status.get("current_balance"),
+        "balance_text": status.get("last_balance_text", ""),
+    }
+
+
+@router.get("/current")
+async def current_bet(request: Request):
+    status = _betting(request).status()
+    return {"ok": True, "current_bet": status.get("current_bet"),
+            "current_round": status.get("current_round")}
 
 
 @router.get("/browser")
@@ -79,7 +133,15 @@ async def session_control(request: Request, body: SessionStartRequest):
     manager = _betting(request)
     try:
         if body.action == "start":
+            risk = _risk(request)
+            if risk and risk.emergency_latched:
+                return JSONResponse(status_code=409, content={
+                    "ok": False, "error": "emergency_stop_latched",
+                    "message": "Reset emergency stop before starting a new session",
+                })
             status = await manager.start_session(body)
+            if risk:
+                await risk.on_session_start(body.profile)
         else:
             status = await manager.stop_session(emergency=False)
         return {"ok": True, "status": status}
@@ -90,6 +152,9 @@ async def session_control(request: Request, body: SessionStartRequest):
 @router.post("/emergency-stop")
 async def emergency_stop(request: Request):
     manager = _betting(request)
+    risk = _risk(request)
+    if risk:
+        await risk.emergency_stop()
     try:
         status = await manager.stop_session(emergency=True)
     except BettingError as exc:
@@ -100,15 +165,30 @@ async def emergency_stop(request: Request):
 @router.post("/decisions")
 async def submit_decision(request: Request, body: DecisionIntent):
     manager = _betting(request)
+    risk = _risk(request)
     try:
+        risk_result = None
+        if risk:
+            risk_result = await risk.evaluate(body, manager.status())
+            if not risk_result.approved:
+                return {"ok": True, "risk": risk_result.public(), "entry": None}
+            # The executor receives only the risk-approved stake and centrally
+            # configured cashout; it never creates or alters a prediction.
+            body = body.model_copy(update={
+                "amount_bif": risk_result.approved_bet,
+                "bet_amount": risk_result.approved_bet,
+                "cashout": risk_result.cashout,
+                "target_multiplier": risk_result.cashout,
+            })
         entry = await manager.submit_decision(body)
     except BettingError as exc:
         return _conflict(exc)
-    return {"ok": True, "entry": entry}
+    return {"ok": True,
+            "risk": risk_result.public() if risk_result else None,
+            "entry": entry}
 
 
 @router.get("/ledger")
 async def ledger(request: Request, limit: int = 50):
     manager = _betting(request)
     return {"ok": True, "entries": manager.ledger(limit)}
-

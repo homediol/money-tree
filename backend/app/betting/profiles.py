@@ -55,6 +55,7 @@ PROFILES: dict[str, BettingProfile] = {
 
 
 def get_profile(key: str) -> BettingProfile:
+    key = key.upper()
     try:
         return PROFILES[key]
     except KeyError:
@@ -65,4 +66,3 @@ def get_profile(key: str) -> BettingProfile:
 
 def profile_keys() -> list[str]:
     return sorted(PROFILES)
-

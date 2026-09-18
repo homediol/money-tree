@@ -1,0 +1,10 @@
+2026/07/12-14:14:39.999 146a6 Creating DB /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_app.tuta.com_0.indexeddb.leveldb since it was missing.
+2026/07/12-14:14:40.104 146a6 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_app.tuta.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/12-14:15:08.809 146bd Level-0 table #5: started
+2026/07/12-14:15:09.071 146bd Level-0 table #5: 17125 bytes OK
+2026/07/12-14:15:09.169 146bd Delete type=0 #3
+2026/07/12-14:15:09.184 146bb Manual compaction at level-0 from '\x00\x02\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x03\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/07/12-14:28:28.160 146a6 Level-0 table #7: started
+2026/07/12-14:28:28.260 146a6 Level-0 table #7: 61542 bytes OK
+2026/07/12-14:28:28.337 146a6 Delete type=0 #4
+2026/07/12-14:28:28.337 146a6 Manual compaction at level-0 from '\x00\x05\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x06\x00\x00\x00' @ 0 : 0; will stop at (end)

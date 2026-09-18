@@ -1,0 +1,35 @@
+2026/08/03-13:06:40.695 93d Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_replit.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/08/03-13:06:40.695 93d Recovering log #96
+2026/08/03-13:06:40.695 93d Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_replit.com_0.indexeddb.leveldb/000096.log 
+2026/08/03-13:06:42.406 93d Level-0 table #102: started
+2026/08/03-13:06:42.453 93d Level-0 table #102: 797 bytes OK
+2026/08/03-13:06:42.489 93d Delete type=0 #96
+2026/08/03-13:06:42.489 93b Manual compaction at level-0 from '\x00\x1c\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x1d\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/08/03-13:07:19.707 93d Level-0 table #104: started
+2026/08/03-13:07:19.752 93d Level-0 table #104: 10756 bytes OK
+2026/08/03-13:07:19.822 93d Delete type=0 #101
+2026/08/03-13:07:19.823 93d Manual compaction at level-0 from '\x00\x1d\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x1e\x00\x00\x00' @ 0 : 0; will stop at '\x00\x1d\x00\x00\x05' @ 1620 : 1
+2026/08/03-13:07:19.823 93d Compacting 1@0 + 1@1 files
+2026/08/03-13:07:19.931 93d Generated table #105@0: 42 keys, 3595 bytes
+2026/08/03-13:07:19.931 93d Compacted 1@0 + 1@1 files => 3595 bytes
+2026/08/03-13:07:19.983 93d compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/08/03-13:07:19.983 93d Delete type=2 #104
+2026/08/03-13:07:19.983 93d Manual compaction at level-0 from '\x00\x1d\x00\x00\x05' @ 1620 : 1 .. '\x00\x1e\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/08/03-13:08:30.808 94f Level-0 table #107: started
+2026/08/03-13:08:30.852 94f Level-0 table #107: 4116 bytes OK
+2026/08/03-13:08:30.888 94f Delete type=2 #102
+2026/08/03-13:08:30.888 94f Delete type=0 #103
+2026/08/03-13:08:30.888 93b Manual compaction at level-0 from '\x00\x1e\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x1f\x00\x00\x00' @ 0 : 0; will stop at '\x00\x1e\x00\x00\x05' @ 1665 : 1
+2026/08/03-13:08:30.888 93b Compacting 1@0 + 1@1 files
+2026/08/03-13:08:30.931 93b Generated table #108@0: 54 keys, 3869 bytes
+2026/08/03-13:08:30.932 93b Compacted 1@0 + 1@1 files => 3869 bytes
+2026/08/03-13:08:30.965 93b compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/08/03-13:08:30.966 93b Delete type=2 #107
+2026/08/03-13:08:30.967 93b Manual compaction at level-0 from '\x00\x1e\x00\x00\x05' @ 1665 : 1 .. '\x00\x1f\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/08/03-13:09:15.667 93d Compacting 1@1 + 1@2 files
+2026/08/03-13:09:15.755 93d Generated table #109@1: 56 keys, 4100 bytes
+2026/08/03-13:09:15.755 93d Compacted 1@1 + 1@2 files => 4100 bytes
+2026/08/03-13:09:15.788 93d compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/08/03-13:09:15.789 93d Delete type=2 #108
+2026/08/03-13:09:15.790 93d Delete type=2 #99
+2026/08/03-13:09:15.790 93d Delete type=2 #105

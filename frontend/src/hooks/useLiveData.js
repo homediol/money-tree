@@ -1,26 +1,34 @@
-import { useEffect, useState } from 'react';
-import { getCurrentSignal, getHistory, getModelPerformance, getPatterns, getSignalHistory, getStatistics } from '../services/api.js';
-
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/live';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { getCurrentSignal, getHistory, getModelPerformance, getPatterns, getSignalHistory, getStatistics, getSystemStatus } from '../services/api.js';
+import { getWebSocketUrl } from '../auth.js';
 
 export function useLiveData() {
   const [state, setState] = useState({ loading: true, error: null });
+  const loadingRef = useRef(false);
+  const lastLoadRef = useRef(0);
 
-  async function load() {
+  const load = useCallback(async (force = false) => {
+    if (loadingRef.current) return;
+    if (!force && Date.now() - lastLoadRef.current < 1000) return;
+    loadingRef.current = true;
     try {
-      const [signal, stats, patterns, history, signalHistory, models] = await Promise.all([
+      const [signal, stats, patterns, history, signalHistory, models, system] = await Promise.all([
         getCurrentSignal(),
         getStatistics(),
         getPatterns(),
         getHistory(),
         getSignalHistory(),
         getModelPerformance(),
+        getSystemStatus(),
       ]);
-      setState({ loading: false, error: null, signal, stats, patterns, history, signalHistory, models });
+      setState({ loading: false, error: null, signal, stats, patterns, history, signalHistory, models, system });
+      lastLoadRef.current = Date.now();
     } catch (error) {
       setState((prev) => ({ ...prev, loading: false, error: error.message || 'API unavailable' }));
+    } finally {
+      loadingRef.current = false;
     }
-  }
+  }, []);
 
   useEffect(() => {
     let ws = null;
@@ -32,7 +40,7 @@ export function useLiveData() {
     // automatically when the backend starts late or is restarted.
     function connect() {
       if (closed) return;
-      ws = new WebSocket(WS_URL);
+      ws = new WebSocket(getWebSocketUrl());
       ws.onopen = () => {
         attempts = 0;
       };
@@ -54,8 +62,7 @@ export function useLiveData() {
       if (retryTimer) clearTimeout(retryTimer);
       if (ws) ws.close();
     };
-  }, []);
+  }, [load]);
 
-  return { ...state, refresh: load };
+  return { ...state, refresh: () => load(true) };
 }
-

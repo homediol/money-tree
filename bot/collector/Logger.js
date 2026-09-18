@@ -21,6 +21,14 @@ const COLORS = {
 };
 
 let _minLevel = LEVELS.INFO;
+let _stdoutAvailable = true;
+
+// A supervisor or terminal can disappear while the collector keeps running.
+// Without an error listener, writing to that closed pipe raises EPIPE; logging
+// the resulting exception then raises EPIPE again forever.
+process.stdout.on('error', err => {
+  if (err?.code === 'EPIPE') _stdoutAvailable = false;
+});
 
 function ts() {
   return new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -69,7 +77,13 @@ function emit(level, tag, message, extras) {
   const extra = extras.length ? ' ' + extras.map(serialize).join(' ') : '';
   const plain = `[${ts()}] [${tag}] [${level}] ${message}${extra}`;
   const colored = `${COLORS[level]}${plain}${COLORS.RESET}`;
-  process.stdout.write(colored + '\n');
+  if (_stdoutAvailable && !process.stdout.destroyed && process.stdout.writable) {
+    try {
+      process.stdout.write(colored + '\n');
+    } catch (err) {
+      if (err?.code === 'EPIPE') _stdoutAvailable = false;
+    }
+  }
   writeFile(plain);
 }
 

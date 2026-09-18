@@ -12,6 +12,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const HOME_URL    = 'https://winner.rw';
 const LOGIN_URL   = 'https://winner.rw/en/authentication/login';
+const AVIATOR_URLS = [
+  'https://winner.rw/en/virtual/crash-games/aviator',
+  'https://winner.rw/en/games/aviator',
+];
 
 // Selectors that indicate the user is logged in.
 // These are checked IN THE CURRENT PAGE without navigating away.
@@ -102,9 +106,13 @@ export class LoginManager {
         } catch {}
       }
 
-      // On winner.rw but no clear signal either way — assume still logged in
-      // to avoid false positives that trigger unnecessary re-logins
-      if (url.includes('winner.rw')) return true;
+      // Winner's authenticated sportsbook currently uses a generic
+      // "Meta Brand" document title while its SPA hydrates. The route is the
+      // reliable signal here; there is intentionally no login form on it.
+      if (url.includes('winner.rw/sportsbook/')) {
+        log.info('LoginManager: authenticated sportsbook route detected');
+        return true;
+      }
 
       return false;
     } catch {
@@ -158,20 +166,64 @@ export class LoginManager {
     // Dismiss any modal/popup that might be blocking the form
     await this._dismissModals(page);
 
+    const pageInfo = async () => {
+      const title = await page.title().catch(() => '');
+      const inputs = await page.locator('input').count().catch(() => 0);
+      return `url=${page.url()} title=${JSON.stringify(title)} inputs=${inputs}`;
+    };
+
+    const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+    if (/verify you are human|checking your browser|captcha|access denied/i.test(bodyText)) {
+      throw new Error(`Winner browser verification is blocking login (${await pageInfo()})`);
+    }
+
+    // Prefer stable semantic attributes. Winner has changed these element IDs
+    // more than once, so IDs are only one option rather than a requirement.
+    const loginForm = page.locator('form:has(input[type="password"])').first();
+
     // Fill phone
-    const phoneInput = page.locator('#phoneInput').first();
-    await phoneInput.waitFor({ state: 'visible', timeout: 15000 });
+    let phoneInput = page.locator([
+      '#phoneInput',
+      'input[name="phone"]',
+      'input[name="username"]',
+      'input[name="login"]',
+      'input[type="tel"]',
+      'input[autocomplete="username"]',
+      'input[placeholder*="phone" i]',
+      'input[placeholder*="mobile" i]',
+    ].join(', ')).first();
+    if (!await phoneInput.isVisible({ timeout: 5000 }).catch(() => false)) {
+      phoneInput = loginForm.locator('input:not([type="password"]):not([type="hidden"]):not([type="submit"])').first();
+    }
+    if (!await phoneInput.isVisible({ timeout: 10000 }).catch(() => false)) {
+      throw new Error(`Winner phone/login input not found (${await pageInfo()})`);
+    }
     await phoneInput.click({ clickCount: 3 });
     await phoneInput.fill(this.phone);
 
     // Fill password
-    const passInput = page.locator('#password').first();
-    await passInput.waitFor({ state: 'visible', timeout: 10000 });
+    const passInput = page.locator([
+      '#password',
+      'input[name="password"]',
+      'input[type="password"]',
+      'input[autocomplete="current-password"]',
+    ].join(', ')).first();
+    if (!await passInput.isVisible({ timeout: 10000 }).catch(() => false)) {
+      throw new Error(`Winner password input not found (${await pageInfo()})`);
+    }
     await passInput.click({ clickCount: 3 });
     await passInput.fill(this.password);
 
     // Submit
-    const submitBtn = page.locator('#buttonLoginSubmit, #buttonLoginSubmitLabel, button[type="submit"]').first();
+    const submitBtn = page.locator([
+      '#buttonLoginSubmit',
+      '#buttonLoginSubmitLabel',
+      'button[type="submit"]',
+      'input[type="submit"]',
+      'button:has-text("Log in")',
+      'button:has-text("Login")',
+      'button:has-text("Sign in")',
+    ].join(', ')).first();
     await submitBtn.waitFor({ state: 'visible', timeout: 10000 });
     await submitBtn.click();
 
@@ -214,7 +266,13 @@ export class LoginManager {
       }
 
       // Try clicking the Aviator link from the current page or homepage.
-      const aviatorLink = page.locator('a[href*="/aviator"], a[href*="crash-games"]').first();
+      const aviatorLink = page.locator([
+        'a[href*="/aviator"]',
+        'a[href*="crash-games"]',
+        'a:has-text("Aviator")',
+        '[role="link"]:has-text("Aviator")',
+        'button:has-text("Aviator")',
+      ].join(', ')).first();
       let linkVisible = await aviatorLink.isVisible({ timeout: 3000 }).catch(() => false);
 
       if (!linkVisible) {
@@ -224,10 +282,24 @@ export class LoginManager {
       }
 
       if (linkVisible) {
-        await aviatorLink.click();
+        await aviatorLink.click({ timeout: 10000 });
         await sleep(4000, signal);
       } else {
-        throw new Error('Could not find Aviator link on winner.rw homepage');
+        // Winner changes its home-page tiles regularly. A missing link should
+        // not strand the collector forever: try known canonical routes.
+        let opened = false;
+        for (const candidate of AVIATOR_URLS) {
+          log.warn(`LoginManager: Aviator link not visible; trying ${candidate}`);
+          if (await this._navigate(page, candidate, signal)) {
+            await sleep(4000, signal);
+            const candidateUrl = page.url().toLowerCase();
+            if (candidateUrl.includes('aviator') || candidateUrl.includes('crash')) {
+              opened = true;
+              break;
+            }
+          }
+        }
+        if (!opened) throw new Error('Could not open Aviator from link or known direct routes');
       }
 
       const url = page.url().toLowerCase();

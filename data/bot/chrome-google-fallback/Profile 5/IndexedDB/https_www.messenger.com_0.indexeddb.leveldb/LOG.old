@@ -1,0 +1,53 @@
+2026/07/11-09:38:39.342 d55f Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.messenger.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/11-09:38:39.347 d55f Recovering log #392
+2026/07/11-09:38:39.610 d55f Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.messenger.com_0.indexeddb.leveldb/000392.log 
+2026/07/11-09:39:36.420 d55f Level-0 table #402: started
+2026/07/11-09:39:36.595 d55f Level-0 table #402: 1776789 bytes OK
+2026/07/11-09:39:36.636 d55f Delete type=0 #392
+2026/07/11-09:39:37.277 d563 Compacting 1@1 + 6@2 files
+2026/07/11-09:39:37.476 d563 Generated table #403@1: 13467 keys, 2139681 bytes
+2026/07/11-09:39:37.785 d563 Generated table #404@1: 56919 keys, 2198334 bytes
+2026/07/11-09:39:38.064 d563 Generated table #405@1: 22898 keys, 2171702 bytes
+2026/07/11-09:39:38.319 d563 Generated table #406@1: 7950 keys, 2132047 bytes
+2026/07/11-09:39:38.564 d563 Generated table #407@1: 18460 keys, 2147997 bytes
+2026/07/11-09:39:38.806 d563 Generated table #408@1: 9263 keys, 739013 bytes
+2026/07/11-09:39:38.806 d563 Compacted 1@1 + 6@2 files => 11528774 bytes
+2026/07/11-09:39:38.992 d563 compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/07/11-09:39:38.993 d563 Delete type=2 #402
+2026/07/11-09:39:38.993 d563 Delete type=2 #395
+2026/07/11-09:39:38.993 d563 Delete type=2 #396
+2026/07/11-09:39:38.994 d563 Delete type=2 #398
+2026/07/11-09:39:38.994 d563 Delete type=2 #399
+2026/07/11-09:39:38.994 d563 Delete type=2 #397
+2026/07/11-09:39:38.994 d563 Delete type=2 #394
+2026/07/11-09:59:07.182 d563 Level-0 table #410: started
+2026/07/11-09:59:07.333 d563 Level-0 table #410: 1778787 bytes OK
+2026/07/11-09:59:07.377 d563 Delete type=0 #401
+2026/07/11-10:00:53.558 db0f Compacting 1@1 + 6@2 files
+2026/07/11-10:00:53.744 db0f Generated table #411@1: 13092 keys, 2138785 bytes
+2026/07/11-10:00:53.922 db0f Generated table #412@1: 57879 keys, 2199361 bytes
+2026/07/11-10:00:54.055 db0f Generated table #413@1: 23338 keys, 2187414 bytes
+2026/07/11-10:00:54.177 db0f Generated table #414@1: 7090 keys, 2130031 bytes
+2026/07/11-10:00:54.322 db0f Generated table #415@1: 7430 keys, 2126851 bytes
+2026/07/11-10:00:54.422 db0f Generated table #416@1: 21804 keys, 1112313 bytes
+2026/07/11-10:00:54.422 db0f Compacted 1@1 + 6@2 files => 11894755 bytes
+2026/07/11-10:00:54.457 db0f compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/07/11-10:00:54.458 db0f Delete type=2 #408
+2026/07/11-10:00:54.458 db0f Delete type=2 #403
+2026/07/11-10:00:54.458 db0f Delete type=2 #406
+2026/07/11-10:00:54.458 db0f Delete type=2 #405
+2026/07/11-10:00:54.458 db0f Delete type=2 #404
+2026/07/11-10:00:54.458 db0f Delete type=2 #407
+2026/07/11-10:00:54.458 db0f Delete type=2 #410
+2026/07/11-11:40:23.682 d563 Level-0 table #418: started
+2026/07/11-11:40:23.880 d563 Level-0 table #418: 1658637 bytes OK
+2026/07/11-11:40:23.923 d563 Delete type=0 #409
+2026/07/11-11:40:42.602 d563 Compacting 1@1 + 6@2 files
+2026/07/11-11:40:42.742 d563 Generated table #419@1: 12583 keys, 2136695 bytes
+2026/07/11-11:40:42.886 d563 Generated table #420@1: 59229 keys, 2203285 bytes
+2026/07/11-11:40:42.998 d563 Generated table #421@1: 23896 keys, 2178448 bytes
+2026/07/11-11:40:43.109 d563 Generated table #422@1: 7018 keys, 2128986 bytes
+2026/07/11-11:40:43.209 d563 Generated table #423@1: 7440 keys, 2129444 bytes
+2026/07/11-11:40:43.366 d563 Generated table #424@1: 22565 keys, 1227543 bytes
+2026/07/11-11:40:43.367 d563 Compacted 1@1 + 6@2 files => 12004401 bytes
+2026/07/11-11:40:43.429 d563 compacted to: files[ 0 0 6 0 0 0 0 ]

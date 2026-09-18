@@ -1,13 +1,17 @@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Clock3 } from 'lucide-react';
 import Card from '../components/Card.jsx';
 import Metric from '../components/Metric.jsx';
 import { useLiveData } from '../hooks/useLiveData.js';
 import { mult, pct } from '../utils/format.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { EmptyState, ErrorState, LoadingState } from '../components/PageState.jsx';
+import DataFreshness from '../components/DataFreshness.jsx';
 
 export default function LiveHistory() {
-  const { history, stats, loading, error } = useLiveData();
-  if (loading) return <div className="text-zinc-400">Loading history...</div>;
-  if (error) return <div className="text-rose-300">{error}</div>;
+  const { history, stats, system, loading, error } = useLiveData();
+  if (loading) return <LoadingState label="Loading round history…" />;
+  if (error) return <ErrorState message={error} />;
   const rounds = history?.rounds || [];
   const latest = rounds.slice(-40).reverse();
   const buckets = [
@@ -19,7 +23,9 @@ export default function LiveHistory() {
   ];
   return (
     <div className="space-y-5">
-      <h1 className="text-3xl font-semibold">Live Round History</h1>
+      <PageHeader eyebrow="Live data" title="Round History" icon={Clock3}
+        description="Inspect recorded multipliers and the distribution of outcomes in the current dataset."
+        action={<DataFreshness timestamp={system?.dataset?.last_timestamp} records={history?.count} />} />
       <section className="grid gap-4 md:grid-cols-4">
         <Card><Metric label="2x Rate" value={pct(stats?.statistics?.base_rate)} /></Card>
         <Card><Metric label="Mean" value={mult(stats?.statistics?.mean)} /></Card>
@@ -40,14 +46,13 @@ export default function LiveHistory() {
         </div>
       </Card>
       <Card title="Latest Multipliers">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-8">
+        {latest.length === 0 ? <EmptyState title="No rounds recorded" description="The collector has not supplied round data yet." /> : <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-8">
           {latest.map((r) => <div key={r.round_index} className={`rounded border p-2 text-center ${r.multiplier >= 2 ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-zinc-800 bg-zinc-950'}`}>
             <div className="text-sm font-semibold">{mult(r.multiplier)}</div>
             <div className="text-xs text-zinc-500">#{r.round_index}</div>
           </div>)}
-        </div>
+        </div>}
       </Card>
     </div>
   );
 }
-

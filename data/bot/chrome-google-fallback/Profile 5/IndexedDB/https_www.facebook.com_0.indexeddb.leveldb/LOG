@@ -1,0 +1,38 @@
+2026/07/21-18:07:41.461 8e6 Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.facebook.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/21-18:07:41.462 8e6 Recovering log #981
+2026/07/21-18:07:41.463 8e6 Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_www.facebook.com_0.indexeddb.leveldb/000981.log 
+2026/07/21-18:07:41.464 8e6 Delete type=2 #970
+2026/07/21-18:07:41.464 8e6 Delete type=2 #969
+2026/07/21-18:07:41.464 8e6 Delete type=2 #973
+2026/07/21-18:07:41.464 8e6 Delete type=2 #976
+2026/07/21-18:07:41.465 8e6 Delete type=2 #972
+2026/07/21-18:07:41.465 8e6 Delete type=2 #971
+2026/07/21-18:07:41.465 8e6 Delete type=2 #974
+2026/07/21-18:07:42.409 8fa Level-0 table #989: started
+2026/07/21-18:07:43.404 8fa Level-0 table #989: 1239 bytes OK
+2026/07/21-18:07:44.325 8fa Delete type=0 #981
+2026/07/21-18:07:44.325 8f9 Manual compaction at level-0 from '\x00\xbd\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\xbe\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/07/21-18:07:46.329 8e6 Compacting 1@1 + 5@2 files
+2026/07/21-18:07:47.603 8e6 Generated table #990@1: 4895 keys, 2120780 bytes
+2026/07/21-18:07:47.762 8e6 Generated table #991@1: 60597 keys, 2211290 bytes
+2026/07/21-18:07:47.873 8e6 Generated table #992@1: 11413 keys, 2141295 bytes
+2026/07/21-18:07:47.974 8e6 Generated table #993@1: 21502 keys, 2154075 bytes
+2026/07/21-18:07:48.129 8e6 Generated table #994@1: 25397 keys, 2168747 bytes
+2026/07/21-18:07:48.129 8e6 Compacted 1@1 + 5@2 files => 10796187 bytes
+2026/07/21-18:07:48.165 8e6 compacted to: files[ 1 0 6 0 0 0 0 ]
+2026/07/21-18:07:48.166 8e6 Delete type=2 #979
+2026/07/21-18:07:48.166 8e6 Delete type=2 #983
+2026/07/21-18:07:48.166 8e6 Delete type=2 #984
+2026/07/21-18:07:48.166 8e6 Delete type=2 #986
+2026/07/21-18:07:48.166 8e6 Delete type=2 #980
+2026/07/21-18:07:48.166 8e6 Delete type=2 #978
+2026/07/21-18:08:41.842 8e8 Level-0 table #996: started
+2026/07/21-18:08:41.941 8e8 Level-0 table #996: 832307 bytes OK
+2026/07/21-18:08:41.978 8e8 Delete type=0 #988
+2026/07/21-18:08:41.978 8e8 Manual compaction at level-0 from '\x00\xbe\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\xbf\x00\x00\x00' @ 0 : 0; will stop at '\x00\x02\x01\x02\x01\x0e\x00m\x00w\x00_\x00e\x00x\x00c\x00h\x00a\x00n\x00g\x00e\x00_\x00v\x00m' @ 3335560 : 0
+2026/07/21-18:08:41.978 8e8 Compacting 2@0 + 0@1 files
+2026/07/21-18:08:42.042 8e8 Generated table #997@0: 8919 keys, 341638 bytes
+2026/07/21-18:08:42.042 8e8 Compacted 2@0 + 0@1 files => 341638 bytes
+2026/07/21-18:08:42.077 8e8 compacted to: files[ 0 1 6 0 0 0 0 ]
+2026/07/21-18:08:42.077 8e8 Delete type=2 #996
+2026/07/21-18:08:42.078 8e8 Manual compaction at level-0 from '\x00\x02\x01\x02\x01\x0e\x00m\x00w\x00_\x00e\x00x\x00c\x00h\x00a\x00n\x00g\x00e\x00_\x00v\x00m' @ 3335560 : 0 .. '\x00\xbf\x00\x00\x00' @ 0 : 0; will stop at (end)

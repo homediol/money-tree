@@ -1,0 +1,7 @@
+2026/04/08-16:21:00.178 8ff Reusing MANIFEST /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_en1.savefrom.net_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/08-16:21:00.179 8ff Recovering log #3
+2026/04/08-16:21:00.179 8ff Reusing old log /home/diolo/.config/google-chrome/Profile 5/IndexedDB/https_en1.savefrom.net_0.indexeddb.leveldb/000003.log 
+2026/04/08-16:23:29.410 8ec Level-0 table #5: started
+2026/04/08-16:23:29.443 8ec Level-0 table #5: 8649 bytes OK
+2026/04/08-16:23:29.478 8ec Delete type=0 #3
+2026/04/08-16:23:29.478 8ec Manual compaction at level-0 from (begin) .. (end); will stop at (end)
