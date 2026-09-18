@@ -23915,8 +23915,28 @@
     "round_index": 5216
   },
   {
-    "round_index": 5217,
     "multiplier": 13.8,
-    "timestamp": "2026-09-18T02:36:15.629Z"
+    "timestamp": "2026-09-18T02:36:15.629Z",
+    "round_index": 5217
+  },
+  {
+    "multiplier": 3.38,
+    "timestamp": "2026-09-18T02:36:40.022Z",
+    "round_index": 5218
+  },
+  {
+    "multiplier": 1.44,
+    "timestamp": "2026-09-18T02:36:53.436Z",
+    "round_index": 5219
+  },
+  {
+    "multiplier": 2.05,
+    "timestamp": "2026-09-18T02:37:11.044Z",
+    "round_index": 5220
+  },
+  {
+    "round_index": 5221,
+    "multiplier": 1.13,
+    "timestamp": "2026-09-18T02:37:21.968Z"
   }
 ]
