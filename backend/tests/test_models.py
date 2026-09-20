@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from app.api.ml import latest_prediction, metrics, model, recent_predictions, status
+from app.api.ml import estimate, latest_prediction, metrics, model, recent_predictions, status
 from app.database.repository import Repository
 from app.ml.model_registry import ModelRegistry
-from app.ml.trainer import TARGET_COLUMN, ModelTrainer, evaluate_probabilities, feature_schema
+from app.ml.trainer import TARGET_COLUMN, ModelTrainer, block_bootstrap_brier_advantage, causal_frequency, evaluate_probabilities, feature_schema
 from app.services.dataset_service import DatasetService
 
 
@@ -73,7 +75,7 @@ def test_baseline_evaluation_and_probability_metrics():
 def test_training_pipeline_candidates_metrics_and_determinism(trained):
     _, dataset, _, _, result = trained
     assert result.status == "READY" and result.validated
-    assert set(result.models) == {"logistic_regression", "random_forest", "gradient_boosting"}
+    assert {"logistic_regression", "random_forest", "extra_trees", "gradient_boosting"} <= set(result.models)
     assert result.algorithm in result.models
     assert result.validation_metrics == result.models[result.algorithm]["validation"]
     assert result.test_metrics["tp"] + result.test_metrics["fp"] + result.test_metrics["fn"] + result.test_metrics["tn"] == result.splits["test"]
@@ -92,6 +94,7 @@ def test_model_version_save_load_and_metadata(trained):
     assert info["model_version"] == result.model_version
     assert info["feature_names"] == result.feature_names
     assert info["target_definition"] == "next_round_ge_2x"
+    assert info["source_sha256"] == hashlib.sha256((root / "roundhistory.json").read_bytes()).hexdigest()
 
 
 def test_probability_inference_persistence_and_range(trained):
@@ -118,6 +121,18 @@ def test_incompatible_feature_version_and_stale_rejection(trained):
     registry.max_feature_age_s = 3600
 
 
+def test_recent_collection_gap_blocks_validated_model_inference(trained):
+    _, dataset, _, registry, _ = trained
+    previous = dataset.quality["latest_contiguous_rounds"]
+    try:
+        dataset.quality["latest_contiguous_rounds"] = 20
+        assert registry.status(dataset)["status"] == "INSUFFICIENT_RECENT_HISTORY"
+        assert registry.status(dataset)["deployable"] is False
+        assert registry.predict_latest(dataset) is None
+    finally:
+        dataset.quality["latest_contiguous_rounds"] = previous
+
+
 def test_below_baseline_model_is_not_used_for_live_inference(trained):
     _, dataset, _, registry, _ = trained
     original = registry._metadata["overfitting_checks"]["deployable"]
@@ -125,8 +140,29 @@ def test_below_baseline_model_is_not_used_for_live_inference(trained):
     try:
         assert registry.status(dataset)["quality_state"] == "BELOW_BASELINE"
         assert registry.predict_latest(dataset) is None
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(wp=SimpleNamespace(model_registry=registry, dataset_service=dataset))))
+        fallback = estimate(request)
+        assert fallback["status"] == "INFORMATIONAL_FALLBACK"
+        assert fallback["estimate"]["usable"] is False
     finally:
         registry._metadata["overfitting_checks"]["deployable"] = original
+
+
+def test_inference_failure_is_safe_and_does_not_create_prediction(trained):
+    _, dataset, _, registry, _ = trained
+    original, error = registry._model, registry._error
+
+    class FailedEstimator:
+        def predict_proba(self, _features):
+            raise RuntimeError("unavailable")
+
+    try:
+        registry._model = FailedEstimator()
+        assert registry.predict_latest(dataset) is None
+        assert registry.status(dataset)["status"] == "ERROR"
+        assert registry.fallback_estimate(dataset)["usable"] is False
+    finally:
+        registry._model, registry._error = original, error
 
 
 def test_ml_api_responses(trained):
@@ -137,3 +173,228 @@ def test_ml_api_responses(trained):
     assert metrics(request)["test_metrics"]["brier_score"] >= 0
     assert latest_prediction(request)["prediction"] is not None
     assert recent_predictions(request, 5)["count"] >= 1
+
+
+def test_restart_loads_artifact_independently_of_working_directory(trained, tmp_path, monkeypatch):
+    root, dataset, _, registry, _ = trained
+    monkeypatch.chdir(tmp_path)
+    loaded = ModelRegistry(model_dir=root / "models", max_feature_age_s=3600)
+    assert loaded.status(dataset)["last_error"] is None
+    assert loaded.predict_latest(dataset)["probability_2x"] == pytest.approx(
+        registry.predict_latest(dataset)["probability_2x"])
+
+
+def test_signal_uses_persisted_registry_and_training_features(trained):
+    from app.services.signal_engine import SignalEngine
+    root, dataset, _, registry, _ = trained
+    loaded = ModelRegistry(model_dir=root / "models", max_feature_age_s=3600)
+    analysis = SignalEngine(2, 10, .6, .68, loaded).current_analysis(dataset.clean_rounds, dataset)
+    assert analysis["ml_estimate"]["validated"] is True
+    assert analysis["ml_estimate"]["probability"] == pytest.approx(
+        registry.predict_latest(dataset)["probability_2x"])
+
+
+def test_legacy_predictor_rejects_training_success_without_quality_validation():
+    from app.ml.predictor import MLPredictor
+    result = SimpleNamespace(validated=True, ensemble={"validated": False})
+    assert MLPredictor().predict(result, None)["probability"] is None
+
+
+def test_rejected_candidate_is_persisted_for_diagnostics(trained, tmp_path, monkeypatch):
+    from dataclasses import replace
+    _, dataset, _, _, result = trained
+    rejected = replace(result, validated=False, status="NOT_VALIDATED",
+                       ensemble={**result.ensemble, "validated": False},
+                       overfitting_checks={**result.overfitting_checks, "deployable": False})
+    rejected._model = result._model
+    registry = ModelRegistry(model_dir=tmp_path / "models")
+    monkeypatch.setattr(registry.trainer, "train_validate", lambda _: rejected)
+    registry.train(dataset)
+    loaded = ModelRegistry(model_dir=tmp_path / "models", max_feature_age_s=3600)
+    assert loaded.performance()["validated"] is False
+    assert loaded.status(dataset)["deployable"] is False
+    assert loaded.predict_latest(dataset) is None
+
+
+def test_validation_flag_requires_both_held_out_baselines(trained):
+    result = trained[-1]
+    selection = result.models[result.algorithm]["selection"]["brier_score"]
+    selection_baseline = min(x["brier_score"] for x in result.baselines["selection"].values() if isinstance(x, dict) and "brier_score" in x)
+    test_baseline = min(x["brier_score"] for x in result.baselines["test"].values() if isinstance(x, dict) and "brier_score" in x)
+    expected = (selection_baseline - selection >= .001
+                and result.overfitting_checks["folds_beating_baseline"] >= 2
+                and test_baseline - result.test_metrics["brier_score"] >= .001
+                and result.overfitting_checks["test_brier_advantage_uncertainty"]["ci95"][0] > 0
+                and result.overfitting_checks["best_baseline_test_uncertainty"]["ci95"][0] > 0)
+    assert result.validated == result.ensemble["validated"] == result.overfitting_checks["deployable"] == expected
+
+
+def test_selection_precedes_test_and_stability_spans_disjoint_periods(trained):
+    result = trained[-1]
+    qualified = result.overfitting_checks["qualified_candidates_before_test"]
+    assert result.algorithm in qualified
+    assert all(result.models[name]["passes_selection_gate"] for name in qualified)
+    assert all(fold["evaluation_end"] <= result.splits["train"] for fold in result.walk_forward)
+    periods = result.overfitting_checks["test_periods"]
+    assert len(periods) == 3
+    assert sum(period["n"] for period in periods) == result.splits["test"]
+    assert all(periods[i]["end"] < periods[i + 1]["start"] for i in range(2))
+
+
+def test_calibration_and_explanations_never_fit_on_final_test(trained):
+    result = trained[-1]
+    calibration = result.calibration
+    assert "80-85% calibration holdout; 85-100% untouched test" in calibration["selection_data"]
+    if calibration["applied"]:
+        assert calibration["method"] == "sigmoid"
+        assert calibration["validation_holdout_improvement"] >= calibration["material_improvement_threshold"]
+    assert result.feature_importance
+    assert all(entry["feature"] in result.feature_names for entry in result.feature_importance)
+    assert all("test" not in entry["method"] for entry in result.feature_importance)
+
+
+def test_future_outcome_cannot_change_earlier_features(tmp_path):
+    rows = raw_rows(180)
+    raw = tmp_path / "history.json"; raw.write_text(json.dumps(rows), encoding="utf-8")
+    dataset = DatasetService(raw, tmp_path / "processed", tmp_path / "features")
+    before = dataset.build_training_dataset(persist=False)
+    earlier = dataset.features_after_round("130")
+    rows[160]["multiplier"] = 500.0
+    raw.write_text(json.dumps(rows), encoding="utf-8")
+    after = dataset.build_training_dataset(persist=False)
+    assert before.loc[before.round_id == "130"].drop(columns="target_2x").to_dict("records") == after.loc[after.round_id == "130"].drop(columns="target_2x").to_dict("records")
+    assert earlier == dataset.features_after_round("130")
+
+
+def test_causal_pattern_counts_exclude_current_label_and_collection_gaps(tmp_path):
+    rows = raw_rows(180)
+    raw = tmp_path / "history.json"
+    raw.write_text(json.dumps(rows), encoding="utf-8")
+    service = DatasetService(raw, tmp_path / "processed", tmp_path / "features")
+    original = service.build_training_dataset(persist=False)
+    target = original.loc[original.round_id == "135"].iloc[0]
+    key = min(int(target.streak_below_2), 6)
+    # Include the first 100 rounds, which are eligible evidence even though
+    # they are not themselves training rows.
+    prior_values = [row["multiplier"] for row in rows[:134]]
+    matches = []
+    for j in range(1, 134):
+        length = 0
+        for previous in reversed(prior_values[:j]):
+            if previous >= 2:
+                break
+            length += 1
+        if min(length, 6) == key:
+            matches.append(j)
+    assert target.pattern_streak_count == len(matches)
+    hits = sum(prior_values[j] >= 2 for j in matches)
+    raw_prior = service.clean_rounds.iloc[:134]
+    prior_frequency = (int((raw_prior.multiplier >= 2).sum()) + 10) / (134 + 20)
+    assert target.pattern_streak_rate == pytest.approx((hits + 30 * prior_frequency) / (len(matches) + 30))
+    rows[134]["multiplier"] = 1.01 if target.target_2x else 999.0  # alter only the target
+    raw.write_text(json.dumps(rows), encoding="utf-8")
+    changed = service.build_training_dataset(persist=False).loc[lambda frame: frame.round_id == "135"].iloc[0]
+    assert changed.drop(labels="target_2x").to_dict() == target.drop(labels="target_2x").to_dict()
+    assert changed.target_2x != target.target_2x
+
+
+def test_incremental_pattern_evidence_equals_full_rebuild(tmp_path):
+    rows = raw_rows(130)
+    raw = tmp_path / "history.json"
+    raw.write_text(json.dumps(rows), encoding="utf-8")
+    service = DatasetService(raw, tmp_path / "processed", tmp_path / "features")
+    service.build_training_dataset(persist=False)
+    raw.write_text(json.dumps(raw_rows(131)), encoding="utf-8")
+    incremented = service.process_incremental()
+    rebuilt = service.build_training_dataset(persist=False)
+    pd.testing.assert_frame_equal(incremented, rebuilt, rtol=1e-10, atol=1e-10)
+
+
+def test_fast_next_features_match_full_prefix_even_after_long_streak_or_gap(tmp_path):
+    rows = raw_rows(155)
+    for row in rows:
+        row["multiplier"] = 1.01
+    rows[121]["timestamp"] = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    raw = tmp_path / "history.json"
+    raw.write_text(json.dumps(rows), encoding="utf-8")
+    dataset = DatasetService(raw, tmp_path / "processed", tmp_path / "features")
+    dataset.build_training_dataset(persist=False)
+    actual = dataset.latest_features()
+    full = dataset.clean_rounds
+    placeholder = pd.DataFrame([{"round_id": "NEXT", "round_index": 156,
+                                 "timestamp": None, "timestamp_dt": pd.NaT, "multiplier": 0.0}])
+    expected = dataset._engineer(pd.concat([full, placeholder], ignore_index=True)).iloc[-1]
+    assert actual["streak_below_2"] == 155
+    for name in dataset.metadata:
+        if name.name == "sequence_last_10":
+            assert actual[name.name] == expected[name.name]
+        else:
+            assert actual[name.name] == pytest.approx(expected[name.name], abs=1e-9)
+
+
+def test_frequency_baseline_is_causal_and_walk_forward_precedes_test(trained):
+    y = np.array([0, 1, 1, 0, 1])
+    assert causal_frequency(y, 2, 3)[0] == .5
+    changed = y.copy(); changed[4] = 0
+    assert causal_frequency(changed, 2, 3)[0] == .5
+    result = trained[-1]
+    assert all(f["evaluation_end"] <= result.splits["train"] for f in result.walk_forward)
+    assert "85-100% untouched test" in result.calibration["selection_data"]
+
+
+def test_fixed_model_prediction_for_past_round_ignores_future_change(trained):
+    _, dataset, _, registry, result = trained
+    source = str(dataset.clean_rounds.iloc[250]["round_id"])
+    earlier = dataset.features_after_round(source)
+    names = result.feature_names
+    before = float(registry._model.predict_proba(np.array([[earlier[name] for name in names]], dtype=float))[0, 1])
+    original = dataset.clean_rounds
+    try:
+        modified = original.copy()
+        modified.loc[300, "multiplier"] = 1000.0
+        dataset.clean_rounds = modified
+        after_features = dataset.features_after_round(source)
+        after = float(registry._model.predict_proba(np.array([[after_features[name] for name in names]], dtype=float))[0, 1])
+    finally:
+        dataset.clean_rounds = original
+    assert before == pytest.approx(after)
+
+
+def test_future_outcome_feature_is_rejected(trained):
+    _, dataset, _, _, _ = trained
+    poisoned = dataset.dataset.assign(next_multiplier=dataset.dataset["target_2x"])
+    result = ModelTrainer().train_validate(poisoned)
+    assert result.status == "INCOMPATIBLE"
+    assert result.validated is False
+
+
+def test_block_bootstrap_advantage_is_reproducible():
+    y = np.tile([0, 1], 100)
+    strong = np.where(y == 1, .9, .1)
+    baseline = np.full(len(y), .5)
+    first = block_bootstrap_brier_advantage(y, strong, baseline)
+    assert first == block_bootstrap_brier_advantage(y, strong, baseline)
+    assert first["ci95"][0] > 0
+
+
+def test_insufficient_history_fallback_has_no_probability(tmp_path):
+    raw = tmp_path / "history.json"; raw.write_text(json.dumps(raw_rows(120)), encoding="utf-8")
+    dataset = DatasetService(raw, tmp_path / "processed", tmp_path / "features")
+    dataset.build_training_dataset(persist=False)
+    registry = ModelRegistry(model_dir=tmp_path / "models")
+    fallback = registry.fallback_estimate(dataset)
+    assert fallback["probability_2x"] is None
+    assert fallback["usable"] is False
+
+
+def test_independent_rounds_do_not_promote_a_spurious_model(tmp_path):
+    rng = np.random.default_rng(2026)
+    rows = raw_rows(520)
+    for row, hit in zip(rows, rng.integers(0, 2, len(rows))):
+        row["multiplier"] = 2.5 if hit else 1.2
+    raw = tmp_path / "history.json"; raw.write_text(json.dumps(rows), encoding="utf-8")
+    dataset = DatasetService(raw, tmp_path / "processed", tmp_path / "features")
+    frame = dataset.build_training_dataset(persist=False)
+    result = ModelTrainer().train_validate(frame)
+    assert result.validated is False
+    assert result.overfitting_checks["deployable"] is False

@@ -76,6 +76,9 @@ async function _installObserver(frame, selector) {
 }
 
 async function _waitForMutation(frame, idleMs) {
+  if (typeof frame.waitForCollectorMutation === 'function') {
+    return frame.waitForCollectorMutation(idleMs);
+  }
   return frame.evaluate((ms) => {
     const c = window.__aviatorCollector;
     if (!c) return { error: 'collector_not_installed' };

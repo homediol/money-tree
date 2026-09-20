@@ -9,18 +9,21 @@ from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (accuracy_score, average_precision_score, brier_score_loss,
                              confusion_matrix, f1_score, log_loss, precision_score,
                              recall_score, roc_auc_score)
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from app.services.dataset_service import DatasetService
 
 TARGET_COLUMN = "target_2x"
 IDENTITY_COLUMNS = {"round_id", "round_index", "timestamp", TARGET_COLUMN, "sequence_last_10"}
 FEATURE_VERSION_PREFIX = "part4"
 SEED = 42
+MAX_HISTORY_GAP_S = 120
 
 
 class ProbabilityCalibratedModel:
@@ -59,6 +62,11 @@ class TrainingResult:
     test_metrics: dict[str, Any] | None = None
     walk_forward: list[dict[str, Any]] | None = None
     overfitting_checks: dict[str, Any] | None = None
+    dataset_hash: str | None = None
+    feature_importance: list[dict[str, Any]] | None = None
+    data_quality: dict[str, Any] | None = None
+    selection_reason: str | None = None
+    source_sha256: str | None = None
 
     def model_dump(self) -> dict[str, Any]:
         return {key: value for key, value in self.__dict__.items() if not key.startswith("_")}
@@ -69,6 +77,31 @@ def feature_schema(dataset: pd.DataFrame) -> tuple[list[str], str, str]:
     payload = json.dumps([(name, str(dataset[name].dtype)) for name in names], separators=(",", ":"))
     digest = hashlib.sha256(payload.encode()).hexdigest()
     return names, digest, f"{FEATURE_VERSION_PREFIX}-{digest[:12]}"
+
+
+def causal_frequency(y: np.ndarray, start: int, stop: int, window: int | None = None) -> np.ndarray:
+    """At index i, the estimate sees y[:i], never y[i] or later."""
+    return np.asarray([float(np.mean(y[max(0, i - window):i] if window else y[:i]))
+                       for i in range(start, stop)], dtype=float)
+
+
+def block_bootstrap_brier_advantage(y: np.ndarray, model_p: np.ndarray, baseline_p: np.ndarray,
+                                    *, repeats: int = 400, block: int = 25,
+                                    baseline_name: str = "frozen_training_frequency") -> dict[str, Any]:
+    """Positive values favor the model; contiguous blocks retain local dependence."""
+    losses = (np.asarray(y) - np.asarray(baseline_p)) ** 2 - (np.asarray(y) - np.asarray(model_p)) ** 2
+    n = len(losses)
+    if n < 2:
+        return {"point": None, "ci95": [None, None], "n": n}
+    block = min(block, n)
+    rng = np.random.default_rng(SEED)
+    estimates = []
+    for _ in range(repeats):
+        starts = rng.integers(0, n - block + 1, size=int(np.ceil(n / block)))
+        indices = np.concatenate([np.arange(start, start + block) for start in starts])[:n]
+        estimates.append(float(losses[indices].mean()))
+    return {"point": float(losses.mean()), "ci95": [float(x) for x in np.quantile(estimates, [.025, .975])],
+            "n": n, "block_size": block, "repeats": repeats, "baseline": baseline_name}
 
 
 def evaluate_probabilities(y_true: np.ndarray, probabilities: np.ndarray) -> dict[str, Any]:
@@ -123,15 +156,33 @@ class ModelTrainer:
         self.latest: TrainingResult | None = None
 
     @staticmethod
-    def factories() -> dict[str, Callable[[], Any]]:
-        return {
-            "logistic_regression": lambda: make_pipeline(StandardScaler(), LogisticRegression(max_iter=1500, random_state=SEED)),
+    def factories(class_weight: str | None = None) -> dict[str, Callable[[], Any]]:
+        factories: dict[str, Callable[[], Any]] = {
+            "logistic_regression": lambda: make_pipeline(StandardScaler(), LogisticRegression(
+                C=.1, max_iter=800, class_weight=class_weight, random_state=SEED)),
             "random_forest": lambda: RandomForestClassifier(
-                n_estimators=180, max_depth=6, min_samples_leaf=30,
-                max_features=.30, random_state=SEED, n_jobs=-1,
-            ),
-            "gradient_boosting": lambda: GradientBoostingClassifier(n_estimators=100, learning_rate=.05, max_depth=2, random_state=SEED),
+                n_estimators=100, max_depth=6, min_samples_leaf=35,
+                max_features=.3, class_weight=class_weight, random_state=SEED, n_jobs=2),
+            "extra_trees": lambda: ExtraTreesClassifier(
+                n_estimators=120, max_depth=6, min_samples_leaf=35,
+                max_features=.3, class_weight=class_weight, random_state=SEED, n_jobs=2),
+            "gradient_boosting": lambda: HistGradientBoostingClassifier(
+                max_iter=80, max_leaf_nodes=7, min_samples_leaf=40,
+                learning_rate=.04, l2_regularization=10, random_state=SEED),
         }
+        try:
+            from xgboost import XGBClassifier
+            factories["xgboost"] = lambda: XGBClassifier(n_estimators=90, max_depth=2, learning_rate=.04,
+                subsample=.85, colsample_bytree=.7, reg_lambda=10, random_state=SEED, n_jobs=2, eval_metric="logloss")
+        except ImportError:
+            pass
+        try:
+            from lightgbm import LGBMClassifier
+            factories["lightgbm"] = lambda: LGBMClassifier(n_estimators=90, max_depth=3, num_leaves=7,
+                min_child_samples=40, learning_rate=.04, reg_lambda=10, random_state=SEED, n_jobs=2, verbosity=-1)
+        except ImportError:
+            pass
+        return factories
 
     def train_validate(self, dataset: pd.DataFrame) -> TrainingResult:
         if TARGET_COLUMN not in dataset or len(dataset) < self.min_samples:
@@ -139,69 +190,159 @@ class ModelTrainer:
         if not dataset["round_index"].is_monotonic_increasing:
             return self._empty("ERROR", "Dataset is not chronologically ordered.", len(dataset))
         feature_names, schema_hash, feature_version = feature_schema(dataset)
-        if not feature_names or any(name in {"multiplier", "target_multiplier", "next_multiplier"} for name in feature_names):
-            return self._empty("INCOMPATIBLE", "Feature schema is empty or contains a prohibited target/outcome field.", len(dataset))
-        clean = dataset.dropna(subset=feature_names + [TARGET_COLUMN]).reset_index(drop=True)
-        n = len(clean); train_end, validation_end = int(n * .70), int(n * .85)
-        train, validation, test = clean.iloc[:train_end], clean.iloc[train_end:validation_end], clean.iloc[validation_end:]
-        if min(len(train), len(validation), len(test)) == 0:
+        prohibited = {"multiplier", "target_multiplier", "next_multiplier", "actual_multiplier", "result"}
+        allowed = {item.name for item in DatasetService._build_metadata() if item.type != "categorical_sequence"}
+        if (not feature_names or set(feature_names) != allowed or
+                any(name in prohibited or name.startswith(("future_", "next_", "outcome_")) for name in feature_names)):
+            return self._empty("INCOMPATIBLE", "Feature schema differs from the approved past-only feature definitions.", len(dataset))
+        ordered = dataset.dropna(subset=feature_names + [TARGET_COLUMN]).reset_index(drop=True)
+        # Do not pretend the first observed round after a collection gap was
+        # immediately next. Timestamp defects are also excluded as labels.
+        timestamps = pd.to_datetime(ordered["timestamp"], utc=True, errors="coerce")
+        seconds = timestamps.diff().dt.total_seconds()
+        index_delta = ordered["round_index"].diff()
+        bad_boundary = ((seconds > MAX_HISTORY_GAP_S) | (seconds < 0) | (index_delta != 1)).fillna(False)
+        bad_boundary.iloc[0] = False
+        clean = ordered.loc[~bad_boundary].reset_index(drop=True)
+        excluded = int(bad_boundary.sum())
+        n = len(clean); train_end, selection_end, validation_end = int(n * .70), int(n * .80), int(n * .85)
+        train = clean.iloc[:train_end]; selection = clean.iloc[train_end:selection_end]
+        calibration_holdout = clean.iloc[selection_end:validation_end]
+        validation = clean.iloc[train_end:validation_end]; test = clean.iloc[validation_end:]
+        if n < self.min_samples or min(len(train), len(selection), len(calibration_holdout), len(test)) < 20:
             return self._empty("INSUFFICIENT_DATA", "Chronological splits are empty.", n)
         X_train, y_train = train[feature_names].to_numpy(float), train[TARGET_COLUMN].to_numpy(int)
+        X_selection, y_selection = selection[feature_names].to_numpy(float), selection[TARGET_COLUMN].to_numpy(int)
+        X_calibration, y_calibration = calibration_holdout[feature_names].to_numpy(float), calibration_holdout[TARGET_COLUMN].to_numpy(int)
         X_validation, y_validation = validation[feature_names].to_numpy(float), validation[TARGET_COLUMN].to_numpy(int)
         X_test, y_test = test[feature_names].to_numpy(float), test[TARGET_COLUMN].to_numpy(int)
         if len(np.unique(y_train)) < 2:
             return self._empty("INSUFFICIENT_DATA", "Training split contains only one class.", n)
-
-        models, fitted = {}, {}
-        for name, factory in self.factories().items():
-            model = factory(); model.fit(X_train, y_train)
-            models[name] = {"validation": evaluate_probabilities(y_validation, model.predict_proba(X_validation)[:, 1]),
-                            "train": evaluate_probabilities(y_train, model.predict_proba(X_train)[:, 1])}
-            fitted[name] = model
-        selected = min(models, key=lambda name: (models[name]["validation"]["brier_score"], models[name]["validation"]["log_loss"]))
-        # Calibration selection uses validation only. The final test remains
-        # untouched until algorithm and calibration choices are fixed.
+        if not np.isfinite(clean[feature_names].to_numpy(float)).all():
+            return self._empty("INCOMPATIBLE", "Features contain non-finite values.", n)
+        all_y = clean[TARGET_COLUMN].to_numpy(int)
+        selection_baseline = _baseline(y_train, y_selection)
+        validation_baseline = _baseline(y_train, y_validation)
+        test_baseline = _baseline(y_train, y_test)
+        for label, start, stop, frame in (("selection", train_end, selection_end, selection_baseline),
+                                          ("validation", train_end, validation_end, validation_baseline),
+                                          ("test", validation_end, n, test_baseline)):
+            ys = all_y[start:stop]
+            frame["causal_frequency"] = evaluate_probabilities(ys, causal_frequency(all_y, start, stop))
+            frame["rolling_250"] = evaluate_probabilities(ys, causal_frequency(all_y, start, stop, 250))
+        class_weight = "balanced" if min(float(y_train.mean()), 1-float(y_train.mean())) < .20 else None
+        factories = self.factories(class_weight)
+        models, fitted, candidate_errors = {}, {}, {}
+        for name, factory in factories.items():
+            try:
+                model = factory(); model.fit(X_train, y_train)
+                selection_metrics = evaluate_probabilities(y_selection, model.predict_proba(X_selection)[:, 1])
+                folds = self._walk_forward(clean.iloc[:train_end], feature_names, name, factories)
+                if len(folds) < 3:
+                    raise ValueError("fewer than three walk-forward folds completed")
+                fold_scores = [f["metrics"]["brier_score"] - f["baseline"]["brier_score"] for f in folds]
+                best_selection_baseline = min(v["brier_score"] for v in selection_baseline.values()
+                                              if isinstance(v, dict) and "brier_score" in v)
+                selection_advantage = best_selection_baseline - selection_metrics["brier_score"]
+                fold_wins = sum(score <= -.001 for score in fold_scores)
+                models[name] = {"selection": selection_metrics,
+                                "validation": evaluate_probabilities(y_validation, model.predict_proba(X_validation)[:, 1]),
+                                "train": evaluate_probabilities(y_train, model.predict_proba(X_train)[:, 1]),
+                                "walk_forward": folds,
+                                "selection_score": selection_metrics["brier_score"] + .5 * float(np.mean([f["metrics"]["brier_score"] for f in folds])) + .25 * float(np.std(fold_scores)),
+                                "selection_brier_advantage": selection_advantage,
+                                "folds_beating_baseline": fold_wins,
+                                "passes_selection_gate": selection_advantage >= .001 and fold_wins >= 2}
+                fitted[name] = model
+            except Exception as exc:
+                candidate_errors[name] = f"{type(exc).__name__}: {exc}"
+        if not models:
+            return self._empty("ERROR", f"Every candidate failed: {candidate_errors}", n)
+        qualified = [name for name in models if models[name]["passes_selection_gate"]]
+        # Never discard a candidate that passes the earlier validation gate
+        # merely because an unqualified candidate has a lower composite score.
+        pool = qualified or list(models)
+        selected = min(pool, key=lambda name: (models[name]["selection_score"], models[name]["selection"]["log_loss"]))
         selected_train_model = fitted[selected]
-        validation_raw = selected_train_model.predict_proba(X_validation)[:, 1]
+        validation_raw = selected_train_model.predict_proba(X_selection)[:, 1]
         calibration_choice = {"method": "none", "applied": False, "material_improvement_threshold": .001}
         calibrator = None
-        midpoint = len(y_validation) // 2
-        if midpoint >= 30 and len(np.unique(y_validation[:midpoint])) == 2:
+        if len(y_selection) >= 100 and len(np.unique(y_selection)) == 2:
             candidate = LogisticRegression(random_state=SEED)
-            candidate.fit(validation_raw[:midpoint].reshape(-1, 1), y_validation[:midpoint])
-            raw_holdout = float(brier_score_loss(y_validation[midpoint:], validation_raw[midpoint:]))
-            calibrated_holdout_values = candidate.predict_proba(validation_raw[midpoint:].reshape(-1, 1))[:, 1]
-            calibrated_holdout = float(brier_score_loss(y_validation[midpoint:], calibrated_holdout_values))
+            candidate.fit(validation_raw.reshape(-1, 1), y_selection)
+            raw_holdout_values = selected_train_model.predict_proba(X_calibration)[:, 1]
+            raw_holdout = float(brier_score_loss(y_calibration, raw_holdout_values))
+            calibrated_holdout_values = candidate.predict_proba(raw_holdout_values.reshape(-1, 1))[:, 1]
+            calibrated_holdout = float(brier_score_loss(y_calibration, calibrated_holdout_values))
             improvement = raw_holdout - calibrated_holdout
             calibration_choice |= {"validation_holdout_raw_brier": raw_holdout,
                                    "validation_holdout_calibrated_brier": calibrated_holdout,
                                    "validation_holdout_improvement": improvement}
-            if improvement >= calibration_choice["material_improvement_threshold"]:
+            if improvement >= calibration_choice["material_improvement_threshold"] and log_loss(y_calibration, calibrated_holdout_values, labels=[0,1]) <= log_loss(y_calibration, raw_holdout_values, labels=[0,1]):
                 calibrator = candidate
                 calibration_choice |= {"method": "sigmoid", "applied": True}
-        final_model = self.factories()[selected](); final_model.fit(np.vstack([X_train, X_validation]), np.concatenate([y_train, y_validation]))
+        # Keep the fitted estimator used to select the calibrator. Refitting on
+        # validation would change its probability distribution after calibration.
+        final_model = selected_train_model
         if calibrator is not None:
             final_model = ProbabilityCalibratedModel(final_model, calibrator)
         test_probability = final_model.predict_proba(X_test)[:, 1]
         test_metrics = evaluate_probabilities(y_test, test_probability)
         validation_metrics = models[selected]["validation"]
-        validation_baseline = _baseline(y_train, y_validation)
-        test_baseline = _baseline(np.concatenate([y_train, y_validation]), y_test)
-        beats_baseline = validation_metrics["brier_score"] < validation_baseline["base_rate_probability"]["brier_score"]
-        walk_forward = self._walk_forward(clean, feature_names, selected)
+        best_selection_baseline = min(x["brier_score"] for k,x in selection_baseline.items() if isinstance(x,dict) and "brier_score" in x)
+        best_test_baseline = min(x["brier_score"] for k,x in test_baseline.items() if isinstance(x,dict) and "brier_score" in x)
+        selection_advantage = best_selection_baseline - models[selected]["selection"]["brier_score"]
+        test_advantage = best_test_baseline - test_metrics["brier_score"]
+        best_test_name = min((key for key, value in test_baseline.items() if isinstance(value, dict) and "brier_score" in value),
+                             key=lambda name: test_baseline[name]["brier_score"])
+        frozen_p = np.full(len(y_test), float(y_train.mean()))
+        baseline_probabilities = {"base_rate_probability": frozen_p,
+                                  "majority_class": np.full(len(y_test), int(float(y_train.mean()) >= .5)),
+                                  "causal_frequency": causal_frequency(all_y, validation_end, n),
+                                  "rolling_250": causal_frequency(all_y, validation_end, n, 250)}
+        uncertainty = block_bootstrap_brier_advantage(y_test, test_probability, frozen_p)
+        best_uncertainty = block_bootstrap_brier_advantage(
+            y_test, test_probability, baseline_probabilities[best_test_name], baseline_name=best_test_name)
+        fold_count = len(models[selected]["walk_forward"])
+        fold_wins = models[selected]["folds_beating_baseline"]
+        robust = bool(qualified) and models[selected]["passes_selection_gate"] and fold_count >= 3
+        # A sealed chronological test is a final *veto*, not a ranking set.
+        deployable = (robust and test_advantage >= .001 and uncertainty["ci95"][0] > 0
+                      and best_uncertainty["ci95"][0] > 0)
+        walk_forward = models[selected]["walk_forward"]
+        test_periods = []
+        for start, stop in zip(np.linspace(0, len(test), 4, dtype=int)[:-1],
+                               np.linspace(0, len(test), 4, dtype=int)[1:]):
+            segment = test.iloc[start:stop]
+            test_periods.append({"start": str(segment.iloc[0]["timestamp"]),
+                                 "end": str(segment.iloc[-1]["timestamp"]), "n": len(segment),
+                                 "model": evaluate_probabilities(y_test[start:stop], test_probability[start:stop]),
+                                 "baseline": evaluate_probabilities(y_test[start:stop],
+                                                                    baseline_probabilities[best_test_name][start:stop])})
         version_seed = f"{datetime.now(timezone.utc).isoformat()}|{schema_hash}|{selected}"
         version = f"ml-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{hashlib.sha256(version_seed.encode()).hexdigest()[:8]}"
         distribution = {"total": n, "positive": int(clean[TARGET_COLUMN].sum()), "negative": int(n-clean[TARGET_COLUMN].sum()),
                         "positive_rate": float(clean[TARGET_COLUMN].mean()), "negative_rate": float(1-clean[TARGET_COLUMN].mean())}
-        gap = models[selected]["train"]["brier_score"] - validation_metrics["brier_score"]
+        gap = validation_metrics["brier_score"] - models[selected]["train"]["brier_score"]
         calibration = calibration_diagnostics(y_test, test_probability)
         calibration.update(calibration_choice)
-        calibration["selection_data"] = "validation_only"
+        calibration["selection_data"] = "70-80% selection; 80-85% calibration holdout; 85-100% untouched test"
+        dataset_hash = hashlib.sha256(pd.util.hash_pandas_object(clean[["round_id", "timestamp", TARGET_COLUMN] + feature_names], index=False).values.tobytes()).hexdigest()
+        importance = self._feature_importance(selected_train_model, feature_names, X_selection, y_selection)
+        selection_reason = (f"{selected} had the lowest selection/walk-forward score among "
+                            f"{len(qualified)} pre-test qualified candidates" if qualified else
+                            f"No candidate qualified before the test; {selected} is reported for diagnostics only")
+        selection_reason += ("; "
+                            f"selection Brier advantage {selection_advantage:+.6f}, "
+                            f"{fold_wins}/{fold_count} earlier folds beat frequency, "
+                            f"untouched test Brier advantage {test_advantage:+.6f} "
+                            f"versus {best_test_name}; its block-bootstrap lower bound was "
+                            f"{best_uncertainty['ci95'][0]:+.6f}.")
         result = TrainingResult(
-            True, "READY", "Selected by lowest chronological validation Brier score. " +
-            ("It beat the base-rate probability baseline." if beats_baseline else "It did not beat the base-rate probability baseline; estimates must be treated as weak."),
-            n, models, {"validated": beats_baseline, "weights": {selected: 1.0}, "feature_columns": feature_names},
-            {"validation": validation_baseline, "test": test_baseline, "historical_base_rate": distribution["positive_rate"],
+            deployable, "READY" if deployable else "NOT_VALIDATED", selection_reason +
+            (" Validated for inference." if deployable else " Live ML inference disabled; historical frequency remains an informational fallback."),
+            n, models, {"validated": deployable, "weights": {selected: 1.0}, "feature_columns": feature_names},
+            {"selection": selection_baseline, "validation": validation_baseline, "test": test_baseline, "historical_base_rate": distribution["positive_rate"],
              "base_rate": test_baseline["base_rate_probability"]},
             calibration, datetime.now(timezone.utc).isoformat(),
             version, feature_version, feature_names, schema_hash, "next_round_ge_2x", selected,
@@ -213,24 +354,55 @@ class ModelTrainer:
             {"train_validation_brier_gap": gap,
              "validation_test_brier_degradation": test_metrics["brier_score"] - validation_metrics["brier_score"],
              "suspicious_perfect_metrics": any(metric["validation"]["accuracy"] >= .999 for metric in models.values()),
-             "outperforms_validation_baseline": beats_baseline,
-             "deployable": beats_baseline,
-             "walk_forward_brier_std": float(np.std([fold["metrics"]["brier_score"] for fold in walk_forward])) if walk_forward else None})
+             "outperforms_validation_baseline": selection_advantage >= .001,
+             "outperforms_test_baseline": test_advantage >= .001,
+             "folds_beating_baseline": fold_wins, "fold_count": fold_count,
+             "candidate_errors": candidate_errors,
+             "test_brier_advantage_uncertainty": uncertainty,
+             "best_baseline_test_uncertainty": best_uncertainty,
+             "best_test_baseline": best_test_name,
+             "qualified_candidates_before_test": qualified,
+             "test_periods": test_periods,
+             "deployable": deployable,
+             "walk_forward_brier_std": float(np.std([fold["metrics"]["brier_score"] for fold in walk_forward])) if walk_forward else None},
+            dataset_hash, importance, {"excluded_gap_or_clock_rows": excluded, "class_weight": class_weight or "none", "max_history_gap_s": MAX_HISTORY_GAP_S}, selection_reason)
         result._model = final_model  # type: ignore[attr-defined]
         result._models = {selected: final_model}  # type: ignore[attr-defined]
         self.latest = result
         return result
 
-    def _walk_forward(self, data: pd.DataFrame, feature_names: list[str], algorithm: str) -> list[dict]:
+    @staticmethod
+    def _feature_importance(model, names: list[str], X_selection: np.ndarray,
+                            y_selection: np.ndarray) -> list[dict[str, Any]]:
+        if hasattr(model, "feature_importances_"):
+            values = model.feature_importances_
+            method = "training_impurity_importance"
+        elif hasattr(model, "named_steps") and hasattr(model[-1], "coef_"):
+            values = np.abs(model[-1].coef_[0])
+            method = "absolute_scaled_training_coefficient"
+        else:
+            # HistGradientBoosting has no native importance. Only the earlier
+            # selection period may be used here, never the sealed final test.
+            values = permutation_importance(model, X_selection, y_selection,
+                                            scoring="neg_brier_score", n_repeats=2,
+                                            max_samples=min(500, len(y_selection)),
+                                            random_state=SEED, n_jobs=1).importances_mean
+            method = "selection_holdout_permutation_brier"
+        return [{"feature": names[i], "importance": float(values[i]), "method": method}
+                for i in np.argsort(values)[::-1][:20]]
+
+    def _walk_forward(self, data: pd.DataFrame, feature_names: list[str], algorithm: str,
+                      factories: dict[str, Callable[[], Any]] | None = None) -> list[dict]:
         results, n = [], len(data)
-        for end in (int(n * .60), int(n * .70), int(n * .80)):
-            stop = min(end + int(n * .10), n)
+        for end in (int(n * .55), int(n * .70), int(n * .85)):
+            stop = min(end + int(n * .15), n)
             train, evaluate = data.iloc[:end], data.iloc[end:stop]
             if len(evaluate) == 0 or train[TARGET_COLUMN].nunique() < 2:
                 continue
-            model = self.factories()[algorithm](); model.fit(train[feature_names], train[TARGET_COLUMN])
+            model = (factories or self.factories())[algorithm](); model.fit(train[feature_names], train[TARGET_COLUMN])
             metrics = evaluate_probabilities(evaluate[TARGET_COLUMN].to_numpy(int), model.predict_proba(evaluate[feature_names])[:, 1])
-            results.append({"train_end": end, "evaluation_start": end, "evaluation_end": stop, "metrics": metrics})
+            baseline = evaluate_probabilities(evaluate[TARGET_COLUMN].to_numpy(int), np.full(len(evaluate), float(train[TARGET_COLUMN].mean())))
+            results.append({"train_end": end, "evaluation_start": end, "evaluation_end": stop, "metrics": metrics, "baseline": baseline})
         return results
 
     def _empty(self, status: str, message: str, size: int) -> TrainingResult:

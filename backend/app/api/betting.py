@@ -36,6 +36,11 @@ def _risk(request: Request):
     return getattr(request.app.state, "risk", None)
 
 
+def _health_gate(request: Request, mode: str = "REAL"):
+    health = getattr(request.app.state, "system_health", None)
+    return health.can_bet_now(mode=mode) if health else {"allowed": False, "reasons": ["health monitor unavailable"]}
+
+
 def _conflict(exc: BettingError) -> JSONResponse:
     return JSONResponse(status_code=409, content={
         "ok": False,
@@ -60,6 +65,12 @@ async def profiles(request: Request):
 async def start_automatic(request: Request, body: AutomaticStartRequest):
     """Start REAL automatic mode; no prediction is created here."""
     try:
+        live_controller = getattr(request.app.state, "live", None)
+        if live_controller is not None:
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": "live_activation_required",
+                "message": "Use POST /api/live/start with explicit ENABLE LIVE BETTING confirmation",
+            })
         risk = _risk(request)
         if risk and risk.emergency_latched:
             return JSONResponse(status_code=409, content={
@@ -81,6 +92,39 @@ async def stop_automatic(request: Request):
         return {"ok": True, "status": status}
     except BettingError as exc:
         return _conflict(exc)
+
+
+@router.post("/pause")
+async def pause_automatic(request: Request):
+    try:
+        status = await _betting(request).stop_session(reason="manual_pause")
+        return {"ok": True, "status": status}
+    except BettingError as exc:
+        return _conflict(exc)
+
+
+@router.post("/resume")
+async def resume_automatic(request: Request):
+    manager = _betting(request)
+    try:
+        health = getattr(request.app.state, "system_health", None)
+        gate = health.can_bet_now(mode="REAL") if health else {"allowed": False, "reasons": ["health unavailable"]}
+        if not gate.get("allowed"):
+            return JSONResponse(status_code=409, content={"ok": False,
+                "error": "safety_gate_blocked", "message": "NO RESUME",
+                "reasons": gate.get("reasons", [])})
+        status = await manager.resume_session()
+        return {"ok": True, "status": status}
+    except BettingError as exc:
+        return _conflict(exc)
+
+
+@router.post("/observe")
+async def observe(request: Request):
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    if orchestrator is None:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "orchestrator_unavailable"})
+    return {"ok": True, "status": await orchestrator.observe()}
 
 
 @router.get("/balance")
@@ -183,6 +227,37 @@ async def submit_decision(request: Request, body: DecisionIntent):
                 "ok": False, "error": "risk_approval_missing",
                 "message": "Decision has no valid risk approval",
             })
+        betting_status = manager.status()
+        live_controller = getattr(request.app.state, "live", None)
+        if betting_status.get("mode") == "REAL" and live_controller:
+            live_gate = live_controller.can_execute_live_bet(authorized, betting_status)
+            if not live_gate.get("allowed"):
+                return JSONResponse(status_code=409, content={"ok": False, "error": "live_safety_gate_blocked", "message": "NO BET", "reasons": live_gate.get("reasons", [])})
+        gate = _health_gate(request, betting_status.get("mode", "REAL"))
+        if (betting_status.get("automatic_enabled") and
+                betting_status.get("mode") != "SIMULATION" and
+                not gate.get("allowed")):
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": "safety_gate_blocked", "message": "NO BET",
+                "reasons": gate.get("reasons", []),
+            })
+        risk_manager = _risk(request)
+        # A stopped/idle manager returns its domain-specific conflict below.
+        # The identity check isolates test/embedded apps from stale app.state.
+        final_blocks = (risk_manager.validate_execution(authorized, betting_status)
+                        if risk_manager and risk_manager.betting_manager is manager
+                        and betting_status.get("automatic_enabled") else [])
+        wp = getattr(request.app.state, "wp", None)
+        if (wp is not None and manager.repository is not None
+                and not wp.dataset_service.clean_rounds.empty):
+            latest = str(wp.dataset_service.clean_rounds.iloc[-1]["round_id"])
+            if latest != str(authorized.get("source_round_id")):
+                final_blocks.append("target_round_missed")
+        if final_blocks:
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": "final_validation_failed",
+                "message": "NO BET", "reasons": sorted(set(final_blocks)),
+            })
         profile = get_profile(authorized["profile"])
         body = body.model_copy(update={
             "execute": True, "amount_bif": approved["approved_bet"],
@@ -202,3 +277,9 @@ async def submit_decision(request: Request, body: DecisionIntent):
 async def ledger(request: Request, limit: int = 50):
     manager = _betting(request)
     return {"ok": True, "entries": manager.ledger(limit)}
+
+
+@router.get("/executions")
+async def executions(request: Request, limit: int = 50):
+    repo = getattr(getattr(request.app.state, "wp", None), "repository", None)
+    return {"ok": True, "executions": repo.list_executions(limit) if repo else []}

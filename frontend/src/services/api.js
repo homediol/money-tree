@@ -123,6 +123,11 @@ export async function getLatestMLPrediction() {
   return data.prediction;
 }
 
+export async function getMLEstimate() {
+  const { data } = await api.get('/api/ml/estimate');
+  return data;
+}
+
 export async function getCurrentEvidence() {
   const { data } = await api.get('/api/evidence/current');
   return data.evidence;
@@ -223,4 +228,44 @@ export async function setRiskProfile(profile) {
 export async function resetRiskEmergency() {
   const { data } = await api.post('/api/risk/reset-emergency');
   return data;
+}
+
+export async function getResultExecutions(limit = 50) {
+  const { data } = await api.get('/api/results/executions', { params: { limit } });
+  return data.executions || [];
+}
+
+export async function getExecutionDetail(id) {
+  const { data } = await api.get(`/api/results/executions/${id}`);
+  return data;
+}
+
+export async function getBalanceLedger(limit = 100) {
+  const { data } = await api.get('/api/results/ledger', { params: { limit } });
+  return data.entries || [];
+}
+
+export async function getReconciliations(limit = 50) {
+  const { data } = await api.get('/api/results/reconciliations', { params: { limit } });
+  return data.reconciliations || [];
+}
+
+export async function getSessionMetrics(limit = 10) {
+  const { data } = await api.get('/api/results/session-metrics', { params: { limit } });
+  return data.sessions || [];
+}
+
+export async function runBacktest(config = {}) {
+  const { data } = await api.post('/api/backtests/run', config);
+  return data.result;
+}
+
+export async function listBacktests(limit = 25) {
+  const { data } = await api.get('/api/backtests', { params: { limit } });
+  return data.runs || [];
+}
+
+export async function getBacktest(runId) {
+  const { data } = await api.get(`/api/backtests/${runId}`);
+  return data.result;
 }

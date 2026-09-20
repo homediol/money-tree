@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
 from app.betting.schemas import DecisionIntent
@@ -141,7 +142,7 @@ class RiskManager:
             if self.emergency_latched:
                 return await self._finish(result(False, "Emergency stop is active"), "risk:emergency_stop")
             state = betting_status.get("state", "IDLE")
-            if state not in {"STARTING", "CONNECTED", "SIMULATION", "NOT_CONNECTED", "WAITING_FOR_BROWSER"}:
+            if state not in {"STARTING", "CONNECTED", "SIMULATION", "SHADOW", "NOT_CONNECTED", "WAITING_FOR_BROWSER"}:
                 return await self._finish(result(False, "Automatic betting session is not active"))
             if profile.key != self.selected_profile:
                 return await self._finish(result(False, "Decision profile does not match selected risk profile"))
@@ -181,3 +182,36 @@ class RiskManager:
             self._evaluated.add(key)
             return await self._finish(result(True, size.reason, amount=size.amount,
                                              level=RiskLevel(profile.default_risk_level)))
+
+    def validate_execution(self, decision: dict, betting_status: dict) -> list[str]:
+        """Final, side-effect-free authorization immediately before UI mutation."""
+        reasons: list[str] = []
+        risk = decision.get("risk") or decision.get("risk_evaluation") or {}
+        if decision.get("status") != "READY_FOR_EXECUTION" or risk.get("status", "APPROVED" if risk.get("approved") else "REJECTED") != "APPROVED":
+            reasons.append("decision_or_risk_not_approved")
+        try:
+            expires = datetime.fromisoformat(str(decision["expires_at"]).replace("Z", "+00:00"))
+            if expires <= datetime.now(timezone.utc): reasons.append("decision_expired")
+        except Exception:
+            reasons.append("invalid_expiry")
+        if not betting_status.get("automatic_enabled"): reasons.append("automatic_mode_off")
+        if self.emergency_latched: reasons.append("emergency_stop")
+        if decision.get("profile") != self.selected_profile: reasons.append("profile_changed")
+        current = betting_status.get("current_balance")
+        start = betting_status.get("starting_balance")
+        goal = betting_status.get("goal_balance")
+        profile = get_risk_profile(decision.get("profile", ""))
+        amount = risk.get("approved_bet_amount", risk.get("approved_bet"))
+        if current is None: reasons.append("balance_unverified")
+        elif goal is not None and current >= goal: reasons.append("goal_reached")
+        elif start is not None and start - current >= profile.maximum_session_loss: reasons.append("session_loss_limit")
+        if betting_status.get("consecutive_losses", 0) >= profile.maximum_consecutive_losses: reasons.append("consecutive_loss_limit")
+        if amount is None or current is None or not self.sizing.calculate(
+            current_balance=float(current or 0), profile=profile, requested_bet=int(amount or 0),
+            risk_level=profile.default_risk_level, session_state=betting_status,
+        ).approved: reasons.append("approved_amount_no_longer_safe")
+        if betting_status.get("current_bet") is not None: reasons.append("another_bet_active")
+        if betting_status.get("mode") == "REAL" and (
+            betting_status.get("browser_status") != "CONNECTED" or not betting_status.get("last_ui_ready")
+        ): reasons.append("browser_unhealthy")
+        return reasons

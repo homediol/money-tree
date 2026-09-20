@@ -6,6 +6,7 @@ import json
 import math
 import os
 import signal
+import shutil
 import statistics
 import sys
 from datetime import datetime, timezone
@@ -58,8 +59,18 @@ class HistoryCollectorManager:
         self.last_error = None
         self.started_at = datetime.now(timezone.utc).isoformat()
         try:
+            # Uvicorn is often launched from a service/IDE without an
+            # interactive shell, so nvm's node binary is not necessarily on
+            # PATH. Resolve it once here instead of silently losing the
+            # browser/history process at startup.
+            node = os.environ.get("NODE_BINARY") or shutil.which("node")
+            if not node:
+                candidates = sorted(Path.home().glob(".nvm/versions/node/*/bin/node"))
+                node = str(candidates[-1]) if candidates else None
+            if not node:
+                raise FileNotFoundError("node executable not found; set NODE_BINARY")
             self.process = await asyncio.create_subprocess_exec(
-                "node", str(self.entrypoint), cwd=str(ROOT / "bot"),
+                node, str(self.entrypoint), cwd=str(ROOT / "bot"),
                 stdout=sys.stdout, stderr=sys.stderr,
             )
             self._watch_task = asyncio.create_task(self._watch())

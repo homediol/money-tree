@@ -29,7 +29,8 @@ class AppState:
         self.rounds, self.quality = self.loader.load()
         self.dataset_service.build_training_dataset()
         self.repository.init()
-        self.model_registry = ModelRegistry(settings.target_multiplier, settings.model_dir, self.repository)
+        self.model_registry = ModelRegistry(settings.target_multiplier, settings.model_dir, self.repository,
+                                            max_feature_age_s=settings.ml_max_history_age)
         self.evidence_engine = EvidenceEngine(self.repository, self.model_registry,
                                               target=settings.target_multiplier,
                                               min_sample_size=settings.min_sample_size)
@@ -89,7 +90,7 @@ class AppState:
     def current_analysis(self) -> dict:
         with self._cache_lock:
             if self._analysis_cache is None:
-                analysis = self.signal_engine().current_analysis(self.rounds)
+                analysis = self.signal_engine().current_analysis(self.rounds, self.dataset_service)
                 if self.rounds is not None and not self.rounds.empty:
                     self.repository.save_signal(analysis)
                 self._analysis_cache = analysis

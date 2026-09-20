@@ -7,7 +7,7 @@
  *   3. Correct URL (on Aviator page)
  *   4. User logged in
  *   5. Collector running (state = COLLECTING)
- *   6. No frozen collector (no new round for > 60s)
+ *   6. No frozen collector (no new round for the configured stale interval)
  *
  * If any check fails, fires the onUnhealthy callback with a reason string.
  * The main loop handles the actual recovery — the watchdog only detects.
@@ -18,7 +18,9 @@ import { State } from './StateMachine.js';
 import { sleep } from './RetryManager.js';
 
 const WATCHDOG_INTERVAL_MS  = 3000;
-const FROZEN_THRESHOLD_S    = 60;
+// Legitimate Aviator rounds can run beyond one minute. A 60-second threshold
+// caused healthy high-multiplier rounds to be treated as collector failures.
+const FROZEN_THRESHOLD_S    = Number(process.env.BOT_FROZEN_THRESHOLD_SECONDS || 180);
 const LOGIN_CHECK_INTERVAL  = 30000; // only check login every 30s, not every 3s
 const POST_RECOVERY_QUIET_MS = 15000; // silence watchdog for 15s after any recovery
 

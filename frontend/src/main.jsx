@@ -3,19 +3,27 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { ErrorBoundary } from 'react-error-boundary';
 import { Toaster } from 'sonner';
-import { Activity, BarChart3, Bot, Brain, GitBranch, History, LayoutDashboard, Settings, ShieldCheck, Signal } from 'lucide-react';
+import { Activity, BarChart3, Bot, Brain, FlaskConical, GitBranch, History, LayoutDashboard, ReceiptText, Settings, ShieldCheck, Signal } from 'lucide-react';
 import './styles/index.css';
 import Dashboard from './pages/Dashboard.jsx';
+import SystemDashboard from './pages/SystemDashboard.jsx';
 import LiveHistory from './pages/LiveHistory.jsx';
 import PatternExplorer from './pages/PatternExplorer.jsx';
 import SignalHistory from './pages/SignalHistory.jsx';
 import ModelPerformance from './pages/ModelPerformance.jsx';
 import Betting from './pages/Betting.jsx';
+import BetPanelSimulation from './components/BetPanelSimulation.jsx';
 import SystemSettings from './pages/SystemSettings.jsx';
 import SystemHealth from './components/SystemHealth.jsx';
 import AppErrorFallback from './components/AppErrorFallback.jsx';
 import EvidenceExplorer from './pages/EvidenceExplorer.jsx';
 import DecisionEngine from './pages/DecisionEngine.jsx';
+import BetResults from './pages/BetResults.jsx';
+import Backtesting from './pages/Backtesting.jsx';
+import StrategyResearch from './pages/StrategyResearch.jsx';
+import ShadowMode from './pages/ShadowMode.jsx';
+import LiveActivation from './pages/LiveActivation.jsx';
+import Recovery from './pages/Recovery.jsx';
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -26,6 +34,13 @@ const nav = [
   { to: '/evidence', label: 'Evidence', icon: ShieldCheck },
   { to: '/decisions', label: 'Decisions', icon: GitBranch },
   { to: '/betting', label: 'Betting', icon: Bot },
+  { to: '/panel-test', label: 'Panel Test', icon: FlaskConical },
+  { to: '/results', label: 'Bet Results', icon: ReceiptText },
+  { to: '/backtesting', label: 'Backtesting', icon: FlaskConical },
+  { to: '/research', label: 'Strategy Research', icon: FlaskConical },
+  { to: '/shadow', label: 'Shadow Mode', icon: FlaskConical },
+  { to: '/live', label: 'Live Activation', icon: ShieldCheck },
+  { to: '/recovery', label: 'Recovery', icon: ShieldCheck },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -64,7 +79,8 @@ function Shell() {
       <main className="lg:pl-64">
         <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
           <Routes>
-            <Route path="/" element={<Dashboard />} />
+            <Route path="/" element={<SystemDashboard />} />
+            <Route path="/analytics" element={<Dashboard />} />
             <Route path="/history" element={<LiveHistory />} />
             <Route path="/patterns" element={<PatternExplorer />} />
             <Route path="/signals" element={<SignalHistory />} />
@@ -72,6 +88,13 @@ function Shell() {
             <Route path="/evidence" element={<EvidenceExplorer />} />
             <Route path="/decisions" element={<DecisionEngine />} />
             <Route path="/betting" element={<Betting />} />
+            <Route path="/panel-test" element={<BetPanelSimulation />} />
+            <Route path="/results" element={<BetResults />} />
+            <Route path="/backtesting" element={<Backtesting />} />
+            <Route path="/research" element={<StrategyResearch />} />
+            <Route path="/shadow" element={<ShadowMode />} />
+            <Route path="/live" element={<LiveActivation />} />
+            <Route path="/recovery" element={<Recovery />} />
             <Route path="/settings" element={<SystemSettings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

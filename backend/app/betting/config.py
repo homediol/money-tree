@@ -48,8 +48,8 @@ class BettingSettings:
         os.environ.get("BOT_CDP_ENDPOINT", "http://127.0.0.1:9222"),
     ).rstrip("/"))
 
-    #: Master switch for real DOM bet placement. Part 1 ships with this OFF:
-    #: the executor performs read-only verification and defers placement.
+    #: Master switch for real DOM bet placement. It defaults OFF and must be
+    #: explicitly enabled after live selector verification.
     allow_real_placement: bool = field(default_factory=lambda: _env_bool(
         "BETTING_ALLOW_REAL_PLACEMENT", False,
     ))
@@ -91,5 +91,4 @@ def get_betting_settings() -> BettingSettings:
     if _default_settings is None:
         _default_settings = BettingSettings()
     return _default_settings
-
 

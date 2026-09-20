@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     app_name: str = "Winner Predict"
     target_multiplier: float = Field(default=2.0, ge=1.0)
     min_sample_size: int = Field(default=30, ge=1)
+    ml_max_history_age: int = Field(default=600, gt=0, description="Maximum history age in seconds for ML inference (ML_MAX_HISTORY_AGE)")
     signal_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
     strong_signal_threshold: float = Field(default=0.68, ge=0.0, le=1.0)
     # The Node collector writes the canonical live history at project-root

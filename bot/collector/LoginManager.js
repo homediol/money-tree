@@ -51,10 +51,12 @@ export class LoginManager {
 
   /** Navigate safely, trying multiple waitUntil strategies. */
   async _navigate(page, url, signal) {
-    for (const waitUntil of ['load', 'domcontentloaded', 'commit']) {
+    // Winner keeps chat/analytics requests alive, so the browser's full
+    // ``load`` event is not a reliable readiness boundary.
+    for (const waitUntil of ['commit', 'domcontentloaded']) {
       if (signal?.aborted) return false;
       try {
-        await page.goto(url, { waitUntil, timeout: 45000 });
+        await page.goto(url, { waitUntil, timeout: 15000 });
         await page.waitForSelector('body', { timeout: 5000 }).catch(() => {});
         if (await isAccessDeniedPage(page)) {
           log.warn(`Navigation to ${url} reached Access Denied`);
@@ -63,6 +65,20 @@ export class LoginManager {
         return true;
       } catch (err) {
         log.warn(`Navigation to ${url} failed (${waitUntil}): ${err.message}`);
+        // Winner may keep analytics/chat requests open indefinitely. A load
+        // timeout is harmless once the requested same-origin route has a body.
+        try {
+          const requested = new URL(url);
+          const current = new URL(page.url());
+          const routeMatches = requested.pathname === '/' ||
+            current.pathname.replace(/\/$/, '') === requested.pathname.replace(/\/$/, '');
+          const bodyReady = await page.locator('body').count().catch(() => 0);
+          if (current.origin === requested.origin && routeMatches && bodyReady &&
+              !await isAccessDeniedPage(page)) {
+            log.info(`Navigation route rendered despite ${waitUntil} timeout: ${page.url()}`);
+            return true;
+          }
+        } catch {}
       }
     }
     return false;

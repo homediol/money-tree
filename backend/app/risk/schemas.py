@@ -36,4 +36,12 @@ class RiskDecision(BaseModel):
     requested_bet: int
 
     def public(self) -> dict:
-        return self.model_dump(mode="json")
+        data = self.model_dump(mode="json")
+        data.update({
+            "status": "APPROVED" if self.approved else "REJECTED",
+            "approved_bet_amount": self.approved_bet,
+            "cashout_target": self.cashout,
+            "approved_at": self.timestamp if self.approved else None,
+            "reasons": [self.reason],
+        })
+        return data

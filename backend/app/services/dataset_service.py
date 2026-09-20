@@ -146,9 +146,25 @@ class DatasetService:
 
         frame = pd.DataFrame(valid, columns=["round_id", "round_index", "timestamp", "timestamp_dt", "multiplier"])
         if not frame.empty:
-            frame = frame.sort_values(["timestamp_dt", "round_index"], kind="stable").reset_index(drop=True)
+            # The collector's numeric round index is the game sequence. A
+            # clock correction must not change which outcome follows a round.
+            frame = frame.sort_values("round_index", kind="stable").reset_index(drop=True)
         values = frame["multiplier"].tolist() if not frame.empty else []
         quality = self._quality(len(raw_rows), len(frame), duplicates, values, frame.to_dict("records"), missing)
+        if len(frame) > 1:
+            delta = frame["timestamp_dt"].diff().dt.total_seconds()
+            quality["timestamp_inversions"] = int((delta < 0).sum())
+            quality["collection_gaps_over_120s"] = int((delta > 120).sum())
+            quality["round_index_gaps"] = int((frame["round_index"].diff().fillna(1) != 1).sum())
+            contiguous = 1
+            for index in range(len(frame) - 1, 0, -1):
+                seconds = float(delta.iloc[index])
+                if not (0 <= seconds <= 120 and frame.iloc[index]["round_index"] - frame.iloc[index - 1]["round_index"] == 1):
+                    break
+                contiguous += 1
+            quality["latest_contiguous_rounds"] = contiguous
+        else:
+            quality["latest_contiguous_rounds"] = len(frame)
         return frame, quality, quarantine
 
     @staticmethod
@@ -174,7 +190,8 @@ class DatasetService:
             "chronological": True,
         }
 
-    def _build_metadata(self) -> list[FeatureMetadata]:
+    @staticmethod
+    def _build_metadata() -> list[FeatureMetadata]:
         items = [FeatureMetadata(f"last_{i}", "numeric", i, f"Multiplier {i} round(s) before the target round") for i in range(1, 6)]
         items += [
             FeatureMetadata("streak_below_1_5", "integer", None, "Consecutive prior rounds below 1.50x"),
@@ -182,18 +199,88 @@ class DatasetService:
             FeatureMetadata("streak_below_3", "integer", None, "Consecutive prior rounds below 3.00x"),
             FeatureMetadata("sequence_last_10", "categorical_sequence", 10, "LOW/MEDIUM/HIGH buckets for the prior 10 rounds"),
         ]
+        items += [FeatureMetadata(f"log_last_{i}", "numeric", i, "Clipped log multiplier from a prior round") for i in range(1, 6)]
+        items += [FeatureMetadata(f"prior_2x_lag_{i}", "numeric", i, "Prior round met the 2.00x threshold") for i in range(1, 6)]
         for window in WINDOWS:
-            for stat in ("mean", "median", "min", "max", "std", "variance", "range"):
+            for stat in ("mean", "median", "min", "max", "std", "variance", "range", "q25", "q75", "log_mean"):
                 items.append(FeatureMetadata(f"{stat}_last_{window}", "numeric", window, f"{stat.title()} of prior {window} multipliers"))
             for name, description in (
                 ("below_1_5", "below 1.50x"), ("eq_1_5", "equal to 1.50x"),
                 ("eq_2_0", "equal to 2.00x"), ("eq_3_0", "equal to 3.00x"),
                 ("eq_5_0", "equal to 5.00x"), ("eq_10_0", "equal to 10.00x"),
-                ("2x", "at least 2.00x"),
+                ("2x", "at least 2.00x"), ("below_1_2", "below 1.20x"), ("gte_5", "at least 5.00x"),
             ):
                 items.append(FeatureMetadata(f"count_{name}_last_{window}", "integer", window, f"Count {description} in prior {window} rounds"))
                 items.append(FeatureMetadata(f"rate_{name}_last_{window}", "numeric", window, f"Rate {description} in prior {window} rounds"))
+        items += [FeatureMetadata("recent_vs_long_2x_rate", "numeric", None, "Prior 10-round minus 100-round 2x rate"),
+                  FeatureMetadata("recent_vs_long_log_mean", "numeric", None, "Prior 10-round minus 100-round log mean")]
+        for window in (10, 25, 100):
+            items += [FeatureMetadata(f"log_std_last_{window}", "numeric", window, "Volatility of clipped log multipliers from prior rounds"),
+                      FeatureMetadata(f"alternation_rate_last_{window}", "numeric", window, "Fraction of adjacent prior outcomes changing sides of 2x")]
+        items += [FeatureMetadata("log_momentum_1_2", "numeric", 2, "Difference between the two most recent clipped log multipliers")]
+        for pattern in ("streak", "sequence_2", "sequence_3"):
+            items += [FeatureMetadata(f"pattern_{pattern}_count", "integer", None,
+                                      "Previously observed, contiguous target rounds matching this past-only Pattern Engine state"),
+                      FeatureMetadata(f"pattern_{pattern}_rate", "numeric", None,
+                                      "Causally smoothed >=2x rate after prior matching Pattern Engine states")]
         return items
+
+    @staticmethod
+    def _pattern_evidence(keys: pd.Series, outcomes: pd.Series, eligible: pd.Series,
+                          historical_rate: pd.Series) -> tuple[pd.Series, pd.Series]:
+        """For row i, aggregate matching labels j<i only (including at inference)."""
+        observations = eligible.astype("int64")
+        successes = outcomes.astype("int64") * observations
+        count = observations.groupby(keys, sort=False).cumsum() - observations
+        hits = successes.groupby(keys, sort=False).cumsum() - successes
+        # Thirty pseudo-observations shrink rare patterns toward the causal
+        # overall frequency; this is evidence, not a future-aware target encoding.
+        rate = (hits + 30 * historical_rate) / (count + 30)
+        return count, rate
+
+    @staticmethod
+    def _pattern_summary(rounds: pd.DataFrame) -> tuple[dict, int, dict, list[str], Any]:
+        """Compact causal state after known rounds; used for fast live updates."""
+        totals: dict[str, dict[Any, list[int]]] = {name: {} for name in ("streak", "sequence_2", "sequence_3")}
+        positives = 0
+        streaks = {1.5: 0, 2.0: 0, 3.0: 0}
+        buckets: list[str] = []
+        previous = None
+        for row in rounds.itertuples(index=False):
+            keys = {"streak": min(streaks[2.0], 6),
+                    "sequence_2": "|".join(buckets[-2:]),
+                    "sequence_3": "|".join(buckets[-3:])}
+            if previous is not None:
+                seconds = (row.timestamp_dt - previous.timestamp_dt).total_seconds()
+                if 0 <= seconds <= 120 and row.round_index - previous.round_index == 1:
+                    for name, key in keys.items():
+                        pair = totals[name].setdefault(key, [0, 0])
+                        pair[0] += 1
+                        pair[1] += int(row.multiplier >= 2)
+            positives += int(row.multiplier >= 2)
+            for threshold in streaks:
+                streaks[threshold] = streaks[threshold] + 1 if row.multiplier < threshold else 0
+            buckets.append(multiplier_bucket(row.multiplier))
+            previous = row
+        return totals, positives, streaks, buckets[-3:], previous
+
+    @staticmethod
+    def _live_pattern_features(totals: dict, positives: int, streaks: dict,
+                               buckets: list[str], history_count: int) -> dict[str, float | int]:
+        result: dict[str, float | int] = {
+            "streak_below_1_5": streaks[1.5],
+            "streak_below_2": streaks[2.0],
+            "streak_below_3": streaks[3.0],
+        }
+        keys = {"streak": min(streaks[2.0], 6),
+                "sequence_2": "|".join(buckets[-2:]),
+                "sequence_3": "|".join(buckets[-3:])}
+        prior_rate = (positives + 10) / (history_count + 20)
+        for name, key in keys.items():
+            count, hits = totals[name].get(key, [0, 0])
+            result[f"pattern_{name}_count"] = count
+            result[f"pattern_{name}_rate"] = (hits + 30 * prior_rate) / (count + 30)
+        return result
 
     @staticmethod
     def _streak_before(values: pd.Series, threshold: float) -> pd.Series:
@@ -214,10 +301,13 @@ class DatasetService:
         }
         for lag in range(1, 6):
             columns[f"last_{lag}"] = values.shift(lag)
+            columns[f"log_last_{lag}"] = np.log1p(values.shift(lag).clip(upper=100))
         for threshold, name in ((1.5, "streak_below_1_5"), (2.0, "streak_below_2"), (3.0, "streak_below_3")):
             columns[name] = self._streak_before(values, threshold)
         buckets = values.map(multiplier_bucket)
         columns["sequence_last_10"] = ["|".join(buckets.iloc[max(0, i - 10):i]) for i in range(len(rounds))]
+        for lag in range(1, 6):
+            columns[f"prior_2x_lag_{lag}"] = (values.shift(lag) >= 2.0).astype(float)
 
         for window in WINDOWS:
             rolling = prior.rolling(window, min_periods=window)
@@ -229,16 +319,44 @@ class DatasetService:
             columns[f"std_last_{window}"] = rolling.std(ddof=0)
             columns[f"variance_last_{window}"] = rolling.var(ddof=0)
             columns[f"range_last_{window}"] = maximum - minimum
+            columns[f"q25_last_{window}"] = rolling.quantile(.25)
+            columns[f"q75_last_{window}"] = rolling.quantile(.75)
+            columns[f"log_mean_last_{window}"] = np.log1p(prior.clip(upper=100)).rolling(window, min_periods=window).mean()
             predicates = {
                 "below_1_5": prior < 1.5, "eq_1_5": np.isclose(prior, 1.5),
                 "eq_2_0": np.isclose(prior, 2.0), "eq_3_0": np.isclose(prior, 3.0),
                 "eq_5_0": np.isclose(prior, 5.0), "eq_10_0": np.isclose(prior, 10.0),
-                "2x": prior >= 2.0,
+                "2x": prior >= 2.0, "below_1_2": prior < 1.2, "gte_5": prior >= 5.0,
             }
             for name, predicate in predicates.items():
                 counts = pd.Series(predicate, index=rounds.index).rolling(window, min_periods=window).sum()
                 columns[f"count_{name}_last_{window}"] = counts
                 columns[f"rate_{name}_last_{window}"] = counts / window
+        columns["recent_vs_long_2x_rate"] = columns["rate_2x_last_10"] - columns["rate_2x_last_100"]
+        columns["recent_vs_long_log_mean"] = columns["log_mean_last_10"] - columns["log_mean_last_100"]
+        log_values = np.log1p(prior.clip(upper=100))
+        binary = (values >= 2).astype("int8")
+        switches = (binary != binary.shift(1)).astype(float)
+        for window in (10, 25, 100):
+            columns[f"log_std_last_{window}"] = log_values.rolling(window, min_periods=window).std(ddof=0)
+            # A window of w prior outcomes contains w-1 transitions.
+            columns[f"alternation_rate_last_{window}"] = switches.shift(1).rolling(window - 1, min_periods=window - 1).mean()
+        columns["log_momentum_1_2"] = columns["log_last_1"] - columns["log_last_2"]
+        # This mirrors PatternEngine's capped low-streak and LOW/MEDIUM/HIGH
+        # sequence definitions, but each historical label is only available to
+        # later rows. Do not count outcomes across a collector gap as "next".
+        seconds = pd.to_datetime(rounds["timestamp"], utc=True, errors="coerce").diff().dt.total_seconds()
+        eligible = ((seconds >= 0) & (seconds <= 120) & (rounds["round_index"].diff() == 1)).fillna(False)
+        prior_successes = binary.cumsum() - binary
+        historical_rate = (prior_successes + 10) / (np.arange(len(rounds)) + 20)
+        pattern_keys = {"streak": columns["streak_below_2"].clip(upper=6)}
+        for length in (2, 3):
+            pattern_keys[f"sequence_{length}"] = pd.Series(
+                ["|".join(buckets.iloc[max(0, i - length):i]) for i in range(len(rounds))], index=rounds.index)
+        for name, keys in pattern_keys.items():
+            count, rate = self._pattern_evidence(keys, binary, eligible, historical_rate)
+            columns[f"pattern_{name}_count"] = count
+            columns[f"pattern_{name}_rate"] = rate
         result = pd.DataFrame(columns)
         return result.iloc[max(WINDOWS):].reset_index(drop=True)
 
@@ -257,11 +375,39 @@ class DatasetService:
         rounds, quality, quarantine = self.load_validate()
         with self._lock:
             old = self.clean_rounds
-            prefix_ok = not old.empty and len(rounds) >= len(old) and rounds.iloc[:len(old)]["round_id"].tolist() == old["round_id"].tolist()
+            prefix_ok = (not old.empty and len(rounds) >= len(old) and
+                         rounds.iloc[:len(old)][["round_id", "timestamp", "multiplier"]].reset_index(drop=True).equals(
+                             old[["round_id", "timestamp", "multiplier"]].reset_index(drop=True)))
             if prefix_ok and len(rounds) > len(old):
-                new_all = self._engineer(rounds.iloc[max(0, len(old) - max(WINDOWS)):].reset_index(drop=True))
+                # Rolling statistics need only their window; causal pattern
+                # counts are carried forward from the full observed prefix.
+                offset = max(0, len(old) - max(WINDOWS))
+                tail = self._engineer(rounds.iloc[offset:].reset_index(drop=True))
                 new_ids = set(rounds.iloc[len(old):]["round_id"])
-                appended = new_all[new_all["round_id"].isin(new_ids)]
+                appended = tail[tail["round_id"].isin(new_ids)].copy().reset_index(drop=True)
+                lookup = {str(value): i for i, value in enumerate(appended["round_id"])}
+                totals, positives, streaks, buckets, previous = self._pattern_summary(old)
+                for j, row in enumerate(rounds.iloc[len(old):].itertuples(index=False), start=len(old)):
+                    features = self._live_pattern_features(totals, positives, streaks, buckets, j)
+                    position = lookup.get(str(row.round_id))
+                    if position is not None:
+                        for name, value in features.items():
+                            appended.at[position, name] = value
+                    seconds = (row.timestamp_dt - previous.timestamp_dt).total_seconds()
+                    if 0 <= seconds <= 120 and row.round_index - previous.round_index == 1:
+                        keys = {"streak": min(streaks[2.0], 6),
+                                "sequence_2": "|".join(buckets[-2:]),
+                                "sequence_3": "|".join(buckets[-3:])}
+                        for name, key in keys.items():
+                            pair = totals[name].setdefault(key, [0, 0])
+                            pair[0] += 1
+                            pair[1] += int(row.multiplier >= 2)
+                    positives += int(row.multiplier >= 2)
+                    for threshold in streaks:
+                        streaks[threshold] = streaks[threshold] + 1 if row.multiplier < threshold else 0
+                    buckets.append(multiplier_bucket(row.multiplier))
+                    buckets = buckets[-3:]
+                    previous = row
                 self.dataset = pd.concat([self.dataset, appended], ignore_index=True)
                 self.last_mode = "incremental"
             elif prefix_ok and len(rounds) == len(old):
@@ -285,14 +431,21 @@ class DatasetService:
             rounds = self.clean_rounds
             if len(rounds) < max(WINDOWS):
                 return None
-            # Add a placeholder target row; its value is never used because all
-            # feature columns are based on shifted prior history.
-            placeholder = pd.DataFrame([{
-                "round_id": "NEXT", "round_index": int(rounds.iloc[-1]["round_index"]) + 1,
-                "timestamp": None, "timestamp_dt": pd.NaT, "multiplier": 0.0,
-            }])
-            row = self._engineer(pd.concat([rounds, placeholder], ignore_index=True)).iloc[-1]
-            return {key: _json_value(value) for key, value in row.items() if key != "target_2x"}
+            return self._features_for_next(rounds)
+
+    def _features_for_next(self, rounds: pd.DataFrame) -> dict[str, Any]:
+        # Add a placeholder target row. The 100-round context suffices for
+        # rolling features; full-prefix state supplies the pattern evidence.
+        placeholder = pd.DataFrame([{
+            "round_id": "NEXT", "round_index": int(rounds.iloc[-1]["round_index"]) + 1,
+            "timestamp": None, "timestamp_dt": pd.NaT, "multiplier": 0.0,
+        }])
+        context = rounds.iloc[-max(WINDOWS):]
+        row = self._engineer(pd.concat([context, placeholder], ignore_index=True)).iloc[-1]
+        features = {key: _json_value(value) for key, value in row.items() if key != "target_2x"}
+        totals, positives, streaks, buckets, _ = self._pattern_summary(rounds)
+        features.update(self._live_pattern_features(totals, positives, streaks, buckets, len(rounds)))
+        return features
 
     def features_after_round(self, source_round_id: str) -> dict[str, Any] | None:
         """Feature vector for the unknown round immediately after source_round_id."""
@@ -303,12 +456,7 @@ class DatasetService:
             rounds = self.clean_rounds.iloc[: int(matches[0]) + 1].copy()
         if len(rounds) < max(WINDOWS):
             return None
-        placeholder = pd.DataFrame([{
-            "round_id": "NEXT", "round_index": int(rounds.iloc[-1]["round_index"]) + 1,
-            "timestamp": None, "timestamp_dt": pd.NaT, "multiplier": 0.0,
-        }])
-        row = self._engineer(pd.concat([rounds, placeholder], ignore_index=True)).iloc[-1]
-        return {key: _json_value(value) for key, value in row.items() if key != "target_2x"}
+        return self._features_for_next(rounds)
 
     def status(self) -> dict[str, Any]:
         train, validation, test = self.chronological_split() if len(self.dataset) else ([], [], [])

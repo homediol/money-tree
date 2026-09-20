@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  AlertTriangle, Bot, CheckCircle2, Circle, OctagonX, Play, Radio, Send, Square, Zap,
+  AlertTriangle, Bot, CheckCircle2, Circle, OctagonX, Play, Radio, Square, Zap,
 } from 'lucide-react';
 import Card from '../components/Card.jsx';
 import { getWebSocketUrl } from '../auth.js';
 import {
   checkBettingBrowser, emergencyStopBetting, getBettingLedger, getBettingProfiles,
   getBettingStatus, getRiskProfiles, getRiskStatus, resetRiskEmergency,
-  setRiskProfile, startBettingSession, stopBettingSession, submitBettingDecision,
+  setRiskProfile, startBettingSession, stopBettingSession,
 } from '../services/api.js';
 
 // Distinct visual language per state — CONNECTED (real) is emerald,
@@ -69,21 +69,17 @@ export default function Betting() {
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
 
-  const [profileKey, setProfileKey] = useState('PROFILE_A');
-  const [startingBalance, setStartingBalance] = useState('5000');
-  const [goalBalance, setGoalBalance] = useState('10000');
-
-  const [demoId, setDemoId] = useState('');
-  const [demoMult, setDemoMult] = useState('2.0');
-  const [demoAmount, setDemoAmount] = useState('');
-  const [demoSlot, setDemoSlot] = useState(0);
-  const [demoBusy, setDemoBusy] = useState(false);
+  const [profileKey, setProfileKey] = useState(null);
+  const [startingBalance, setStartingBalance] = useState('');
+  const [goalBalance, setGoalBalance] = useState('');
 
   const wsRef = useRef(null);
 
   const st = status?.status || status || {};
   const state = st.state || 'IDLE';
   const active = ACTIVE_STATES.has(state);
+  const canStart = Boolean(profileKey && startingBalance !== '' && goalBalance !== ''
+    && Number(startingBalance) >= 0 && Number(goalBalance) > Number(startingBalance));
 
   const refresh = useCallback(async () => {
     try {
@@ -96,6 +92,11 @@ export default function Betting() {
       setLedger(l?.entries || []);
       setRisk(r?.status || null);
       setRiskProfiles(rp?.profiles || null);
+      const live = s?.status || s || {};
+      const selected = r?.status?.selected_profile || live.profile;
+      if (selected) setProfileKey(selected);
+      if (live.starting_balance != null) setStartingBalance(String(live.starting_balance));
+      if (live.goal_balance != null) setGoalBalance(String(live.goal_balance));
       setError(null);
     } catch (e) {
       setError(errMsg(e));
@@ -134,10 +135,22 @@ export default function Betting() {
     }
 
     refresh();
+    let browserTimer = null;
+    const pollBrowser = async () => {
+      try {
+        const liveBrowser = await checkBettingBrowser(true);
+        if (!closed) setBrowser(liveBrowser);
+      } catch (e) {
+        if (!closed) setError(errMsg(e));
+      }
+    };
+    pollBrowser();
+    browserTimer = window.setInterval(pollBrowser, 5000);
     connect();
     return () => {
       closed = true;
       if (retryTimer) window.clearTimeout(retryTimer);
+      if (browserTimer) window.clearInterval(browserTimer);
       if (wsRef.current) wsRef.current.close();
     };
   }, [refresh]);
@@ -177,41 +190,6 @@ export default function Betting() {
     } finally {
       setActionBusy(false);
       setBrowserLoading(false);
-    }
-  }
-
-  async function submitDemo() {
-    setDemoBusy(true);
-    setNotice(null);
-    setError(null);
-    try {
-      const body = {
-        decision_id: demoId || `manual-${Date.now()}`,
-        round_id: `manual-round-${Date.now()}`,
-        execute: true,
-        profile: profileKey,
-        target_multiplier: Number(demoMult),
-        cashout: Number(demoMult),
-        expires_at: new Date(Date.now() + 30000).toISOString(),
-        bet_slot: demoSlot,
-        source: 'manual-demo',
-      };
-      if (demoAmount !== '') body.bet_amount = Number(demoAmount);
-      const res = await submitBettingDecision(body);
-      const e = res?.entry || {};
-      const text = res?.risk && !res.risk.approved
-        ? `Risk blocked ${res.risk.decision_id}: ${res.risk.reason}`
-        : e.status === 'deferred'
-        ? `Decision ${e.decision_id}: deferred — ${e.reason} (${e.note})`
-        : e.status === 'rejected'
-          ? `Decision ${e.decision_id}: rejected — ${e.reason} (${e.note})`
-          : `Decision ${e.decision_id}: ${e.status}${e.simulated ? ' (simulated)' : ''} — ${e.note}`;
-      setNotice(text);
-      refresh();
-    } catch (err) {
-      setError(errMsg(err));
-    } finally {
-      setDemoBusy(false);
     }
   }
 
@@ -260,7 +238,7 @@ export default function Betting() {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => run('start')}
-            disabled={actionBusy || active}
+            disabled={actionBusy || active || !canStart}
             className="inline-flex items-center gap-2 rounded border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 disabled:cursor-not-allowed disabled:opacity-40 hover:bg-emerald-500/20"
           >
             <Play size={16} /> Start
@@ -291,12 +269,12 @@ export default function Betting() {
       {/* Metrics */}
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Card>
-          <div className="text-xs uppercase tracking-wide text-zinc-500">Current Balance (verified)</div>
-          <div className="mt-1 text-2xl font-semibold">{s.last_balance_text || '—'}</div>
-          <div className="text-xs text-zinc-500">{s.simulated ? 'simulated' : 'read-only from live browser'}</div>
+          <div className="text-xs uppercase tracking-wide text-zinc-500">Current Balance (live)</div>
+          <div className="mt-1 text-2xl font-semibold">{browserReady?.balance_text || s.last_balance_text || '—'}</div>
+          <div className="text-xs text-zinc-500">Read-only from the connected game browser</div>
         </Card>
         <Card>
-          <div className="text-xs uppercase tracking-wide text-zinc-500">Profit / Loss (RWF)</div>
+          <div className="text-xs uppercase tracking-wide text-zinc-500">Profit / Loss (BIF)</div>
           <div className={`mt-1 text-2xl font-semibold ${(s.running_pnl_bif || 0) >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
             {s.running_pnl_bif == null ? '—' : s.running_pnl_bif > 0 ? `+${s.running_pnl_bif}` : s.running_pnl_bif}
           </div>
@@ -319,8 +297,8 @@ export default function Betting() {
       </section>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Card><div className="text-xs text-zinc-500">Starting Balance</div><div className="text-lg font-semibold">{s.starting_balance ?? '—'} RWF</div></Card>
-        <Card><div className="text-xs text-zinc-500">Goal</div><div className="text-lg font-semibold">{s.goal_balance ?? '—'} RWF</div></Card>
+        <Card><div className="text-xs text-zinc-500">Session Starting Balance</div><div className="text-lg font-semibold">{s.starting_balance ?? '—'} BIF</div></Card>
+        <Card><div className="text-xs text-zinc-500">Session Goal</div><div className="text-lg font-semibold">{s.goal_balance ?? '—'} BIF</div></Card>
         <Card><div className="text-xs text-zinc-500">Selected Profile</div><div className="text-lg font-semibold">{s.profile_label || s.profile || '—'}</div></Card>
         <Card><div className="text-xs text-zinc-500">Current Bet / Last Result</div><div className="truncate text-sm font-semibold">{s.current_bet?.decision_id || 'No active bet'} / {s.last_result?.note || '—'}</div></Card>
       </section>
@@ -333,9 +311,9 @@ export default function Betting() {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Risk Profile</div><div className="font-semibold">{risk?.profile_name || '—'}</div><div className="text-xs text-zinc-500">cashout {risk?.cashout ?? '—'}x</div></div>
           <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Risk Level</div><div className={`font-semibold ${risk?.risk_level === 'BLOCKED' ? 'text-rose-300' : 'text-emerald-300'}`}>{risk?.risk_level || 'BLOCKED'}</div><div className="text-xs text-zinc-500">{risk?.risk_status || 'BLOCKED'}</div></div>
-          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Current / Maximum Bet</div><div className="font-semibold">{risk?.current_bet_size ?? 0} / {risk?.maximum_bet ?? '—'} RWF</div><div className="text-xs text-zinc-500">max {(100 * (risk?.maximum_balance_percentage || 0)).toFixed(0)}% of balance</div></div>
-          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Session Loss / Maximum</div><div className="font-semibold">{risk?.session_loss ?? 0} / {risk?.maximum_session_loss ?? '—'} RWF</div><div className="text-xs text-zinc-500">P/L {risk?.profit_loss == null ? '—' : `${risk.profit_loss} RWF`}</div></div>
-          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Consecutive Losses</div><div className="font-semibold">{risk?.consecutive_losses ?? 0} / {risk?.maximum_consecutive_losses ?? '—'}</div><div className="text-xs text-zinc-500">available {risk?.available_balance ?? '—'} RWF</div></div>
+          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Approved Bet / Maximum</div><div className="font-semibold">{risk?.current_bet_size ?? '—'} / {risk?.maximum_bet ?? '—'} BIF</div><div className="text-xs text-zinc-500">max {(100 * (risk?.maximum_balance_percentage || 0)).toFixed(0)}% of balance</div></div>
+          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Session Loss / Maximum</div><div className="font-semibold">{risk?.session_loss ?? '—'} / {risk?.maximum_session_loss ?? '—'} BIF</div><div className="text-xs text-zinc-500">P/L {risk?.profit_loss == null ? '—' : `${risk.profit_loss} BIF`}</div></div>
+          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Consecutive Losses</div><div className="font-semibold">{risk?.consecutive_losses ?? '—'} / {risk?.maximum_consecutive_losses ?? '—'}</div><div className="text-xs text-zinc-500">available {risk?.available_balance ?? '—'} BIF</div></div>
         </div>
         <div className={`mt-3 rounded border p-3 text-sm ${risk?.risk_status === 'APPROVED' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-rose-500/30 bg-rose-500/10 text-rose-200'}`}>
           Risk Status: {risk?.risk_status || 'BLOCKED'} · {risk?.reason || 'Awaiting authorized decision'}
@@ -348,11 +326,11 @@ export default function Betting() {
         <Card title="Betting Control">
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block text-sm">
-              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Starting Balance (RWF)</span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Starting Balance (BIF)</span>
               <input type="number" min="0" value={startingBalance} onChange={(e) => setStartingBalance(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
             </label>
             <label className="block text-sm">
-              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Goal Balance (RWF)</span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Goal Balance (BIF)</span>
               <input type="number" min="1" value={goalBalance} onChange={(e) => setGoalBalance(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
             </label>
             <fieldset className="sm:col-span-2">
@@ -404,44 +382,25 @@ export default function Betting() {
                   <div className="col-span-3 rounded bg-zinc-900 p-2"><span className="text-zinc-500">Latest payouts: </span>{(snap.payouts_head || []).join(' · ') || '—'}</div>
                 </div>
               )}
+              {snap && <div className="grid gap-2 sm:grid-cols-2">
+                {[0, 1].map(slot => {
+                  const input = snap.stake_inputs?.find(item => item.slot === slot);
+                  const button = snap.place_bet_buttons?.find(item => item.slot === slot);
+                  return <div key={slot} className="rounded border border-zinc-700 p-2 text-xs">
+                    <div className="mb-1 font-semibold">Observed panel {slot + 1}</div>
+                    <div>Stake field: {input ? (input.visible ? 'visible' : 'hidden') : 'not found'}</div>
+                    <div>Displayed stake: {input?.value || '—'}</div>
+                    <div>Button: {button ? (button.visible ? (button.disabled ? 'disabled' : 'enabled') : 'hidden') : 'not found'}</div>
+                    <div>Cash-out: configured by authorized execution only</div>
+                  </div>;
+                })}
+              </div>}
               {browserReady?.error && <div className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-200">{browserReady.error}</div>}
               {!browser?.ok && browser?.browser?.error && <div className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-200">{browser.browser.error}</div>}
             </div>
           )}
         </Card>
       </div>
-
-      {/* Demo decision (external contract) */}
-      <Card title="Submit decision (external contract)" action={
-        <span className="text-[11px] text-zinc-500">The module never predicts — decisions arrive through this contract.</span>
-      }>
-        <div className="grid gap-3 sm:grid-cols-6">
-          <label className="block text-sm sm:col-span-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Decision id</span>
-            <input value={demoId} onChange={(e) => setDemoId(e.target.value)} placeholder={`manual-${Date.now()}`} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
-          </label>
-          <label className="block text-sm">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Target ×</span>
-            <input type="number" step="0.01" min="1.01" value={demoMult} onChange={(e) => setDemoMult(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
-          </label>
-          <label className="block text-sm">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Stake BIF (blank = profile)</span>
-            <input type="number" min="100" value={demoAmount} onChange={(e) => setDemoAmount(e.target.value)} placeholder="profile default" className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm" />
-          </label>
-          <label className="block text-sm">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Bet slot</span>
-            <select value={demoSlot} onChange={(e) => setDemoSlot(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm">
-              <option value={0}>0 (first)</option>
-              <option value={1}>1 (second)</option>
-            </select>
-          </label>
-          <div className="flex items-end">
-            <button onClick={submitDemo} disabled={demoBusy || !active} className="inline-flex w-full items-center justify-center gap-2 rounded border border-sky-500/40 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-40">
-              <Send size={15} /> Submit
-            </button>
-          </div>
-        </div>
-      </Card>
 
       {/* Ledger */}
       <Card title="Ledger" action={<span className="text-[11px] text-zinc-500">{ledger.length} shown · ring cap 200</span>}>

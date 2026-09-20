@@ -378,8 +378,31 @@ export class BrowserManager {
     return this._historyPage;
   }
 
+  /** Recreate only the collector page while preserving this browser/context. */
+  async recoverHistoryPage(signal) {
+    if (signal?.aborted) throw new Error('Aborted');
+    if (!this._context || !this.isAlive()) {
+      await this.restart(signal);
+    }
+    const previous = this._historyPage;
+    const sourceUrl = previous && !previous.isClosed() ? previous.url() : '';
+    if (previous && !previous.isClosed()) {
+      await previous.close().catch(() => {});
+    }
+    this._historyPage = await this._context.newPage();
+    if (sourceUrl && sourceUrl !== 'about:blank') {
+      await this._historyPage.goto(sourceUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    }
+    log.warn('BrowserManager: recreated history page in the existing browser context');
+    return this._historyPage;
+  }
+
   /** Close everything cleanly. */
   async _close() {
+    if (!this._ownsBrowser && this._historyPage && this._historyPage !== this._page &&
+        !this._historyPage.isClosed()) {
+      try { await this._historyPage.close(); } catch {}
+    }
     if (this._context) {
       if (this._ownsBrowser) {
         try { await this._context.close(); } catch {}
@@ -433,38 +456,9 @@ export class BrowserManager {
     }
   }
 
-  /**
-   * Launch a completely fresh, non-persistent Chrome context. This behaves
-   * like an incognito session: no profile locks, stale tabs, or cached site
-   * state. LoginManager will visit winner.rw and authenticate normally.
-   */
+  /** Compatibility alias retained for older callers; never opens a second browser. */
   async restartIncognito(signal) {
-    await this._close();
-    if (signal?.aborted) throw new Error('Aborted');
-
-    const launchOptions = buildLaunchOptions();
-    // A separate temporary browser does not need a public CDP port and must
-    // not collide with an existing Chrome process already using port 9222.
-    launchOptions.args = launchOptions.args.filter(arg => !arg.startsWith('--remote-debugging-port='));
-    log.warn('BrowserManager: launching fresh incognito Chrome fallback');
-
-    this._browser = await chromium.launch({
-      ...launchOptions,
-      headless: this.headless,
-    });
-    this._context = await this._browser.newContext(CTX_OPTS);
-    this._page = await this._context.newPage();
-    this._historyPage = null;
-    this._ownsBrowser = true;
-    this.restartCount += 1;
-
-    this._browser.once('disconnected', () => {
-      log.warn('BrowserManager: incognito browser connection lost');
-      this._browser = null;
-      this._context = null;
-      this._page = null;
-      this._ownsBrowser = false;
-    });
+    await this.recoverHistoryPage(signal);
     return this._context;
   }
 }

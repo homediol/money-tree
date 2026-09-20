@@ -97,7 +97,7 @@ class AviatorCollector {
 
     // Watchdog recovery signal — set when watchdog fires, cleared after recovery
     this._watchdogReason = null;
-    this._cleanFallbackUsed = false;
+    this._sameContextRecoveryUsed = false;
   }
 
   async _initRoundStore() {
@@ -147,10 +147,9 @@ class AviatorCollector {
     try {
       await this.loginMgr.goToAviator(this._page, this.signal);
     } catch (err) {
-      log.warn(`Bot profile could not open Aviator; trying fresh incognito Chrome: ${formatError(err)}`);
-      await this.browser.restartIncognito(this.signal);
-      this._cleanFallbackUsed = true;
-      this._page = await this.browser.getHistoryPage();
+      log.warn(`Aviator did not open; recreating the history page in the existing context: ${formatError(err)}`);
+      this._page = await this.browser.recoverHistoryPage(this.signal);
+      this._sameContextRecoveryUsed = true;
       await this.loginMgr.ensureLoggedIn(this._page, this.signal);
       await this.loginMgr.goToAviator(this._page, this.signal);
     }
@@ -198,25 +197,24 @@ class AviatorCollector {
         log.error(`Collection error: ${formatError(err)}`);
 
         // If Winner opened the route but never created the game iframe, do
-        // not keep reloading that same broken bot-profile page. Switch once to
-        // a clean incognito browser, visit home, log in, and reopen Aviator.
-        if (!this._cleanFallbackUsed && /timed out waiting for aviator iframe/i.test(formatError(err))) {
-          log.warn('Aviator iframe missing; switching immediately to fresh incognito Chrome');
-          this.sm.transition(State.RECOVERING, 'iframe-timeout-incognito-fallback');
+        // not keep reloading that same page. Recreate only the history page
+        // inside the BrowserManager-owned context, then reopen Aviator.
+        if (!this._sameContextRecoveryUsed && /timed out waiting for aviator iframe/i.test(formatError(err))) {
+          log.warn('Aviator iframe missing; recreating history page in the existing context');
+          this.sm.transition(State.RECOVERING, 'iframe-timeout-page-recovery');
           try {
-            await this.browser.restartIncognito(this.signal);
-            this._page = await this.browser.getHistoryPage();
+            this._page = await this.browser.recoverHistoryPage(this.signal);
             // ensureLoggedIn always visits https://winner.rw/ before opening
             // the login page, which is required for Winner/Cloudflare.
             await this.loginMgr.ensureLoggedIn(this._page, this.signal);
             this.sm.transition(State.GAME_LOADING, 'incognito-fallback');
             await this.loginMgr.goToAviator(this._page, this.signal);
-            this._cleanFallbackUsed = true;
+            this._sameContextRecoveryUsed = true;
             this.watchdog.setPage(this._page);
             attempt = 0;
             continue;
           } catch (fallbackErr) {
-            log.error(`Incognito Chrome fallback failed: ${formatError(fallbackErr)}`);
+            log.error(`Same-context page recovery failed: ${formatError(fallbackErr)}`);
             throw fallbackErr;
           }
         }
@@ -258,8 +256,8 @@ class AviatorCollector {
     const frame = await this.frameMgr.waitForFrame(this._page, {
       signal: this.signal,
       // Detect a bad dedicated-profile load quickly. Once on the user's
-      // clean fallback, allow the full configured game startup interval.
-      timeoutMs: this._cleanFallbackUsed
+      // recovered page, allow the full configured game startup interval.
+      timeoutMs: this._sameContextRecoveryUsed
         ? Number(process.env.BOT_FRAME_TIMEOUT || 120000)
         : Number(process.env.BOT_INITIAL_FRAME_TIMEOUT || 30000),
     });
@@ -348,6 +346,9 @@ class AviatorCollector {
           this._totalAdded  += added.length;
           await this.roundStore.saveRounds(added, 'collector');
           added.forEach(() => this.health.recordRound());
+          if (this._watchdogReason?.startsWith('collector frozen')) {
+            this._watchdogReason = null;
+          }
           log.info(`History updated: ${this._history.length} rounds saved`);
         }
       }

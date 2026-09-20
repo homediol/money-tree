@@ -5,6 +5,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { BrowserManager } from '../collector/BrowserManager.js';
+import { Collector } from '../collector/Collector.js';
+import { FrameManager } from '../collector/FrameManager.js';
+import { LoginManager } from '../collector/LoginManager.js';
 import {
   appendRounds, inferNewMultipliers, normalizeMultiplier,
   readRoundHistory, writeRoundHistory,
@@ -47,4 +50,75 @@ test('history page reuses one browser context and never launches another browser
   assert.equal(await manager.getHistoryPage(), page);
   assert.equal(await manager.getHistoryPage(), page);
   assert.equal(newPages, 1);
+});
+
+test('history page recovery stays in the existing browser context', async () => {
+  let newPages = 0;
+  let closed = 0;
+  const oldPage = {
+    isClosed: () => false,
+    url: () => 'https://winner.rw/en/virtual/crash-games/aviator',
+    close: async () => { closed += 1; },
+  };
+  const freshPage = {
+    isClosed: () => false,
+    url: () => 'about:blank',
+    goto: async () => {},
+  };
+  const context = {
+    pages: () => [oldPage],
+    newPage: async () => { newPages += 1; return freshPage; },
+  };
+  const manager = new BrowserManager(true);
+  manager.isAlive = () => true;
+  manager.launch = async () => { throw new Error('must not launch'); };
+  manager._context = context;
+  manager._historyPage = oldPage;
+  manager._page = oldPage;
+  assert.equal(await manager.recoverHistoryPage(), freshPage);
+  assert.equal(manager._context, context);
+  assert.equal(closed, 1);
+  assert.equal(newPages, 1);
+});
+
+test('navigation accepts a rendered Winner route after load timeout', async () => {
+  const body = { count: async () => 1, innerText: async () => 'Winner sportsbook' };
+  const page = {
+    goto: async () => { throw new Error('Timeout 45000ms exceeded'); },
+    url: () => 'https://winner.rw/en/sportsbook/upcoming',
+    locator: () => body,
+    waitForSelector: async () => {},
+  };
+  const manager = new LoginManager({ phone: 'test', password: 'test' });
+  assert.equal(await manager._navigate(page, 'https://winner.rw/', null), true);
+});
+
+test('frame manager uses direct CDP when Playwright omits the game OOPIF', async () => {
+  const direct = {
+    isDetached: () => false,
+    name: () => 'aviator-next-cdp',
+    url: () => 'https://aviaport.spribegaming.com/aviator',
+    locator: () => ({ first: () => ({ waitFor: async () => {} }) }),
+  };
+  const page = {
+    frames: () => [],
+    mainFrame: () => null,
+    waitForEvent: async () => {},
+  };
+  const manager = new FrameManager();
+  manager._connectDirectFrame = async () => direct;
+  assert.equal(await manager.waitForFrame(page, { timeoutMs: 100 }), direct);
+});
+
+test('collector uses Node-side mutation polling for a direct CDP frame', async () => {
+  let requestedIdle = null;
+  const frame = {
+    waitForCollectorMutation: async idleMs => {
+      requestedIdle = idleMs;
+      return { multipliers: [2.5, 1.1], sig: '2.50|1.10' };
+    },
+  };
+  const result = await new Collector().waitForMutation(frame, 1234);
+  assert.equal(requestedIdle, 1234);
+  assert.deepEqual(result.multipliers, [2.5, 1.1]);
 });

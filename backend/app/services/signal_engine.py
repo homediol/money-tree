@@ -25,7 +25,7 @@ class SignalEngine:
         self.model_registry = model_registry
         self.ml_predictor = MLPredictor()
 
-    def current_analysis(self, rounds: pd.DataFrame) -> dict:
+    def current_analysis(self, rounds: pd.DataFrame, dataset_service=None) -> dict:
         if rounds.empty:
             return {"label": "STATISTICAL PATTERN ANALYSIS", "status": "INSUFFICIENT DATA", "error": "No valid rounds available."}
 
@@ -33,7 +33,16 @@ class SignalEngine:
         pattern = self.patterns.conditional_for_current(rounds)
         sequence = self.similarity.find_similar(rounds, sequence_length=3, limit=25)
         features = build_current_features(rounds["multiplier"].astype(float).tolist(), self.target)
-        ml = self.ml_predictor.predict(self.model_registry.latest, rounds, self.target)
+        if dataset_service is not None:
+            health = self.model_registry.status(dataset_service)
+            prediction = self.model_registry.predict_latest(dataset_service)
+            ml = {"validated": prediction is not None,
+                  "status": "VALIDATED" if prediction else "MODEL NOT VALIDATED",
+                  "probability": prediction["probability_2x"] if prediction else None,
+                  "models": {}, "health": health,
+                  "reason": health.get("last_error") or health.get("validation_message")}
+        else:
+            ml = self.ml_predictor.predict(self.model_registry.latest, rounds, self.target)
 
         pattern_prob = pattern.get("probability") if pattern.get("sufficient_data") else None
         sequence_prob = sequence.get("probability") if sequence.get("sufficient_data") else None
@@ -138,4 +147,3 @@ roundhistory.json
 
 ────────────────────────────
 """.strip()
-

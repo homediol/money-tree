@@ -1,19 +1,16 @@
 {
-  "collectorRunning": true,
+  "collectorRunning": false,
   "browserConnected": true,
   "pageConnected": true,
   "frameConnected": true,
   "loggedIn": true,
   "state": "COLLECTING",
-  "lastRoundTime": "2026-09-18T04:36:07.491Z",
-  "lastRecovery": {
-    "action": "FRAME_RECOVER",
-    "ts": "2026-09-18T04:27:29.396Z"
-  },
-  "recoveryCount": 20,
+  "lastRoundTime": "2026-09-20T04:12:27.133Z",
+  "lastRecovery": null,
+  "recoveryCount": 0,
   "browserRestartCount": 0,
   "loginCount": 1,
-  "totalRoundsSaved": 162,
-  "uptime": 3620,
-  "health": "HEALTHY"
+  "totalRoundsSaved": 30,
+  "uptime": 609,
+  "health": "STOPPED"
 }

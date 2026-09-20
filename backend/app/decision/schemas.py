@@ -69,6 +69,7 @@ class DecisionRecord(BaseModel):
     model_version: str
     feature_version: str
     risk_evaluation: dict | None = None
+    risk: dict | None = None
     transitions: list[dict]
 
     @model_validator(mode="after")

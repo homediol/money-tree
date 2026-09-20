@@ -152,6 +152,7 @@ class DecisionEngine:
                                     expires_at=record["expires_at"], source="part8-decision-engine")
             risk = await risk_manager.evaluate(intent, betting_status)
             record["risk_evaluation"] = risk.public()
+            record["risk"] = risk.public()
             if not risk.approved:
                 record["risk_status"], record["execution_status"] = "REJECTED", "BLOCKED"
                 record["block_reasons"].append(f"risk_rejected:{risk.reason}")

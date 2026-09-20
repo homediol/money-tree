@@ -11,7 +11,7 @@ import { log } from './Logger.js';
 const __dirname    = path.dirname(fileURLToPath(import.meta.url));
 const STATUS_PATH  = path.join(__dirname, '..', '..', 'data', 'bot', 'status.json');
 const FLUSH_INTERVAL_MS = 5000;
-const STALE_AFTER_MS = Number(process.env.HISTORY_STALE_AFTER_MS || 120000);
+const STALE_AFTER_MS = Number(process.env.HISTORY_STALE_AFTER_MS || 180000);
 
 export class HealthMonitor {
   constructor() {

@@ -128,6 +128,18 @@ def test_chronological_split_metadata_persistence_and_incremental_update(tmp_pat
     assert svc.last_mode == "incremental"
 
 
+def test_corrected_historical_outcome_rebuilds_features(tmp_path):
+    rows = records(130)
+    svc = service_for(tmp_path, rows)
+    first = svc.build_training_dataset(persist=False)
+    rows[99]["multiplier"] = 1.01
+    svc.raw_path.write_text(json.dumps(rows), encoding="utf-8")
+    corrected = svc.process_incremental()
+    assert svc.last_mode == "full"
+    assert first.iloc[0]["last_1"] == 100
+    assert corrected.iloc[0]["last_1"] == 1.01
+
+
 def test_data_apis_return_service_state(tmp_path):
     svc = service_for(tmp_path, records(105))
     svc.build_training_dataset()

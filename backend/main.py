@@ -8,16 +8,24 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import analysis, betting as betting_api, data, decisions, evidence, history, ml, models, patterns, risk as risk_api, signals, statistics
+from app.api import analysis, backtesting, betting as betting_api, data, decisions, evidence, history, health, ml, models, patterns, research, results, risk as risk_api, shadow, signals, statistics, live as live_api, operations as operations_api, recovery as recovery_api
 from app.betting.config import get_betting_settings
 from app.betting.session import BettingManager, configure_default_manager
+from app.betting.schemas import DecisionIntent
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.services.app_state import AppState
 from app.services.monitoring_engine import MonitoringEngine
+from app.services.system_health import SystemHealth
+from app.services.system_orchestrator import SystemOrchestrator
+from app.shadow import ShadowManager
 from app.risk.engine import RiskManager
 from app.history_collector import HistoryCollectorManager
 from app.decision.engine import DecisionEngine
+from app.reconciliation import ReconciliationService
+from app.live import LiveActivationManager
+from app.services.operations import OperationsManager
+from app.services.disaster_recovery import DisasterRecoveryManager
 
 configure_logging()
 log = get_logger("APP")
@@ -65,13 +73,26 @@ async def process_history_update(app: FastAPI):
     await manager.broadcast({"type": "history:new_round", "round": status["latest"]})
     await manager.broadcast({"type": "history:updated", "history": {"count": status["count"]}})
     await manager.broadcast({"type": "history:stats", "stats": history.stats()})
+    if status.get("latest") and hasattr(app.state, "shadow"):
+        await app.state.shadow.process_round(app, status["latest"])
+    if status.get("latest") and hasattr(app.state, "reconciliation"):
+        await app.state.reconciliation.reconcile_round(status["latest"])
     dataset = app.state.wp.dataset_service
     await manager.broadcast({"type": "data:updated", "quality": dataset.quality, "dataset": dataset.status()})
     await manager.broadcast({"type": "features:updated", "features": dataset.latest_features()})
     pattern_report = await asyncio.to_thread(app.state.wp.pattern_report)
     await manager.broadcast({"type": "patterns:updated", "baseline": pattern_report["baseline"],
                              "patterns": pattern_report["patterns"][:20]})
-    prediction = await asyncio.to_thread(app.state.wp.model_registry.predict_latest, dataset)
+    registry = app.state.wp.model_registry
+    # The live contract exposes why inference is suppressed before any
+    # Evidence/Decision/Risk work is considered. Legacy test doubles may only
+    # implement predict_latest; production always provides prediction_payload.
+    if hasattr(registry, "prediction_payload"):
+        inference = await asyncio.to_thread(registry.prediction_payload, dataset)
+        await manager.broadcast({"type": "prediction:status", **inference})
+        prediction = inference["prediction"] if inference["usable"] else None
+    else:
+        prediction = await asyncio.to_thread(registry.predict_latest, dataset)
     if prediction:
         await manager.broadcast({"type": "prediction:new", "prediction": prediction})
         snapshot = await asyncio.to_thread(app.state.wp.build_evidence, prediction)
@@ -88,6 +109,35 @@ async def process_history_update(app: FastAPI):
                 risk_manager=app.state.risk,
             )
             await manager.broadcast({"type": "decision:updated", "decision": decision})
+            if decision.get("status") == "READY_FOR_EXECUTION":
+                # Internal queue handoff. The executor still performs its own
+                # lock/contract/browser validation before touching the page.
+                current = app.state.betting.status()
+                if current.get("mode") == "REAL":
+                    live_gate = app.state.live.can_execute_live_bet(decision, current)
+                    if not live_gate.get("allowed"):
+                        await manager.broadcast({"type": "execution:rejected", "decision_id": decision.get("decision_id"), "reasons": live_gate.get("reasons", [])})
+                        return
+                blocks = app.state.risk.validate_execution(decision, current)
+                if not blocks and str(decision.get("source_round_id")) == str(
+                        dataset.clean_rounds.iloc[-1]["round_id"]):
+                    approved = decision.get("risk") or decision.get("risk_evaluation") or {}
+                    try:
+                        await app.state.betting.submit_decision(DecisionIntent(
+                            decision_id=decision["decision_id"],
+                            round_id=decision["target_round_id"], execute=True,
+                            profile=decision["profile"],
+                            cashout=approved["cashout_target"],
+                            bet_amount=approved["approved_bet_amount"],
+                            expires_at=decision["expires_at"], source="part9-queue",
+                        ))
+                    except Exception as exc:
+                        log.warning("[EXECUTION] queue handoff refused decision=%s: %s",
+                                    decision.get("decision_id"), exc)
+                elif blocks:
+                    await manager.broadcast({"type": "execution:rejected",
+                                             "decision_id": decision.get("decision_id"),
+                                             "reasons": blocks})
 
 
 async def monitor_file(app: FastAPI):
@@ -101,9 +151,25 @@ async def monitor_file(app: FastAPI):
             await process_history_update(app)
 
 
+async def monitor_health(app: FastAPI):
+    while True:
+        await app.state.system_health.enforce_safety()
+        await asyncio.sleep(2)
+
+
+async def monitor_operations(app: FastAPI):
+    while True:
+        try:
+            await app.state.operations.evaluate()
+        except Exception as exc:
+            log.error("operations evaluation failed: %s", exc)
+        await asyncio.sleep(15)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    app.state.manager = manager
     app.state.wp = AppState(settings)
     log.info("[DATA] Loaded %s rounds", len(app.state.wp.rounds))
 
@@ -111,30 +177,60 @@ async def lifespan(app: FastAPI):
     betting_manager = BettingManager(
         get_betting_settings(),
         broadcaster=manager.broadcast,
+        repository=app.state.wp.repository,
     )
+    reconciled = app.state.wp.repository.reconcile_incomplete_executions()
+    if reconciled:
+        log.warning("[EXECUTION] reconciled %s incomplete executions; none will be retried", reconciled)
     app.state.betting = betting_manager
     configure_default_manager(betting_manager)
     app.state.risk = RiskManager(
         broadcaster=manager.broadcast,
         betting_manager=betting_manager,
     )
+    app.state.reconciliation = ReconciliationService(
+        app.state.wp.repository, broadcaster=manager.broadcast,
+        betting_manager=betting_manager, risk_manager=app.state.risk,
+    )
+    betting_manager.reconciler = app.state.reconciliation
     app.state.decision_engine = DecisionEngine(
         settings.decision_path, app.state.wp.repository, broadcaster=manager.broadcast,
     )
     app.state.history_collector = HistoryCollectorManager(settings.data_path, manager.broadcast)
-    await app.state.history_collector.start()
-
-    task = asyncio.create_task(monitor_file(app))
+    app.state.shadow = ShadowManager(repository=app.state.wp.repository, broadcaster=manager.broadcast)
+    app.state.system_health = SystemHealth(
+        broadcaster=manager.broadcast, betting_manager=betting_manager,
+        history_collector=app.state.history_collector, repository=app.state.wp.repository,
+    )
+    app.state.live = LiveActivationManager(app)
+    app.state.operations = OperationsManager(app)
+    app.state.disaster_recovery = DisasterRecoveryManager(app, app.state.operations)
+    # These services are initialized synchronously above. Their runtime work
+    # still emits failures through the existing websocket events; the health
+    # registry records initialization without claiming browser/data freshness.
+    for component in ("features", "patterns", "ml", "evidence", "decision", "risk", "api"):
+        app.state.system_health.heartbeat(component, ok=True,
+                                          metadata={"initialized": True}, stale_after_s=3600)
+    betting_manager.safety_gate = app.state.system_health.can_bet_now
+    # Expose monitor functions to the lifecycle coordinator without making
+    # it responsible for domain work.
+    app.state.history_monitor = monitor_file
+    app.state.system_health_monitor = monitor_health
+    app.state.operations_monitor = monitor_operations
+    app.state.orchestrator = SystemOrchestrator(app)
+    # Recovery always starts in SAFE_MODE and never resumes live betting.
+    await app.state.disaster_recovery.recover("startup")
+    # Recovery observes already-known target rounds; it never queues/repeats a bet.
+    known_rounds = {str(row["round_id"]): row for row in app.state.history_collector.rows()}
+    for execution in app.state.wp.repository.open_executions():
+        known = known_rounds.get(str(execution.get("target_round_id")))
+        if known:
+            await app.state.reconciliation.reconcile_round(known)
     try:
+        await app.state.orchestrator.start()
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
-        await betting_manager.shutdown()
-        await app.state.history_collector.stop()
+        await app.state.orchestrator.shutdown()
 
 
 app = FastAPI(title="Winner Predict", description="STATISTICAL PATTERN ANALYSIS platform for Aviator round history research.", version="1.0.0", lifespan=lifespan)
@@ -179,6 +275,14 @@ app.include_router(evidence.router)
 app.include_router(decisions.router)
 app.include_router(betting_api.router)
 app.include_router(risk_api.router)
+app.include_router(results.router)
+app.include_router(health.router)
+app.include_router(backtesting.router)
+app.include_router(research.router)
+app.include_router(shadow.router)
+app.include_router(live_api.router)
+app.include_router(operations_api.router)
+app.include_router(recovery_api.router)
 
 
 @app.get("/", tags=["system"])

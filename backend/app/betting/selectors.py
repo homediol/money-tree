@@ -9,9 +9,9 @@ DOM topology discovered by live probing (2026-09-06) against winner.rw:
               (same-site child → reachable via contentDocument; the actual
                game plane, betting panel and payout history live here)
 
-All expressions below are read-only (querySelector / style reads only).
-They are evaluated inside the aviaport document so that the aviator-next
-child can be reached through ``contentDocument``.
+Observation expressions below are read-only (querySelector / style reads
+only). The browser client evaluates outer-shell expressions in aviaport and
+game expressions directly in an isolated aviator-next frame context.
 """
 from __future__ import annotations
 
@@ -31,13 +31,10 @@ PLACE_BET_SEL = ".btn-success.bet"                               # aviator-next
 PRESET_SEL = ".bet-opt"                                          # aviator-next
 BETS_LIST_SEL = ".bets-list .bet-list-item"                      # aviator-next
 
-# JS snippet: reach the aviator-next document (throws descriptive errors).
-AVIATOR_NEXT_DOC = """() => {
-  const f = document.querySelector('iframe[src*="aviator-next"]');
-  if (!f) return { ok: false, err: 'aviator-next iframe not found' };
-  if (!f.contentDocument || !f.contentDocument.body)
-    return { ok: false, err: 'aviator-next contentDocument inaccessible (OOPIF boundary?)' };
-  return { ok: true, doc: f.contentDocument };
+# Evaluated directly in the aviator-next CDP execution context.
+GAME_DOCUMENT_PROBE = """() => {
+  if (!document.body) return { ok: false, err: 'aviator-next body is not ready' };
+  return { ok: true, url: location.href, readyState: document.readyState };
 }"""
 
 # JS snippet: read balance from the aviaport (outer) document.
@@ -48,20 +45,23 @@ READ_BALANCE = """() => {
   return { ok: true, text: txt, html: (el.innerHTML || '').slice(0, 200) };
 }"""
 
-# JS snippet: full read-only capability snapshot of the game (evaluated in
-# the aviator-next document). No mutation: no clicks, no input, no nav.
+# JS snippet: full read-only capability snapshot. It is evaluated directly in
+# the aviator-next frame's isolated world. No mutation: no clicks/input/nav.
 SNAPSHOT = r"""() => {
+  const d = document;
+  const view = window;
+  if (!d.body) return { ok: false, err: 'aviator-next body is not ready' };
   const out = {
     ok: true,
     payouts: [], bets: 0, balanceText: '', betPanel: false,
     stakeInputs: [], placeBetButtons: [], presets: [],
     phaseHints: [], betTabActive: false,
   };
-  const payEls = document.querySelectorAll('.payouts-block .payout');
+  const payEls = d.querySelectorAll('.payouts-block .payout');
   payEls.forEach((e, i) => { if (i < 10) out.payouts.push((e.textContent || '').trim()); });
-  out.bets = document.querySelectorAll('.bets-list .bet-list-item').length;
+  out.bets = d.querySelectorAll('.bets-list .bet-list-item').length;
 
-  const blocks = document.querySelectorAll('.bet-block');
+  const blocks = d.querySelectorAll('.bet-block');
   out.betPanel = blocks.length > 0;
   blocks.forEach((b, i) => {
     if (i >= 2) return;
@@ -76,9 +76,9 @@ SNAPSHOT = r"""() => {
     if (i === 0) out.betTabActive = tabs.includes('Bet');
   });
 
-  document.querySelectorAll('.btn-success.bet').forEach((btn, i) => {
+  d.querySelectorAll('.btn-success.bet').forEach((btn, i) => {
     if (i >= 2) return;
-    const cs = getComputedStyle(btn);
+    const cs = view.getComputedStyle(btn);
     out.placeBetButtons.push({
       slot: i,
       text: (btn.textContent || '').trim(),
@@ -89,19 +89,17 @@ SNAPSHOT = r"""() => {
     });
   });
 
-  document.querySelectorAll('.bet-block .bet-opt').forEach((p, i) => {
+  d.querySelectorAll('.bet-block .bet-opt').forEach((p, i) => {
     if (i < 8) out.presets.push((p.textContent || '').trim());
   });
 
-  document.querySelectorAll('[class*="stage" i], [class*="status" i]').forEach(e => {
+  d.querySelectorAll('[class*="stage" i], [class*="status" i]').forEach(e => {
     const c = (e.className || '').toString();
     if (c.length < 90 && out.phaseHints.length < 6) {
       out.phaseHints.push({ cls: c, txt: (e.textContent || '').trim().slice(0, 40) });
     }
   });
 
-  const balEl = document.querySelector('.header__balance, .header__wrap-balance');
-  if (balEl) out.balanceText = (balEl.textContent || '').trim();
   return out;
 }"""
 
@@ -127,8 +125,12 @@ def parse_amount(text: str | None) -> float:
     except ValueError:
         return 0.0
     tail = text[m.end():].strip().upper()
-    if tail and tail[0] in _SUFFIX:
-        value *= _SUFFIX[tail[0]]
+    # Do not confuse the B in the BIF currency code with a billion suffix.
+    # Accept compact forms (12.3KBIF), spaced forms (12.3 K BIF), and a bare
+    # scale suffix while requiring a real token boundary after K/M/B.
+    scale = re.match(r"([KMB])(?=\s|$|BIF\b|RWF\b|USD\b)", tail)
+    if scale:
+        value *= _SUFFIX[scale.group(1)]
     return value
 
 
@@ -226,4 +228,3 @@ class GameSnapshot:
             "presets": self.presets,
             "bet_tab_active": self.bet_tab_active,
         }
-

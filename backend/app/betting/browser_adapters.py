@@ -1,12 +1,9 @@
-"""Executors that translate decisions into game actions.
+"""Executors that translate risk-approved decisions into game actions.
 
 Two backends implement the same ``PlacementBackend`` protocol:
 
-- ``RealBrowserBackend`` — talks to the live browser through the read-only
-  client. In Part 1 real DOM bet placement is *not implemented*: an attempt
-  raises ``PlacementUnavailable`` with reason ``placement_driver_not_implemented``.
-  The session layer converts that into an honest DEFERRED ledger entry, never
-  a fake "placed".
+- ``RealBrowserBackend`` — attaches to the collector-owned CDP browser and
+  performs verified DOM placement when the explicit production switch is on.
 - ``SimulationBackend`` — a deterministic scripted environment used for
   demo/testing. Every entry it produces carries ``simulated: true`` and its
   ledger/events never claim a real placement happened.
@@ -175,6 +172,7 @@ class SimulationBackend:
                 "pnl_bif": round(pnl, 2),
                 "round_label": label,
                 "resolved_at": time.time(),
+                "balance_after": self._balance,
             })
         self._queue.clear()
         # Crash history newest-first, matching .payouts-block .payout order.
@@ -269,12 +267,7 @@ class SimulationBackend:
 
 # ── Real browser backend ─────────────────────────────────────────────────────
 class RealBrowserBackend:
-    """Read-only real-browser executor (Part 1).
-
-    ``place()`` raises ``PlacementUnavailable`` — the real DOM bet driver
-    intentionally ships in Part 2. When placement is later enabled, this class
-    remains the seam: the session only ever touches the browser through it.
-    """
+    """Live executor using only the collector-owned browser/context."""
 
     simulated = False
     name_label = "real-browser"
@@ -282,6 +275,7 @@ class RealBrowserBackend:
     def __init__(self, browser_client: Any, *, allow_real_placement: bool = False):
         self.browser = browser_client
         self.allow_real_placement = bool(allow_real_placement)
+        self._pending: list[dict] = []
 
     def name(self) -> str:
         return self.name_label
@@ -306,18 +300,51 @@ class RealBrowserBackend:
         if not self.allow_real_placement:
             raise PlacementUnavailable(
                 "placement_driver_not_implemented",
-                "BETTING_ALLOW_REAL_PLACEMENT is off; the real DOM bet driver "
-                "ships in Part 2 (Part 1 performs read-only verification only).",
+                "BETTING_ALLOW_REAL_PLACEMENT is off; live placement is disabled.",
+            )
+        ready = await self.readiness()
+        if not ready.get("connected") or ready.get("stage") != "ready":
+            raise PlacementUnavailable(
+                "placement_driver_not_implemented",
+                "Part 2 compatibility: collector-owned browser is not ready for the Part 9 driver",
             )
 
     async def place(self, *, amount_bif: int, target_multiplier: float,
                     bet_slot: int, decision_id: str) -> PlacementOutcome:
-        raise PlacementUnavailable(
-            "placement_driver_not_implemented",
-            "RealBrowserBackend.place() is intentionally unimplemented in "
-            "Part 1; see Part 2 for the DOM bet placement driver.",
-        )
+        await self.ensure_ready()
+        before = await self.snapshot()
+        try:
+            await self.browser.place_bet(
+                amount_bif=amount_bif, cashout=target_multiplier, slot=bet_slot,
+            )
+        except Exception as exc:
+            raise PlacementUnavailable("placement_failed", str(exc)) from exc
+        self._pending.append({
+            "decision_id": decision_id, "amount_bif": amount_bif,
+            "target_multiplier": target_multiplier, "bet_slot": bet_slot,
+            "payout_before": (before.get("payouts_head") or [None])[0],
+            "balance_before": before.get("balance"), "placed_at": time.time(),
+        })
+        return PlacementOutcome(ok=True, simulated=False,
+                                detail="live bet controls verified and clicked",
+                                round_label=None)
 
     async def collect_resolved(self) -> list[dict]:
-        return []  # nothing is ever placed in Part 1
-
+        if not self._pending:
+            return []
+        snap = await self.snapshot()
+        latest = (snap.get("payouts_head") or [None])[0]
+        if latest is None or latest == self._pending[0]["payout_before"]:
+            return []
+        out = []
+        for bet in self._pending:
+            won = float(latest) >= float(bet["target_multiplier"])
+            before, after = bet.get("balance_before"), snap.get("balance")
+            pnl = (after - before if before is not None and after is not None
+                   else bet["amount_bif"] * (bet["target_multiplier"] - 1)
+                   if won else -bet["amount_bif"])
+            out.append({**bet, "crash_point": float(latest), "won": won,
+                        "pnl_bif": round(pnl, 2), "round_label": None,
+                        "balance_after": snap.get("balance"), "resolved_at": time.time()})
+        self._pending.clear()
+        return out

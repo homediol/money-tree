@@ -8,6 +8,7 @@ strategy/signals layer.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from app.profiles import RISK_PROFILES
 
 # Global contract bounds for Aviator-style crash games.
 MIN_MULTIPLIER = 1.01
@@ -35,20 +36,20 @@ PROFILES: dict[str, BettingProfile] = {
         key="PROFILE_A",
         label="Standard 2.0x",
         description="Targets 2.0x with a 500 BIF default stake.",
-        base_target=2.0,
+        base_target=RISK_PROFILES["PROFILE_A"].cashout,
         default_amount_bif=500,
-        min_amount_bif=100,
-        max_amount_bif=10000,
+        min_amount_bif=RISK_PROFILES["PROFILE_A"].minimum_bet,
+        max_amount_bif=10000,  # contract parse ceiling; Risk owns the lower live limit
         max_loss_bif=20000,
     ),
     "PROFILE_B": BettingProfile(
         key="PROFILE_B",
         label="Conservative 1.5x",
         description="Targets 1.5x with a 200 BIF default stake.",
-        base_target=1.5,
+        base_target=RISK_PROFILES["PROFILE_B"].cashout,
         default_amount_bif=200,
-        min_amount_bif=100,
-        max_amount_bif=5000,
+        min_amount_bif=RISK_PROFILES["PROFILE_B"].minimum_bet,
+        max_amount_bif=5000,  # contract parse ceiling; Risk owns the lower live limit
         max_loss_bif=10000,
     ),
 }

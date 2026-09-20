@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import logging
 import os
 import uuid
 import warnings
@@ -12,6 +14,8 @@ import joblib
 import numpy as np
 
 from app.ml.trainer import ModelTrainer, TrainingResult, feature_schema
+
+log = logging.getLogger("APP.ML")
 
 
 class ModelRegistry:
@@ -30,21 +34,27 @@ class ModelRegistry:
         self._training = False
         self._error: str | None = None
         self._latest_prediction: dict[str, Any] | None = None
+        self._last_stale_warning_key: tuple[str | None, int] | None = None
         self._load_active()
 
     @staticmethod
     def _atomic_json(path: Path, payload: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
 
     def train(self, dataset_service) -> TrainingResult:
         self._training, self._error = True, None
         try:
             result = self.trainer.train_validate(dataset_service.dataset.copy())
+            if getattr(dataset_service, "raw_path", None) and dataset_service.raw_path.exists():
+                result.source_sha256 = hashlib.sha256(dataset_service.raw_path.read_bytes()).hexdigest()
             self.latest = result
-            if not result.validated or not getattr(result, "_model", None):
+            if not getattr(result, "_model", None):
                 return result
             version_dir = self.model_dir / result.model_version
             version_dir.mkdir(parents=True, exist_ok=False)
@@ -52,10 +62,10 @@ class ModelRegistry:
             metadata_path = version_dir / "metadata.json"
             joblib.dump({"model": result._model, "feature_names": result.feature_names,
                          "feature_version": result.feature_version, "schema_hash": result.feature_schema_hash}, artifact_path)
-            metadata = result.model_dump() | {"artifact_path": str(artifact_path)}
+            metadata = result.model_dump() | {"artifact_path": str(artifact_path.resolve())}
             self._atomic_json(metadata_path, metadata)
             self._atomic_json(self.active_path, {"model_version": result.model_version,
-                                                 "metadata_path": str(metadata_path), "artifact_path": str(artifact_path)})
+                                                 "metadata_path": str(metadata_path.resolve()), "artifact_path": str(artifact_path.resolve())})
             self._model, self._metadata = result._model, metadata
             if self.repository:
                 self.repository.save_model_version(result.model_version, result.algorithm or "unknown", str(artifact_path), metadata)
@@ -71,13 +81,16 @@ class ModelRegistry:
             return
         try:
             active = json.loads(self.active_path.read_text(encoding="utf-8"))
-            metadata = json.loads(Path(active["metadata_path"]).read_text(encoding="utf-8"))
+            # Version-local paths also load legacy manifests written relative
+            # to a different working directory.
+            version_dir = self.model_dir / active["model_version"]
+            metadata = json.loads((version_dir / "metadata.json").read_text(encoding="utf-8"))
             # Joblib currently triggers a harmless NumPy 2.5 array-shape
             # deprecation while reading its own pickle format. Scope the
             # suppression to artifact loading so application warnings remain.
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="Setting the shape on a NumPy array has been deprecated", category=DeprecationWarning)
-                artifact = joblib.load(active["artifact_path"])
+                artifact = joblib.load(version_dir / "model.joblib")
             self._model, self._metadata = artifact["model"], metadata
         except Exception as exc:
             self._model, self._metadata, self._error = None, None, str(exc)
@@ -99,26 +112,83 @@ class ModelRegistry:
                 state = "INCOMPATIBLE"
             elif self._features_stale(dataset_service):
                 state = "STALE"
+            elif dataset_service.quality.get("latest_contiguous_rounds", 0) < 100:
+                state = "INSUFFICIENT_RECENT_HISTORY"
+        model_validated = bool(self._metadata and self._metadata.get("overfitting_checks", {}).get("deployable", False))
+        if state == "READY" and not model_validated:
+            state = "NOT_VALIDATED"
         return {"status": state, "model_version": self._metadata.get("model_version") if self._metadata else None,
                 "feature_version": self._metadata.get("feature_version") if self._metadata else None,
                 "compatible": compatible,
-                "deployable": bool(self._metadata and self._metadata.get("overfitting_checks", {}).get("deployable", False)),
-                "quality_state": ("BASELINE_OUTPERFORMED" if self._metadata and self._metadata.get("overfitting_checks", {}).get("deployable") else "BELOW_BASELINE"),
+                "model_validated": model_validated,
+                "deployable": model_validated and state == "READY",
+                "quality_state": ("NOT_EVALUATED" if not self._metadata else
+                                  "BASELINE_OUTPERFORMED" if self._metadata.get("overfitting_checks", {}).get("deployable") else "BELOW_BASELINE"),
+                "validation_message": self._metadata.get("message") if self._metadata else "No trained model is available.",
                 "last_error": self._error,
                 "latest_prediction_id": self._latest_prediction.get("prediction_id") if self._latest_prediction else None}
 
     def _features_stale(self, dataset_service) -> bool:
+        return not self._history_context(dataset_service)["fresh"]
+
+    def _history_context(self, dataset_service) -> dict[str, Any]:
         if dataset_service.clean_rounds.empty:
-            return True
-        timestamp = dataset_service.clean_rounds.iloc[-1]["timestamp_dt"]
-        age = (datetime.now(timezone.utc) - timestamp.to_pydatetime()).total_seconds()
-        return age > self.max_feature_age_s
+            return {"latest_round_timestamp": None, "history_age": None,
+                    "staleness_threshold": self.max_feature_age_s, "fresh": False}
+        latest = dataset_service.clean_rounds.iloc[-1]
+        timestamp = str(latest["timestamp"])
+        try:
+            age = (datetime.now(timezone.utc) - latest["timestamp_dt"].to_pydatetime()).total_seconds()
+        except (KeyError, AttributeError, TypeError, ValueError):
+            age = None
+        return {"latest_round_timestamp": timestamp, "history_age": age,
+                "staleness_threshold": self.max_feature_age_s,
+                "fresh": age is not None and 0 <= age <= self.max_feature_age_s}
+
+    def _warn_stale(self, context: dict[str, Any]) -> None:
+        key = (context["latest_round_timestamp"], self.max_feature_age_s)
+        if self._last_stale_warning_key != key:
+            log.warning("ML inference blocked: STALE_HISTORY latest_round_timestamp=%s history_age=%s threshold_seconds=%s",
+                        context["latest_round_timestamp"], context["history_age"], self.max_feature_age_s)
+            self._last_stale_warning_key = key
+
+    def prediction_payload(self, dataset_service) -> dict[str, Any]:
+        """One explicit live inference contract; never expose a non-usable prediction."""
+        context = self._history_context(dataset_service)
+        count = len(dataset_service.clean_rounds)
+        contiguous = int(dataset_service.quality.get("latest_contiguous_rounds") or 0)
+        prediction = None
+        if count == 0:
+            reason = "INSUFFICIENT_HISTORY"
+        elif not context["fresh"]:
+            reason = "STALE_HISTORY"
+            self._warn_stale(context)
+        elif count < self.trainer.min_samples or contiguous < 100:
+            reason = "INSUFFICIENT_HISTORY"
+        elif not self.status(dataset_service)["deployable"]:
+            reason = "NO_DEPLOYED_MODEL"
+        else:
+            prediction = self.predict_latest(dataset_service)
+            reason = "OK" if prediction is not None else "NO_DEPLOYED_MODEL"
+        return {"usable": prediction is not None, "prediction": prediction,
+                "confidence": prediction.get("confidence") if prediction else 0.0,
+                "reason": reason, **{key: context[key] for key in
+                                    ("latest_round_timestamp", "history_age", "staleness_threshold")},
+                "history_age_unit": "seconds"}
 
     def predict_latest(self, dataset_service, *, allow_stale: bool = False) -> dict[str, Any] | None:
         health = self.status(dataset_service)
-        if health["status"] not in ({"READY", "STALE"} if allow_stale else {"READY"}):
+        if self.target != 2.0:
+            return None
+        if health["status"] == "STALE":
+            self._warn_stale(self._history_context(dataset_service))
+        # The legacy allow_stale flag is intentionally non-operative: stale
+        # history must never produce a numeric live prediction.
+        if health["status"] != "READY":
             return None
         if not health["deployable"]:
+            return None
+        if dataset_service.quality.get("latest_contiguous_rounds", 0) < 100:
             return None
         latest = dataset_service.latest_features()
         if not latest:
@@ -129,13 +199,42 @@ class ModelRegistry:
         except (KeyError, TypeError, ValueError) as exc:
             self._error = f"feature vector incompatible: {exc}"
             return None
-        probability = float(self._model.predict_proba(row)[0, 1])
+        if not np.isfinite(row).all():
+            self._error = "feature vector contains non-finite values"
+            return None
+        try:
+            probability = float(self._model.predict_proba(row)[0, 1])
+        except Exception as exc:
+            self._error = f"model inference failed: {type(exc).__name__}: {exc}"
+            return None
         if not 0 <= probability <= 1:
             self._error = "model returned probability outside [0,1]"
             return None
         source = dataset_service.clean_rounds.iloc[-1]
+        checks = self._metadata.get("overfitting_checks") or {}
+        base_metrics = ((self._metadata.get("baselines") or {}).get("test") or {}).get("base_rate_probability") or {}
+        test_metrics = self._metadata.get("test_metrics") or {}
+        baseline_brier = base_metrics.get("brier_score")
+        # A conservative skill score, not certainty about the next outcome.
+        skill = (max(0.0, min(1.0, (baseline_brier - test_metrics["brier_score"]) / baseline_brier))
+                 if baseline_brier and test_metrics.get("brier_score") is not None else 0.0)
+        pattern_evidence = [
+            {"type": "causal_pattern", "pattern": name,
+             "previous_matches": int(latest[f"pattern_{name}_count"]),
+             "smoothed_rate": float(latest[f"pattern_{name}_rate"])}
+            for name in ("streak", "sequence_2", "sequence_3")
+        ]
         prediction = {"prediction_id": uuid.uuid4().hex, "source_round_id": str(source["round_id"]),
-                      "target": "next_round_ge_2x", "probability_2x": probability,
+                      "usable": True, "reason": "OK",
+                      "target": "next_round_ge_2x", "target_code": "NEXT_ROUND_GTE_2X", "probability_2x": probability,
+                      "confidence": skill, "confidence_definition": "positive held-out Brier skill versus frozen training frequency (not event certainty)",
+                      "data_points_used": int(len(dataset_service.clean_rounds)),
+                      "training_samples": self._metadata.get("dataset_size"),
+                      "history_rounds_available": int(len(dataset_service.clean_rounds)),
+                      "evidence": [{"type": "held_out_model_evaluation", "test_brier_score": test_metrics.get("brier_score"),
+                                    "test_log_loss": test_metrics.get("log_loss"),
+                                    "test_brier_advantage_ci95": (checks.get("best_baseline_test_uncertainty") or {}).get("ci95"),
+                                    "dataset_hash": self._metadata.get("dataset_hash")}, *pattern_evidence],
                       "predicted_class": int(probability >= .5), "model_version": self._metadata["model_version"],
                       "feature_version": self._metadata["feature_version"], "created_at": datetime.now(timezone.utc).isoformat(),
                       "data_timestamp": str(source["timestamp"]), "fresh": health["status"] == "READY",
@@ -151,6 +250,35 @@ class ModelRegistry:
         if self.repository:
             self.repository.save_ml_prediction(prediction)
         return prediction
+
+    def fallback_estimate(self, dataset_service) -> dict[str, Any]:
+        """Informational frequency, never a numeric prediction or risk input."""
+        rows = dataset_service.clean_rounds
+        n = len(rows)
+        context = self._history_context(dataset_service)
+        contiguous = int(dataset_service.quality.get("latest_contiguous_rounds") or 0)
+        if n == 0:
+            reason = "INSUFFICIENT_HISTORY"
+        elif not context["fresh"]:
+            reason = "STALE_HISTORY"
+            self._warn_stale(context)
+        elif n < self.trainer.min_samples or contiguous < 100:
+            reason = "INSUFFICIENT_HISTORY"
+        else:
+            reason = "NO_DEPLOYED_MODEL"
+        recent = rows.tail(min(250, n))
+        frequency = float((recent["multiplier"] >= 2).mean()) if reason == "NO_DEPLOYED_MODEL" else None
+        return {"target": "NEXT_ROUND_GTE_2X", "probability_2x": None,
+                "informational_frequency_2x": frequency, "prediction": None,
+                "confidence": 0.0, "model_version": None, "data_points_used": len(recent) if frequency is not None else 0,
+                "latest_contiguous_rounds": dataset_service.quality.get("latest_contiguous_rounds"),
+                "source_round_id": str(rows.iloc[-1]["round_id"]) if n else None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "usable": False, "reason": reason,
+                **{key: context[key] for key in ("latest_round_timestamp", "history_age", "staleness_threshold")},
+                "history_age_unit": "seconds",
+                "evidence": ([{"type": "observed_frequency", "window": len(recent), "informational_only": True}]
+                             if frequency is not None else [])}
 
     def performance(self) -> dict:
         if self._metadata:
@@ -181,9 +309,14 @@ class ModelRegistry:
         if not prediction:
             return None
         deployable = bool(self._metadata and self._metadata.get("overfitting_checks", {}).get("deployable", False))
-        return {**prediction, "fresh": bool(prediction.get("fresh")) and deployable,
-                "usable": deployable,
-                "quality_state": "BASELINE_OUTPERFORMED" if deployable else "BELOW_BASELINE"}
+        try:
+            created = datetime.fromisoformat(prediction["created_at"])
+            age = (datetime.now(timezone.utc) - created).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            age = float("inf")
+        fresh = bool(prediction.get("fresh")) and 0 <= age <= self.max_feature_age_s
+        return ({**prediction, "fresh": True, "usable": True, "quality_state": "BASELINE_OUTPERFORMED"}
+                if fresh and deployable else None)
 
     def recent_predictions(self, limit: int = 25) -> list[dict]:
         return self.repository.list_ml_predictions(limit) if self.repository else ([self._latest_prediction] if self._latest_prediction else [])

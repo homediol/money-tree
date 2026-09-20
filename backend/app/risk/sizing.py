@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.risk.config import RiskProfile
+from app.profiles import RiskProfile
 
 
 @dataclass(frozen=True)

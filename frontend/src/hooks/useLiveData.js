@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getCurrentDecision, getCurrentEvidence, getCurrentSignal, getDataStatus, getDecisionStatus, getHistory, getHistoryStats, getHistoryStatus, getLatestFeatures, getLatestMLPrediction, getMLMetrics, getMLStatus, getModelPerformance, getPatternReport, getPatterns, getRecentDecisions, getRecentEvidence, getSignalHistory, getStatistics, getSystemStatus } from '../services/api.js';
+import { getCurrentDecision, getCurrentEvidence, getCurrentSignal, getDataStatus, getDecisionStatus, getHistory, getHistoryStats, getHistoryStatus, getLatestFeatures, getLatestMLPrediction, getMLEstimate, getMLMetrics, getMLStatus, getModelPerformance, getPatternReport, getPatterns, getRecentDecisions, getRecentEvidence, getSignalHistory, getStatistics, getSystemStatus } from '../services/api.js';
 import { getWebSocketUrl } from '../auth.js';
 
 export function useLiveData() {
@@ -12,7 +12,7 @@ export function useLiveData() {
     if (!force && Date.now() - lastLoadRef.current < 1000) return;
     loadingRef.current = true;
     try {
-      const [signal, stats, patterns, history, signalHistory, models, system, historyStatus, historyStats, dataStatus, latestFeatures, patternReport, mlStatus, mlMetrics, mlPrediction, evidence, evidenceHistory, decision, decisionHistory, decisionStatus] = await Promise.all([
+      const [signal, stats, patterns, history, signalHistory, models, system, historyStatus, historyStats, dataStatus, latestFeatures, patternReport, mlStatus, mlMetrics, mlPrediction, mlEstimate, evidence, evidenceHistory, decision, decisionHistory, decisionStatus] = await Promise.all([
         getCurrentSignal(),
         getStatistics(),
         getPatterns(),
@@ -28,13 +28,14 @@ export function useLiveData() {
         getMLStatus(),
         getMLMetrics(),
         getLatestMLPrediction(),
+        getMLEstimate(),
         getCurrentEvidence(),
         getRecentEvidence(),
         getCurrentDecision(),
         getRecentDecisions(),
         getDecisionStatus(),
       ]);
-      setState({ loading: false, error: null, signal, stats, patterns, history, signalHistory, models, system, historyStatus, historyStats, dataStatus, latestFeatures, patternReport, mlStatus, mlMetrics, mlPrediction, evidence, evidenceHistory, decision, decisionHistory, decisionStatus });
+      setState({ loading: false, error: null, signal, stats, patterns, history, signalHistory, models, system, historyStatus, historyStats, dataStatus, latestFeatures, patternReport, mlStatus, mlMetrics, mlPrediction, mlEstimate, evidence, evidenceHistory, decision, decisionHistory, decisionStatus });
       lastLoadRef.current = Date.now();
     } catch (error) {
       setState((prev) => ({ ...prev, loading: false, error: error.message || 'API unavailable' }));

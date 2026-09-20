@@ -1,0 +1,936 @@
+{
+  "sample_size": 7493,
+  "positive_rate": 0.4839183237688509,
+  "segments": 65,
+  "gap_boundaries": 64,
+  "max_lag": 50,
+  "alpha": 0.05,
+  "multiple_testing": "Holm-Bonferroni across all reported p-values",
+  "overall_verdict": "REJECT_SOME_NULLS",
+  "failed_tests": [
+    "ljung_box",
+    "autocorrelation_lag_25"
+  ],
+  "tests": {
+    "runs": {
+      "statistic": -0.5178711308357058,
+      "p_value": 0.60454818549077,
+      "observed_runs": 3746,
+      "expected_runs": 3768.075972789615,
+      "variance": 1817.1730907408094,
+      "within_segment_pairs": 7428,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "transition_first_order": {
+      "statistic": 0.44676679566672944,
+      "p_value": 0.5038743640021999,
+      "degrees_of_freedom": 1,
+      "matrix": [
+        [
+          1999,
+          1834
+        ],
+        [
+          1847,
+          1748
+        ]
+      ],
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "transition_second_order": {
+      "statistic": 3.1863982126034585,
+      "p_value": 0.20327427442876705,
+      "degrees_of_freedom": 2,
+      "matrix": [
+        [
+          [
+            1058,
+            928
+          ],
+          [
+            948,
+            867
+          ]
+        ],
+        [
+          [
+            928,
+            899
+          ],
+          [
+            880,
+            856
+          ]
+        ]
+      ],
+      "null": "Y[t] independent of Y[t-2] conditional on Y[t-1]",
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "entropy_vs_max": {
+      "statistic": 0.9992536508096335,
+      "p_value": 0.0055579384946196275,
+      "theoretical_max_bits": 1.0,
+      "ratio_to_max": 0.9992536508096335,
+      "null": "Bernoulli probability equals 0.5; this is not an independence test",
+      "holm_adjusted_p": 0.29457074021484025,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "ljung_box": {
+      "statistic": 260.4866895217995,
+      "p_value": 3.0550142172314517e-30,
+      "degrees_of_freedom": 50,
+      "approximation": "gap-aware pair correlations",
+      "holm_adjusted_p": 1.6497076773049838e-28,
+      "pass": false,
+      "verdict": "FAIL_REJECT_IID_OR_BALANCE"
+    },
+    "autocorrelation_lag_1": {
+      "lag": 1,
+      "statistic": 0.007755405255132776,
+      "p_value": 0.5039397389612739,
+      "pairs": 7428,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_2": {
+      "lag": 2,
+      "statistic": 0.020320749255507274,
+      "p_value": 0.08121425235941071,
+      "pairs": 7364,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_3": {
+      "lag": 3,
+      "statistic": -0.007257572632276482,
+      "p_value": 0.5351809715311918,
+      "pairs": 7303,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_4": {
+      "lag": 4,
+      "statistic": -0.004240715795517383,
+      "p_value": 0.7182123964081709,
+      "pairs": 7243,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_5": {
+      "lag": 5,
+      "statistic": 0.015734683462141505,
+      "p_value": 0.18230743874328678,
+      "pairs": 7186,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_6": {
+      "lag": 6,
+      "statistic": -0.008991177111918812,
+      "p_value": 0.44782987063974444,
+      "pairs": 7129,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_7": {
+      "lag": 7,
+      "statistic": -0.005277648380479291,
+      "p_value": 0.657223740192853,
+      "pairs": 7072,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_8": {
+      "lag": 8,
+      "statistic": 0.00437494985425227,
+      "p_value": 0.7140747433571649,
+      "pairs": 7016,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_9": {
+      "lag": 9,
+      "statistic": -0.007038262706796039,
+      "p_value": 0.5570931579533688,
+      "pairs": 6962,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_10": {
+      "lag": 10,
+      "statistic": 0.002634585823379875,
+      "p_value": 0.8266901109454696,
+      "pairs": 6909,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_11": {
+      "lag": 11,
+      "statistic": 0.0028667188318178207,
+      "p_value": 0.8124052151480929,
+      "pairs": 6856,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_12": {
+      "lag": 12,
+      "statistic": 0.013964916536221022,
+      "p_value": 0.24938503989060526,
+      "pairs": 6805,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_13": {
+      "lag": 13,
+      "statistic": 0.01910255260282654,
+      "p_value": 0.11644566362160404,
+      "pairs": 6755,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_14": {
+      "lag": 14,
+      "statistic": 0.0014394791445311703,
+      "p_value": 0.9061807438155989,
+      "pairs": 6706,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_15": {
+      "lag": 15,
+      "statistic": 0.007587055354510366,
+      "p_value": 0.5359052580059556,
+      "pairs": 6659,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_16": {
+      "lag": 16,
+      "statistic": 0.013006247704122393,
+      "p_value": 0.2903119809348116,
+      "pairs": 6612,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_17": {
+      "lag": 17,
+      "statistic": -0.0009588201294279146,
+      "p_value": 0.9380832053771488,
+      "pairs": 6566,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_18": {
+      "lag": 18,
+      "statistic": -2.3547085993097473e-05,
+      "p_value": 0.9984832378226628,
+      "pairs": 6520,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_19": {
+      "lag": 19,
+      "statistic": -0.01209370149214791,
+      "p_value": 0.33044313219353094,
+      "pairs": 6478,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_20": {
+      "lag": 20,
+      "statistic": 0.02238067315386275,
+      "p_value": 0.0725965921103512,
+      "pairs": 6436,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_21": {
+      "lag": 21,
+      "statistic": -0.004253694602632082,
+      "p_value": 0.7337429256309442,
+      "pairs": 6397,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_22": {
+      "lag": 22,
+      "statistic": 0.02297966472764364,
+      "p_value": 0.06687681281119198,
+      "pairs": 6360,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_23": {
+      "lag": 23,
+      "statistic": 0.00744170526421025,
+      "p_value": 0.5540947223318176,
+      "pairs": 6323,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_24": {
+      "lag": 24,
+      "statistic": -0.009063731628061,
+      "p_value": 0.47242401212667956,
+      "pairs": 6287,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_25": {
+      "lag": 25,
+      "statistic": 0.16458751535336907,
+      "p_value": 3.2623907026585136e-39,
+      "pairs": 6252,
+      "holm_adjusted_p": 1.7943148864621824e-37,
+      "pass": false,
+      "verdict": "FAIL_REJECT_IID_OR_BALANCE"
+    },
+    "autocorrelation_lag_26": {
+      "lag": 26,
+      "statistic": -0.0024193746586550565,
+      "p_value": 0.8487413138488282,
+      "pairs": 6217,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_27": {
+      "lag": 27,
+      "statistic": -0.016519307138412726,
+      "p_value": 0.19398576313186508,
+      "pairs": 6184,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_28": {
+      "lag": 28,
+      "statistic": -0.011887591380678146,
+      "p_value": 0.35125014067358695,
+      "pairs": 6151,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_29": {
+      "lag": 29,
+      "statistic": -0.0006127123320714314,
+      "p_value": 0.9617838832289984,
+      "pairs": 6118,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_30": {
+      "lag": 30,
+      "statistic": 0.003870189264758046,
+      "p_value": 0.7627750445398042,
+      "pairs": 6085,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_31": {
+      "lag": 31,
+      "statistic": -0.02686269240060029,
+      "p_value": 0.03662763176330388,
+      "pairs": 6053,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_32": {
+      "lag": 32,
+      "statistic": -0.0021725584424975067,
+      "p_value": 0.8661434576404323,
+      "pairs": 6022,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_33": {
+      "lag": 33,
+      "statistic": -0.015680341283377117,
+      "p_value": 0.22493715948934762,
+      "pairs": 5991,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_34": {
+      "lag": 34,
+      "statistic": -0.01653211731402265,
+      "p_value": 0.20191448637778112,
+      "pairs": 5960,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_35": {
+      "lag": 35,
+      "statistic": 0.0018297622438535547,
+      "p_value": 0.8879601048784218,
+      "pairs": 5931,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_36": {
+      "lag": 36,
+      "statistic": -0.018689621296978494,
+      "p_value": 0.1511043492449921,
+      "pairs": 5902,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_37": {
+      "lag": 37,
+      "statistic": 0.0069525245245664336,
+      "p_value": 0.5942390343593623,
+      "pairs": 5873,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_38": {
+      "lag": 38,
+      "statistic": -0.005156071308753872,
+      "p_value": 0.6935222454803517,
+      "pairs": 5844,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_39": {
+      "lag": 39,
+      "statistic": 0.003372282150762175,
+      "p_value": 0.7970824283767336,
+      "pairs": 5816,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_40": {
+      "lag": 40,
+      "statistic": -0.011158279079516631,
+      "p_value": 0.3960188938351673,
+      "pairs": 5788,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_41": {
+      "lag": 41,
+      "statistic": -0.018467986187472252,
+      "p_value": 0.16101073571900365,
+      "pairs": 5762,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_42": {
+      "lag": 42,
+      "statistic": -0.025163626667599723,
+      "p_value": 0.05669063325006878,
+      "pairs": 5736,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_43": {
+      "lag": 43,
+      "statistic": -0.007879340423644772,
+      "p_value": 0.5516230523085183,
+      "pairs": 5711,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_44": {
+      "lag": 44,
+      "statistic": -0.01147159150269275,
+      "p_value": 0.3870737800549644,
+      "pairs": 5687,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_45": {
+      "lag": 45,
+      "statistic": 0.015010261470664338,
+      "p_value": 0.2587375351260676,
+      "pairs": 5663,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_46": {
+      "lag": 46,
+      "statistic": 0.00817558753855933,
+      "p_value": 0.5393076823165447,
+      "pairs": 5640,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_47": {
+      "lag": 47,
+      "statistic": -0.003006914612859587,
+      "p_value": 0.8217392694452611,
+      "pairs": 5617,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_48": {
+      "lag": 48,
+      "statistic": 0.026175573025672492,
+      "p_value": 0.05027124033700326,
+      "pairs": 5594,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_49": {
+      "lag": 49,
+      "statistic": 0.00456815462330049,
+      "p_value": 0.7331876266679238,
+      "pairs": 5571,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    },
+    "autocorrelation_lag_50": {
+      "lag": 50,
+      "statistic": -0.004749064598816218,
+      "p_value": 0.7235728935733571,
+      "pairs": 5549,
+      "holm_adjusted_p": 1.0,
+      "pass": true,
+      "verdict": "PASS_NOT_REJECTED"
+    }
+  },
+  "caveat": "Non-rejection is not proof of randomness; balance versus 0.5 is a separate assumption.",
+  "model_version": "ml-20260919T193237Z-a6cf34fe",
+  "source_sha256": "4f29dc328bd0bea551694290a083f77c69ddf3927ef220a0b73ccf8e0b45e4a4",
+  "raw_data_quality": {
+    "total_rounds": 7493,
+    "valid_rounds": 7493,
+    "invalid_rounds": 0,
+    "duplicates": 0,
+    "date_range": {
+      "start": "2026-07-28T13:37:37.587000Z",
+      "end": "2026-09-19T06:15:39.443000Z"
+    },
+    "min": 1.0,
+    "max": 3834.33,
+    "mean": 9.72546776991859,
+    "median": 1.93,
+    "count_2x_plus": 3626,
+    "rate_2x_plus": 0.4839183237688509,
+    "missing_values": {
+      "round_id": 0,
+      "timestamp": 0,
+      "multiplier": 0
+    },
+    "chronological": true,
+    "timestamp_inversions": 1,
+    "collection_gaps_over_120s": 62,
+    "round_index_gaps": 1,
+    "latest_contiguous_rounds": 244
+  },
+  "capture_diagnostic": {
+    "by_lag": [
+      {
+        "lag": 1,
+        "exact_matches": 35,
+        "pairs": 7428,
+        "fraction": 0.004711900915455035,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 2,
+        "exact_matches": 36,
+        "pairs": 7364,
+        "fraction": 0.004888647474198805,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 3,
+        "exact_matches": 29,
+        "pairs": 7303,
+        "fraction": 0.0039709708339038755,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 4,
+        "exact_matches": 42,
+        "pairs": 7243,
+        "fraction": 0.005798702195222974,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 5,
+        "exact_matches": 32,
+        "pairs": 7186,
+        "fraction": 0.004453103256331756,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 6,
+        "exact_matches": 44,
+        "pairs": 7129,
+        "fraction": 0.00617197362883995,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 7,
+        "exact_matches": 40,
+        "pairs": 7072,
+        "fraction": 0.005656108597285068,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 8,
+        "exact_matches": 33,
+        "pairs": 7016,
+        "fraction": 0.004703534777651083,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 9,
+        "exact_matches": 41,
+        "pairs": 6962,
+        "fraction": 0.005889112324044815,
+        "longest_consecutive_matches": 2
+      },
+      {
+        "lag": 10,
+        "exact_matches": 42,
+        "pairs": 6909,
+        "fraction": 0.0060790273556231,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 11,
+        "exact_matches": 28,
+        "pairs": 6856,
+        "fraction": 0.004084014002333722,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 12,
+        "exact_matches": 41,
+        "pairs": 6805,
+        "fraction": 0.006024981631153564,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 13,
+        "exact_matches": 34,
+        "pairs": 6755,
+        "fraction": 0.005033308660251665,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 14,
+        "exact_matches": 20,
+        "pairs": 6706,
+        "fraction": 0.0029824038174768863,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 15,
+        "exact_matches": 45,
+        "pairs": 6659,
+        "fraction": 0.006757771437152726,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 16,
+        "exact_matches": 45,
+        "pairs": 6612,
+        "fraction": 0.006805807622504537,
+        "longest_consecutive_matches": 2
+      },
+      {
+        "lag": 17,
+        "exact_matches": 30,
+        "pairs": 6566,
+        "fraction": 0.004568991775814804,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 18,
+        "exact_matches": 24,
+        "pairs": 6520,
+        "fraction": 0.0036809815950920245,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 19,
+        "exact_matches": 20,
+        "pairs": 6478,
+        "fraction": 0.0030873726458783574,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 20,
+        "exact_matches": 36,
+        "pairs": 6436,
+        "fraction": 0.005593536357986327,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 21,
+        "exact_matches": 33,
+        "pairs": 6397,
+        "fraction": 0.005158668125683915,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 22,
+        "exact_matches": 33,
+        "pairs": 6360,
+        "fraction": 0.005188679245283019,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 23,
+        "exact_matches": 28,
+        "pairs": 6323,
+        "fraction": 0.004428277716273921,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 24,
+        "exact_matches": 31,
+        "pairs": 6287,
+        "fraction": 0.004930809607125815,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 25,
+        "exact_matches": 1048,
+        "pairs": 6252,
+        "fraction": 0.1676263595649392,
+        "longest_consecutive_matches": 25
+      },
+      {
+        "lag": 26,
+        "exact_matches": 26,
+        "pairs": 6217,
+        "fraction": 0.004182081389737816,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 27,
+        "exact_matches": 25,
+        "pairs": 6184,
+        "fraction": 0.004042690815006468,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 28,
+        "exact_matches": 30,
+        "pairs": 6151,
+        "fraction": 0.004877255730775484,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 29,
+        "exact_matches": 33,
+        "pairs": 6118,
+        "fraction": 0.005393919581562602,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 30,
+        "exact_matches": 28,
+        "pairs": 6085,
+        "fraction": 0.004601479046836483,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 31,
+        "exact_matches": 30,
+        "pairs": 6053,
+        "fraction": 0.004956220056170494,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 32,
+        "exact_matches": 37,
+        "pairs": 6022,
+        "fraction": 0.006144138160079708,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 33,
+        "exact_matches": 23,
+        "pairs": 5991,
+        "fraction": 0.003839091971290269,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 34,
+        "exact_matches": 32,
+        "pairs": 5960,
+        "fraction": 0.005369127516778523,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 35,
+        "exact_matches": 35,
+        "pairs": 5931,
+        "fraction": 0.005901197099983139,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 36,
+        "exact_matches": 19,
+        "pairs": 5902,
+        "fraction": 0.0032192477126397833,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 37,
+        "exact_matches": 29,
+        "pairs": 5873,
+        "fraction": 0.0049378511833815765,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 38,
+        "exact_matches": 25,
+        "pairs": 5844,
+        "fraction": 0.004277891854893908,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 39,
+        "exact_matches": 23,
+        "pairs": 5816,
+        "fraction": 0.003954607977991747,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 40,
+        "exact_matches": 32,
+        "pairs": 5788,
+        "fraction": 0.0055286800276434,
+        "longest_consecutive_matches": 2
+      },
+      {
+        "lag": 41,
+        "exact_matches": 27,
+        "pairs": 5762,
+        "fraction": 0.004685872960777508,
+        "longest_consecutive_matches": 2
+      },
+      {
+        "lag": 42,
+        "exact_matches": 31,
+        "pairs": 5736,
+        "fraction": 0.005404463040446304,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 43,
+        "exact_matches": 22,
+        "pairs": 5711,
+        "fraction": 0.0038522150236385924,
+        "longest_consecutive_matches": 2
+      },
+      {
+        "lag": 44,
+        "exact_matches": 15,
+        "pairs": 5687,
+        "fraction": 0.0026375945138034113,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 45,
+        "exact_matches": 31,
+        "pairs": 5663,
+        "fraction": 0.005474130319618577,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 46,
+        "exact_matches": 31,
+        "pairs": 5640,
+        "fraction": 0.00549645390070922,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 47,
+        "exact_matches": 26,
+        "pairs": 5617,
+        "fraction": 0.004628805412141713,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 48,
+        "exact_matches": 27,
+        "pairs": 5594,
+        "fraction": 0.004826599928494816,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 49,
+        "exact_matches": 23,
+        "pairs": 5571,
+        "fraction": 0.0041285227068748875,
+        "longest_consecutive_matches": 1
+      },
+      {
+        "lag": 50,
+        "exact_matches": 53,
+        "pairs": 5549,
+        "fraction": 0.009551270499189043,
+        "longest_consecutive_matches": 23
+      }
+    ],
+    "highest_fraction": {
+      "lag": 25,
+      "exact_matches": 1048,
+      "pairs": 6252,
+      "fraction": 0.1676263595649392,
+      "longest_consecutive_matches": 25
+    },
+    "note": "Exact multiplier repeats may indicate collector replay; this is a post-hoc diagnostic."
+  }
+}

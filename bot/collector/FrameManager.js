@@ -10,6 +10,7 @@
 
 import { log } from './Logger.js';
 import { sleep } from './RetryManager.js';
+import { connectToCdpGameFrame } from './CdpGameFrame.js';
 
 export const PAYOUT_SELECTOR = '.payouts-block .payout';
 
@@ -19,7 +20,24 @@ const PAYOUT_TIMEOUT_MS = Number(process.env.BOT_PAYOUT_TIMEOUT || 90000);
 
 export class FrameManager {
   constructor() {
-    // No cached frame — always resolve fresh
+    // Playwright frames are always resolved fresh. The direct CDP adapter is
+    // retained only while its websocket/context remain alive.
+    this._directFrame = null;
+  }
+
+  async _connectDirectFrame(page) {
+    let parentId = null;
+    let session = null;
+    try {
+      session = await page.context().newCDPSession(page);
+      const info = await session.send('Target.getTargetInfo');
+      parentId = info.targetInfo?.targetId || null;
+    } catch {
+      // Target pairing is an optimisation; discovery still works without it.
+    } finally {
+      await session?.detach().catch(() => {});
+    }
+    return connectToCdpGameFrame(undefined, parentId);
   }
 
   /** True if a frame reference is still usable. */
@@ -109,6 +127,17 @@ export class FrameManager {
       if (found?.method === 'payout-selector') {
         log.info(`FrameManager: frame ready (payout-selector) — ${this._describe(found.frame)}`);
         return found.frame;
+      }
+
+      // Chrome may expose Spribe as a separate OOPIF target without adding it
+      // to Playwright's page.frames(). Use a target-local isolated world in
+      // that case; it has the same evaluate/locator surface used downstream.
+      if (!this.isFrameAlive(this._directFrame)) {
+        this._directFrame = await this._connectDirectFrame(page).catch(() => null);
+      }
+      if (await this.isFrameReady(this._directFrame)) {
+        log.info(`FrameManager: frame ready (direct-cdp) — ${this._describe(this._directFrame)}`);
+        return this._directFrame;
       }
 
       if (found?.method === 'url-hint') {

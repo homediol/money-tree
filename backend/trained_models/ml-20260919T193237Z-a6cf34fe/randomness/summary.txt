@@ -1,0 +1,11 @@
+Raw-outcome randomness battery: ml-20260919T193237Z-a6cf34fe
+N=7493; >=2x rate=0.483918; segments=65; gap boundaries=64
+Holm-Bonferroni family alpha=0.05; verdict=REJECT_SOME_NULLS
+runs: statistic=-0.517871, p=0.604548, Holm p=1, pass=True
+transition_first_order: statistic=0.446767, p=0.503874, Holm p=1, pass=True
+transition_second_order: statistic=3.186398, p=0.203274, Holm p=1, pass=True
+entropy_vs_max: statistic=0.999254, p=0.00555794, Holm p=0.294571, pass=True
+ljung_box: statistic=260.486690, p=3.05501e-30, Holm p=1.64971e-28, pass=False
+Significant serial lags after correction: 25
+Largest exact multiplier-repeat fraction: lag 25, 1048/6252 (16.7626%); longest run 25 (post-hoc diagnostic).
+Non-rejection does not prove independence; rejection may reflect collection artifacts.

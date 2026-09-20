@@ -18,7 +18,8 @@ import httpx
 import pytest
 
 from app.betting.browser_adapters import PlacementUnavailable, SimulationBackend
-from app.betting.browser_client import BrowserUnreachable
+from app.betting.browser_client import AviatorBrowserClient, CdpSession, BrowserUnreachable, Target
+from app.betting.selectors import SNAPSHOT, parse_amount
 from app.betting.config import BettingSettings
 from app.betting.events import betting_event, ledger_event, notice_event, state_event
 from app.betting.profiles import PROFILES, profile_keys
@@ -75,6 +76,95 @@ def decision(decision_id: str, target_multiplier: float = 2.0,
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def test_cdp_evaluate_invokes_function_and_awaits_result():
+    async def go():
+        session = CdpSession("ws://unused", fast_settings())
+        captured = {}
+
+        async def fake_call(method, params):
+            captured.update({"method": method, "params": params})
+            return {"result": {"type": "object", "value": {"ok": True}}}
+
+        session.call = fake_call
+        value = await session.evaluate("() => ({ ok: true })")
+        return value, captured
+
+    value, captured = _run(go())
+    assert value == {"ok": True}
+    assert captured["method"] == "Runtime.evaluate"
+    assert captured["params"]["expression"] == "(() => ({ ok: true }))()"
+    assert captured["params"]["awaitPromise"] is True
+
+
+def test_cdp_evaluate_targets_an_explicit_frame_context():
+    async def go():
+        session = CdpSession("ws://unused", fast_settings())
+        captured = {}
+
+        async def fake_call(method, params):
+            captured.update({"method": method, "params": params})
+            return {"result": {"type": "boolean", "value": True}}
+
+        session.call = fake_call
+        assert await session.evaluate("() => true", context_id=42) is True
+        return captured
+
+    captured = _run(go())
+    assert captured["params"]["contextId"] == 42
+
+
+def test_snapshot_queries_directly_inside_aviator_next_context():
+    assert "const d = document" in SNAPSHOT
+    assert "d.querySelectorAll('.payouts-block .payout')" in SNAPSHOT
+    assert "d.querySelectorAll('.bet-block')" in SNAPSHOT
+    assert "d.querySelectorAll('.btn-success.bet')" in SNAPSHOT
+
+
+def test_nested_aviator_frame_is_found_in_cdp_frame_tree():
+    tree = {"frame": {"id": "outer", "url": "https://aviaport.example"},
+            "childFrames": [{"frame": {"id": "game", "url":
+                              "https://aviator-next.spribegaming.com/"}}]}
+    assert AviatorBrowserClient._find_frame(tree, "aviator-next")["id"] == "game"
+
+
+def test_browser_target_resolution_pairs_game_frame_with_selected_page():
+    client = AviatorBrowserClient(BettingSettings())
+    client._discover = lambda: [
+        Target("page-a", "page", "https://winner.rw/aviator", "ws://page-a"),
+        Target("frame-b", "iframe", "https://aviaport.spribegaming.com/aviator",
+               "ws://frame-b", "page-b"),
+        Target("page-b", "page", "https://winner.rw/aviator", "ws://page-b"),
+        Target("frame-a", "iframe", "https://aviaport.spribegaming.com/aviator",
+               "ws://frame-a", "page-a"),
+    ]
+    page, frame = client.resolve_targets()
+    assert page.id == "page-a"
+    assert frame.id == "frame-a"
+
+
+def test_real_placement_enables_cashout_but_keeps_repeat_betting_off():
+    import inspect
+
+    source = inspect.getsource(AviatorBrowserClient.place_bet)
+    assert ".cash-out-switcher .input-switch" in source
+    assert ".cashout-spinner input" in source
+    assert ".auto-bet .input-switch" in source
+    assert "autoBet:false" in source
+    assert "execCommand('insertText'" in source
+    assert "stake model verification failed" in source
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("1,000BIF", 1000),
+    ("1,000 BIF", 1000),
+    ("12.3K", 12_300),
+    ("12.3KBIF", 12_300),
+    ("2 M BIF", 2_000_000),
+])
+def test_balance_parser_distinguishes_currency_from_scale_suffix(text, expected):
+    assert parse_amount(text) == expected
 
 
 async def _wait_task(task: asyncio.Task, timeout: float = 6.0) -> None:

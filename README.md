@@ -71,7 +71,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 Configuration is optional — copy `backend/.env.example` to `backend/.env`
 and edit if you need different paths, thresholds, or CORS origins. Defaults
-point at `backend/data/`, `backend/trained_models/`, and
+point at `data/roundhistory.json`, `backend/trained_models/`, and
 `backend/winner_predict.sqlite3`.
 
 For any deployment reachable by other machines, set `API_KEY` to a random
@@ -171,7 +171,7 @@ alpine image. Dependencies are installed inside the containers on every `up`.
 
 ## Dataset
 
-The backend uses `backend/data/roundhistory.json`. The loader detects the JSON
+The current FastAPI backend uses `data/roundhistory.json`. The loader detects the JSON
 shape before parsing. The current dataset is an array of round records:
 
 ```json
@@ -205,17 +205,45 @@ marked `INSUFFICIENT DATA`.
 
 ## Model Validation
 
-The ML system trains Logistic Regression, Random Forest, and Gradient Boosting
-models when scikit-learn is installed. Validation uses chronological
-walk-forward splits only — the model never shuffles rounds and never trains on
-future data when evaluating earlier rounds.
+From the project root, with `backend/.venv` installed:
 
-Models are compared against the historical base-rate probability, `always >= 2x`,
-`always < 2x`, and random 50/50 baselines. If validation does not beat the
-baseline, the UI and API return `MODEL NOT VALIDATED`.
+```bash
+PYTHONPATH=backend backend/.venv/bin/python backend/scripts/next_round_ml.py train
+PYTHONPATH=backend backend/.venv/bin/python backend/scripts/next_round_ml.py predict
+PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_models.py backend/tests/test_dataset_service.py -q
+```
 
-Trained artifacts are written to `backend/trained_models/`; metrics and signal
-history persist in `backend/winner_predict.sqlite3`.
+The supervised label for row N is its own `>=2x` outcome; all its features
+use only rounds before N. For live inference, the unknown next row is a
+placeholder with no outcome. Features include multiple rolling distributions,
+robust log statistics, streaks, transition rates, and causally smoothed Pattern
+Engine state frequencies. A collector gap cannot be treated as a known
+immediately following round. The feature schema is versioned and rejects
+unapproved columns.
+
+Candidates are Logistic Regression, Random Forest, Extra Trees, histogram
+Gradient Boosting, and optionally XGBoost/LightGBM when installed. The fixed
+70/10/5/15 chronological splits are for fitting, selection, calibration
+checking, and an untouched final test. Three earlier expanding walk-forward
+folds are also evaluated. Model choice uses only the earlier folds and
+selection set; the final test can reject deployment but cannot choose a model.
+Class weighting is enabled when the fitting period is substantially imbalanced.
+A sigmoid calibrator is fitted on selection predictions only when a separate
+holdout shows an improvement in both Brier and log loss. Diagnostics include
+calibration bins, PR/ROC-AUC, precision/recall/F1, log loss, Brier, confusion
+matrices, three test-period checks, and block-bootstrap Brier advantage against
+simple frozen/causal/rolling frequency baselines.
+
+If no candidate demonstrates a stable out-of-sample advantage, `/api/ml/estimate`
+returns an informational, **non-usable** 250-round frequency. No unvalidated
+ML output enters the Evidence → Decision → Risk path. Even a validated ML
+prediction only supplies evidence; it never places or sizes a bet. Predictions
+are blocked when history is stale or the latest contiguous history is too short.
+
+Training snapshots are archived by SHA-256 under `backend/artifacts/training_datasets/`.
+Versioned model artifacts and complete evaluation reports are stored under
+`backend/trained_models/`; the latest version is referenced by `active.json`.
+Do not load model artifacts from untrusted sources (joblib uses pickle).
 
 ## Limitations
 
