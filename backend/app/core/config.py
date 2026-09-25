@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+import tempfile
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,6 +36,10 @@ class Settings(BaseSettings):
     decision_path: Path = Path(__file__).resolve().parents[3] / "data" / "decision.json"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     api_key: str | None = Field(default=None, min_length=16)
+    backend_host: str = "0.0.0.0"
+    backend_port: int = Field(default=8000, ge=1, le=65535)
+    enforce_single_instance: bool = True
+    instance_lock_path: Path = Path(tempfile.gettempdir()) / "winner-predict-backend-8000.lock"
 
 
 @lru_cache

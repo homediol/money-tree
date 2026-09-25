@@ -1,13 +1,31 @@
 import React, { useEffect, useState } from 'react';
+import { api } from '../services/api.js';
 
-const json = async (url, options) => (await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options })).json();
+const json = async (url, options = {}) => {
+  const response = await api.request({ url, ...options });
+  return response.data;
+};
 
 export default function LiveActivation() {
   const [status, setStatus] = useState(null); const [readiness, setReadiness] = useState(null); const [profile, setProfile] = useState('PROFILE_A');
   const [start, setStart] = useState(1000); const [goal, setGoal] = useState(1100); const [busy, setBusy] = useState(false);
-  const refresh = async () => { const [s, r] = await Promise.all([json('/api/live/status'), json('/api/live/readiness', { method: 'POST', body: '{}' })]); setStatus(s); setReadiness(r); };
+  const refresh = async () => {
+    try {
+      const [s, r] = await Promise.all([
+        json('/api/live/status'),
+        json('/api/live/readiness', { method: 'POST', data: {} }),
+      ]);
+      setStatus(s); setReadiness(r);
+    } catch (error) {
+      // The global backend connection monitor owns retries and backoff. Keep
+      // the last safe state visible while it reconnects.
+      if (error?.code !== 'ERR_BACKEND_RECONNECTING') {
+        console.warn(`[backend ${new Date().toISOString()}] live status refresh failed`, error);
+      }
+    }
+  };
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, []);
-  const action = async (path, body = {}) => { setBusy(true); try { await json(`/api/live/${path}`, { method: 'POST', body: JSON.stringify(body) }); await refresh(); } finally { setBusy(false); } };
+  const action = async (path, body = {}) => { setBusy(true); try { await json(`/api/live/${path}`, { method: 'POST', data: body }); await refresh(); } finally { setBusy(false); } };
   const mode = status?.mode || 'OBSERVING';
   const color = mode === 'LIVE_ACTIVE' ? 'text-red-300' : mode === 'EMERGENCY_STOP' ? 'text-red-500' : 'text-yellow-300';
   return <section className="space-y-5">

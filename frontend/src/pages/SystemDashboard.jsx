@@ -3,7 +3,7 @@ import Card from '../components/Card.jsx';
 import { api, getResultExecutions } from '../services/api.js';
 
 const value = (v) => v == null || v === '' ? 'UNKNOWN' : String(v);
-const tone = (state) => state === 'HEALTHY' || state === 'CONNECTED' ? 'text-emerald-300' : state === 'PAUSED' || state === 'DEGRADED' ? 'text-amber-300' : 'text-rose-300';
+const tone = (state) => state === 'HEALTHY' || state === 'CONNECTED' || state === 'APPROVED' ? 'text-emerald-300' : state === 'PAUSED' || state === 'DEGRADED' || state === 'WAITING' || state === 'OFF' || state === 'IDLE' ? 'text-amber-300' : 'text-rose-300';
 
 export default function SystemDashboard() {
   const [health, setHealth] = useState(null);
@@ -22,7 +22,11 @@ export default function SystemDashboard() {
       ]);
       setHealth(h.data); setStatus(b.data.status); setRisk(r.data.status); setHistory(his.data); setExecutions(xs); setOperations(op.data);
       setError(null);
-    } catch (e) { setError(e?.response?.data?.detail || e.message || 'Dashboard unavailable'); }
+    } catch (e) {
+      if (e?.code !== 'ERR_BACKEND_RECONNECTING') {
+        setError(e?.response?.data?.detail || e.message || 'Dashboard unavailable');
+      }
+    }
   }
   useEffect(() => { refresh(); const id = setInterval(refresh, 3000); return () => clearInterval(id); }, []);
 
@@ -36,7 +40,7 @@ export default function SystemDashboard() {
       <p className="mt-1 text-sm text-zinc-400">Backend-authoritative pipeline status. UNKNOWN values are never estimated.</p></div>
     {error && <div className="rounded border border-rose-500/40 bg-rose-950/30 p-3 text-sm text-rose-200">{error}</div>}
     <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {[["System Health", health?.state], ["Mode", status?.mode], ["History", history?.status], ["Risk", risk?.risk_status]].map(([k,v]) => <Card key={k}><div className="text-xs uppercase text-zinc-500">{k}</div><div className={`mt-1 text-xl font-semibold ${tone(v)}`}>{value(v)}</div></Card>)}
+      {[["System Health", health?.state], ["Mode", status?.mode || (status?.state === 'IDLE' ? 'OFF' : null)], ["History", history?.status], ["Risk", risk?.risk_status]].map(([k,v]) => <Card key={k}><div className="text-xs uppercase text-zinc-500">{k}</div><div className={`mt-1 text-xl font-semibold ${tone(v)}`}>{value(v)}</div>{k === 'Risk' && <div className="mt-1 text-xs text-zinc-500">{risk?.reason || 'No risk status received'}</div>}</Card>)}
     </section>
     <Card title="Long-running operations"><div className="grid gap-2 text-sm sm:grid-cols-3"><div>Uptime: {value(operations?.snapshot?.uptime_s)}s</div><div>Open executions: {value(operations?.snapshot?.open_executions)}</div><div>Incidents: {value(operations?.incident ? 1 : 0)}</div></div>{operations?.incident && <div className="mt-3 text-rose-300">Operations paused betting: {operations.incident.reasons.join('; ')}</div>}</Card>
     <Card title="Controls"><div className="flex flex-wrap gap-2">

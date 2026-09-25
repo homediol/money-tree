@@ -181,9 +181,23 @@ def test_risk_api_and_frontend_state_payload():
             payload = (await client.get("/api/risk/status")).json()["status"]
         assert profiles["profiles"]["PROFILE_A"]["cashout"] == 2.0
         assert changed["profile"]["cashout"] == 1.5
-        assert payload["risk_status"] == "BLOCKED"
+        assert payload["risk_status"] == "WAITING"
+        assert payload["risk_level"] == "NOT_EVALUATED"
         assert "maximum_session_loss" in payload
     run(go())
+
+
+def test_risk_status_distinguishes_waiting_from_emergency_block():
+    risk, fake, _ = manager()
+    waiting = risk.status(fake.status())
+    assert waiting["risk_status"] == "WAITING"
+    assert waiting["reason"].startswith("Waiting for a fresh")
+
+    run(risk.emergency_stop())
+    blocked = risk.status(fake.status())
+    assert blocked["risk_status"] == "BLOCKED"
+    assert blocked["risk_level"] == "BLOCKED"
+    assert blocked["reason"] == "Emergency stop is active"
 
 
 def test_decision_api_routes_risk_approval_into_executor():

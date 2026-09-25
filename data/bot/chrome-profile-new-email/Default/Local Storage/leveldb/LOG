@@ -1,27 +1,25 @@
-2026/09/20-06:02:30.207 39a5d Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/MANIFEST-000001
-2026/09/20-06:02:30.222 39a5d Recovering log #2921
-2026/09/20-06:02:30.224 39a5d Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/002921.log 
-2026/09/20-06:02:57.605 39a61 Level-0 table #2926: started
-2026/09/20-06:02:57.916 39a61 Level-0 table #2926: 693302 bytes OK
-2026/09/20-06:02:58.026 39a61 Delete type=0 #2921
-2026/09/20-06:03:30.227 39a61 Level-0 table #2928: started
-2026/09/20-06:03:30.313 39a61 Level-0 table #2928: 183672 bytes OK
-2026/09/20-06:03:30.421 39a61 Delete type=0 #2925
-2026/09/20-06:07:50.189 39a61 Level-0 table #2930: started
-2026/09/20-06:07:50.378 39a61 Level-0 table #2930: 99288 bytes OK
-2026/09/20-06:07:50.513 39a61 Delete type=0 #2927
-2026/09/20-06:09:40.636 39a61 Level-0 table #2932: started
-2026/09/20-06:09:40.694 39a61 Level-0 table #2932: 102131 bytes OK
-2026/09/20-06:09:40.866 39a61 Delete type=0 #2929
-2026/09/20-06:09:40.873 39a61 Compacting 4@0 + 1@1 files
-2026/09/20-06:09:41.018 39a61 Generated table #2933@0: 166 keys, 823786 bytes
-2026/09/20-06:09:41.019 39a61 Compacted 4@0 + 1@1 files => 823786 bytes
-2026/09/20-06:09:41.092 39a61 compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/09/20-06:09:41.093 39a61 Delete type=2 #2932
-2026/09/20-06:09:41.094 39a61 Delete type=2 #2926
-2026/09/20-06:09:41.094 39a61 Delete type=2 #2923
-2026/09/20-06:09:41.094 39a61 Delete type=2 #2928
-2026/09/20-06:09:41.094 39a61 Delete type=2 #2930
-2026/09/20-06:11:40.677 39a5d Level-0 table #2935: started
-2026/09/20-06:11:40.742 39a5d Level-0 table #2935: 99340 bytes OK
-2026/09/20-06:11:40.973 39a5d Delete type=0 #2931
+2026/09/25-05:15:34.284 532db Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/MANIFEST-000001
+2026/09/25-05:15:34.318 532db Recovering log #3990
+2026/09/25-05:15:34.319 532db Level-0 table #3993: started
+2026/09/25-05:15:34.602 532db Level-0 table #3993: 91795 bytes OK
+2026/09/25-05:15:34.603 532db Recovering log #3992
+2026/09/25-05:15:34.605 532db Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/003992.log 
+2026/09/25-05:15:35.040 532db Delete type=0 #3990
+2026/09/25-05:15:35.042 532f8 Compacting 4@0 + 1@1 files
+2026/09/25-05:15:35.529 532f8 Generated table #3994@0: 216 keys, 793434 bytes
+2026/09/25-05:15:35.530 532f8 Compacted 4@0 + 1@1 files => 793434 bytes
+2026/09/25-05:15:35.713 532f8 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/09/25-05:15:35.724 532f8 Delete type=2 #3993
+2026/09/25-05:15:35.725 532f8 Delete type=2 #3989
+2026/09/25-05:15:35.735 532f8 Delete type=2 #3985
+2026/09/25-05:15:35.735 532f8 Delete type=2 #3987
+2026/09/25-05:15:35.735 532f8 Delete type=2 #3991
+2026/09/25-05:16:10.560 532dd Level-0 table #3996: started
+2026/09/25-05:16:11.186 532dd Level-0 table #3996: 611110 bytes OK
+2026/09/25-05:16:11.494 532dd Delete type=0 #3992
+2026/09/25-05:16:17.449 532dd Level-0 table #3998: started
+2026/09/25-05:16:17.500 532dd Level-0 table #3998: 167027 bytes OK
+2026/09/25-05:16:17.566 532dd Delete type=0 #3995
+2026/09/25-05:20:47.192 532dd Level-0 table #4000: started
+2026/09/25-05:20:47.249 532dd Level-0 table #4000: 88873 bytes OK
+2026/09/25-05:20:47.286 532dd Delete type=0 #3997

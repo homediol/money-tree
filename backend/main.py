@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import os
+import sqlite3
+import time
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +19,7 @@ from app.betting.session import BettingManager, configure_default_manager
 from app.betting.schemas import DecisionIntent
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.runtime import InstanceLock
 from app.services.app_state import AppState
 from app.services.monitoring_engine import MonitoringEngine
 from app.services.system_health import SystemHealth
@@ -143,18 +149,30 @@ async def process_history_update(app: FastAPI):
 async def monitor_file(app: FastAPI):
     monitor = MonitoringEngine(app.state.wp.settings.data_path)
     while True:
-        await asyncio.sleep(3)
-        if monitor.has_changed():
-            # File parsing, database sync and statistical analysis are
-            # synchronous/CPU-bound. Keep them off FastAPI's event loop so
-            # health checks and UI requests remain responsive.
-            await process_history_update(app)
+        try:
+            await asyncio.sleep(3)
+            if monitor.has_changed():
+                # File parsing, database sync and statistical analysis are
+                # synchronous/CPU-bound. Keep them off FastAPI's event loop so
+                # health checks and UI requests remain responsive.
+                await process_history_update(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("history monitor cycle failed; retrying")
+            await asyncio.sleep(2)
 
 
 async def monitor_health(app: FastAPI):
     while True:
-        await app.state.system_health.enforce_safety()
-        await asyncio.sleep(2)
+        try:
+            await app.state.system_health.enforce_safety()
+            await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("system health monitor cycle failed; retrying")
+            await asyncio.sleep(2)
 
 
 async def monitor_operations(app: FastAPI):
@@ -166,75 +184,155 @@ async def monitor_operations(app: FastAPI):
         await asyncio.sleep(15)
 
 
+async def initialize_app_state(settings, attempts: int = 3) -> AppState:
+    """Initialize disk/database state with bounded retries for transient locks."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return await asyncio.to_thread(AppState, settings)
+        except sqlite3.OperationalError as exc:
+            if attempt == attempts:
+                raise
+            delay = 0.5 * (2 ** (attempt - 1))
+            log.warning("database startup attempt %s/%s failed: %s; retrying in %.1fs",
+                        attempt, attempts, exc, delay)
+            await asyncio.sleep(delay)
+    raise RuntimeError("application state initialization exhausted retries")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    app.state.manager = manager
-    app.state.wp = AppState(settings)
-    log.info("[DATA] Loaded %s rounds", len(app.state.wp.rounds))
-
-    # Betting automation module (Part 1 — read-only browser verification).
-    betting_manager = BettingManager(
-        get_betting_settings(),
-        broadcaster=manager.broadcast,
-        repository=app.state.wp.repository,
-    )
-    reconciled = app.state.wp.repository.reconcile_incomplete_executions()
-    if reconciled:
-        log.warning("[EXECUTION] reconciled %s incomplete executions; none will be retried", reconciled)
-    app.state.betting = betting_manager
-    configure_default_manager(betting_manager)
-    app.state.risk = RiskManager(
-        broadcaster=manager.broadcast,
-        betting_manager=betting_manager,
-    )
-    app.state.reconciliation = ReconciliationService(
-        app.state.wp.repository, broadcaster=manager.broadcast,
-        betting_manager=betting_manager, risk_manager=app.state.risk,
-    )
-    betting_manager.reconciler = app.state.reconciliation
-    app.state.decision_engine = DecisionEngine(
-        settings.decision_path, app.state.wp.repository, broadcaster=manager.broadcast,
-    )
-    app.state.history_collector = HistoryCollectorManager(settings.data_path, manager.broadcast)
-    app.state.shadow = ShadowManager(repository=app.state.wp.repository, broadcaster=manager.broadcast)
-    app.state.system_health = SystemHealth(
-        broadcaster=manager.broadcast, betting_manager=betting_manager,
-        history_collector=app.state.history_collector, repository=app.state.wp.repository,
-    )
-    app.state.live = LiveActivationManager(app)
-    app.state.operations = OperationsManager(app)
-    app.state.disaster_recovery = DisasterRecoveryManager(app, app.state.operations)
-    # These services are initialized synchronously above. Their runtime work
-    # still emits failures through the existing websocket events; the health
-    # registry records initialization without claiming browser/data freshness.
-    for component in ("features", "patterns", "ml", "evidence", "decision", "risk", "api"):
-        app.state.system_health.heartbeat(component, ok=True,
-                                          metadata={"initialized": True}, stale_after_s=3600)
-    betting_manager.safety_gate = app.state.system_health.can_bet_now
-    # Expose monitor functions to the lifecycle coordinator without making
-    # it responsible for domain work.
-    app.state.history_monitor = monitor_file
-    app.state.system_health_monitor = monitor_health
-    app.state.operations_monitor = monitor_operations
-    app.state.orchestrator = SystemOrchestrator(app)
-    # Recovery always starts in SAFE_MODE and never resumes live betting.
-    await app.state.disaster_recovery.recover("startup")
-    # Recovery observes already-known target rounds; it never queues/repeats a bet.
-    known_rounds = {str(row["round_id"]): row for row in app.state.history_collector.rows()}
-    for execution in app.state.wp.repository.open_executions():
-        known = known_rounds.get(str(execution.get("target_round_id")))
-        if known:
-            await app.state.reconciliation.reconcile_round(known)
+    instance_lock = InstanceLock(settings.instance_lock_path)
+    orchestrator = None
+    started = time.monotonic()
+    app.state.ready = False
     try:
-        await app.state.orchestrator.start()
+        if settings.enforce_single_instance:
+            instance_lock.acquire()
+        log.info("backend startup begin pid=%s host=%s port=%s", os.getpid(),
+                 settings.backend_host, settings.backend_port)
+        app.state.manager = manager
+        app.state.started_monotonic = started
+        app.state.started_at = datetime.now(timezone.utc).isoformat()
+        app.state.instance_id = uuid.uuid4().hex
+        app.state.wp = await initialize_app_state(settings)
+        log.info("[DATA] Loaded %s rounds", len(app.state.wp.rounds))
+
+        # Betting automation module (Part 1 — read-only browser verification).
+        betting_manager = BettingManager(
+            get_betting_settings(), broadcaster=manager.broadcast,
+            repository=app.state.wp.repository,
+        )
+        reconciled = app.state.wp.repository.reconcile_incomplete_executions()
+        if reconciled:
+            log.warning("[EXECUTION] reconciled %s incomplete executions; none will be retried", reconciled)
+        app.state.betting = betting_manager
+        configure_default_manager(betting_manager)
+        app.state.risk = RiskManager(
+            broadcaster=manager.broadcast, betting_manager=betting_manager,
+        )
+        app.state.reconciliation = ReconciliationService(
+            app.state.wp.repository, broadcaster=manager.broadcast,
+            betting_manager=betting_manager, risk_manager=app.state.risk,
+        )
+        betting_manager.reconciler = app.state.reconciliation
+        app.state.decision_engine = DecisionEngine(
+            settings.decision_path, app.state.wp.repository,
+            broadcaster=manager.broadcast,
+        )
+        app.state.history_collector = HistoryCollectorManager(settings.data_path, manager.broadcast)
+        app.state.shadow = ShadowManager(repository=app.state.wp.repository, broadcaster=manager.broadcast)
+        app.state.system_health = SystemHealth(
+            broadcaster=manager.broadcast, betting_manager=betting_manager,
+            history_collector=app.state.history_collector, repository=app.state.wp.repository,
+        )
+        app.state.live = LiveActivationManager(app)
+        app.state.operations = OperationsManager(app)
+        app.state.disaster_recovery = DisasterRecoveryManager(app, app.state.operations)
+        for component in ("features", "patterns", "ml", "evidence", "decision", "risk", "api"):
+            app.state.system_health.heartbeat(
+                component, ok=True, metadata={"initialized": True}, stale_after_s=3600,
+            )
+        betting_manager.safety_gate = app.state.system_health.can_bet_now
+        app.state.history_monitor = monitor_file
+        app.state.system_health_monitor = monitor_health
+        app.state.operations_monitor = monitor_operations
+        orchestrator = SystemOrchestrator(app)
+        app.state.orchestrator = orchestrator
+        try:
+            await app.state.disaster_recovery.recover("startup")
+        except Exception:
+            log.exception("startup recovery failed; continuing in safe mode")
+        known_rounds = {str(row["round_id"]): row for row in app.state.history_collector.rows()}
+        for execution in app.state.wp.repository.open_executions():
+            known = known_rounds.get(str(execution.get("target_round_id")))
+            if known:
+                try:
+                    await app.state.reconciliation.reconcile_round(known)
+                except Exception:
+                    log.exception("startup reconciliation failed execution=%s",
+                                  execution.get("execution_id"))
+        await orchestrator.start()
+        app.state.ready = True
+        log.info("backend startup complete pid=%s instance=%s", os.getpid(),
+                 app.state.instance_id)
         yield
+    except Exception:
+        log.exception("backend startup/runtime failure")
+        raise
     finally:
-        await app.state.orchestrator.shutdown()
+        app.state.ready = False
+        log.info("backend graceful shutdown begin pid=%s", os.getpid())
+        if orchestrator is not None:
+            await orchestrator.shutdown()
+        instance_lock.release()
+        log.info("backend graceful shutdown complete pid=%s", os.getpid())
 
 
 app = FastAPI(title="Winner Predict", description="STATISTICAL PATTERN ANALYSIS platform for Aviator round history research.", version="1.0.0", lifespan=lifespan)
 settings = get_settings()
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception):
+    """Return a stable error response without terminating the ASGI process."""
+    request_id = getattr(request.state, "request_id", "unknown")
+    log.exception("unhandled API failure request_id=%s method=%s path=%s",
+                  request_id, request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"ok": False, "error": "internal_server_error",
+                 "request_id": request_id},
+    )
+
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = (time.perf_counter() - started) * 1000
+        log.exception("API request crashed request_id=%s method=%s path=%s duration_ms=%.1f",
+                      request_id, request.method, request.url.path, elapsed)
+        response = JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "internal_server_error",
+                     "request_id": request_id},
+        )
+    elapsed = (time.perf_counter() - started) * 1000
+    response.headers["X-Request-ID"] = request_id
+    if response.status_code >= 500:
+        log.error("API failure request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
+                  request_id, request.method, request.url.path,
+                  response.status_code, elapsed)
+    elif request.url.path != "/health":
+        log.info("API request request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
+                 request_id, request.method, request.url.path,
+                 response.status_code, elapsed)
+    return response
 
 
 @app.middleware("http")
@@ -300,8 +398,40 @@ async def root():
 
 
 @app.get("/health", tags=["system"])
-async def health():
-    return {"ok": True, "status": "healthy"}
+async def health(request: Request):
+    """Liveness/readiness report used by the frontend and process supervisor."""
+    database = {"status": "unavailable", "error": "repository not initialized"}
+    repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
+    if repository is not None:
+        try:
+            with repository.connect() as conn:
+                conn.execute("SELECT 1").fetchone()
+            database = {"status": "ok", "path": str(repository.database_path)}
+        except Exception as exc:
+            database = {"status": "error", "error": str(exc)}
+            log.exception("database health check failed")
+    ready = bool(getattr(request.app.state, "ready", False))
+    database_ok = database["status"] == "ok"
+    payload = {
+        "ok": ready and database_ok,
+        "service": "winner-predict-backend",
+        "status": "healthy" if ready and database_ok else "degraded",
+        "backend": {
+            "status": "ok" if ready else "starting",
+            "pid": os.getpid(),
+            "instance_id": getattr(request.app.state, "instance_id", None),
+            "started_at": getattr(request.app.state, "started_at", None),
+            "uptime_seconds": round(
+                time.monotonic() - getattr(request.app.state, "started_monotonic", time.monotonic()),
+                3,
+            ),
+        },
+        "database": database,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+    log.info("health check backend=%s database=%s",
+             payload["backend"]["status"], database["status"])
+    return JSONResponse(status_code=200 if payload["ok"] else 503, content=payload)
 
 
 @app.get("/api/system/status", tags=["system"])
@@ -350,4 +480,7 @@ async def websocket_live(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Reload mode intentionally remains opt-in through the uvicorn CLI. An
+    # implicit reloader creates an extra process and recurring brief outages.
+    uvicorn.run(app, host=settings.backend_host, port=settings.backend_port,
+                reload=False, log_level="info")

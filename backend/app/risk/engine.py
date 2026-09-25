@@ -83,12 +83,29 @@ class RiskManager:
     def status(self, betting_status: Optional[dict] = None) -> dict:
         bs = betting_status or {}
         profile = get_risk_profile(self.selected_profile)
+        last = self.last_evaluation
         start = bs.get("starting_balance")
         current = bs.get("current_balance")
         if current is None:
             current = bs.get("last_balance")
         profit = None if start is None or current is None else current - start
         loss = 0 if profit is None or profit >= 0 else abs(profit)
+        if self.emergency_latched:
+            risk_status = "BLOCKED"
+            risk_level = "BLOCKED"
+            reason = "Emergency stop is active"
+        elif last is None:
+            risk_status = "WAITING"
+            risk_level = "NOT_EVALUATED"
+            reason = "Waiting for a fresh READY_FOR_EXECUTION decision"
+        elif last.get("approved"):
+            risk_status = "APPROVED"
+            risk_level = last.get("risk_level", "APPROVED")
+            reason = last.get("reason", "Risk approved")
+        else:
+            risk_status = "BLOCKED"
+            risk_level = last.get("risk_level", "BLOCKED")
+            reason = last.get("reason", "Risk rejected the latest decision")
         return {
             "selected_profile": profile.key,
             "profile_name": profile.name,
@@ -105,12 +122,12 @@ class RiskManager:
             "session_loss": loss,
             "total_bet_amount": sum(x["approved_bet"] for x in self.audit_log if x["approved"]),
             "consecutive_losses": bs.get("consecutive_losses", 0),
-            "current_bet_size": (self.last_evaluation or {}).get("approved_bet", 0),
-            "risk_level": (self.last_evaluation or {}).get("risk_level", "BLOCKED"),
-            "risk_status": "APPROVED" if (self.last_evaluation or {}).get("approved") else "BLOCKED",
-            "reason": (self.last_evaluation or {}).get("reason", "Awaiting authorized decision"),
+            "current_bet_size": (last or {}).get("approved_bet", 0),
+            "risk_level": risk_level,
+            "risk_status": risk_status,
+            "reason": reason,
             "emergency_stop": self.emergency_latched,
-            "last_evaluation": self.last_evaluation,
+            "last_evaluation": last,
             "audit_count": len(self.audit_log),
         }
 

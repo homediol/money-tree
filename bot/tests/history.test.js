@@ -52,6 +52,54 @@ test('history page reuses one browser context and never launches another browser
   assert.equal(newPages, 1);
 });
 
+test('managed history page removes restored MetaBrandTitle and blank tabs', async () => {
+  const closed = [];
+  const staleWinner = {
+    isClosed: () => closed.includes('winner'),
+    url: () => 'https://winner.rw/sportsbook/upcoming',
+    close: async () => { closed.push('winner'); },
+  };
+  const blank = {
+    isClosed: () => closed.includes('blank'),
+    url: () => 'chrome://newtab/',
+    close: async () => { closed.push('blank'); },
+  };
+  let focused = 0;
+  const historyPage = {
+    isClosed: () => false,
+    url: () => 'about:blank',
+    goto: async () => {},
+    bringToFront: async () => { focused += 1; },
+  };
+  const manager = new BrowserManager(true);
+  manager.isAlive = () => true;
+  manager._ownsBrowser = true;
+  manager._page = staleWinner;
+  manager._context = {
+    pages: () => [staleWinner, blank, historyPage],
+    newPage: async () => historyPage,
+  };
+
+  assert.equal(await manager.getHistoryPage(), historyPage);
+  assert.deepEqual(closed.sort(), ['blank', 'winner']);
+  assert.equal(focused, 1);
+  assert.equal(manager._page, null);
+});
+
+test('attached user browser tabs are never cleaned up', async () => {
+  let closed = 0;
+  const userPage = {
+    isClosed: () => false,
+    url: () => 'https://winner.rw/sportsbook/upcoming',
+    close: async () => { closed += 1; },
+  };
+  const manager = new BrowserManager(true);
+  manager._ownsBrowser = false;
+  manager._context = { pages: () => [userPage] };
+  await manager._cleanupManagedStarterPages(null);
+  assert.equal(closed, 0);
+});
+
 test('history page recovery stays in the existing browser context', async () => {
   let newPages = 0;
   let closed = 0;

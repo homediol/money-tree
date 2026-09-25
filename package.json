@@ -4,6 +4,7 @@
   "description": "Aviator ML — unified launcher",
   "scripts": {
     "start":      "node scripts/start-all.js",
+    "backend":    "node scripts/start-all.js --backend-only",
     "collector":  "node bot/roundhistory-collector.js",
     "flask":      ".venv/bin/python backend/run.py",
     "bot-api":    ".venv/bin/python backend/bot_api.py",

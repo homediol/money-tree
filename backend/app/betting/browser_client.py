@@ -319,8 +319,13 @@ class AviatorBrowserClient:
             balance = await session.evaluate(READ_BALANCE)
             if isinstance(balance, dict) and balance.get("ok"):
                 snap.balance_text = balance.get("text") or ""
-                snap.balance = parse_amount(snap.balance_text)
+                snap.balance = (parse_amount(snap.balance_text)
+                                if any(ch.isdigit() for ch in snap.balance_text)
+                                else None)
+            else:
+                snap.balance = None
         except (BrowserError, BrowserUiError):
+            snap.balance = None
             log.debug("balance read failed after game snapshot", exc_info=True)
         return snap
 

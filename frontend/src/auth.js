@@ -31,7 +31,7 @@ export function getSession() {
 
 export function getWebSocketUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const base = import.meta.env.VITE_WS_URL || `${protocol}//${window.location.hostname}:8000/ws/live`;
+  const base = import.meta.env.VITE_WS_URL || `${protocol}//${window.location.host}/ws/live`;
   const token = getApiToken();
   return token ? `${base}${base.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : base;
 }

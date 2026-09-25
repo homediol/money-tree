@@ -318,17 +318,18 @@ class BettingSession:
         stage = status.get("stage")
         if not connected or stage in ("unreachable",):
             if self.state == SessionState.CONNECTED:
-                self._set_state(SessionState.WAITING_FOR_BROWSER)
+                self.request_stop("browser_disconnected")
+                return
             elif self.state not in (SessionState.STARTING, SessionState.WAITING_FOR_BROWSER):
                 self._set_state(SessionState.NOT_CONNECTED,
                                 error=status.get("error"))
             await asyncio.sleep(self.settings.browser_recheck_s)
             return
         if stage in ("targets_missing", "read_error"):
-            # Browser is there but the Aviator game plane is not observable.
+            # An active real session cannot resume after losing the game plane.
             if self.state == SessionState.CONNECTED:
-                self._set_state(SessionState.WAITING_FOR_BROWSER,
-                                error=status.get("error"))
+                self.request_stop("browser_observation_lost")
+                return
             elif self.state != SessionState.WAITING_FOR_BROWSER:
                 self._set_state(SessionState.WAITING_FOR_BROWSER,
                                 error=status.get("error"))
@@ -348,6 +349,9 @@ class BettingSession:
         self.last_snapshot = snap
         self.last_balance = snap.get("balance")
         self.last_balance_text = snap.get("balance_text") or ""
+        if self.last_balance is None:
+            self.request_stop("balance_unverified")
+            return
         self.last_ui_ready = bool(snap.get("ui_ready"))
         if snap.get("payouts_head"):
             self._latest_crash = snap["payouts_head"][0]
@@ -361,6 +365,9 @@ class BettingSession:
     def _mark_observe_failure(self, error: str) -> None:
         self.last_error = error
         self.consecutive_read_errors += 1
+        if self.state == SessionState.CONNECTED:
+            self.request_stop("browser_observation_lost")
+            return
         if self.consecutive_read_errors >= self.settings.max_consecutive_read_errors:
             if self.state in (SessionState.CONNECTED, SessionState.STARTING):
                 self._set_state(SessionState.WAITING_FOR_BROWSER, error=error)
@@ -938,7 +945,7 @@ class BettingManager:
             return {
                 "session_id": None, "state": SessionState.IDLE.value,
                 "lifecycle_status": "idle", "enabled": False,
-                "automatic_enabled": False, "mode": None,
+                "automatic_enabled": False, "mode": "OFF",
                 "simulated": False, "session": None,
                 "backend": {"managed": False}, "browser_status": "NOT_CONNECTED",
                 "starting_balance": None, "current_balance": None,

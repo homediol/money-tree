@@ -310,13 +310,13 @@ export default function Betting() {
       }>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Risk Profile</div><div className="font-semibold">{risk?.profile_name || '—'}</div><div className="text-xs text-zinc-500">cashout {risk?.cashout ?? '—'}x</div></div>
-          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Risk Level</div><div className={`font-semibold ${risk?.risk_level === 'BLOCKED' ? 'text-rose-300' : 'text-emerald-300'}`}>{risk?.risk_level || 'BLOCKED'}</div><div className="text-xs text-zinc-500">{risk?.risk_status || 'BLOCKED'}</div></div>
+          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Risk Level</div><div className={`font-semibold ${risk?.risk_level === 'BLOCKED' ? 'text-rose-300' : risk?.risk_level === 'NOT_EVALUATED' ? 'text-amber-300' : 'text-emerald-300'}`}>{risk?.risk_level || 'NOT_EVALUATED'}</div><div className="text-xs text-zinc-500">{risk?.risk_status || 'WAITING'}</div></div>
           <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Approved Bet / Maximum</div><div className="font-semibold">{risk?.current_bet_size ?? '—'} / {risk?.maximum_bet ?? '—'} BIF</div><div className="text-xs text-zinc-500">max {(100 * (risk?.maximum_balance_percentage || 0)).toFixed(0)}% of balance</div></div>
           <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Session Loss / Maximum</div><div className="font-semibold">{risk?.session_loss ?? '—'} / {risk?.maximum_session_loss ?? '—'} BIF</div><div className="text-xs text-zinc-500">P/L {risk?.profit_loss == null ? '—' : `${risk.profit_loss} BIF`}</div></div>
           <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Consecutive Losses</div><div className="font-semibold">{risk?.consecutive_losses ?? '—'} / {risk?.maximum_consecutive_losses ?? '—'}</div><div className="text-xs text-zinc-500">available {risk?.available_balance ?? '—'} BIF</div></div>
         </div>
-        <div className={`mt-3 rounded border p-3 text-sm ${risk?.risk_status === 'APPROVED' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-rose-500/30 bg-rose-500/10 text-rose-200'}`}>
-          Risk Status: {risk?.risk_status || 'BLOCKED'} · {risk?.reason || 'Awaiting authorized decision'}
+        <div className={`mt-3 rounded border p-3 text-sm ${risk?.risk_status === 'APPROVED' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : risk?.risk_status === 'WAITING' ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-rose-500/30 bg-rose-500/10 text-rose-200'}`}>
+          Risk Status: {risk?.risk_status || 'WAITING'} · {risk?.reason || 'Waiting for a fresh authorized decision'}
           {risk?.emergency_stop && ' · Emergency stop is latched; no new bets can be approved.'}
         </div>
       </Card>

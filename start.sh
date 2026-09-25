@@ -1,34 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKEND_DIR="$ROOT_DIR/backend"
-PY311_VENV="$ROOT_DIR/.venv"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$PROJECT_DIR"
 
-echo "Project: $ROOT_DIR"
-
-if command -v python3.11 >/dev/null 2>&1; then
-  PY311_BIN="python3.11"
-elif [ -x /usr/local/bin/python3.11 ]; then
-  PY311_BIN="/usr/local/bin/python3.11"
+if command -v node >/dev/null 2>&1; then
+  NODE_BIN="$(command -v node)"
 else
-  echo "ERROR: Python 3.11 is required for the TensorFlow backend."
-  echo "Install Python 3.11, then run this script again."
+  NODE_BIN="$(find "${NVM_DIR:-$HOME/.nvm}/versions/node" -path '*/bin/node' -type f 2>/dev/null | sort -V | tail -n 1)"
+fi
+
+if [ -z "${NODE_BIN:-}" ] || [ ! -x "$NODE_BIN" ]; then
+  echo "ERROR: Node.js is required to run the supervised Winner Predict stack." >&2
   exit 1
 fi
 
-if [ ! -x "$PY311_VENV/bin/python" ]; then
-  echo "Creating Python 3.11 TensorFlow virtual environment..."
-  "$PY311_BIN" -m venv "$PY311_VENV"
-else
-  echo "Repairing Python 3.11 TensorFlow virtual environment..."
-  "$PY311_BIN" -m venv --upgrade "$PY311_VENV"
-fi
-
-echo "Installing full backend ML requirements for Python 3.11..."
-"$PY311_VENV/bin/python" -m pip install --upgrade pip
-"$PY311_VENV/bin/python" -m pip install -r "$BACKEND_DIR/requirements.txt"
-
-echo "Starting TensorFlow backend on http://localhost:5000 ..."
-cd "$BACKEND_DIR"
-exec "$PY311_VENV/bin/python" run.py
+echo "Starting the supervised Winner Predict stack from $PROJECT_DIR"
+exec "$NODE_BIN" scripts/start-all.js

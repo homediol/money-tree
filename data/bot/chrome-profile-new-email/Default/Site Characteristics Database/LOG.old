@@ -1,3 +1,4 @@
-2026/09/20-05:53:12.166 39258 Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Site Characteristics Database/MANIFEST-000001
-2026/09/20-05:53:12.167 39258 Recovering log #6
-2026/09/20-05:53:12.460 39258 Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Site Characteristics Database/000006.log 
+2026/09/25-04:53:50.819 527f9 Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Site Characteristics Database/MANIFEST-000001
+2026/09/25-04:53:50.831 527f9 Recovering log #6
+2026/09/25-04:53:50.847 527f9 (ignoring error) /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Site Characteristics Database/000006.log: dropping 1375 bytes; Corruption: checksum mismatch
+2026/09/25-04:53:50.848 527f9 Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Site Characteristics Database/000006.log 

@@ -34,10 +34,13 @@ def execution(**changes):
 def store(repo, row): assert repo.create_execution(row)
 
 
-@pytest.mark.parametrize(("multiplier","outcome","pnl"), [(2.5, "WIN", 100), (1.2, "LOSS", -100)])
-def test_valid_win_loss_and_platform_balance_precedence(setup, multiplier, outcome, pnl):
+@pytest.mark.parametrize(("multiplier","outcome","pnl","observed"), [
+    (2.5, "WIN", 100, 1100),
+    (1.2, "LOSS", -100, 900),
+])
+def test_valid_win_loss_requires_matching_platform_balance(
+        setup, multiplier, outcome, pnl, observed):
     repo, service = setup; row = execution(); store(repo, row)
-    observed = 1234 if outcome == "WIN" else 876
     result = run(service.reconcile(row, round_id="101", multiplier=multiplier, evidence={
         "placement_confirmed": True, "cashout_requested": True,
         "cashout_executed": outcome == "WIN", "cashout_confirmed": outcome == "WIN",
@@ -48,6 +51,22 @@ def test_valid_win_loss_and_platform_balance_precedence(setup, multiplier, outco
     saved = repo.execution_by_id("x1")
     assert saved["profit_loss"] == pnl
     assert saved["balance_after"] == observed
+
+
+def test_platform_balance_mismatch_stays_unknown_and_pauses(setup):
+    repo, service = setup; row = execution(); store(repo, row)
+    result = run(service.reconcile(row, round_id="101", multiplier=2.5, evidence={
+        "placement_confirmed": True, "cashout_requested": True,
+        "cashout_executed": True, "cashout_confirmed": True,
+        "platform_observed_balance": 1234,
+    }))
+    assert result["status"] == "UNKNOWN"
+    assert result["outcome"] == "UNKNOWN"
+    assert result["balance"]["balance_status"] == "MISMATCH"
+    assert result["balance"]["internal_expected_balance"] == 1100
+    assert result["risk_action"] == "PAUSE"
+    saved = repo.execution_by_id("x1")
+    assert saved["profit_loss"] is None
 
 
 def test_unknown_never_becomes_loss_and_cashout_states_are_distinct(setup):
@@ -67,7 +86,7 @@ def test_unverified_balance_is_unknown_not_estimated(setup):
     repo, service = setup; row = execution(); store(repo, row)
     result = run(service.reconcile(row, round_id="101", multiplier=1.1, evidence={
         "placement_confirmed": True}))
-    assert result["outcome"] == "LOSS"
+    assert result["outcome"] == "UNKNOWN"
     assert result["status"] == "UNKNOWN"
     assert result["balance"]["internal_expected_balance"] == 900
     assert result["balance"]["reconciled_balance"] is None

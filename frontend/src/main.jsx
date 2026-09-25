@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { ErrorBoundary } from 'react-error-boundary';
@@ -24,6 +24,7 @@ import StrategyResearch from './pages/StrategyResearch.jsx';
 import ShadowMode from './pages/ShadowMode.jsx';
 import LiveActivation from './pages/LiveActivation.jsx';
 import Recovery from './pages/Recovery.jsx';
+import { BACKEND_RESTORED_EVENT } from './services/backendConnection.js';
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -45,6 +46,14 @@ const nav = [
 ];
 
 function Shell() {
+  const [backendEpoch, setBackendEpoch] = useState(0);
+
+  useEffect(() => {
+    const restore = () => setBackendEpoch((value) => value + 1);
+    window.addEventListener(BACKEND_RESTORED_EVENT, restore);
+    return () => window.removeEventListener(BACKEND_RESTORED_EVENT, restore);
+  }, []);
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <SystemHealth />
@@ -78,7 +87,7 @@ function Shell() {
       </header>
       <main className="lg:pl-64">
         <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-          <Routes>
+          <Routes key={backendEpoch}>
             <Route path="/" element={<SystemDashboard />} />
             <Route path="/analytics" element={<Dashboard />} />
             <Route path="/history" element={<LiveHistory />} />

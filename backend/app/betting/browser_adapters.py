@@ -311,40 +311,18 @@ class RealBrowserBackend:
 
     async def place(self, *, amount_bif: int, target_multiplier: float,
                     bet_slot: int, decision_id: str) -> PlacementOutcome:
+        # The current selector probe cannot verify a platform acceptance
+        # receipt, target-round identity, or a confirmed cashout. A click is
+        # therefore unsafe even when the environment switch was enabled by
+        # mistake.
         await self.ensure_ready()
-        before = await self.snapshot()
-        try:
-            await self.browser.place_bet(
-                amount_bif=amount_bif, cashout=target_multiplier, slot=bet_slot,
-            )
-        except Exception as exc:
-            raise PlacementUnavailable("placement_failed", str(exc)) from exc
-        self._pending.append({
-            "decision_id": decision_id, "amount_bif": amount_bif,
-            "target_multiplier": target_multiplier, "bet_slot": bet_slot,
-            "payout_before": (before.get("payouts_head") or [None])[0],
-            "balance_before": before.get("balance"), "placed_at": time.time(),
-        })
-        return PlacementOutcome(ok=True, simulated=False,
-                                detail="live bet controls verified and clicked",
-                                round_label=None)
+        raise PlacementUnavailable(
+            "platform_verification_incomplete",
+            "Live platform acceptance, round and cashout evidence are "
+            "unverified; NO BET",
+        )
 
     async def collect_resolved(self) -> list[dict]:
-        if not self._pending:
-            return []
-        snap = await self.snapshot()
-        latest = (snap.get("payouts_head") or [None])[0]
-        if latest is None or latest == self._pending[0]["payout_before"]:
-            return []
-        out = []
-        for bet in self._pending:
-            won = float(latest) >= float(bet["target_multiplier"])
-            before, after = bet.get("balance_before"), snap.get("balance")
-            pnl = (after - before if before is not None and after is not None
-                   else bet["amount_bif"] * (bet["target_multiplier"] - 1)
-                   if won else -bet["amount_bif"])
-            out.append({**bet, "crash_point": float(latest), "won": won,
-                        "pnl_bif": round(pnl, 2), "round_label": None,
-                        "balance_after": snap.get("balance"), "resolved_at": time.time()})
-        self._pending.clear()
-        return out
+        # A changing crash-history cell is not a bet result. Only a verified
+        # platform receipt can resolve a real execution.
+        return []

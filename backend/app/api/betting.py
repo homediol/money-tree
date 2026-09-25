@@ -64,25 +64,11 @@ async def profiles(request: Request):
 @router.post("/start")
 async def start_automatic(request: Request, body: AutomaticStartRequest):
     """Start REAL automatic mode; no prediction is created here."""
-    try:
-        live_controller = getattr(request.app.state, "live", None)
-        if live_controller is not None:
-            return JSONResponse(status_code=409, content={
-                "ok": False, "error": "live_activation_required",
-                "message": "Use POST /api/live/start with explicit ENABLE LIVE BETTING confirmation",
-            })
-        risk = _risk(request)
-        if risk and risk.emergency_latched:
-            return JSONResponse(status_code=409, content={
-                "ok": False, "error": "emergency_stop_latched",
-                "message": "Reset emergency stop before starting a new session",
-            })
-        status = await _betting(request).start_session(body.as_session_request())
-        if risk:
-            await risk.on_session_start(body.profile)
-        return {"ok": True, "status": status}
-    except BettingError as exc:
-        return _conflict(exc)
+    return JSONResponse(status_code=409, content={
+        "ok": False, "error": "live_activation_required",
+        "message": "Use POST /api/live/start with explicit ENABLE LIVE BETTING "
+                   "confirmation and platform verification",
+    })
 
 
 @router.post("/stop")
@@ -106,6 +92,11 @@ async def pause_automatic(request: Request):
 @router.post("/resume")
 async def resume_automatic(request: Request):
     manager = _betting(request)
+    if manager.last_request is not None and manager.last_request.mode == "REAL":
+        return JSONResponse(status_code=409, content={
+            "ok": False, "error": "fresh_live_activation_required",
+            "message": "REAL sessions require a fresh /api/live/start activation",
+        })
     try:
         health = getattr(request.app.state, "system_health", None)
         gate = health.can_bet_now(mode="REAL") if health else {"allowed": False, "reasons": ["health unavailable"]}
@@ -178,6 +169,12 @@ async def session_control(request: Request, body: SessionStartRequest):
     manager = _betting(request)
     try:
         if body.action == "start":
+            if body.mode == "REAL":
+                return JSONResponse(status_code=409, content={
+                    "ok": False, "error": "live_activation_required",
+                    "message": "REAL sessions require /api/live/start and "
+                               "platform verification",
+                })
             risk = _risk(request)
             if risk and risk.emergency_latched:
                 return JSONResponse(status_code=409, content={
@@ -229,6 +226,11 @@ async def submit_decision(request: Request, body: DecisionIntent):
             })
         betting_status = manager.status()
         live_controller = getattr(request.app.state, "live", None)
+        if betting_status.get("mode") == "REAL" and live_controller is None:
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": "live_activation_unavailable",
+                "message": "NO BET",
+            })
         if betting_status.get("mode") == "REAL" and live_controller:
             live_gate = live_controller.can_execute_live_bet(authorized, betting_status)
             if not live_gate.get("allowed"):

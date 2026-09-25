@@ -2,9 +2,10 @@
   "name": "aviator-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "Python Flask backend launcher for the Aviator app",
+  "description": "Winner Predict FastAPI backend launcher",
   "scripts": {
-    "start": "python3 run.py"
+    "start": "node ../scripts/start-all.js --backend-only",
+    "dev": ".venv/bin/python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
   },
   "dependencies": {
     "fastapi": "^0.0.8"

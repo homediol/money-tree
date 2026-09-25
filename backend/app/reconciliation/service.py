@@ -131,8 +131,13 @@ class ReconciliationService:
         expected = None if before is None or pnl is None else round(float(before) + pnl, 2)
         reconciled = float(observed) if observed is not None else None
         balance_status = "VERIFIED" if observed is not None else "UNKNOWN"
-        if outcome == "UNKNOWN" or balance_status == "UNKNOWN":
+        if (expected is not None and reconciled is not None
+                and abs(expected - reconciled) > 0.01):
+            balance_status = "MISMATCH"
+        if outcome == "UNKNOWN" or balance_status != "VERIFIED":
             final_status = "UNKNOWN"
+            outcome = "UNKNOWN"
+            pnl = None
         else:
             final_status = "RECONCILED"
 
@@ -170,7 +175,7 @@ class ReconciliationService:
                                        balance_status, stamp))
         else:
             ledger.append(self._ledger(execution, "RECONCILIATION", None, expected, observed,
-                                       None, "UNKNOWN", stamp))
+                                       None, balance_status, stamp))
         if not self.repository.save_reconciliation(reconciliation, execution, ledger):
             existing = next((x for x in self.repository.list_reconciliations(1000)
                              if x["execution_id"] == execution["execution_id"]), reconciliation)

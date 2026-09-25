@@ -37,8 +37,10 @@ frontend/
 
 ### One-command stack — `npm start`
 
-From the repo root, `npm start` launches every service under one supervisor
-process (Ctrl+C stops them together):
+From the repo root, `npm start` (or `./start.sh`) launches every service under
+one supervisor process. The supervisor validates that port 8000 belongs to
+Winner Predict, restarts the backend with capped exponential backoff after an
+unexpected exit, and forwards Ctrl+C/SIGTERM for graceful shutdown.
 
 | Service | What it is | Port |
 | ------- | ---------- | ---- |
@@ -62,10 +64,17 @@ cd backend
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+npm start
 ```
 
+Equivalently, from the repository root run `npm run backend`.
+
+For intentional hot-reload development only, use
+`cd backend && npm run dev`. Normal startup does not use Uvicorn's extra
+reloader process.
+
 - Interactive API docs (Swagger): <http://localhost:8000/docs>
+- Process/database health: <http://localhost:8000/health>
 - Live file monitor: when `backend/data/roundhistory.json` changes the app
   reloads and broadcasts `updated_analysis` over the WebSocket.
 
@@ -94,10 +103,16 @@ npm run dev
 
 The dashboard runs at <http://localhost:5173>.
 
-The frontend talks to the backend directly at
-`http://localhost:8000` (`VITE_API_BASE_URL`) and opens
-`ws://localhost:8000/ws/live` (`VITE_WS_URL`). Override both at dev/build time
-with environment variables if the backend runs elsewhere.
+In development the frontend uses same-origin `/api`, `/health`, and `/ws`
+routes, which Vite proxies to `BACKEND_PROXY_TARGET` (default
+`http://127.0.0.1:8000`). This avoids CORS and hostname mismatches. Set
+`VITE_API_BASE_URL` and `VITE_WS_URL` only when the browser must connect to a
+separate backend origin.
+
+If the backend starts late or restarts, the dashboard shows a compact
+`Reconnecting…` indicator and probes it with capped exponential backoff. The
+active page reloads its data automatically after recovery; no manual Retry or
+browser refresh is needed.
 
 ### Browser profile fallback
 

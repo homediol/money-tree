@@ -77,6 +77,11 @@ class LiveActivationManager:
         checks["betting_page"] = "HEALTHY" if browser_ready else "NOT_READY"
         if bool(getattr(settings, "allow_real_placement", False)) and not browser_ready:
             reasons.append("betting page is not connected and UI-ready")
+        # Presence of a reconciler is not proof that platform acceptance and
+        # cashout can be observed. Until the authenticated page is inspected
+        # and receipt verification is implemented, activation stays off.
+        checks["platform_execution"] = "UNVERIFIED"
+        reasons.append("platform acceptance, round and cashout controls are unverified")
         checks["cashout_monitor"] = "AVAILABLE" if getattr(app.state, "reconciliation", None) else "UNAVAILABLE"
         if checks["cashout_monitor"] == "UNAVAILABLE": reasons.append("cashout/result reconciliation unavailable")
         history = getattr(app.state, "history_collector", None)
@@ -142,12 +147,24 @@ class LiveActivationManager:
     async def stop(self, emergency: bool = False) -> dict[str, Any]:
         if emergency:
             await self.app.state.risk.emergency_stop()
-        return await self.pause("emergency_stop" if emergency else "manual_stop")
+        status = await self.pause("emergency_stop" if emergency else "manual_stop")
+        if emergency:
+            self.mode = "EMERGENCY_STOP"
+            if self.session:
+                self.session["mode"] = self.mode
+                self.repository.update_live_session(self.session)
+            status = self.status()
+        return status
 
     async def resume(self, confirmation: str) -> dict[str, Any]:
-        if confirmation != "ENABLE LIVE BETTING": return {"ok": False, "error": "explicit_confirmation_required"}
-        self.mode = "LIVE_READY"
-        return await self.start({"confirmation": confirmation, **((self.session or {}).get("snapshot", {}))})
+        # A paused or crashed session must repeat the full readiness and
+        # balance/profile/limits review through /start.
+        return {
+            "ok": False,
+            "error": "fresh_live_activation_required",
+            "message": "Review current platform balance and configuration, "
+                       "then start a new LIVE session",
+        }
 
     def can_execute_live_bet(self, decision: dict[str, Any], betting_status: dict[str, Any] | None = None) -> dict[str, Any]:
         blocks: list[str] = []

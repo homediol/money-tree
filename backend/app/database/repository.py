@@ -194,12 +194,20 @@ class Repository:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.database_path)
+        # Concurrent API, history-monitor and operations tasks use separate
+        # connections. WAL permits readers during writes; busy_timeout turns a
+        # short write overlap into bounded waiting instead of a request-level
+        # "database is locked" failure.
+        conn = sqlite3.connect(self.database_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
     def init(self) -> None:
         with self.connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(SCHEMA)
 
     def upsert_rounds(self, rows: list[dict[str, Any]]) -> None:

@@ -155,7 +155,7 @@ class GameSnapshot:
     payouts: list[float] = field(default_factory=list)
     bets_visible: int = 0
     balance_text: str = ""
-    balance: float = 0.0
+    balance: float | None = None
     bet_panel: bool = False
     stake_inputs: list[dict] = field(default_factory=list)
     place_bet_buttons: list[dict] = field(default_factory=list)
@@ -197,12 +197,13 @@ class GameSnapshot:
             parsed = parse_payout(p)
             if parsed is not None:
                 payouts.append(parsed)
-        bal = parse_amount(value.get("balanceText") or "")
+        balance_text = value.get("balanceText") or ""
+        bal = parse_amount(balance_text) if _NUM_RE.search(balance_text) else None
         return cls(
             ok=True,
             payouts=payouts,
             bets_visible=int(value.get("bets") or 0),
-            balance_text=value.get("balanceText") or "",
+            balance_text=balance_text,
             balance=bal,
             bet_panel=bool(value.get("betPanel")),
             stake_inputs=list(value.get("stakeInputs") or []),

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+from app.api import decisions as decisions_api
 from app.database.repository import Repository
 from app.decision.engine import DecisionEngine
 from app.decision.schemas import DecisionConfig, DecisionRecord
@@ -195,6 +196,43 @@ def test_api_has_no_direct_create_or_execute_bypass():
     assert not any(path.endswith("/create") or path.endswith("/execute") for path, _ in decision_routes)
     evaluate_routes = [methods for path, methods in decision_routes if path == "/api/decisions/evaluate"]
     assert evaluate_routes == [("POST",)]
+
+
+def test_decision_status_explains_single_handoff_and_pipeline_blocks():
+    current = {
+        "status": "EXPIRED", "risk_status": "BLOCKED",
+        "execution_status": "EXPIRED",
+    }
+    registry = SimpleNamespace(
+        status=lambda _dataset: {"status": "NOT_VALIDATED", "deployable": False},
+        prediction_payload=lambda _dataset: {
+            "usable": False, "reason": "NO_DEPLOYED_MODEL",
+        },
+    )
+    state = SimpleNamespace()
+    state.decision_engine = SimpleNamespace(
+        current=lambda: current,
+        config=DecisionConfig(automatic_mode=False),
+    )
+    state.wp = SimpleNamespace(
+        dataset_service=object(), model_registry=registry,
+        repository=SimpleNamespace(list_decisions=lambda _limit: [current]),
+    )
+    state.betting = SimpleNamespace(status=lambda: {
+        "mode": "OFF", "automatic_enabled": False,
+    })
+    state.risk = SimpleNamespace(emergency_latched=True)
+
+    payload = decisions_api.status(SimpleNamespace(app=SimpleNamespace(state=state)))
+    assert payload["decision_file"]["role"] == "CURRENT_HANDOFF_ONLY"
+    assert payload["history_count"] == 1
+    assert payload["pipeline"]["state"] == "BLOCKED"
+    assert payload["pipeline"]["session_mode"] == "OFF"
+    assert payload["pipeline"]["blockers"] == [
+        "model:NOT_VALIDATED", "prediction:NO_DEPLOYED_MODEL",
+        "decision_automatic_mode_off", "betting_session_off",
+        "emergency_stop", "current_decision:EXPIRED",
+    ]
 
 
 def test_schema_rejects_invalid_state_transition(setup):

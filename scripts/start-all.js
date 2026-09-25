@@ -2,16 +2,15 @@
 /**
  * start-all.js
  * ============
- * Starts all services in the correct order:
+ * Starts and supervises the project services in the correct order:
  *
- *  1. bot/roundhistory-collector.js  — collects live round data → data/roundhistory.json
- *  2. backend/app.py                 — legacy Flask prediction API (port 5000)
- *  3. backend/bot_api.py             — legacy FastAPI bot control API (port 5001)
- *  4. backend/main.py                — Winner Predict FastAPI API (port 8000)
- *  5. frontend (vite dev)            — React dashboard (port 5173)
- *  6. aviator_enterprise/main.py     — legacy Enterprise ML API (port 8002)
+ *  1. backend/run.py                 — legacy Flask prediction API (port 5000)
+ *  2. backend/bot_api.py             — legacy FastAPI bot control API (port 5001)
+ *  3. backend/main.py                — Winner Predict FastAPI API (port 8000)
+ *  4. frontend (vite dev)            — React dashboard (port 5173)
+ *  5. aviator_enterprise/main.py     — legacy Enterprise ML API (port 8002)
  *
- * Usage:  npm start   (from project root)
+ * Usage: npm start, or npm run backend for only the port-8000 API.
  */
 
 const { spawn, spawnSync } = require("child_process");
@@ -19,6 +18,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const net = require("net");
+const http = require("http");
 
 const ROOT    = path.resolve(__dirname, "..");
 const BACKEND = path.join(ROOT, "backend");
@@ -108,17 +108,16 @@ function runSetup(cmd, args, cwd = ROOT) {
 }
 
 function ensureBackendEnvironment() {
-  const rootVenvPython = path.join(ROOT, ".venv", "bin", "python");
-  const rootVenvPythonWin = path.join(ROOT, ".venv", "Scripts", "python.exe");
-  const venvPython = process.platform === "win32" ? rootVenvPythonWin : rootVenvPython;
+  const probe = spawnSync(BACKEND_PY, ["-c", "import fastapi, uvicorn, pydantic_settings"], {
+    cwd: BACKEND,
+    env: process.env,
+    stdio: "ignore",
+  });
+  if (probe.status === 0) return BACKEND_PY;
 
-  if (!fs.existsSync(venvPython)) {
-    runSetup("python3.11", ["-m", "venv", path.join(ROOT, ".venv")]);
-  }
-
-  runSetup(venvPython, ["-m", "pip", "install", "--upgrade", "pip"]);
-  runSetup(venvPython, ["-m", "pip", "install", "-r", path.join(BACKEND, "requirements.txt")]);
-  return venvPython;
+  console.warn("[runner] backend dependencies are incomplete; installing once…");
+  runSetup(BACKEND_PY, ["-m", "pip", "install", "-r", path.join(BACKEND, "requirements.txt")]);
+  return BACKEND_PY;
 }
 
 // ── Service definitions ────────────────────────────────────────────────────
@@ -148,6 +147,9 @@ const SERVICES = [
     cwd:     BACKEND,
     color:   "\x1b[96m",   // bright cyan
     port:    8000,
+    healthPath: "/health",
+    expectedService: "winner-predict-backend",
+    restart: true,
     // Winner Predict API — owns port 8000 (frontend defaults point here)
   },
   {
@@ -156,6 +158,8 @@ const SERVICES = [
     args:    ["run", "dev"],
     cwd:     FRONTEND,
     color:   "\x1b[32m",   // green
+    port:    5173,
+    restart: true,
   },
   {
     name:    "enterprise",
@@ -169,8 +173,9 @@ const SERVICES = [
   },
 ];
 
-// ── Process registry ───────────────────────────────────────────────────────
-const children = [];
+// ── Process registry / supervision ─────────────────────────────────────────
+const serviceStates = new Map();
+const scheduledTimers = new Set();
 let shuttingDown = false;
 
 function label(svc) {
@@ -191,6 +196,42 @@ function isPortInUse(port, host = "127.0.0.1") {
     });
     socket.once("error", () => resolve(false));
   });
+}
+
+function timestamp() {
+  return new Date().toISOString();
+}
+
+function stateFor(svc) {
+  if (!serviceStates.has(svc.name)) {
+    serviceStates.set(svc.name, {
+      child: null, restartAttempts: 0, startedAt: 0,
+      external: false, monitor: null,
+    });
+  }
+  return serviceStates.get(svc.name);
+}
+
+function probeJson(port, pathname) {
+  return new Promise((resolve) => {
+    const request = http.get({ host: "127.0.0.1", port, path: pathname, timeout: 1500 }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { if (body.length < 65536) body += chunk; });
+      response.on("end", () => {
+        try { resolve({ status: response.statusCode, data: JSON.parse(body) }); }
+        catch (_) { resolve({ status: response.statusCode, data: null }); }
+      });
+    });
+    request.on("timeout", () => { request.destroy(); resolve(null); });
+    request.on("error", () => resolve(null));
+  });
+}
+
+async function expectedServiceOwnsPort(svc) {
+  if (!svc.healthPath || !svc.expectedService) return true;
+  const response = await probeJson(svc.port, svc.healthPath);
+  return response?.data?.service === svc.expectedService;
 }
 
 function prefixLines(svc, stream, writer) {
@@ -218,69 +259,138 @@ function prefixLines(svc, stream, writer) {
   });
 }
 
+function signalChild(child, signal) {
+  if (!child?.pid) return;
+  try {
+    if (process.platform !== "win32") process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch (_) {}
+}
+
 function stopAll(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log("\n\x1b[90m[runner] shutting down all services…\x1b[0m");
-  for (const child of children) {
-    if (!child.killed) {
-      try { child.kill("SIGTERM"); } catch (_) {}
-    }
+  process.exitCode = code;
+  console.log(`\n\x1b[90m[runner ${timestamp()}] graceful shutdown requested…\x1b[0m`);
+  for (const timer of scheduledTimers) clearTimeout(timer);
+  scheduledTimers.clear();
+  for (const state of serviceStates.values()) {
+    if (state.monitor) clearInterval(state.monitor);
+    signalChild(state.child, "SIGTERM");
   }
-  setTimeout(() => process.exit(code), 1000);
+  setTimeout(() => {
+    for (const state of serviceStates.values()) signalChild(state.child, "SIGKILL");
+  }, 7000).unref();
+  setTimeout(() => process.exit(code), 7500).unref();
 }
 
-// ── Launch a single service (with optional delay) ─────────────────────────
-function launch(svc) {
+function scheduleRestart(svc) {
+  if (shuttingDown || svc.optional || svc.restart === false) return;
+  const state = stateFor(svc);
+  state.restartAttempts += 1;
+  const delay = Math.min(1000 * (2 ** (state.restartAttempts - 1)), 30000);
+  console.error(`${label(svc)} ${timestamp()} restarting in ${delay}ms (attempt ${state.restartAttempts})`);
+  const timer = setTimeout(() => {
+    scheduledTimers.delete(timer);
+    launch(svc, true);
+  }, delay);
+  scheduledTimers.add(timer);
+}
+
+function monitorExisting(svc) {
+  const state = stateFor(svc);
+  if (state.monitor || !svc.port) return;
+  state.monitor = setInterval(async () => {
+    if (shuttingDown) return;
+    const listening = await isPortInUse(svc.port);
+    if (listening) return;
+    clearInterval(state.monitor);
+    state.monitor = null;
+    state.external = false;
+    console.warn(`${label(svc)} ${timestamp()} reused instance disappeared; taking ownership`);
+    scheduleRestart(svc);
+  }, 5000);
+}
+
+// ── Launch a single service (with bounded exponential recovery) ───────────
+function launch(svc, restarting = false) {
   return new Promise((resolve) => {
-    setTimeout(async () => {
-      if (svc.port && await isPortInUse(svc.port)) {
-        console.warn(
-          `${label(svc)} port ${svc.port} is already in use; assuming an existing instance is running and reusing it.`
-        );
-        resolve(null);
-        return;
-      }
-
-      console.log(`\x1b[90m[runner]\x1b[0m starting ${label(svc)}: ${svc.cmd} ${svc.args.join(" ")}`);
-
-      const env = { ...process.env };
-      // Inject nvm node into PATH for npm/node commands
-      const nvmBin = path.dirname(NODE_BIN);
-      if (nvmBin !== "node" && fs.existsSync(nvmBin)) {
-        env.PATH = `${nvmBin}:${env.PATH || ""}`;
-      }
-
-      const child = spawn(svc.cmd, svc.args, {
-        cwd:   svc.cwd,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-        shell: process.platform === "win32",
-      });
-
-      children.push(child);
-      prefixLines(svc, child.stdout, process.stdout);
-      prefixLines(svc, child.stderr, process.stderr);
-
-      child.on("exit", (code, signal) => {
-        if (shuttingDown) return;
-        if (svc.optional) {
-          console.warn(`${label(svc)} exited (code=${code} signal=${signal || "none"}) — optional, continuing`);
-        } else {
-          console.error(`${label(svc)} exited unexpectedly (code=${code} signal=${signal || "none"})`);
-          stopAll(code || 1);
+    const timer = setTimeout(async () => {
+      scheduledTimers.delete(timer);
+      try {
+        if (svc.port && await isPortInUse(svc.port)) {
+          if (!await expectedServiceOwnsPort(svc)) {
+            console.error(`${label(svc)} ${timestamp()} PORT CONFLICT: ${svc.port} is owned by a different service`);
+            resolve(null);
+            stopAll(1);
+            return;
+          }
+          const state = stateFor(svc);
+          state.external = true;
+          state.restartAttempts = 0;
+          console.warn(`${label(svc)} ${timestamp()} verified existing instance on port ${svc.port}; not starting a duplicate`);
+          monitorExisting(svc);
+          resolve(null);
+          return;
         }
-      });
 
-      resolve(child);
-    }, svc.delayMs || 0);
+        console.log(`\x1b[90m[runner ${timestamp()}]\x1b[0m starting ${label(svc)}: ${svc.cmd} ${svc.args.join(" ")}`);
+
+        const env = { ...process.env };
+        const nvmBin = path.dirname(NODE_BIN);
+        if (nvmBin !== "node" && fs.existsSync(nvmBin)) {
+          env.PATH = `${nvmBin}:${env.PATH || ""}`;
+        }
+
+        const child = spawn(svc.cmd, svc.args, {
+          cwd: svc.cwd, env,
+          stdio: ["ignore", "pipe", "pipe"],
+          shell: process.platform === "win32",
+          detached: process.platform !== "win32",
+        });
+
+        const state = stateFor(svc);
+        state.child = child;
+        state.external = false;
+        state.startedAt = Date.now();
+        prefixLines(svc, child.stdout, process.stdout);
+        prefixLines(svc, child.stderr, process.stderr);
+
+        let handled = false;
+        const stopped = (reason) => {
+          if (handled) return;
+          handled = true;
+          if (state.child === child) state.child = null;
+          if (shuttingDown) return;
+          if (Date.now() - state.startedAt > 60000) state.restartAttempts = 0;
+          console.error(`${label(svc)} ${timestamp()} stopped unexpectedly (${reason})`);
+          scheduleRestart(svc);
+        };
+        child.once("error", (error) => stopped(`spawn error: ${error.message}`));
+        child.once("exit", (code, signal) => stopped(`code=${code} signal=${signal || "none"}`));
+
+        resolve(child);
+      } catch (error) {
+        console.error(`${label(svc)} ${timestamp()} launch failure: ${error.stack || error}`);
+        resolve(null);
+        if (restarting) scheduleRestart(svc);
+        else stopAll(1);
+      }
+    }, restarting ? 0 : (svc.delayMs || 0));
+    scheduledTimers.add(timer);
   });
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────
 (async () => {
+  const backendOnly = process.argv.includes("--backend-only");
+  const selectedServices = backendOnly
+    ? SERVICES.filter((svc) => svc.name === "backend")
+    : SERVICES;
   console.log("\x1b[1m\x1b[37m╔══════════════════════════════════════╗\x1b[0m");
-  console.log("\x1b[1m\x1b[37m║   Aviator ML — Starting All Services  ║\x1b[0m");
+  console.log(backendOnly
+    ? "\x1b[1m\x1b[37m║   Winner Predict — Backend Supervisor ║\x1b[0m"
+    : "\x1b[1m\x1b[37m║   Aviator ML — Starting All Services  ║\x1b[0m");
   console.log("\x1b[1m\x1b[37m╚══════════════════════════════════════╝\x1b[0m");
   console.log(`  Python  : ${PYTHON_BIN}`);
   console.log(`  Node    : ${NODE_BIN}`);
@@ -289,18 +399,29 @@ function launch(svc) {
   console.log("");
 
   const backendPython = ensureBackendEnvironment();
-  for (const svc of SERVICES) {
+  for (const svc of selectedServices) {
     if (svc.name === "flask" || svc.name === "bot-api") {
       svc.cmd = backendPython;
     }
   }
 
-  for (const svc of SERVICES) {
+  for (const svc of selectedServices) {
     await launch(svc);
   }
 
-  console.log("\n\x1b[90m[runner] all services launched. Press Ctrl+C to stop.\x1b[0m\n");
-})();
+  console.log("\n\x1b[90m[runner] requested services launched and supervised. Press Ctrl+C to stop.\x1b[0m\n");
+})().catch((error) => {
+  console.error(`[runner ${timestamp()}] fatal startup error:`, error);
+  stopAll(1);
+});
 
 process.on("SIGINT",  () => stopAll(0));
 process.on("SIGTERM", () => stopAll(0));
+process.on("uncaughtException", (error) => {
+  console.error(`[runner ${timestamp()}] uncaught exception:`, error);
+  stopAll(1);
+});
+process.on("unhandledRejection", (error) => {
+  console.error(`[runner ${timestamp()}] unhandled rejection:`, error);
+  stopAll(1);
+});

@@ -17,9 +17,13 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from app.betting.browser_adapters import PlacementUnavailable, SimulationBackend
+from app.betting.browser_adapters import (
+    PlacementUnavailable,
+    RealBrowserBackend,
+    SimulationBackend,
+)
 from app.betting.browser_client import AviatorBrowserClient, CdpSession, BrowserUnreachable, Target
-from app.betting.selectors import SNAPSHOT, parse_amount
+from app.betting.selectors import GameSnapshot, SNAPSHOT, parse_amount
 from app.betting.config import BettingSettings
 from app.betting.events import betting_event, ledger_event, notice_event, state_event
 from app.betting.profiles import PROFILES, profile_keys
@@ -273,6 +277,13 @@ def test_sim_backend_payouts_newest_first_and_describe():
 
 # ── BettingSession — simulation lifecycle ───────────────────────────────────
 
+def test_idle_manager_reports_explicit_off_mode():
+    status = BettingManager(fast_settings()).status()
+    assert status["state"] == "IDLE"
+    assert status["mode"] == "OFF"
+    assert status["automatic_enabled"] is False
+
+
 def test_sim_session_places_resolves_and_autostops_on_max_rounds():
     async def go():
         mgr = BettingManager(fast_settings())
@@ -489,6 +500,38 @@ def test_real_gating_master_switch_on_still_defers_driver_not_implemented():
     _run(go())
 
 
+def test_real_backend_never_clicks_without_platform_receipt_verification():
+    class ReadyBrowser:
+        settings = SimpleNamespace(cdp_http="http://127.0.0.1:9222")
+
+        def __init__(self):
+            self.place_calls = 0
+
+        async def readiness(self):
+            return {"connected": True, "stage": "ready"}
+
+        async def place_bet(self, **_kwargs):
+            self.place_calls += 1
+
+    async def go():
+        browser = ReadyBrowser()
+        backend = RealBrowserBackend(browser, allow_real_placement=True)
+        with pytest.raises(PlacementUnavailable) as exc:
+            await backend.place(amount_bif=500, target_multiplier=2.0,
+                                bet_slot=0, decision_id="no-click")
+        assert exc.value.reason == "platform_verification_incomplete"
+        assert browser.place_calls == 0
+        assert await backend.collect_resolved() == []
+
+    _run(go())
+
+
+def test_snapshot_missing_balance_is_unknown_not_zero():
+    snap = GameSnapshot.from_value({"ok": True, "balanceText": ""})
+    assert snap.balance is None
+    assert snap.as_dict()["balance"] is None
+
+
 # ── Schemas / events / profiles contracts ───────────────────────────────────
 
 def test_decision_intent_schema_rejects_out_of_band_values():
@@ -613,6 +656,17 @@ def test_api_session_control_validation():
     r, r2 = _run(_api_call(go))
     assert r.status_code == 422
     assert r2.status_code == 422
+
+
+def test_api_session_control_rejects_direct_real_start():
+    async def go(client):
+        return await client.post("/api/betting/session", json={
+            "action": "start", "mode": "REAL", "profile": "PROFILE_A",
+        })
+    r = _run(_api_call(go))
+    assert r.status_code == 409
+    assert r.json()["error"] == "live_activation_required"
+    assert r.json()["message"].startswith("REAL sessions require /api/live/start")
 
 
 def test_api_decision_out_of_band_rejected_422():
@@ -791,24 +845,15 @@ def test_emergency_stop_emits_event_and_stops():
     _run(go())
 
 
-def test_api_automatic_start_stop_balance_and_current_routes():
+def test_api_automatic_start_requires_explicit_live_activation():
     async def go(client):
-        start = await client.post("/api/betting/start", json={
+        return await client.post("/api/betting/start", json={
             "starting_balance": 5000, "goal_balance": 10000,
             "profile": "profile_a",
         })
-        balance = await client.get("/api/betting/balance")
-        current = await client.get("/api/betting/current")
-        stop = await client.post("/api/betting/stop")
-        await _wait_task(client.manager.session._task)
-        return start, balance, current, stop
-    start, balance, current, stop = _run(_api_call(go))
-    assert start.status_code == 200
-    assert start.json()["status"]["starting_balance"] == 5000
-    assert start.json()["status"]["goal_balance"] == 10000
-    assert balance.status_code == 200 and balance.json()["verified"] is False
-    assert current.json()["current_bet"] is None
-    assert stop.status_code == 200
+    response = _run(_api_call(go))
+    assert response.status_code == 409
+    assert response.json()["error"] == "live_activation_required"
 
 
 def test_named_realtime_events_cover_frontend_contract():
@@ -843,4 +888,41 @@ def test_browser_disconnect_stops_connected_real_session():
         assert session._stop_requested is True
         assert session.stop_reason == "browser_disconnected"
         assert session.state == SessionState.STOPPING
+    _run(go())
+
+
+def test_unreachable_status_stops_connected_real_session():
+    class DisconnectedBackend:
+        async def readiness(self):
+            return {"connected": False, "stage": "unreachable",
+                    "error": "connection lost"}
+
+    async def go():
+        session = _real_session(fast_settings())
+        session.state = SessionState.CONNECTED
+        session.backend = DisconnectedBackend()
+        await session._real_observe_cycle()
+        assert session._stop_requested is True
+        assert session.stop_reason == "browser_disconnected"
+
+    _run(go())
+
+
+def test_unknown_observed_balance_stops_real_session():
+    class UnknownBalanceBackend:
+        async def readiness(self):
+            return {"connected": True, "stage": "ready"}
+
+        async def snapshot(self):
+            return {"ok": True, "balance": None, "balance_text": "",
+                    "ui_ready": True, "payouts_head": []}
+
+    async def go():
+        session = _real_session(fast_settings())
+        session.backend = UnknownBalanceBackend()
+        await session._real_observe_cycle()
+        assert session._stop_requested is True
+        assert session.stop_reason == "balance_unverified"
+        assert session.last_balance is None
+
     _run(go())

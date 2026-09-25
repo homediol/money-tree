@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -12,6 +13,9 @@ def configure_logging() -> None:
         "%(asctime)sZ %(levelname)s %(name)s %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
+    # The trailing Z means UTC. logging uses local time unless its converter is
+    # overridden, which previously produced misleading timestamps in Kigali.
+    formatter.converter = time.gmtime
     stream = logging.StreamHandler(sys.stdout)
     stream.setFormatter(formatter)
     file_handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024,

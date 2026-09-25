@@ -7,6 +7,10 @@ health/event loops alive.
 from __future__ import annotations
 
 import asyncio
+import logging
+
+
+log = logging.getLogger("APP.lifecycle")
 
 
 class SystemOrchestrator:
@@ -19,15 +23,38 @@ class SystemOrchestrator:
         if self.started:
             return
         history = self.app.state.history_collector
-        await history.start()
+        try:
+            await history.start()
+        except Exception:
+            # Collector/browser availability is reported by system health; it
+            # must not prevent the HTTP API from starting.
+            log.exception("history collector failed during startup; API remains available")
         self.tasks = [
-            asyncio.create_task(self.app.state.system_health_monitor(self.app)),
-            asyncio.create_task(self.app.state.history_monitor(self.app)),
+            self._task(self.app.state.system_health_monitor(self.app), "system-health"),
+            self._task(self.app.state.history_monitor(self.app), "history-monitor"),
         ]
         operations_monitor = getattr(self.app.state, "operations_monitor", None)
         if operations_monitor is not None:
-            self.tasks.append(asyncio.create_task(operations_monitor(self.app)))
+            self.tasks.append(self._task(operations_monitor(self.app), "operations-monitor"))
         self.started = True
+
+    @staticmethod
+    def _task(coro, name: str) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+
+        def report_failure(done: asyncio.Task) -> None:
+            if done.cancelled():
+                return
+            try:
+                error = done.exception()
+            except asyncio.CancelledError:
+                return
+            if error is not None:
+                log.error("background task %s stopped unexpectedly: %s", name, error,
+                          exc_info=(type(error), error, error.__traceback__))
+
+        task.add_done_callback(report_failure)
+        return task
 
     async def shutdown(self) -> None:
         if not self.started:
@@ -40,8 +67,14 @@ class SystemOrchestrator:
             except BaseException:
                 pass
         self.tasks.clear()
-        await self.app.state.betting.shutdown()
-        await self.app.state.history_collector.stop()
+        try:
+            await self.app.state.betting.shutdown()
+        except Exception:
+            log.exception("betting shutdown failed")
+        try:
+            await self.app.state.history_collector.stop()
+        except Exception:
+            log.exception("history collector shutdown failed")
         self.started = False
 
     async def observe(self) -> dict:

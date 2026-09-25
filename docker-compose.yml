@@ -11,8 +11,17 @@ services:
     volumes:
       - .:/app
     command: sh -c "pip install -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 10s
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)); assert d['service']=='winner-predict-backend'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
 
   frontend:
     image: node:20-alpine
@@ -23,12 +32,9 @@ services:
       # them against glibc while node:20-alpine uses musl.
       - /app/frontend/node_modules
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    init: true
+    restart: unless-stopped
     ports:
       - "5173:5173"
     environment:
-      - VITE_API_BASE_URL=http://localhost:8000
-      - VITE_WS_URL=ws://localhost:8000/ws/live
-    depends_on:
-      - backend
-
-
+      - BACKEND_PROXY_TARGET=http://backend:8000

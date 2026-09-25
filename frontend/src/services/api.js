@@ -1,11 +1,12 @@
 import axios from 'axios';
 import { getApiToken } from '../auth.js';
+import {
+  backendRequestsAllowed,
+  reportBackendRequestFailure,
+} from './backendConnection.js';
+import { getApiBaseUrl } from './endpoints.js';
 
-export function getApiBaseUrl() {
-  if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
-  if (typeof window === 'undefined') return 'http://localhost:8000';
-  return `${window.location.protocol}//${window.location.hostname}:8000`;
-}
+export { getApiBaseUrl } from './endpoints.js';
 
 export const api = axios.create({
   baseURL: getApiBaseUrl(),
@@ -13,10 +14,25 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  if (!backendRequestsAllowed() && config.url !== '/health') {
+    const error = new axios.AxiosError(
+      'Backend is reconnecting', 'ERR_BACKEND_RECONNECTING', config,
+    );
+    error.isBackendUnavailable = true;
+    return Promise.reject(error);
+  }
   const token = getApiToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    reportBackendRequestFailure(error);
+    return Promise.reject(error);
+  },
+);
 
 export async function getCurrentSignal() {
   const { data } = await api.get('/api/signal/current');

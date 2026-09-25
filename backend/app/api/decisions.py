@@ -32,8 +32,56 @@ def recent(request: Request, limit: int = 25):
 @router.get("/status")
 def status(request: Request):
     engine = _engine(request)
-    return {"current": engine.current(), "config": engine.config.model_dump(),
-            "places_bets": False, "risk_manager_required": True}
+    current = engine.current()
+    wp = request.app.state.wp
+    dataset = wp.dataset_service
+    model = wp.model_registry.status(dataset)
+    inference = wp.model_registry.prediction_payload(dataset)
+    betting = request.app.state.betting.status()
+    emergency = bool(request.app.state.risk.emergency_latched)
+    blockers: list[str] = []
+    if not model.get("deployable"):
+        blockers.append(f"model:{model.get('status', 'UNKNOWN')}")
+    if not inference.get("usable"):
+        blockers.append(f"prediction:{inference.get('reason', 'UNAVAILABLE')}")
+    if not engine.config.automatic_mode:
+        blockers.append("decision_automatic_mode_off")
+    if not betting.get("automatic_enabled"):
+        blockers.append("betting_session_off")
+    if emergency:
+        blockers.append("emergency_stop")
+    current_executable = bool(
+        current
+        and current.get("status") == "READY_FOR_EXECUTION"
+        and current.get("risk_status") == "APPROVED"
+        and current.get("execution_status") == "READY"
+    )
+    if not current_executable:
+        blockers.append(f"current_decision:{current.get('status') if current else 'MISSING'}")
+    history = wp.repository.list_decisions(500)
+    return {
+        "current": current,
+        "config": engine.config.model_dump(),
+        "places_bets": False,
+        "risk_manager_required": True,
+        "decision_file": {
+            "role": "CURRENT_HANDOFF_ONLY",
+            "contains_one_record_by_design": True,
+        },
+        "history_count": len(history),
+        "pipeline": {
+            "state": "READY" if not blockers else "BLOCKED",
+            "blockers": list(dict.fromkeys(blockers)),
+            "model_status": model.get("status"),
+            "model_deployable": bool(model.get("deployable")),
+            "prediction_usable": bool(inference.get("usable")),
+            "prediction_reason": inference.get("reason"),
+            "session_mode": betting.get("mode", "OFF"),
+            "automatic_enabled": bool(betting.get("automatic_enabled")),
+            "emergency_stop": emergency,
+            "current_executable": current_executable,
+        },
+    }
 
 
 @router.get("/config")

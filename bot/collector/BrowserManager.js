@@ -374,8 +374,39 @@ export class BrowserManager {
     if (source && source.url() && source.url() !== 'about:blank') {
       await this._historyPage.goto(source.url(), { waitUntil: 'domcontentloaded' });
     }
+    await this._cleanupManagedStarterPages(this._historyPage);
+    if (typeof this._historyPage.bringToFront === 'function') {
+      await this._historyPage.bringToFront().catch(() => {});
+    }
     log.info('BrowserManager: dedicated history page ready in existing context');
     return this._historyPage;
+  }
+
+  /**
+   * A persistent collector profile can restore old Winner and chrome://newtab
+   * pages. Winner's sportsbook shell exposes the untranslated document title
+   * "MetaBrandTitle", leaving that broken-looking tab beside the real Aviator
+   * page. These are safe to close only when this manager owns the dedicated
+   * bot browser; attached user browsers are never modified.
+   */
+  async _cleanupManagedStarterPages(keepPage) {
+    if (!this._ownsBrowser || !this._context) return;
+    for (const page of this._context.pages()) {
+      if (page === keepPage || page.isClosed()) continue;
+      const url = page.url().toLowerCase();
+      const staleWinnerShell = url.includes('winner.rw') && !isAviatorPage(page);
+      const disposableBlank = url === 'about:blank' || url.startsWith('chrome://newtab');
+      if (!staleWinnerShell && !disposableBlank) continue;
+      try {
+        await page.close();
+        log.info(`BrowserManager: closed stale managed tab: ${url}`);
+      } catch (err) {
+        log.warn(`BrowserManager: could not close stale managed tab ${url}: ${err.message}`);
+      }
+    }
+    if (this._page && this._page !== keepPage && this._page.isClosed()) {
+      this._page = null;
+    }
   }
 
   /** Recreate only the collector page while preserving this browser/context. */
