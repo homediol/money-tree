@@ -77467,8 +77467,80 @@
   },
   {
     "round_id": "13346",
-    "round_index": 13346,
     "multiplier": 1.13,
-    "timestamp": "2026-09-27T04:56:13.873Z"
+    "timestamp": "2026-09-27T04:56:13.873Z",
+    "round_index": 13346
+  },
+  {
+    "round_id": "13347",
+    "multiplier": 3.41,
+    "timestamp": "2026-09-27T04:56:39.846Z",
+    "round_index": 13347
+  },
+  {
+    "round_id": "13348",
+    "multiplier": 49.13,
+    "timestamp": "2026-09-27T04:57:35.370Z",
+    "round_index": 13348
+  },
+  {
+    "round_id": "13349",
+    "multiplier": 6.61,
+    "timestamp": "2026-09-27T04:58:07.388Z",
+    "round_index": 13349
+  },
+  {
+    "round_id": "13350",
+    "multiplier": 1.23,
+    "timestamp": "2026-09-27T04:58:20.163Z",
+    "round_index": 13350
+  },
+  {
+    "round_id": "13351",
+    "multiplier": 2.77,
+    "timestamp": "2026-09-27T04:58:42.174Z",
+    "round_index": 13351
+  },
+  {
+    "round_id": "13352",
+    "multiplier": 1.1,
+    "timestamp": "2026-09-27T04:58:53.184Z",
+    "round_index": 13352
+  },
+  {
+    "round_id": "13353",
+    "multiplier": 1.48,
+    "timestamp": "2026-09-27T04:59:07.724Z",
+    "round_index": 13353
+  },
+  {
+    "round_id": "13354",
+    "multiplier": 1.14,
+    "timestamp": "2026-09-27T04:59:19.218Z",
+    "round_index": 13354
+  },
+  {
+    "round_id": "13355",
+    "multiplier": 2.01,
+    "timestamp": "2026-09-27T04:59:37.691Z",
+    "round_index": 13355
+  },
+  {
+    "round_id": "13356",
+    "multiplier": 5.68,
+    "timestamp": "2026-09-27T05:00:09.491Z",
+    "round_index": 13356
+  },
+  {
+    "round_id": "13357",
+    "multiplier": 1.31,
+    "timestamp": "2026-09-27T05:00:24.216Z",
+    "round_index": 13357
+  },
+  {
+    "round_id": "13358",
+    "round_index": 13358,
+    "multiplier": 1.36,
+    "timestamp": "2026-09-27T05:00:41.088Z"
   }
 ]

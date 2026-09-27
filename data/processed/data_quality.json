@@ -1,18 +1,18 @@
 {
-  "total_rounds": 12908,
-  "valid_rounds": 12908,
+  "total_rounds": 12924,
+  "valid_rounds": 12924,
   "invalid_rounds": 0,
   "duplicates": 0,
   "date_range": {
     "start": "2026-07-28T13:37:37.587000Z",
-    "end": "2026-09-27T04:54:34.126000Z"
+    "end": "2026-09-27T05:00:41.088000Z"
   },
   "min": 1.0,
   "max": 3834.33,
-  "mean": 8.702626278277036,
+  "mean": 8.699446765707211,
   "median": 1.92,
-  "count_2x_plus": 6207,
-  "rate_2x_plus": 0.48086458010536104,
+  "count_2x_plus": 6216,
+  "rate_2x_plus": 0.4809656453110492,
   "missing_values": {
     "round_id": 0,
     "timestamp": 0,
@@ -22,5 +22,5 @@
   "timestamp_inversions": 1,
   "collection_gaps_over_120s": 90,
   "round_index_gaps": 1,
-  "latest_contiguous_rounds": 84
+  "latest_contiguous_rounds": 100
 }
