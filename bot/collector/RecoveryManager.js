@@ -43,7 +43,7 @@ export class RecoveryManager {
 
     this._recoveryInProgress = true;
     const reason  = typeof errOrReason === 'string' ? errOrReason : formatError(errOrReason);
-    const errClass = typeof errOrReason === 'string' ? 'FRAME_RECOVER' : classifyError(errOrReason);
+    const errClass = classifyError(errOrReason);
     const start   = Date.now();
     let attempt   = 0;
 
@@ -165,6 +165,7 @@ export class RecoveryManager {
   async _ensureOnAviator(page, signal) {
     this.sm.transition(State.GAME_LOADING, 'navigating-to-aviator');
     await this.login.goToAviator(page, signal);
+    await this.browser.focusGamePage(page);
     this.sm.transition(State.WAITING_IFRAME, 'on-aviator-page');
   }
 

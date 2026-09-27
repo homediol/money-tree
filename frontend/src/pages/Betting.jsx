@@ -3,6 +3,7 @@ import {
   AlertTriangle, Bot, CheckCircle2, Circle, OctagonX, Play, Radio, Square, Zap,
 } from 'lucide-react';
 import Card from '../components/Card.jsx';
+import BettingModeControl from '../components/BettingModeControl.jsx';
 import { getWebSocketUrl } from '../auth.js';
 import {
   checkBettingBrowser, emergencyStopBetting, getBettingLedger, getBettingProfiles,
@@ -218,6 +219,7 @@ export default function Betting() {
 
   return (
     <div className="space-y-5">
+      <BettingModeControl />
       <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-300">

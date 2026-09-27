@@ -107,7 +107,7 @@ export class Collector {
     }
     const multipliers = result.multipliers.map(normalizeMultiplier).filter(v => v !== null);
     log.info(`Collector: observer installed — ${multipliers.length} rounds visible`);
-    return { multipliers, signature: snapshotSignature(multipliers) };
+    return { multipliers, signature: snapshotSignature(multipliers), timestamp: raw?.ts || null };
   }
 
   async waitForMutation(frame, idleMs = MUTATION_IDLE_MS) {

@@ -1,25 +1,14 @@
-import { useState } from 'react';
-import { BrainCircuit, PlayCircle } from 'lucide-react';
+import { BrainCircuit } from 'lucide-react';
 import Card from '../components/Card.jsx';
 import Metric from '../components/Metric.jsx';
 import StatusPill from '../components/StatusPill.jsx';
 import { useLiveData } from '../hooks/useLiveData.js';
-import { trainModels } from '../services/api.js';
 import { pct } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { ErrorState, LoadingState } from '../components/PageState.jsx';
 
 export default function ModelPerformance() {
   const { models, mlStatus, mlMetrics, mlEstimate, refresh, loading, error } = useLiveData();
-  const [training, setTraining] = useState(false);
-  const [trainError, setTrainError] = useState('');
-  async function train() {
-    setTraining(true);
-    setTrainError('');
-    try { await trainModels(); await refresh(); }
-    catch (err) { setTrainError(err?.response?.data?.detail || err.message || 'Training failed.'); }
-    finally { setTraining(false); }
-  }
   if (loading) return <LoadingState label="Loading ML model state…" />;
   if (error) return <ErrorState message={error} onRetry={refresh} />;
   const validation = models?.validation_metrics || mlMetrics?.validation_metrics || {};
@@ -29,10 +18,9 @@ export default function ModelPerformance() {
   const inferenceUsable = mlEstimate?.usable === true;
   const displayedRate = inferenceUsable ? mlEstimate?.prediction?.probability_2x : mlEstimate?.estimate?.informational_frequency_2x;
   return <div className="space-y-5">
-    {trainError && <p role="alert" className="text-rose-400">{trainError}</p>}
     <PageHeader eyebrow="Probability estimation" title="ML Model" icon={BrainCircuit}
-      description="Chronologically evaluated model estimates. Outputs are not guarantees or betting decisions."
-      action={<button onClick={train} disabled={training} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 disabled:opacity-60"><PlayCircle size={17} />{training ? 'Training…' : 'Train models'}</button>} />
+      description="Chronologically evaluated model estimates. Outputs are not guarantees or betting decisions." />
+    <p className="text-sm text-zinc-400">The next evaluation runs automatically after enough new processed and contiguous rounds, cooldown, and a free training lock. Progress is on the System Operations Dashboard.</p>
       <Card title="Model Health"><div className="flex flex-wrap items-center gap-4"><StatusPill status={mlStatus?.status || 'NOT_TRAINED'} /><span className="text-sm text-zinc-400">{mlStatus?.last_error || mlStatus?.validation_message || models?.message || 'No active model.'}</span><span className={`rounded px-2 py-1 text-xs font-semibold ${mlStatus?.deployable ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>{mlStatus?.deployable && mlStatus?.status === 'READY' ? 'LIVE INFERENCE ENABLED' : `LIVE INFERENCE DISABLED — ${mlStatus?.status === 'READY' ? mlStatus?.quality_state : mlStatus?.status || 'NOT_TRAINED'}`}</span></div></Card>
     <section className="grid gap-4 md:grid-cols-4">
       <Card><Metric label="Model Version" value={mlStatus?.model_version || 'N/A'} /></Card>

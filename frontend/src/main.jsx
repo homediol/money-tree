@@ -25,6 +25,7 @@ import ShadowMode from './pages/ShadowMode.jsx';
 import LiveActivation from './pages/LiveActivation.jsx';
 import Recovery from './pages/Recovery.jsx';
 import { BACKEND_RESTORED_EVENT } from './services/backendConnection.js';
+import ApiAccessGate from './components/ApiAccessGate.jsx';
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -57,7 +58,7 @@ function Shell() {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <SystemHealth />
-      <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-zinc-800 bg-zinc-950/95 p-5 lg:block">
+      <aside className="fixed inset-y-0 left-0 hidden w-64 overflow-y-auto border-r border-zinc-800 bg-zinc-950/95 p-5 lg:block">
         <div className="flex items-center gap-3 border-b border-zinc-800 pb-5">
           <div className="grid h-10 w-10 place-items-center rounded bg-emerald-500 text-zinc-950">
             <Activity size={22} />
@@ -67,7 +68,7 @@ function Shell() {
             <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">Operations Console</div>
           </div>
         </div>
-        <nav className="mt-8 space-y-1">
+        <nav className="mt-8 space-y-1 pb-6">
           {nav.map(({ to, label, icon: Icon }) => (
             <NavLink key={to} to={to} className={({ isActive }) => `group flex items-center gap-3 rounded-lg border px-3 py-2.5 text-sm font-medium transition ${isActive ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200' : 'border-transparent text-zinc-400 hover:border-zinc-800 hover:bg-zinc-900 hover:text-zinc-100'}`}>
               <Icon size={18} className="transition-transform group-hover:scale-110" /> {label}
@@ -117,7 +118,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ErrorBoundary FallbackComponent={AppErrorFallback} onReset={() => window.location.assign('/')}>
       <BrowserRouter>
-        <Shell />
+        <ApiAccessGate><Shell /></ApiAccessGate>
         <Toaster richColors position="top-right" theme="dark" />
       </BrowserRouter>
     </ErrorBoundary>

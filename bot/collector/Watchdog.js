@@ -35,6 +35,7 @@ export class Watchdog {
     this._running    = false;
     this._checking   = false;
     this._lastLoginCheck  = 0;
+    this._loginFailures = 0;
     this._quietUntil      = 0;  // suppress alerts until this timestamp
   }
 
@@ -62,6 +63,8 @@ export class Watchdog {
     while (this._running && !signal?.aborted) {
       await sleep(WATCHDOG_INTERVAL_MS, signal);
       if (!this._running || signal?.aborted) break;
+      if (Date.now() < this._quietUntil) continue;
+      if (this.health.snapshot().network?.status !== 'ONLINE') continue;
 
       // Don't run checks while a recovery is already in progress
       const state = this.sm.current;
@@ -103,16 +106,21 @@ export class Watchdog {
     }
 
     // 4. Login check — only when COLLECTING
-    if (this.sm.is(State.COLLECTING)) {
+    if (this.sm.is(State.COLLECTING) &&
+        (this._loginFailures || Date.now() - this._lastLoginCheck >= LOGIN_CHECK_INTERVAL)) {
+      this._lastLoginCheck = Date.now();
       const loggedIn = await this.login.isLoggedIn(page).catch(() => false);
       this.health.setLoggedIn(loggedIn);
       if (!loggedIn) {
-        return this._alert('user logged out', page);
+        this._loginFailures += 1;
+        if (this._loginFailures >= 2) return this._alert('user logged out', page);
+      } else {
+        this._loginFailures = 0;
       }
     }
 
     // 5. Frozen collector check
-    const secs = this.health.secondsSinceLastRound();
+    const secs = this.health.secondsSinceCollectionActivity();
     if (secs !== null && secs > FROZEN_THRESHOLD_S && this.sm.is(State.COLLECTING)) {
       return this._alert(`collector frozen — no round for ${Math.round(secs)}s`, page);
     }

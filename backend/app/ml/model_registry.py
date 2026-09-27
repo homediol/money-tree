@@ -6,12 +6,15 @@ import logging
 import os
 import uuid
 import warnings
+from threading import Lock
+from threadpoolctl import threadpool_limits
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import joblib
 import numpy as np
+import pandas as pd
 
 from app.ml.trainer import ModelTrainer, TrainingResult, feature_schema
 
@@ -31,7 +34,10 @@ class ModelRegistry:
         self.latest: TrainingResult | None = None
         self._model = None
         self._metadata: dict[str, Any] | None = None
+        self._candidate_model = None
+        self._candidate_metadata = None
         self._training = False
+        self._train_lock = Lock()
         self._error: str | None = None
         self._latest_prediction: dict[str, Any] | None = None
         self._last_stale_warning_key: tuple[str | None, int] | None = None
@@ -47,53 +53,113 @@ class ModelRegistry:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
 
-    def train(self, dataset_service) -> TrainingResult:
+    def train(self, dataset_service, progress: Callable[[str], None] | None = None) -> TrainingResult:
+        if not self._train_lock.acquire(blocking=False):
+            raise RuntimeError("training_already_in_progress")
         self._training, self._error = True, None
         try:
-            result = self.trainer.train_validate(dataset_service.dataset.copy())
-            if getattr(dataset_service, "raw_path", None) and dataset_service.raw_path.exists():
-                result.source_sha256 = hashlib.sha256(dataset_service.raw_path.read_bytes()).hexdigest()
+            with getattr(dataset_service, "_lock", Lock()):
+                snapshot = dataset_service.dataset.copy()
+            raw_path = getattr(dataset_service, "raw_path", None)
+            source_hash = (hashlib.sha256(raw_path.read_bytes()).hexdigest()
+                           if not getattr(dataset_service, "source_loader", None) and raw_path and raw_path.exists()
+                           else hashlib.sha256(pd.util.hash_pandas_object(snapshot, index=False).values.tobytes()).hexdigest())
+            # Limit native BLAS/OpenMP work so collection and API serving retain CPU.
+            with threadpool_limits(limits=2):
+                result = (self.trainer.train_validate(snapshot, progress=progress)
+                          if progress else self.trainer.train_validate(snapshot))
+            result.source_sha256 = source_hash
+            if not snapshot.empty:
+                result.last_training_round_index = int(snapshot.iloc[-1]["round_index"])
             self.latest = result
-            if not getattr(result, "_model", None):
-                return result
-            version_dir = self.model_dir / result.model_version
-            version_dir.mkdir(parents=True, exist_ok=False)
-            artifact_path = version_dir / "model.joblib"
-            metadata_path = version_dir / "metadata.json"
-            joblib.dump({"model": result._model, "feature_names": result.feature_names,
-                         "feature_version": result.feature_version, "schema_hash": result.feature_schema_hash}, artifact_path)
-            metadata = result.model_dump() | {"artifact_path": str(artifact_path.resolve())}
-            self._atomic_json(metadata_path, metadata)
-            self._atomic_json(self.active_path, {"model_version": result.model_version,
-                                                 "metadata_path": str(metadata_path.resolve()), "artifact_path": str(artifact_path.resolve())})
-            self._model, self._metadata = result._model, metadata
+            result.model_version = result.model_version or f"attempt-{uuid.uuid4().hex}"
+            metadata = result.model_dump()
+            candidate_model = getattr(result, "_model", None)
+            if candidate_model is not None:
+                version_dir = self.model_dir / result.model_version
+                version_dir.mkdir(parents=True, exist_ok=False)
+                artifact_path = version_dir / "model.joblib"
+                joblib.dump({"model": candidate_model, "feature_names": result.feature_names,
+                             "feature_version": result.feature_version, "schema_hash": result.feature_schema_hash}, artifact_path)
+                metadata["artifact_path"] = str(artifact_path.resolve())
+                self._atomic_json(version_dir / "metadata.json", metadata)
+            metadata.update(
+                validation_folds=metadata.get("walk_forward") or [],
+                metrics=metadata.get("test_metrics") or {},
+                rejection_reason=None if result.validated else result.selection_reason or result.message,
+                deployment_status="DEPLOYED" if result.validated else "NOT_DEPLOYABLE",
+                next_evaluation_checkpoint=(result.last_training_round_index or 0) + getattr(self, "retrain_interval", 250),
+            )
+            champion_valid = bool(self._metadata and self._metadata.get("overfitting_checks", {}).get("deployable"))
+            promote = candidate_model is not None and (result.validated or not champion_valid)
+            active_metadata = metadata if promote else self._metadata
             if self.repository:
-                self.repository.save_model_version(result.model_version, result.algorithm or "unknown", str(artifact_path), metadata)
+                self.repository.save_model_candidate(metadata)
+                if candidate_model is not None:
+                    self.repository.save_model_version(result.model_version, result.algorithm or "unknown", metadata["artifact_path"], metadata)
+                # PostgreSQL owns both pointers. Binary weights remain artifacts.
+                self.repository.save_application_state("ml_registry", {"active": active_metadata, "candidate": metadata})
+            elif candidate_model is not None:
+                self._atomic_json(self.model_dir / "candidate.json", {"model_version": result.model_version})
+            self._candidate_model, self._candidate_metadata = candidate_model, metadata
+            if promote:
+                # Legacy tooling may still inspect this manifest; it is not
+                # authoritative when a repository is configured.
+                self._atomic_json(self.active_path, {"model_version": result.model_version,
+                                                     "artifact_path": metadata["artifact_path"]})
+                self._model, self._metadata = candidate_model, metadata
+                self._latest_prediction = None
             return result
         except Exception as exc:
             self._error = str(exc)
             raise
         finally:
             self._training = False
+            self._train_lock.release()
+
+    def _read_artifact(self, metadata: dict):
+        version_dir = self.model_dir / metadata["model_version"]
+        artifact_path = version_dir / "model.joblib"
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Setting the shape on a NumPy array has been deprecated", category=DeprecationWarning)
+            artifact = joblib.load(artifact_path)
+        if (artifact.get("feature_names") != metadata.get("feature_names")
+                or artifact.get("schema_hash") != metadata.get("feature_schema_hash")
+                or artifact.get("feature_version") != metadata.get("feature_version")):
+            raise ValueError("model artifact does not match persisted feature schema")
+        return artifact["model"]
 
     def _load_active(self) -> None:
-        if not self.active_path.exists():
-            return
         try:
-            active = json.loads(self.active_path.read_text(encoding="utf-8"))
-            # Version-local paths also load legacy manifests written relative
-            # to a different working directory.
-            version_dir = self.model_dir / active["model_version"]
-            metadata = json.loads((version_dir / "metadata.json").read_text(encoding="utf-8"))
-            # Joblib currently triggers a harmless NumPy 2.5 array-shape
-            # deprecation while reading its own pickle format. Scope the
-            # suppression to artifact loading so application warnings remain.
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message="Setting the shape on a NumPy array has been deprecated", category=DeprecationWarning)
-                artifact = joblib.load(version_dir / "model.joblib")
-            self._model, self._metadata = artifact["model"], metadata
+            persisted = self.repository.load_application_state("ml_registry") if self.repository else None
+            if persisted is not None:
+                self._metadata = persisted.get("active")
+                self._candidate_metadata = persisted.get("candidate")
+            else:
+                # One-time migration of an existing installation into the DB.
+                if not self.active_path.exists():
+                    return
+                active = json.loads(self.active_path.read_text(encoding="utf-8"))
+                self._metadata = json.loads((self.model_dir / active["model_version"] / "metadata.json").read_text())
+                self._candidate_metadata = self._metadata
+                if not self.repository and (self.model_dir / "candidate.json").exists():
+                    candidate = json.loads((self.model_dir / "candidate.json").read_text())
+                    self._candidate_metadata = json.loads((self.model_dir / candidate["model_version"] / "metadata.json").read_text())
+                if self.repository:
+                    self.repository.save_model_candidate(self._candidate_metadata)
+                    self.repository.save_application_state("ml_registry", {"active": self._metadata, "candidate": self._candidate_metadata})
+            if self._metadata:
+                self._model = self._read_artifact(self._metadata)
+            if self._candidate_metadata and self._candidate_metadata.get("artifact_path"):
+                self._candidate_model = (self._model if self._candidate_metadata.get("model_version") == (self._metadata or {}).get("model_version")
+                                         else self._read_artifact(self._candidate_metadata))
         except Exception as exc:
-            self._model, self._metadata, self._error = None, None, str(exc)
+            self._error = str(exc)
+            log.exception("model restore failed")
+
+    def candidate(self):
+        """Experimental observer only; never a deployment or execution input."""
+        return self._candidate_model, self._candidate_metadata
 
     def status(self, dataset_service=None) -> dict[str, Any]:
         if self._training:
@@ -117,7 +183,9 @@ class ModelRegistry:
         model_validated = bool(self._metadata and self._metadata.get("overfitting_checks", {}).get("deployable", False))
         if state == "READY" and not model_validated:
             state = "NOT_VALIDATED"
-        return {"status": state, "model_version": self._metadata.get("model_version") if self._metadata else None,
+        return {"status": state, "candidate_version": (self._candidate_metadata or {}).get("model_version"),
+                "active_model_version": self._metadata.get("model_version") if model_validated else None,
+                "model_version": self._metadata.get("model_version") if self._metadata else None,
                 "feature_version": self._metadata.get("feature_version") if self._metadata else None,
                 "compatible": compatible,
                 "model_validated": model_validated,
@@ -281,10 +349,17 @@ class ModelRegistry:
                              if frequency is not None else [])}
 
     def performance(self) -> dict:
+        if self._candidate_metadata:
+            return self._candidate_metadata
         if self._metadata:
             return self._metadata
         if self.latest:
             return self.latest.model_dump()
+        if self.repository:
+            candidates = self.repository.list_model_candidates(1)
+            if candidates:
+                candidate = candidates[0]
+                return {**candidate, "restored_from_persistence": True}
         return {"status": "NOT_TRAINED", "validated": False, "models": {}, "baselines": {}}
 
     def model_info(self) -> dict:
@@ -300,9 +375,8 @@ class ModelRegistry:
             return {}
 
     def metrics(self) -> dict:
-        if not self._metadata:
-            return {"status": "NOT_TRAINED"}
-        return {key: self._metadata.get(key) for key in ("baselines", "models", "validation_metrics", "test_metrics", "calibration", "walk_forward", "overfitting_checks")}
+        metadata = self.performance()
+        return {key: metadata.get(key) for key in ("baselines", "models", "validation_metrics", "test_metrics", "calibration", "walk_forward", "overfitting_checks")}
 
     def latest_prediction(self) -> dict | None:
         prediction = self._latest_prediction or (self.repository.latest_ml_prediction() if self.repository else None)

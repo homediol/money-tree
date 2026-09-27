@@ -10,6 +10,7 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.isotonic import IsotonicRegression
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (accuracy_score, average_precision_score, brier_score_loss,
@@ -33,7 +34,8 @@ class ProbabilityCalibratedModel:
 
     def predict_proba(self, features):
         raw = self.model.predict_proba(features)[:, 1]
-        calibrated = self.calibrator.predict_proba(raw.reshape(-1, 1))[:, 1]
+        calibrated = (self.calibrator.predict_proba(raw.reshape(-1, 1))[:, 1]
+                      if hasattr(self.calibrator, "predict_proba") else self.calibrator.predict(raw))
         return np.column_stack([1 - calibrated, calibrated])
 
 
@@ -67,6 +69,7 @@ class TrainingResult:
     data_quality: dict[str, Any] | None = None
     selection_reason: str | None = None
     source_sha256: str | None = None
+    last_training_round_index: int | None = None
 
     def model_dump(self) -> dict[str, Any]:
         return {key: value for key, value in self.__dict__.items() if not key.startswith("_")}
@@ -110,6 +113,7 @@ def evaluate_probabilities(y_true: np.ndarray, probabilities: np.ndarray) -> dic
     predicted = (probabilities >= 0.5).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_true, predicted, labels=[0, 1]).ravel()
     both = len(np.unique(y_true)) == 2
+    calibration = calibration_diagnostics(y_true, probabilities)
     return {
         "accuracy": float(accuracy_score(y_true, predicted)),
         "precision": float(precision_score(y_true, predicted, zero_division=0)),
@@ -119,6 +123,14 @@ def evaluate_probabilities(y_true: np.ndarray, probabilities: np.ndarray) -> dic
         "pr_auc": float(average_precision_score(y_true, probabilities)) if both else None,
         "log_loss": float(log_loss(y_true, probabilities, labels=[0, 1])),
         "brier_score": float(brier_score_loss(y_true, probabilities)),
+        "calibration_error": calibration["expected_calibration_error"],
+        "prediction_distribution": {"min": float(np.min(probabilities)),
+                                    "p10": float(np.quantile(probabilities, .1)),
+                                    "median": float(np.median(probabilities)),
+                                    "p90": float(np.quantile(probabilities, .9)),
+                                    "max": float(np.max(probabilities)),
+                                    "mean": float(np.mean(probabilities)),
+                                    "std": float(np.std(probabilities))},
         "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
         # Compatibility fields used by the existing model table/tests.
         "tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp),
@@ -139,6 +151,15 @@ def calibration_diagnostics(y_true: np.ndarray, probabilities: np.ndarray, bins:
                      "mean_probability": predicted, "observed_rate": observed})
     return {"method": "none", "bins": rows, "expected_calibration_error": float(ece),
             "brier_score": float(brier_score_loss(y_true, probabilities)),
+            "decision_thresholds": {
+                str(threshold): {
+                    "near_count": int(((probabilities >= threshold - .05) & (probabilities < threshold + .05)).sum()),
+                    "near_observed_rate": (float(y_true[(probabilities >= threshold - .05) & (probabilities < threshold + .05)].mean())
+                                           if ((probabilities >= threshold - .05) & (probabilities < threshold + .05)).any() else None),
+                    "above_count": int((probabilities >= threshold).sum()),
+                    "above_observed_rate": (float(y_true[probabilities >= threshold].mean())
+                                            if (probabilities >= threshold).any() else None),
+                } for threshold in (.55, .60, .68)},
             "note": "No calibrator is applied unless held-out validation demonstrates material improvement."}
 
 
@@ -184,7 +205,7 @@ class ModelTrainer:
             pass
         return factories
 
-    def train_validate(self, dataset: pd.DataFrame) -> TrainingResult:
+    def train_validate(self, dataset: pd.DataFrame, progress: Callable[[str], None] | None = None) -> TrainingResult:
         if TARGET_COLUMN not in dataset or len(dataset) < self.min_samples:
             return self._empty("INSUFFICIENT_DATA", f"At least {self.min_samples} Part 4 rows with target_2x are required.", len(dataset))
         if not dataset["round_index"].is_monotonic_increasing:
@@ -231,6 +252,8 @@ class ModelTrainer:
             frame["causal_frequency"] = evaluate_probabilities(ys, causal_frequency(all_y, start, stop))
             frame["rolling_250"] = evaluate_probabilities(ys, causal_frequency(all_y, start, stop, 250))
         class_weight = "balanced" if min(float(y_train.mean()), 1-float(y_train.mean())) < .20 else None
+        if progress:
+            progress("EVALUATING")
         factories = self.factories(class_weight)
         models, fitted, candidate_errors = {}, {}, {}
         for name, factory in factories.items():
@@ -240,7 +263,7 @@ class ModelTrainer:
                 folds = self._walk_forward(clean.iloc[:train_end], feature_names, name, factories)
                 if len(folds) < 3:
                     raise ValueError("fewer than three walk-forward folds completed")
-                fold_scores = [f["metrics"]["brier_score"] - f["baseline"]["brier_score"] for f in folds]
+                fold_scores = [-f["brier_advantage"] for f in folds]
                 best_selection_baseline = min(v["brier_score"] for v in selection_baseline.values()
                                               if isinstance(v, dict) and "brier_score" in v)
                 selection_advantage = best_selection_baseline - selection_metrics["brier_score"]
@@ -268,19 +291,34 @@ class ModelTrainer:
         calibration_choice = {"method": "none", "applied": False, "material_improvement_threshold": .001}
         calibrator = None
         if len(y_selection) >= 100 and len(np.unique(y_selection)) == 2:
-            candidate = LogisticRegression(random_state=SEED)
-            candidate.fit(validation_raw.reshape(-1, 1), y_selection)
             raw_holdout_values = selected_train_model.predict_proba(X_calibration)[:, 1]
-            raw_holdout = float(brier_score_loss(y_calibration, raw_holdout_values))
-            calibrated_holdout_values = candidate.predict_proba(raw_holdout_values.reshape(-1, 1))[:, 1]
-            calibrated_holdout = float(brier_score_loss(y_calibration, calibrated_holdout_values))
-            improvement = raw_holdout - calibrated_holdout
-            calibration_choice |= {"validation_holdout_raw_brier": raw_holdout,
-                                   "validation_holdout_calibrated_brier": calibrated_holdout,
-                                   "validation_holdout_improvement": improvement}
-            if improvement >= calibration_choice["material_improvement_threshold"] and log_loss(y_calibration, calibrated_holdout_values, labels=[0,1]) <= log_loss(y_calibration, raw_holdout_values, labels=[0,1]):
-                calibrator = candidate
-                calibration_choice |= {"method": "sigmoid", "applied": True}
+            raw_metrics = evaluate_probabilities(y_calibration, raw_holdout_values)
+            calibration_choice["validation_holdout_raw_brier"] = raw_metrics["brier_score"]
+            calibration_choice["methods"] = {"none": raw_metrics}
+            candidates = {}
+            sigmoid = LogisticRegression(random_state=SEED)
+            sigmoid.fit(validation_raw.reshape(-1, 1), y_selection)
+            candidates["sigmoid"] = (sigmoid, sigmoid.predict_proba(raw_holdout_values.reshape(-1, 1))[:, 1])
+            isotonic = IsotonicRegression(out_of_bounds="clip")
+            isotonic.fit(validation_raw, y_selection)
+            candidates["isotonic"] = (isotonic, isotonic.predict(raw_holdout_values))
+            eligible = []
+            for method, (candidate, probabilities) in candidates.items():
+                metrics = evaluate_probabilities(y_calibration, probabilities)
+                calibration_choice["methods"][method] = metrics
+                if (raw_metrics["brier_score"] - metrics["brier_score"] >= .001
+                        and metrics["log_loss"] <= raw_metrics["log_loss"]
+                        and metrics["calibration_error"] <= raw_metrics["calibration_error"]):
+                    eligible.append((metrics["brier_score"], method, candidate))
+            if eligible:
+                _, method, calibrator = min(eligible)
+                chosen_metrics = calibration_choice["methods"][method]
+                calibration_choice |= {"method": method, "applied": True,
+                                       "validation_holdout_calibrated_brier": chosen_metrics["brier_score"],
+                                       "validation_holdout_improvement": raw_metrics["brier_score"] - chosen_metrics["brier_score"]}
+            else:
+                calibration_choice |= {"validation_holdout_calibrated_brier": raw_metrics["brier_score"],
+                                       "validation_holdout_improvement": 0.0}
         # Keep the fitted estimator used to select the calibrator. Refitting on
         # validation would change its probability distribution after calibration.
         final_model = selected_train_model
@@ -309,6 +347,17 @@ class ModelTrainer:
         # A sealed chronological test is a final *veto*, not a ranking set.
         deployable = (robust and test_advantage >= .001 and uncertainty["ci95"][0] > 0
                       and best_uncertainty["ci95"][0] > 0)
+        rejection_reasons = []
+        if selection_advantage < .001:
+            rejection_reasons.append("selection_brier_advantage_below_0.001")
+        if fold_wins < 2:
+            rejection_reasons.append("fewer_than_2_of_3_walk_forward_folds_beat_base_rate_by_0.001")
+        if test_advantage < .001:
+            rejection_reasons.append("test_brier_advantage_below_0.001")
+        if uncertainty["ci95"][0] <= 0:
+            rejection_reasons.append("base_rate_test_bootstrap_lower_bound_not_positive")
+        if best_uncertainty["ci95"][0] <= 0:
+            rejection_reasons.append("best_baseline_test_bootstrap_lower_bound_not_positive")
         walk_forward = models[selected]["walk_forward"]
         test_periods = []
         for start, stop in zip(np.linspace(0, len(test), 4, dtype=int)[:-1],
@@ -322,7 +371,10 @@ class ModelTrainer:
         version_seed = f"{datetime.now(timezone.utc).isoformat()}|{schema_hash}|{selected}"
         version = f"ml-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{hashlib.sha256(version_seed.encode()).hexdigest()[:8]}"
         distribution = {"total": n, "positive": int(clean[TARGET_COLUMN].sum()), "negative": int(n-clean[TARGET_COLUMN].sum()),
-                        "positive_rate": float(clean[TARGET_COLUMN].mean()), "negative_rate": float(1-clean[TARGET_COLUMN].mean())}
+                        "positive_rate": float(clean[TARGET_COLUMN].mean()), "negative_rate": float(1-clean[TARGET_COLUMN].mean()),
+                        "splits": {label: {"n": len(frame), "positive_rate": float(frame[TARGET_COLUMN].mean())}
+                                   for label, frame in (("train", train), ("selection", selection),
+                                                        ("calibration", calibration_holdout), ("test", test))}}
         gap = validation_metrics["brier_score"] - models[selected]["train"]["brier_score"]
         calibration = calibration_diagnostics(y_test, test_probability)
         calibration.update(calibration_choice)
@@ -338,6 +390,14 @@ class ModelTrainer:
                             f"untouched test Brier advantage {test_advantage:+.6f} "
                             f"versus {best_test_name}; its block-bootstrap lower bound was "
                             f"{best_uncertainty['ci95'][0]:+.6f}.")
+        if rejection_reasons:
+            selection_reason += " Rejection gates: " + ", ".join(rejection_reasons) + "."
+        drift = {}
+        for label, frame in (("selection", selection), ("calibration", calibration_holdout), ("test", test)):
+            shift = ((frame[feature_names].mean() - train[feature_names].mean()).abs()
+                     / train[feature_names].std().replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).dropna()
+            drift[label] = {"base_rate_shift": float(frame[TARGET_COLUMN].mean() - train[TARGET_COLUMN].mean()),
+                            "largest_standardized_feature_shifts": {key: float(value) for key, value in shift.nlargest(10).items()}}
         result = TrainingResult(
             deployable, "READY" if deployable else "NOT_VALIDATED", selection_reason +
             (" Validated for inference." if deployable else " Live ML inference disabled; historical frequency remains an informational fallback."),
@@ -362,10 +422,13 @@ class ModelTrainer:
              "best_baseline_test_uncertainty": best_uncertainty,
              "best_test_baseline": best_test_name,
              "qualified_candidates_before_test": qualified,
+             "rejection_reasons": rejection_reasons,
              "test_periods": test_periods,
              "deployable": deployable,
              "walk_forward_brier_std": float(np.std([fold["metrics"]["brier_score"] for fold in walk_forward])) if walk_forward else None},
-            dataset_hash, importance, {"excluded_gap_or_clock_rows": excluded, "class_weight": class_weight or "none", "max_history_gap_s": MAX_HISTORY_GAP_S}, selection_reason)
+            dataset_hash, importance, {"excluded_gap_or_clock_rows": excluded, "class_weight": class_weight or "none",
+                                       "max_history_gap_s": MAX_HISTORY_GAP_S, "drift": drift,
+                                       "removed_deterministic_features": ["rolling_count_from_rate", "variance_from_std", "range_from_extrema"]}, selection_reason)
         result._model = final_model  # type: ignore[attr-defined]
         result._models = {selected: final_model}  # type: ignore[attr-defined]
         self.latest = result
@@ -402,7 +465,14 @@ class ModelTrainer:
             model = (factories or self.factories())[algorithm](); model.fit(train[feature_names], train[TARGET_COLUMN])
             metrics = evaluate_probabilities(evaluate[TARGET_COLUMN].to_numpy(int), model.predict_proba(evaluate[feature_names])[:, 1])
             baseline = evaluate_probabilities(evaluate[TARGET_COLUMN].to_numpy(int), np.full(len(evaluate), float(train[TARGET_COLUMN].mean())))
-            results.append({"train_end": end, "evaluation_start": end, "evaluation_end": stop, "metrics": metrics, "baseline": baseline})
+            probabilities = model.predict_proba(evaluate[feature_names])[:, 1]
+            frozen = np.full(len(evaluate), float(train[TARGET_COLUMN].mean()))
+            results.append({"train_end": end, "evaluation_start": end, "evaluation_end": stop,
+                            "metrics": metrics, "baseline": baseline, "baseline_name": "base_rate_probability",
+                            "brier_advantage": baseline["brier_score"] - metrics["brier_score"],
+                            "brier_advantage_uncertainty": block_bootstrap_brier_advantage(
+                                evaluate[TARGET_COLUMN].to_numpy(int), probabilities, frozen,
+                                baseline_name="base_rate_probability")})
         return results
 
     def _empty(self, status: str, message: str, size: int) -> TrainingResult:

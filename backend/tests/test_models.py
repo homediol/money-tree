@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from threading import Event, Thread
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -246,7 +247,7 @@ def test_calibration_and_explanations_never_fit_on_final_test(trained):
     calibration = result.calibration
     assert "80-85% calibration holdout; 85-100% untouched test" in calibration["selection_data"]
     if calibration["applied"]:
-        assert calibration["method"] == "sigmoid"
+        assert calibration["method"] in {"sigmoid", "isotonic"}
         assert calibration["validation_holdout_improvement"] >= calibration["material_improvement_threshold"]
     assert result.feature_importance
     assert all(entry["feature"] in result.feature_names for entry in result.feature_importance)
@@ -375,6 +376,65 @@ def test_block_bootstrap_advantage_is_reproducible():
     first = block_bootstrap_brier_advantage(y, strong, baseline)
     assert first == block_bootstrap_brier_advantage(y, strong, baseline)
     assert first["ci95"][0] > 0
+
+
+def test_fold_reports_base_rate_advantage_and_calibration(trained):
+    result = trained[-1]
+    for candidate in result.models.values():
+        assert len(candidate["walk_forward"]) == 3
+        for fold in candidate["walk_forward"]:
+            assert fold["baseline_name"] == "base_rate_probability"
+            assert fold["brier_advantage"] == pytest.approx(
+                fold["baseline"]["brier_score"] - fold["metrics"]["brier_score"])
+            assert fold["brier_advantage_uncertainty"]["n"] == fold["evaluation_end"] - fold["evaluation_start"]
+            assert 0 <= fold["metrics"]["calibration_error"] <= 1
+    if result.class_distribution["splits"]["selection"]["n"] >= 100:
+        assert set(result.calibration["methods"]) == {"none", "sigmoid", "isotonic"}
+    else:
+        assert result.calibration["method"] == "none"
+        assert result.calibration["applied"] is False
+
+
+def test_registry_rejects_concurrent_training_attempt(tmp_path, monkeypatch):
+    registry = ModelRegistry(model_dir=tmp_path / "models")
+    entered, release = Event(), Event()
+    dataset = SimpleNamespace(dataset=pd.DataFrame(), raw_path=None)
+    first_result = []
+
+    def slow_training(_snapshot):
+        entered.set()
+        assert release.wait(timeout=5)
+        return registry.trainer._empty("INSUFFICIENT_DATA", "fixture", 0)
+
+    monkeypatch.setattr(registry.trainer, "train_validate", slow_training)
+    worker = Thread(target=lambda: first_result.append(registry.train(dataset)))
+    worker.start()
+    try:
+        assert entered.wait(timeout=5)
+        with pytest.raises(RuntimeError, match="training_already_in_progress"):
+            registry.train(dataset)
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert len(first_result) == 1
+
+
+def test_requested_windows_and_conditional_features_are_past_only(tmp_path):
+    rows = raw_rows(180)
+    raw = tmp_path / "history.json"
+    raw.write_text(json.dumps(rows), encoding="utf-8")
+    service = DatasetService(raw, tmp_path / "processed", tmp_path / "features")
+    before = service.build_training_dataset(persist=False)
+    target = before.loc[before.round_id == "150"].iloc[0]
+    assert all(f"rate_2x_last_{window}" in before for window in (5, 10, 20, 50, 100))
+    assert "rate_2x_last_25" not in before
+    assert "variance_last_20" not in before
+    assert target.transition_after_0_count_100 + target.transition_after_1_count_100 == 100
+    rows[149]["multiplier"] = 999 if target.target_2x == 0 else 1.01
+    raw.write_text(json.dumps(rows), encoding="utf-8")
+    after = service.build_training_dataset(persist=False).loc[lambda frame: frame.round_id == "150"].iloc[0]
+    assert after.drop(labels="target_2x").to_dict() == target.drop(labels="target_2x").to_dict()
 
 
 def test_insufficient_history_fallback_has_no_probability(tmp_path):

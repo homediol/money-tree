@@ -65,7 +65,7 @@ class SystemHealth:
 
     def heartbeat(self, name: str, *, ok: bool, latency_ms: float | None = None,
                   error: str | None = None, metadata: dict[str, Any] | None = None,
-                  stale_after_s: float | None = None) -> None:
+                  stale_after_s: float | None = None, waiting: bool = False) -> None:
         if name not in self._components:
             self._components[name] = ComponentHealth(name=name)
         c = self._components[name]
@@ -80,14 +80,17 @@ class SystemHealth:
             c.last_success = now
             c.last_error = None
         else:
-            c.state = "ERROR"
-            c.error_count += 1
+            c.state = "WAITING" if waiting else "ERROR"
+            if not waiting:
+                c.error_count += 1
             c.last_error = error or "health check failed"
 
     def _history_ok(self, now: float) -> tuple[bool, str | None, dict]:
         if self.history_collector is None:
             return False, "history collector unavailable", {}
         try:
+            # Execution safety still verifies the canonical persisted history,
+            # not only the collector's lightweight sidecar health signal.
             status = self.history_collector.status()
             latest = status.get("latest") or {}
             stamp = latest.get("timestamp")
@@ -137,21 +140,25 @@ class SystemHealth:
                     bs.get("browser_status") in {"CONNECTED", "READY"} and bool(bs.get("last_ui_ready"))
                     and bs.get("current_balance") is not None
                 )
+                browser_waiting = (not browser_ok and not bs.get("automatic_enabled")
+                                   and not bs.get("last_error"))
+                browser_reason = None if browser_ok else (
+                    "execution browser idle; no verified UI balance" if browser_waiting
+                    else bs.get("last_error") or "browser not connected and UI-ready with verified balance"
+                )
                 self.heartbeat("browser", ok=browser_ok,
-                               error=None if browser_ok else "browser not connected and UI-ready with verified balance",
+                               waiting=browser_waiting, error=browser_reason,
                                metadata={"mode": mode, "browser_status": bs.get("browser_status"),
                                          "ui_ready": bs.get("last_ui_ready")}, stale_after_s=20)
                 if not browser_ok and mode == "REAL" and bs.get("automatic_enabled"):
                     reasons.append("browser unsafe")
-                recon_ok = not bool(self.repository and self.repository.open_executions())
                 # An active execution is expected while a round is in flight;
                 # unresolved UNKNOWN/RECONCILIATION_PENDING is unsafe.
-                if self.repository:
-                    open_rows = self.repository.open_executions()
-                    recon_ok = not any(x.get("status") in {"UNKNOWN", "RECONCILIATION_PENDING"} for x in open_rows)
+                open_rows = self.repository.open_executions() if self.repository else []
+                recon_ok = not any(x.get("status") in {"UNKNOWN", "RECONCILIATION_PENDING"} for x in open_rows)
                 self.heartbeat("reconciliation", ok=recon_ok,
                                error=None if recon_ok else "unresolved execution requires reconciliation",
-                               metadata={"open_executions": len(self.repository.open_executions()) if self.repository else None},
+                               metadata={"open_executions": len(open_rows) if self.repository else None},
                                stale_after_s=30)
                 if not recon_ok:
                     reasons.append("reconciliation unresolved")
@@ -207,7 +214,7 @@ class SystemHealth:
 
     async def enforce_safety(self) -> dict[str, Any]:
         async with self._lock:
-            result = self.refresh()
+            result = await asyncio.to_thread(self.refresh)
             if self.betting_manager and self.betting_manager.session:
                 session = self.betting_manager.session
                 if session.mode.value == "REAL" and not self.can_bet_now(mode="REAL").get("allowed"):

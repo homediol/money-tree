@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter(prefix="/api/history", tags=["history"])
 
@@ -13,7 +13,7 @@ def history(request: Request, limit: int = 250):
         "returned": int(len(rows)),
         "rounds": [
             {
-                "round_id": str(r.round_index),
+                "round_id": str(getattr(r, "round_id", r.round_index)),
                 "round_index": int(r.round_index),
                 "multiplier": float(r.multiplier),
                 "timestamp": r.timestamp,
@@ -54,4 +54,6 @@ async def start(request: Request):
 
 @router.post("/stop")
 async def stop(request: Request):
+    if request.app.state.history_collector.external:
+        raise HTTPException(status_code=409, detail="collector_is_supervisor_managed")
     return await request.app.state.history_collector.stop()

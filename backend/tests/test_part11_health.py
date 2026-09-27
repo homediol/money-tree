@@ -63,7 +63,10 @@ def test_stale_history_pauses_without_fabricating_health(tmp_path):
     assert monitor.can_bet_now(mode="REAL")["allowed"] is False
 
 
-def test_safety_enforcement_requests_stop_and_emits_alert(tmp_path):
+def test_safety_enforcement_requests_stop_and_emits_alert(tmp_path, monkeypatch):
+    async def direct(function, *args, **kwargs):
+        return function(*args, **kwargs)
+    monkeypatch.setattr(asyncio, "to_thread", direct)
     events = []
 
     async def broadcast(payload):
@@ -83,3 +86,33 @@ def test_unknown_component_is_not_reported_healthy(tmp_path):
     snapshot = monitor.refresh()
     assert snapshot["components"]["ml"]["state"] == "ERROR"
     assert snapshot["components"]["ml"]["last_error"] == "model unavailable"
+
+
+def test_idle_execution_browser_waits_without_counting_failure_or_opening_gate(tmp_path):
+    monitor = health(tmp_path)
+
+    class IdleBetting:
+        session = None
+
+        def status(self):
+            return {"mode": "OFF", "browser_status": "NOT_CONNECTED",
+                    "automatic_enabled": False, "current_balance": None}
+
+    monitor.betting_manager = IdleBetting()
+    browser = monitor.refresh()["components"]["browser"]
+    assert browser["state"] == "WAITING"
+    assert browser["error_count"] == 0
+    assert "idle" in browser["last_error"]
+    assert monitor.can_bet_now(mode="REAL")["allowed"] is False
+
+
+def test_active_real_session_with_unverified_browser_remains_error(tmp_path):
+    monitor = health(tmp_path)
+    monitor.betting_manager.status = lambda: {
+        "mode": "REAL", "browser_status": "WAITING_FOR_BROWSER",
+        "automatic_enabled": True, "current_balance": None,
+    }
+    browser = monitor.refresh()["components"]["browser"]
+    assert browser["state"] == "ERROR"
+    assert browser["error_count"] == 1
+    assert monitor.can_bet_now(mode="REAL")["allowed"] is False

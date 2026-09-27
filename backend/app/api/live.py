@@ -16,27 +16,32 @@ async def readiness(request: Request):
 
 @router.post("/start")
 async def start(request: Request, body: dict):
-    return await live(request).start(body)
+    return {"ok": False, "error": "backend_mode_switch_required",
+            "message": "Review LIVE settings and switch through POST /api/betting-mode"}
 
 
 @router.post("/pause")
 async def pause(request: Request, body: dict | None = None):
-    return {"ok": True, "status": await live(request).pause((body or {}).get("reason", "manual_pause"))}
+    reason = (body or {}).get("reason", "manual_pause")
+    modes = request.app.state.betting_mode
+    return {"ok": True, "status": await modes.force_safe(reason)}
 
 
 @router.post("/resume")
 async def resume(request: Request, body: dict):
-    return await live(request).resume(body.get("confirmation", ""))
+    return {"ok": False, "error": "fresh_live_review_required",
+            "message": "Resume is disabled. Start a fresh backend reviewed LIVE mode switch."}
 
 
 @router.post("/stop")
 async def stop(request: Request):
-    return {"ok": True, "status": await live(request).stop(False)}
+    return {"ok": True, "status": await request.app.state.betting_mode.force_safe("manual_stop")}
 
 
 @router.post("/emergency-stop")
 async def emergency_stop(request: Request):
-    return {"ok": True, "status": await live(request).stop(True)}
+    await request.app.state.risk.emergency_stop()
+    return {"ok": True, "status": await request.app.state.betting_mode.force_safe("emergency_stop")}
 
 
 @router.get("/status")

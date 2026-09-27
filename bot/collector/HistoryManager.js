@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { log } from './Logger.js';
+import crypto from 'crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT               = path.resolve(__dirname, '..', '..');
@@ -31,6 +32,11 @@ export function snapshotSignature(multipliers) {
 
 export function fmt(v) {
   return `${Number(v).toFixed(2)}x`;
+}
+
+export function stableRoundId(timestamp, multiplier, ordinal = '') {
+  const source = `${timestamp || 'unknown'}|${Number(multiplier).toFixed(2)}|${ordinal}`;
+  return `aviator-${crypto.createHash('sha256').update(source).digest('hex').slice(0, 24)}`;
 }
 
 // ── File I/O ──────────────────────────────────────────────────────────────────
@@ -83,7 +89,7 @@ export function readRoundHistory(filepath = ROUND_HISTORY_PATH) {
     const suppliedId = typeof item === 'object' && item !== null
       ? (item.round_id ?? item.id ?? null)
       : null;
-    const roundId = suppliedId != null ? String(suppliedId) : String(roundIdx);
+    const roundId = suppliedId != null ? String(suppliedId) : stableRoundId(timestamp, multiplier, roundIdx);
     const key = suppliedId != null
       ? `id:${roundId}`
       : `${roundIdx}|${timestamp || ''}|${multiplier.toFixed(2)}`;
@@ -152,7 +158,7 @@ export function inferNewMultipliers(prev, curr) {
  * Append new multipliers (newest-first array) to history (oldest-first).
  * Returns { history, added }.
  */
-export function appendRounds(history, newestFirst) {
+export function appendRounds(history, newestFirst, observedAt = null) {
   if (!newestFirst.length) return { history, added: [] };
 
   const added = [];
@@ -161,7 +167,10 @@ export function appendRounds(history, newestFirst) {
   for (const mult of [...newestFirst].reverse()) {
     const normalized = normalizeMultiplier(mult);
     if (normalized === null || normalized < 1) continue;
-    const record = { round_id: String(idx), multiplier: normalized, timestamp: new Date().toISOString(), round_index: idx };
+    const timestamp = observedAt || new Date().toISOString();
+    const roundId = stableRoundId(timestamp, normalized, idx);
+    if (history.some(row => String(row.round_id) === roundId)) continue;
+    const record = { round_id: roundId, multiplier: normalized, timestamp, round_index: idx };
     history.push(record);
     added.push(record);
     idx++;

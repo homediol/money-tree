@@ -90,8 +90,10 @@ class ShadowManager:
             self.mode = "SHADOW"; await self.emit("resumed", session=self.status())
         return self.status()
 
-    async def process_round(self, app, observed: dict):
-        if self.mode not in {"SHADOW", "PAUSED"} or not self.session: return
+    async def reconcile_round(self, observed: dict):
+        """Settle only the shadow trade targeting this exact observed round."""
+        if self.mode not in {"SHADOW", "PAUSED"} or not self.session:
+            return
         round_id = str(observed.get("round_id"))
         async with self._lock:
             if round_id in self._processed_rounds: return
@@ -100,32 +102,74 @@ class ShadowManager:
             pending = self._pending.pop(round_id, None)
             if pending:
                 await self._reconcile(pending, observed)
-            if self.mode != "SHADOW": return
-            prediction = app.state.wp.model_registry.predict_latest(app.state.wp.dataset_service)
-            evidence = app.state.wp.build_evidence(prediction) if prediction else None
-            if not prediction or not evidence: return
-            decision = await app.state.decision_engine.evaluate(
-                prediction, evidence, model_status=app.state.wp.model_registry.status(app.state.wp.dataset_service),
-                betting_status=self.betting_status(), risk_manager=app.state.risk)
-            await self.emit("prediction", prediction=prediction, session_id=self.session["session_id"])
-            await self.emit("decision", decision=decision, session_id=self.session["session_id"])
-            if decision.get("status") != "READY_FOR_EXECUTION":
-                self.session["risk_blocks"] += 1; self.repository.save_shadow_session(self.session); return
-            risk = decision.get("risk_evaluation") or {}
-            if any(t.get("decision_id") == decision.get("decision_id")
-                   for t in self.repository.list_shadow_trades(self.session["session_id"], 500)):
-                return
-            intent = DecisionIntent(decision_id=decision["decision_id"], round_id=decision["target_round_id"],
-                execute=True, profile=self.session["profile"], cashout=risk.get("cashout", risk.get("cashout_target", 2.0)),
-                bet_amount=risk.get("approved_bet", 0), source="shadow")
-            trade = {"execution_id": "P-" + uuid.uuid4().hex, "session_id": self.session["session_id"],
-                     "decision_id": decision["decision_id"], "prediction_id": prediction.get("prediction_id"),
-                     "target_round_id": decision["target_round_id"], "profile": self.session["profile"],
-                     "bet_amount": risk.get("approved_bet", 0), "cashout_target": intent.cashout,
-                     "balance_before": self.session["current_balance"], "status": "PAPER_AUTHORIZED", "created_at": _now()}
-            self._pending[str(trade["target_round_id"])] = trade
-            self.repository.save_shadow_trade(trade)
-            await self.emit("paper_trade", trade=trade)
+
+    async def submit_decision(self, decision: dict, prediction: dict | None = None):
+        """Send a shared production decision to the isolated shadow ledger."""
+        if self.mode != "SHADOW" or not self.session:
+            return {"accepted": False, "reason": "shadow_mode_not_active"}
+        if decision.get("status") != "READY_FOR_EXECUTION":
+            self.session["risk_blocks"] += 1
+            self.repository.save_shadow_session(self.session)
+            return {"accepted": False, "reason": "decision_not_risk_approved"}
+        risk = decision.get("risk_evaluation") or decision.get("risk") or {}
+        if (not risk.get("approved")
+                or risk.get("status", "APPROVED") != "APPROVED"
+                or str(decision.get("profile") or self.session["profile"]).upper() != self.session["profile"]
+                or str(risk.get("profile") or decision.get("profile") or self.session["profile"]).upper() != self.session["profile"]):
+            return {"accepted": False, "reason": "risk_profile_or_approval_mismatch"}
+        decision_id = str(decision.get("decision_id") or "")
+        target_round_id = str(decision.get("target_round_id") or "")
+        if not decision_id or not target_round_id:
+            return {"accepted": False, "reason": "decision_identity_missing"}
+        if any(str(t.get("decision_id")) == decision_id
+               and str(t.get("target_round_id")) == target_round_id
+               for t in self.repository.list_shadow_trades(limit=1000)):
+            return {"accepted": False, "reason": "duplicate_shadow_decision"}
+        if target_round_id in self._pending:
+            return {"accepted": False, "reason": "shadow_round_already_pending"}
+        try:
+            intent = DecisionIntent(
+                decision_id=decision_id, round_id=target_round_id, execute=True,
+                profile=self.session["profile"],
+                cashout=risk.get("cashout", risk.get("cashout_target")),
+                bet_amount=risk.get("approved_bet", risk.get("approved_bet_amount")),
+                source="shadow",
+            )
+        except Exception as exc:
+            return {"accepted": False, "reason": f"invalid_approved_decision:{exc}"}
+        trade = {
+            "execution_id": "P-" + uuid.uuid4().hex,
+            "session_id": self.session["session_id"], "decision_id": decision_id,
+            "prediction_id": (prediction or {}).get("prediction_id"),
+            "target_round_id": target_round_id, "profile": self.session["profile"],
+            "bet_amount": risk.get("approved_bet", risk.get("approved_bet_amount")),
+            "cashout_target": intent.cashout,
+            "balance_before": self.session["current_balance"],
+            "status": "PAPER_AUTHORIZED", "created_at": _now(),
+            "mode": "SHADOW_REALISTIC", "simulated": True,
+        }
+        self._pending[target_round_id] = trade
+        self.repository.save_shadow_trade(trade)
+        await self.emit("paper_trade", trade=trade)
+        return {"accepted": True, "trade": trade}
+
+    async def process_round(self, app, observed: dict):
+        """Compatibility wrapper; production routing uses the shared decision pipeline."""
+        await self.reconcile_round(observed)
+        if self.mode != "SHADOW" or not self.session:
+            return
+        prediction = app.state.wp.model_registry.predict_latest(app.state.wp.dataset_service)
+        evidence = app.state.wp.build_evidence(prediction) if prediction else None
+        if not prediction or not evidence:
+            return
+        decision = await app.state.decision_engine.evaluate(
+            prediction, evidence,
+            model_status=app.state.wp.model_registry.status(app.state.wp.dataset_service),
+            betting_status=self.betting_status(), risk_manager=app.state.risk,
+        )
+        await self.emit("prediction", prediction=prediction, session_id=self.session["session_id"])
+        await self.emit("decision", decision=decision, session_id=self.session["session_id"])
+        await self.submit_decision(decision, prediction)
 
     async def _reconcile(self, trade, observed):
         multiplier = float(observed.get("multiplier")); target = float(trade["cashout_target"])

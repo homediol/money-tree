@@ -38,16 +38,18 @@ def test_api_key_authentication_when_configured():
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://testserver",
             ) as client:
+                health = await client.get("/health")
                 denied = await client.get("/api/status")
                 allowed = await client.get(
                     "/api/status",
                     headers={"Authorization": "Bearer test-key-with-16-characters"},
                 )
             await app.state.betting.shutdown()
-            return denied, allowed
+            return health, denied, allowed
         finally:
             app_settings.api_key = original
 
-    denied, allowed = asyncio.run(go())
+    health, denied, allowed = asyncio.run(go())
+    assert health.json()["auth_required"] is True
     assert denied.status_code == 401
     assert allowed.status_code == 200

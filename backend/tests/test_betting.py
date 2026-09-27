@@ -515,10 +515,12 @@ def test_real_backend_never_clicks_without_platform_receipt_verification():
 
     async def go():
         browser = ReadyBrowser()
-        backend = RealBrowserBackend(browser, allow_real_placement=True)
+        backend = RealBrowserBackend(browser, allow_real_placement=True,
+                                     execution_gate=lambda _intent: {"allowed": True})
         with pytest.raises(PlacementUnavailable) as exc:
             await backend.place(amount_bif=500, target_multiplier=2.0,
-                                bet_slot=0, decision_id="no-click")
+                                bet_slot=0, decision_id="no-click",
+                                intent=SimpleNamespace())
         assert exc.value.reason == "platform_verification_incomplete"
         assert browser.place_calls == 0
         assert await backend.collect_resolved() == []

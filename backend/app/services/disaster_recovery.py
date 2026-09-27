@@ -27,7 +27,11 @@ class DisasterRecoveryManager:
     def integrity_check(self) -> dict[str, Any]:
         try:
             with self.repo.connect() as conn:
-                result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                if getattr(self.repo, "database_url", None):
+                    conn.execute("SELECT 1").fetchone()
+                    result = "ok"
+                else:
+                    result = conn.execute("PRAGMA integrity_check").fetchone()[0]
             return {"ok": result == "ok", "integrity": result, "checked_at": datetime.now(timezone.utc).isoformat()}
         except Exception as exc:
             return {"ok": False, "integrity": "UNKNOWN", "error": str(exc), "checked_at": datetime.now(timezone.utc).isoformat()}

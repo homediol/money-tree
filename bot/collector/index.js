@@ -14,6 +14,7 @@
 
 import path from 'path';
 import fs from 'fs';
+import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 
 import { log, formatError } from './Logger.js';
@@ -27,6 +28,7 @@ import { RecoveryManager } from './RecoveryManager.js';
 import { Watchdog }        from './Watchdog.js';
 import { PostgresRoundStore } from './PostgresRoundStore.js';
 import { sleep, backoffMs } from './RetryManager.js';
+import { waitForNetwork } from './NetworkMonitor.js';
 import {
   readRoundHistory,
   inferNewMultipliers, appendRounds,
@@ -84,6 +86,8 @@ class AviatorCollector {
       onUnhealthy:   (reason, page) => this._onWatchdogAlert(reason, page),
     });
     this.roundStore = new PostgresRoundStore({ connectionString: credentials.databaseUrl || null });
+    this.roundStore.sessionId = randomUUID();
+    this.restoredCollectorState = null;
 
     // Round history state
     this._history     = [];
@@ -110,12 +114,25 @@ class AviatorCollector {
     }
 
     this._history = await this.roundStore.loadRounds();
+    this.restoredCollectorState = await this.roundStore.loadState();
+    if (!this.restoredCollectorState && this._history.length) {
+      this.restoredCollectorState = this.roundStore.computeState(this._history);
+      await this.roundStore.saveState(this.restoredCollectorState);
+    }
     log.info(`Loaded ${this._history.length} round(s) from ${this.roundStore.backendName()}`);
+    if (this.restoredCollectorState) {
+      log.info(`Restored collector continuity: ${this.restoredCollectorState.contiguous_rounds}/${100}`);
+    }
   }
 
   async _onWatchdogAlert(reason, page) {
     // Signal the main loop to recover on its next iteration
     this._watchdogReason = reason;
+  }
+
+  async _waitForNetwork() {
+    this._watchdogReason = null;
+    return waitForNetwork(this.signal, status => this.health.setNetwork(status));
   }
 
   async run() {
@@ -129,6 +146,7 @@ class AviatorCollector {
 
     // ── Step 0: Prepare PostgreSQL round store ────────────────────────────
     await this._initRoundStore();
+    if (!await this._waitForNetwork()) return;
 
     // ── Step 1: Launch browser ────────────────────────────────────────────
     await this.browser.launch(this.signal);
@@ -153,6 +171,7 @@ class AviatorCollector {
       await this.loginMgr.ensureLoggedIn(this._page, this.signal);
       await this.loginMgr.goToAviator(this._page, this.signal);
     }
+    await this.browser.focusGamePage(this._page);
 
     // ── Step 4: Start watchdog ────────────────────────────────────────────
     this.watchdog.setPage(this._page);
@@ -179,6 +198,7 @@ class AviatorCollector {
         const reason = this._watchdogReason;
         this._watchdogReason = null;
         log.warn(`Collection loop: watchdog alert — ${reason}`);
+        if (!await this._waitForNetwork()) break;
         this._page = await this.recovery.recover(reason, this._page, this.signal).catch(err => {
           log.error(`Recovery failed: ${formatError(err)}`);
           return this._page;
@@ -195,6 +215,7 @@ class AviatorCollector {
         if (this.signal?.aborted) break;
 
         log.error(`Collection error: ${formatError(err)}`);
+        if (!await this._waitForNetwork()) break;
 
         // If Winner opened the route but never created the game iframe, do
         // not keep reloading that same page. Recreate only the history page
@@ -209,6 +230,7 @@ class AviatorCollector {
             await this.loginMgr.ensureLoggedIn(this._page, this.signal);
             this.sm.transition(State.GAME_LOADING, 'incognito-fallback');
             await this.loginMgr.goToAviator(this._page, this.signal);
+            await this.browser.focusGamePage(this._page);
             this._sameContextRecoveryUsed = true;
             this.watchdog.setPage(this._page);
             attempt = 0;
@@ -266,6 +288,7 @@ class AviatorCollector {
     await this.frameMgr.waitForPayouts(frame, this.signal);
 
     const { multipliers: initMults, signature: initSig } = await this.collector.install(frame);
+    this.health.recordObserverInstalled();
 
     // Establish or update baseline snapshot
     if (!this._prevSnapshot) {
@@ -276,7 +299,7 @@ class AviatorCollector {
       // Reconnected after reload — catch up missed rounds
       const inferred = inferNewMultipliers(this._prevSnapshot, initMults);
       if (inferred.length > 0) {
-        const { history, added } = appendRounds(this._history, inferred);
+          const { history, added } = appendRounds(this._history, inferred, new Date().toISOString());
         if (added.length > 0) {
           this._history = history;
           await this.roundStore.saveRounds(added, 'collector_catchup');
@@ -339,7 +362,7 @@ class AviatorCollector {
         const newest = inferred[0];
         log.info(`New round: ${fmt(newest)}`);
 
-        const { history, added } = appendRounds(this._history, inferred);
+        const { history, added } = appendRounds(this._history, inferred, event.timestamp || new Date().toISOString());
         if (added.length > 0) {
           this._history      = history;
           this._lastSavedSig = currSig;

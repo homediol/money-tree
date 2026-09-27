@@ -73,11 +73,11 @@ def test_targets_lags_windows_statistics_thresholds_and_sequences(tmp_path):
     assert row["min_last_100"] == 1
     assert row["max_last_100"] == 100
     assert np.isclose(row["std_last_100"], np.std(np.arange(1, 101), ddof=0))
-    assert np.isclose(row["variance_last_100"], np.var(np.arange(1, 101), ddof=0))
-    assert row["range_last_100"] == 99
-    assert row["count_2x_last_10"] == 10
+    assert "variance_last_100" not in dataset
+    assert "range_last_100" not in dataset
+    assert "count_2x_last_10" not in dataset
     assert row["rate_2x_last_10"] == 1
-    assert row["count_eq_10_0_last_100"] == 1
+    assert row["rate_eq_10_0_last_100"] == .01
     assert row["sequence_last_10"] == "|".join(["HIGH"] * 10)
     assert multiplier_bucket(1.49) == "LOW"
     assert multiplier_bucket(1.5) == "MEDIUM"

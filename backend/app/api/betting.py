@@ -74,6 +74,9 @@ async def start_automatic(request: Request, body: AutomaticStartRequest):
 @router.post("/stop")
 async def stop_automatic(request: Request):
     try:
+        modes = getattr(request.app.state, "betting_mode", None)
+        if modes and modes.mode == "LIVE_REAL":
+            return {"ok": True, "status": await modes.force_safe("manual_stop")}
         status = await _betting(request).stop_session(emergency=False)
         return {"ok": True, "status": status}
     except BettingError as exc:
@@ -83,6 +86,9 @@ async def stop_automatic(request: Request):
 @router.post("/pause")
 async def pause_automatic(request: Request):
     try:
+        modes = getattr(request.app.state, "betting_mode", None)
+        if modes and modes.mode == "LIVE_REAL":
+            return {"ok": True, "status": await modes.force_safe("manual_pause")}
         status = await _betting(request).stop_session(reason="manual_pause")
         return {"ok": True, "status": status}
     except BettingError as exc:
@@ -92,6 +98,11 @@ async def pause_automatic(request: Request):
 @router.post("/resume")
 async def resume_automatic(request: Request):
     manager = _betting(request)
+    if getattr(request.app.state, "betting_mode", None):
+        return JSONResponse(status_code=409, content={
+            "ok": False, "error": "backend_mode_switch_required",
+            "message": "Session resumes require the reviewed backend mode switch",
+        })
     if manager.last_request is not None and manager.last_request.mode == "REAL":
         return JSONResponse(status_code=409, content={
             "ok": False, "error": "fresh_live_activation_required",
@@ -169,6 +180,11 @@ async def session_control(request: Request, body: SessionStartRequest):
     manager = _betting(request)
     try:
         if body.action == "start":
+            if getattr(request.app.state, "betting_mode", None):
+                return JSONResponse(status_code=409, content={
+                    "ok": False, "error": "backend_mode_switch_required",
+                    "message": "Use the authoritative SHADOW_REALISTIC/LIVE_REAL mode switch",
+                })
             if body.mode == "REAL":
                 return JSONResponse(status_code=409, content={
                     "ok": False, "error": "live_activation_required",
@@ -197,6 +213,9 @@ async def emergency_stop(request: Request):
     risk = _risk(request)
     if risk:
         await risk.emergency_stop()
+    modes = getattr(request.app.state, "betting_mode", None)
+    if modes:
+        return {"ok": True, "status": await modes.force_safe("emergency_stop")}
     try:
         status = await manager.stop_session(emergency=True)
     except BettingError as exc:
@@ -214,6 +233,9 @@ async def submit_decision(request: Request, body: DecisionIntent):
                 or authorized.get("decision_id") != body.decision_id
                 or authorized.get("target_round_id") != body.round_id
                 or authorized.get("profile") != body.profile):
+            modes = getattr(request.app.state, "betting_mode", None)
+            if modes and modes.mode == "LIVE_REAL":
+                await modes.force_safe("pre_bet_failure:decision_not_authorized_or_stale")
             return JSONResponse(status_code=409, content={
                 "ok": False, "error": "decision_not_authorized",
                 "message": "Only the matching, unexpired Part 8 risk-approved decision may reach the executor",
@@ -234,6 +256,10 @@ async def submit_decision(request: Request, body: DecisionIntent):
         if betting_status.get("mode") == "REAL" and live_controller:
             live_gate = live_controller.can_execute_live_bet(authorized, betting_status)
             if not live_gate.get("allowed"):
+                modes = getattr(request.app.state, "betting_mode", None)
+                if modes:
+                    await modes.force_safe("pre_bet_gate_blocked:" + ";".join(
+                        live_gate.get("reasons", []) or ["live_safety_gate_blocked"]))
                 return JSONResponse(status_code=409, content={"ok": False, "error": "live_safety_gate_blocked", "message": "NO BET", "reasons": live_gate.get("reasons", [])})
         gate = _health_gate(request, betting_status.get("mode", "REAL"))
         if (betting_status.get("automatic_enabled") and
@@ -256,6 +282,9 @@ async def submit_decision(request: Request, body: DecisionIntent):
             if latest != str(authorized.get("source_round_id")):
                 final_blocks.append("target_round_missed")
         if final_blocks:
+            modes = getattr(request.app.state, "betting_mode", None)
+            if modes and modes.mode == "LIVE_REAL":
+                await modes.force_safe("pre_bet_risk_blocked:" + ";".join(final_blocks))
             return JSONResponse(status_code=409, content={
                 "ok": False, "error": "final_validation_failed",
                 "message": "NO BET", "reasons": sorted(set(final_blocks)),

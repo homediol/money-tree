@@ -29,6 +29,23 @@ class RiskManager:
         self._evaluated: set[tuple[str, str]] = set()
         self._lock = asyncio.Lock()
         self.last_evaluation: Optional[dict] = None
+        repository = getattr(getattr(betting_manager, "repository", None), "load_application_state", None)
+        if repository:
+            persisted = betting_manager.repository.load_application_state("risk_runtime") or {}
+            self.selected_profile = persisted.get("selected_profile", self.selected_profile)
+            self.emergency_latched = bool(persisted.get("emergency_stop", False))
+            self.last_evaluation = persisted.get("last_evaluation")
+
+    def _persist_state(self) -> None:
+        repository = getattr(self.betting_manager, "repository", None)
+        if repository and hasattr(repository, "save_application_state"):
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            repository.save_application_state("risk_runtime", {
+                "selected_profile": self.selected_profile,
+                "emergency_stop": self.emergency_latched,
+                "last_evaluation": self.last_evaluation,
+            }, now)
 
     async def _emit(self, event: str, **payload) -> None:
         if self.broadcaster:
@@ -37,6 +54,7 @@ class RiskManager:
     async def select_profile(self, key: str) -> dict:
         profile = get_risk_profile(key)
         self.selected_profile = profile.key
+        self._persist_state()
         await self._emit("risk:profile_changed", profile=profile.public())
         return profile.public()
 
@@ -46,10 +64,12 @@ class RiskManager:
 
     async def emergency_stop(self) -> None:
         self.emergency_latched = True
+        self._persist_state()
         await self._emit("risk:emergency_stop", reason="Emergency stop is latched")
 
     async def reset_emergency(self) -> None:
         self.emergency_latched = False
+        self._persist_state()
         await self._emit("risk:evaluated", approved=False,
                          reason="Emergency stop reset; awaiting a decision")
 
@@ -61,6 +81,7 @@ class RiskManager:
         self.audit_log.append(row)
         self.audit_log = self.audit_log[-self.audit_cap:]
         self.last_evaluation = row
+        self._persist_state()
         log.info("[RISK] decision=%s round=%s approved=%s level=%s reason=%s",
                  result.decision_id, result.round_id, result.approved,
                  result.risk_level, result.reason)

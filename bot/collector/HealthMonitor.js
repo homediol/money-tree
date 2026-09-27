@@ -24,6 +24,8 @@ export class HealthMonitor {
       loggedIn:           false,
       state:              'STARTING',
       lastRoundTime:      null,
+      lastObserverInstalledAt: null,
+      network:            { status: 'UNKNOWN', reason: null, checked_at: null },
       lastRecovery:       null,
       recoveryCount:      0,
       browserRestartCount:0,
@@ -52,6 +54,8 @@ export class HealthMonitor {
   setPageConnected(v)        { this._metrics.pageConnected = v; }
   setFrameConnected(v)       { this._metrics.frameConnected = v; }
   setLoggedIn(v)             { this._metrics.loggedIn = v; }
+  setNetwork(value)          { this._metrics.network = value; }
+  recordObserverInstalled()  { this._metrics.lastObserverInstalledAt = new Date().toISOString(); }
   recordRound()              { this._metrics.lastRoundTime = new Date().toISOString(); this._metrics.totalRoundsSaved++; }
   recordRecovery(action)     { this._metrics.recoveryCount++; this._metrics.lastRecovery = { action, ts: new Date().toISOString() }; }
   recordBrowserRestart()     { this._metrics.browserRestartCount++; }
@@ -62,6 +66,7 @@ export class HealthMonitor {
   snapshot() {
     let health = 'WAITING';
     if (!this._metrics.collectorRunning) health = 'STOPPED';
+    else if (this._metrics.network.status !== 'ONLINE' && this._metrics.network.status !== 'UNKNOWN') health = 'WAITING_FOR_NETWORK';
     else if (!this._metrics.browserConnected) health = 'CONNECTING';
     else if (!this._metrics.frameConnected) health = 'DISCONNECTED';
     else if (this._metrics.lastRoundTime && Date.now() - Date.parse(this._metrics.lastRoundTime) > STALE_AFTER_MS) health = 'STALE';
@@ -77,6 +82,12 @@ export class HealthMonitor {
   secondsSinceLastRound() {
     if (!this._metrics.lastRoundTime) return null;
     return (Date.now() - new Date(this._metrics.lastRoundTime).getTime()) / 1000;
+  }
+
+  secondsSinceCollectionActivity() {
+    const times = [this._metrics.lastRoundTime, this._metrics.lastObserverInstalledAt]
+      .map(value => value ? Date.parse(value) : NaN).filter(Number.isFinite);
+    return times.length ? (Date.now() - Math.max(...times)) / 1000 : null;
   }
 
   // ── Persistence ───────────────────────────────────────────────────────────

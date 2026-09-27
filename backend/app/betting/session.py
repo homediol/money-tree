@@ -112,6 +112,8 @@ class BettingSession:
         repository=None,
         reconciler=None,
         safety_gate=None,
+        execution_gate=None,
+        execution_failure_handler=None,
     ):
         self.settings = settings
         self.request = request
@@ -123,6 +125,8 @@ class BettingSession:
         self.repository = repository
         self.reconciler = reconciler
         self.safety_gate = safety_gate
+        self.execution_gate = execution_gate
+        self.execution_failure_handler = execution_failure_handler
 
         self.state = SessionState.IDLE
         self.stop_reason: Optional[str] = None
@@ -136,6 +140,7 @@ class BettingSession:
 
         # Observed state (REAL mode).
         self.last_balance: Optional[float] = None
+        self.last_balance_observed_at: Optional[str] = None
         self.last_balance_text: str = ""
         self.last_ui_ready: bool = False
         self.last_snapshot: dict = {}
@@ -175,6 +180,10 @@ class BettingSession:
             await self.broadcaster(payload)
         except Exception:
             log.debug("broadcaster failed", exc_info=True)
+
+    async def _pause_live_after_failure(self, reason: str) -> None:
+        if self.mode != Mode.SIMULATION and self.execution_failure_handler:
+            await self.execution_failure_handler(reason)
 
     def _event(self, kind: str, **extra: Any) -> None:
         asyncio.ensure_future(self._emit({
@@ -235,6 +244,7 @@ class BettingSession:
             self._browser_client = client
             self.backend = RealBrowserBackend(
                 client, allow_real_placement=self.settings.allow_real_placement,
+                execution_gate=self.execution_gate,
             )
         self._set_state(SessionState.STARTING, started_at=self.started_at)
         self._event("started", status=self.status())
@@ -348,6 +358,7 @@ class BettingSession:
             return
         self.last_snapshot = snap
         self.last_balance = snap.get("balance")
+        self.last_balance_observed_at = _now() if self.last_balance is not None else None
         self.last_balance_text = snap.get("balance_text") or ""
         if self.last_balance is None:
             self.request_stop("balance_unverified")
@@ -417,9 +428,10 @@ class BettingSession:
                                and abs(observed_pnl - expected_pnl) <= tolerance)
             platform_evidence = {
                 "placement_confirmed": balance_matches,
-                "cashout_requested": True,
-                "cashout_executed": bool(item.get("won") and balance_matches),
-                "cashout_confirmed": bool(item.get("won") and balance_matches),
+                "cashout_requested": bool(item.get("cashout_requested")),
+                "cashout_executed": item.get("cashout_executed") is True,
+                "cashout_confirmed": item.get("cashout_confirmed") is True,
+                "payout": item.get("actual_payout"),
                 "platform_observed_balance": after,
                 "observed_profit_loss": observed_pnl,
                 "observation_complete": True,
@@ -557,10 +569,13 @@ class BettingSession:
             gate = self.safety_gate(mode=self.mode.value)
             if not gate.get("allowed"):
                 self.request_stop("health_safety_pause")
+                await self._pause_live_after_failure(
+                    "CanBetNow_blocked:" + ",".join(gate.get("reasons", [])))
                 raise SafetyGateBlocked(gate.get("reasons"))
         async with self._lock:
             decision_key = (intent.decision_id, intent.round_id or "")
             if decision_key in self._seen_decisions:
+                await self._pause_live_after_failure("duplicate_decision")
                 raise DuplicateDecision(intent.decision_id)
             entry = _mk_entry(intent, mode=self.mode.value,
                               simulated=self.mode == Mode.SIMULATION)
@@ -577,9 +592,14 @@ class BettingSession:
                 "session_id": self.session_id, "lifecycle_state": "QUEUED",
                 "requested_bet_amount": intent.effective_amount(),
                 "requested_cashout": intent.cashout,
-                "placement_confirmed": False,
+            "placement_confirmed": False,
+            "cashout_requested": False,
+            "cashout_target": intent.cashout,
+            "cashout_confirmed": False,
+            "actual_payout": None,
             }
             if self.repository and not self.repository.create_execution(execution):
+                await self._pause_live_after_failure("duplicate_execution_record")
                 raise DuplicateDecision(intent.decision_id)
             if self.repository:
                 self.repository.append_execution_event(
@@ -592,6 +612,7 @@ class BettingSession:
                 rejection = self._validate_contract(intent)
                 if rejection:
                     reason, note = rejection
+                    await self._pause_live_after_failure(f"decision_contract_failed:{reason}:{note}")
                     entry.update(status=OutcomeStatus.REJECTED.value,
                                  reason=reason, note=note)
                     self.rejected_count += 1
@@ -712,24 +733,28 @@ class BettingSession:
         amount = intent.effective_amount()
         profile = self.profile
         if amount > profile.max_loss_bif:
+            await self._pause_live_after_failure("stake_exceeds_profile_limit")
             entry.update(status=OutcomeStatus.REJECTED.value,
                          reason=DecisionRejectReason.INTERNAL_ERROR.value,
                          note="stake exceeds profile max_loss_bif")
             self.rejected_count += 1
             return
         if self.last_balance is None:
+            await self._pause_live_after_failure("real_balance_unverified")
             entry.update(status=OutcomeStatus.REJECTED.value,
                          reason=DecisionRejectReason.UI_NOT_READY.value,
                          note="game balance unknown — cannot verify funds")
             self.rejected_count += 1
             return
         if self.last_balance < amount:
+            await self._pause_live_after_failure("real_balance_insufficient")
             entry.update(status=OutcomeStatus.REJECTED.value,
                          reason=DecisionRejectReason.INSUFFICIENT_BALANCE.value,
                          note=f"game balance {self.last_balance:.0f}BIF < stake {amount}BIF")
             self.rejected_count += 1
             return
         if not self.last_ui_ready:
+            await self._pause_live_after_failure("betting_ui_not_ready")
             entry.update(status=OutcomeStatus.REJECTED.value,
                          reason=DecisionRejectReason.UI_NOT_READY.value,
                          note="betting panel not visible in this game phase")
@@ -737,6 +762,7 @@ class BettingSession:
             return
         backend: RealBrowserBackend = self.backend  # type: ignore[assignment]
         if not backend.allow_real_placement:
+            await self._pause_live_after_failure("real_placement_disabled")
             entry.update(status=OutcomeStatus.DEFERRED.value,
                          reason=DecisionRejectReason.PLACEMENT_DISABLED.value,
                          note="BETTING_ALLOW_REAL_PLACEMENT is off — real placement is disabled")
@@ -745,6 +771,8 @@ class BettingSession:
         try:
             await backend.ensure_ready()
         except PlacementUnavailable as exc:
+            if self.execution_failure_handler:
+                await self.execution_failure_handler(exc.message)
             entry.update(status=OutcomeStatus.DEFERRED.value,
                          reason=DecisionRejectReason.PLACEMENT_DRIVER_UNAVAILABLE.value,
                          note=exc.message)
@@ -754,8 +782,11 @@ class BettingSession:
             outcome = await backend.place(
                 amount_bif=amount, target_multiplier=float(intent.cashout),
                 bet_slot=intent.bet_slot, decision_id=intent.decision_id,
+                intent=intent,
             )
         except PlacementUnavailable as exc:
+            if self.execution_failure_handler:
+                await self.execution_failure_handler(exc.message)
             entry.update(status=OutcomeStatus.DEFERRED.value,
                          reason=exc.reason, note=exc.message)
             self.deferred_count += 1
@@ -817,6 +848,7 @@ class BettingSession:
             "last_error": self.last_error,
             "last_balance_bif": self.last_balance,
             "current_balance": self.last_balance,
+            "last_balance_observed_at": self.last_balance_observed_at,
             "starting_balance": self.starting_balance,
             "goal_balance": self.goal_balance,
             "last_balance_text": self.last_balance_text,
@@ -863,12 +895,16 @@ class BettingManager:
         repository=None,
         reconciler=None,
         safety_gate=None,
+        execution_gate=None,
+        execution_failure_handler=None,
     ):
         self.settings = settings
         self.broadcaster = broadcaster
         self.repository = repository
         self.reconciler = reconciler
         self.safety_gate = safety_gate
+        self.execution_gate = execution_gate
+        self.execution_failure_handler = execution_failure_handler
         self.session: Optional[BettingSession] = None
         self.last_request: Optional[SessionStartRequest] = None
         self.session_seq = 0
@@ -901,6 +937,8 @@ class BettingManager:
                 repository=self.repository,
                 reconciler=self.reconciler,
                 safety_gate=self.safety_gate,
+                execution_gate=self.execution_gate,
+                execution_failure_handler=self.execution_failure_handler,
             )
             self.session = session
             self.last_request = request

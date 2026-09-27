@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { getApiToken } from '../auth.js';
+import { API_UNAUTHORIZED_EVENT, getApiToken, logout } from '../auth.js';
 import {
   backendRequestsAllowed,
   reportBackendRequestFailure,
@@ -29,6 +29,10 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    if (error?.response?.status === 401) {
+      logout();
+      window.dispatchEvent(new Event(API_UNAUTHORIZED_EVENT));
+    }
     reportBackendRequestFailure(error);
     return Promise.reject(error);
   },
@@ -97,6 +101,11 @@ export async function getModelPerformance() {
 export async function getSystemStatus() {
   const { data } = await api.get('/api/system/status');
   return data;
+}
+
+export async function getSystemReadiness() {
+  const { data } = await api.get('/api/readiness', { timeout: 4000 });
+  return data.readiness;
 }
 
 export async function getDataStatus() {

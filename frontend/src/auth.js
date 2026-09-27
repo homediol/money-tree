@@ -2,6 +2,7 @@
 // API_KEY is configured; no usernames or passwords are shipped in the bundle.
 
 const TOKEN_KEY = 'winner_predict_api_token';
+export const API_UNAUTHORIZED_EVENT = 'winner:api-unauthorized';
 
 export function setApiToken(token) {
   const value = token?.trim();

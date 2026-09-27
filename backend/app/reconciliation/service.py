@@ -148,6 +148,8 @@ class ReconciliationService:
             "cashout_requested": cashout_requested,
             "cashout_executed": cashout_executed,
             "cashout_confirmed": cashout_confirmed,
+            "cashout_target": execution.get("cashout_target"),
+            "actual_payout": evidence.get("payout"),
             "balance_after": reconciled, "profit_loss": pnl if reconciled is not None else None,
             "balance_status": balance_status,
             "error": "verification_incomplete" if final_status == "UNKNOWN" else None,

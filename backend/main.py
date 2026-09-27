@@ -13,7 +13,8 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import analysis, backtesting, betting as betting_api, data, decisions, evidence, history, health, ml, models, patterns, research, results, risk as risk_api, shadow, signals, statistics, live as live_api, operations as operations_api, recovery as recovery_api
+from app.api import analysis, backtesting, betting as betting_api, data, decisions, evidence, history, health, ml, models, patterns, readiness as readiness_api, research, results, risk as risk_api, shadow, signals, statistics, live as live_api, operations as operations_api, recovery as recovery_api
+from app.api import betting_mode as betting_mode_api, stability as stability_api
 from app.betting.config import get_betting_settings
 from app.betting.session import BettingManager, configure_default_manager
 from app.betting.schemas import DecisionIntent
@@ -24,6 +25,8 @@ from app.services.app_state import AppState
 from app.services.monitoring_engine import MonitoringEngine
 from app.services.system_health import SystemHealth
 from app.services.system_orchestrator import SystemOrchestrator
+from app.services.system_readiness import SystemReadiness
+from app.services.betting_mode import BettingModeManager
 from app.shadow import ShadowManager
 from app.risk.engine import RiskManager
 from app.history_collector import HistoryCollectorManager
@@ -32,6 +35,7 @@ from app.reconciliation import ReconciliationService
 from app.live import LiveActivationManager
 from app.services.operations import OperationsManager
 from app.services.disaster_recovery import DisasterRecoveryManager
+from app.services.process_lifecycle import ProcessLifecycle
 
 configure_logging()
 log = get_logger("APP")
@@ -50,7 +54,8 @@ class ConnectionManager:
 
     async def broadcast(self, payload: dict):
         stale = []
-        for ws in self.active:
+        # Connections may join or leave while send_json yields to the loop.
+        for ws in tuple(self.active):
             try:
                 await ws.send_json(payload)
             except Exception:
@@ -80,11 +85,14 @@ async def process_history_update(app: FastAPI):
     await manager.broadcast({"type": "history:updated", "history": {"count": status["count"]}})
     await manager.broadcast({"type": "history:stats", "stats": history.stats()})
     if status.get("latest") and hasattr(app.state, "shadow"):
-        await app.state.shadow.process_round(app, status["latest"])
+        await app.state.shadow.reconcile_round(status["latest"])
     if status.get("latest") and hasattr(app.state, "reconciliation"):
         await app.state.reconciliation.reconcile_round(status["latest"])
     dataset = app.state.wp.dataset_service
     await manager.broadcast({"type": "data:updated", "quality": dataset.quality, "dataset": dataset.status()})
+    readiness = getattr(app.state, "readiness", None)
+    if readiness is not None:
+        await readiness.refresh()
     await manager.broadcast({"type": "features:updated", "features": dataset.latest_features()})
     pattern_report = await asyncio.to_thread(app.state.wp.pattern_report)
     await manager.broadcast({"type": "patterns:updated", "baseline": pattern_report["baseline"],
@@ -104,7 +112,9 @@ async def process_history_update(app: FastAPI):
         snapshot = await asyncio.to_thread(app.state.wp.build_evidence, prediction)
         if snapshot:
             await manager.broadcast({"type": "prediction:evidence_updated", "evidence": snapshot})
-            betting_status = app.state.betting.status()
+            mode_manager = getattr(app.state, "betting_mode", None)
+            betting_status = (mode_manager.betting_status() if mode_manager
+                              else app.state.betting.status())
             betting_status["emergency_stop"] = app.state.risk.emergency_latched
             if not dataset.clean_rounds.empty:
                 betting_status["latest_history_round_id"] = str(dataset.clean_rounds.iloc[-1]["round_id"])
@@ -116,12 +126,29 @@ async def process_history_update(app: FastAPI):
             )
             await manager.broadcast({"type": "decision:updated", "decision": decision})
             if decision.get("status") == "READY_FOR_EXECUTION":
-                # Internal queue handoff. The executor still performs its own
-                # lock/contract/browser validation before touching the page.
-                current = app.state.betting.status()
+                # One shared prediction/evidence/decision/risk result is sent
+                # to exactly one executor selected by backend-owned mode.
+                current = (mode_manager.betting_status() if mode_manager
+                           else app.state.betting.status())
+                if mode_manager and mode_manager.mode == "SHADOW_REALISTIC":
+                    shadow_blocks = app.state.risk.validate_execution(decision, current)
+                    if shadow_blocks:
+                        await manager.broadcast({"type": "execution:rejected",
+                            "decision_id": decision.get("decision_id"),
+                            "reasons": shadow_blocks})
+                        return
+                    shadow_result = await app.state.shadow.submit_decision(decision, prediction)
+                    if not shadow_result.get("accepted"):
+                        await manager.broadcast({"type": "execution:rejected",
+                            "decision_id": decision.get("decision_id"),
+                            "reasons": [shadow_result.get("reason", "shadow_rejected")]})
+                    return
                 if current.get("mode") == "REAL":
                     live_gate = app.state.live.can_execute_live_bet(decision, current)
                     if not live_gate.get("allowed"):
+                        if mode_manager:
+                            await mode_manager.force_safe("pre_bet_gate_blocked:" + ";".join(
+                                live_gate.get("reasons", []) or ["live_safety_gate_blocked"]))
                         await manager.broadcast({"type": "execution:rejected", "decision_id": decision.get("decision_id"), "reasons": live_gate.get("reasons", [])})
                         return
                 blocks = app.state.risk.validate_execution(decision, current)
@@ -141,6 +168,8 @@ async def process_history_update(app: FastAPI):
                         log.warning("[EXECUTION] queue handoff refused decision=%s: %s",
                                     decision.get("decision_id"), exc)
                 elif blocks:
+                    if mode_manager and mode_manager.mode == "LIVE_REAL":
+                        await mode_manager.force_safe("pre_bet_risk_blocked:" + ";".join(blocks))
                     await manager.broadcast({"type": "execution:rejected",
                                              "decision_id": decision.get("decision_id"),
                                              "reasons": blocks})
@@ -167,6 +196,16 @@ async def monitor_health(app: FastAPI):
     while True:
         try:
             await app.state.system_health.enforce_safety()
+            readiness = getattr(app.state, "readiness", None)
+            if readiness is not None:
+                await readiness.refresh()
+            modes = getattr(app.state, "betting_mode", None)
+            if modes is not None:
+                await modes.monitor_safety()
+            lifecycle = getattr(app.state, "lifecycle", None)
+            if lifecycle is not None:
+                await manager.broadcast({"type": "backend:stability",
+                                         "stability": await backend_stability_snapshot(app)})
             await asyncio.sleep(2)
         except asyncio.CancelledError:
             raise
@@ -199,16 +238,65 @@ async def initialize_app_state(settings, attempts: int = 3) -> AppState:
     raise RuntimeError("application state initialization exhausted retries")
 
 
+async def backend_stability_snapshot(app: FastAPI) -> dict:
+    """Build a cheap, non-blocking stability view for the dashboard."""
+    lifecycle = getattr(app.state, "lifecycle", None)
+    snapshot = lifecycle.status() if lifecycle is not None else {
+        "status": "STARTING", "pid": os.getpid(), "ppid": os.getppid(),
+    }
+    history = getattr(app.state, "history_collector", None)
+    snapshot["collector"] = history.health_status() if history else {"status": "STARTING"}
+    readiness = getattr(app.state, "readiness", None)
+    ml = readiness.cached_status() if readiness and readiness.cached_status() else {}
+    snapshot["ml_worker"] = {
+        "status": ml.get("automatic_training", {}).get("status", "IDLE") if isinstance(ml, dict) else "IDLE",
+        "last_result": ml.get("automatic_training", {}).get("last_result") if isinstance(ml, dict) else None,
+        "reason": ml.get("automatic_training", {}).get("reason") if isinstance(ml, dict) else None,
+    }
+    repository = getattr(getattr(app.state, "wp", None), "repository", None)
+    if repository is None:
+        snapshot["database"] = {"status": "STARTING"}
+    else:
+        try:
+            with repository.connect() as conn:
+                conn.execute("SELECT 1").fetchone()
+            snapshot["database"] = {"status": "OK"}
+        except Exception as exc:
+            snapshot["database"] = {"status": "ERROR", "reason": str(exc)}
+    system_health = getattr(app.state, "system_health", None)
+    if system_health is None:
+        snapshot["browser"] = {"status": "STARTING"}
+    else:
+        try:
+            browser = system_health.snapshot()["components"]["browser"]
+            snapshot["browser"] = {"status": browser["state"], "reason": browser["last_error"]}
+        except Exception as exc:
+            snapshot["browser"] = {"status": "ERROR", "reason": str(exc)}
+    return snapshot
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     instance_lock = InstanceLock(settings.instance_lock_path)
+    lifecycle = ProcessLifecycle(settings.data_path.parent / "backend_lifecycle.jsonl")
+    app.state.lifecycle = lifecycle
     orchestrator = None
     started = time.monotonic()
+    shutdown_reason = "graceful_lifespan_exit"
     app.state.ready = False
     try:
         if settings.enforce_single_instance:
             instance_lock.acquire()
+        previous_events = lifecycle.events()
+        prior_start = next((event for event in reversed(previous_events)
+                            if event.get("event") == "backend_start"
+                            and event.get("pid") != os.getpid()), None)
+        lifecycle.start(
+            startup_reason=os.environ.get("WINNER_STARTUP_REASON", "manual_or_process_manager"),
+            previous_pid=(prior_start or {}).get("pid"),
+            restart_count=int(os.environ.get("WINNER_RESTART_COUNT", "0") or 0),
+        )
         log.info("backend startup begin pid=%s host=%s port=%s", os.getpid(),
                  settings.backend_host, settings.backend_port)
         app.state.manager = manager
@@ -249,6 +337,17 @@ async def lifespan(app: FastAPI):
         app.state.live = LiveActivationManager(app)
         app.state.operations = OperationsManager(app)
         app.state.disaster_recovery = DisasterRecoveryManager(app, app.state.operations)
+        app.state.readiness = SystemReadiness(
+            app,
+            broadcaster=manager.broadcast,
+            required_rounds=settings.readiness_required_rounds,
+            automatic_training=settings.readiness_auto_train,
+            min_new_rounds=settings.ml_retrain_min_new_rounds,
+            cooldown_s=settings.ml_retrain_cooldown_s,
+        )
+        app.state.betting_mode = BettingModeManager(app)
+        betting_manager.execution_gate = app.state.betting_mode.final_execution_gate
+        betting_manager.execution_failure_handler = app.state.betting_mode.handle_execution_failure
         for component in ("features", "patterns", "ml", "evidence", "decision", "risk", "api"):
             app.state.system_health.heartbeat(
                 component, ok=True, metadata={"initialized": True}, stale_after_s=3600,
@@ -273,15 +372,19 @@ async def lifespan(app: FastAPI):
                     log.exception("startup reconciliation failed execution=%s",
                                   execution.get("execution_id"))
         await orchestrator.start()
+        await app.state.readiness.refresh()
         app.state.ready = True
         log.info("backend startup complete pid=%s instance=%s", os.getpid(),
                  app.state.instance_id)
         yield
-    except Exception:
+    except Exception as exc:
+        shutdown_reason = f"startup_or_runtime_exception:{type(exc).__name__}"
+        lifecycle.exception(exc, phase="startup_or_runtime")
         log.exception("backend startup/runtime failure")
         raise
     finally:
         app.state.ready = False
+        lifecycle.shutdown(reason=shutdown_reason)
         log.info("backend graceful shutdown begin pid=%s", os.getpid())
         if orchestrator is not None:
             await orchestrator.shutdown()
@@ -381,6 +484,9 @@ app.include_router(shadow.router)
 app.include_router(live_api.router)
 app.include_router(operations_api.router)
 app.include_router(recovery_api.router)
+app.include_router(readiness_api.router)
+app.include_router(betting_mode_api.router)
+app.include_router(stability_api.router)
 
 
 @app.get("/", tags=["system"])
@@ -415,6 +521,7 @@ async def health(request: Request):
     payload = {
         "ok": ready and database_ok,
         "service": "winner-predict-backend",
+        "auth_required": bool(settings.api_key),
         "status": "healthy" if ready and database_ok else "degraded",
         "backend": {
             "status": "ok" if ready else "starting",
@@ -427,6 +534,8 @@ async def health(request: Request):
             ),
         },
         "database": database,
+        "stability": (getattr(request.app.state, "lifecycle", None).status()
+                      if getattr(request.app.state, "lifecycle", None) else None),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
     log.info("health check backend=%s database=%s",
@@ -471,6 +580,11 @@ async def websocket_live(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         await websocket.send_json({"type": "system_status", "status": "connected", "label": "STATISTICAL PATTERN ANALYSIS"})
+        readiness = getattr(websocket.app.state, "readiness", None)
+        if readiness is not None:
+            snapshot = readiness.cached_status()
+            if snapshot is not None:
+                await websocket.send_json({"type": "readiness:updated", "readiness": snapshot})
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

@@ -28,6 +28,8 @@ class HistoryCollectorManager:
     def __init__(self, data_path: Path, broadcaster: Broadcaster | None = None):
         self.data_path = Path(data_path)
         self.status_path = ROOT / "data" / "bot" / "status.json"
+        self.external_pid_path = ROOT / "data" / "bot" / "collector-supervisor.json"
+        self.external = os.environ.get("WINNER_COLLECTOR_EXTERNAL") == "1"
         self.entrypoint = ROOT / "bot" / "roundhistory-collector.js"
         self.broadcaster = broadcaster
         self.process: asyncio.subprocess.Process | None = None
@@ -51,6 +53,10 @@ class HistoryCollectorManager:
             await self.broadcaster({"type": name, **payload})
 
     async def start(self) -> dict:
+        if self.external:
+            # The stack supervisor owns the collector independently of the
+            # API. Backend restarts must not terminate browser observation.
+            return self.status()
         if self.process and self.process.returncode is None:
             if self._paused:
                 await self.resume()
@@ -91,6 +97,8 @@ class HistoryCollectorManager:
             await self._emit("history:error" if code else "history:stopped", status=self.status())
 
     async def stop(self) -> dict:
+        if self.external:
+            return self.status()
         proc = self.process
         self.state = "STOPPED"
         self._paused = False
@@ -128,9 +136,30 @@ class HistoryCollectorManager:
         except (OSError, json.JSONDecodeError):
             return {}
 
-    def status(self) -> dict:
+    def _external_process(self) -> tuple[bool, str | None]:
+        try:
+            value = json.loads(self.external_pid_path.read_text(encoding="utf-8"))
+            pid = int(value["pid"])
+            if not value.get("running") or pid <= 0:
+                return False, value.get("timestamp")
+            os.kill(pid, 0)
+            return True, value.get("timestamp")
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return False, None
+
+    def health_status(self) -> dict:
+        """Cheap collector health for frequent readiness updates.
+
+        The full status endpoint also parses the complete history file. That
+        work is unnecessary when readiness only needs the process and sidecar
+        health state.
+        """
         node = self._node_status()
         running = bool(self.process and self.process.returncode is None)
+        if self.external:
+            running, external_started = self._external_process()
+            if external_started:
+                self.started_at = external_started
         state = self.state
         status_is_current = False
         try:
@@ -140,19 +169,28 @@ class HistoryCollectorManager:
         if running and not self._paused and status_is_current:
             candidate = str(node.get("health", state)).upper()
             state = candidate if candidate in self.STATES else state
+        elif running and self.external:
+            state = "CONNECTING"
         elif not running and state not in {"ERROR", "STOPPED"}:
             state = "STOPPED"
+        return {
+            "status": state, "running": running, "paused": self._paused,
+            "started_at": self.started_at, "last_error": self.last_error,
+            "last_update": node.get("lastRoundTime"),
+            "browser_connected": bool(node.get("browserConnected", False)),
+            "frame_connected": bool(node.get("frameConnected", False)),
+            "recovery_count": int(node.get("recoveryCount", 0) or 0),
+        }
+
+    def status(self) -> dict:
+        health = self.health_status()
         rows = self.rows()
         latest = rows[-1] if rows else None
         previous = rows[-2] if len(rows) > 1 else None
         return {
-            "status": state, "running": running, "paused": self._paused,
+            **health,
             "count": len(rows), "latest": latest, "previous": previous,
             "last_update": latest.get("timestamp") if latest else None,
-            "started_at": self.started_at, "last_error": self.last_error,
-            "browser_connected": bool(node.get("browserConnected", False)),
-            "frame_connected": bool(node.get("frameConnected", False)),
-            "recovery_count": int(node.get("recoveryCount", 0) or 0),
         }
 
     def rows(self) -> list[dict]:

@@ -272,9 +272,11 @@ class RealBrowserBackend:
     simulated = False
     name_label = "real-browser"
 
-    def __init__(self, browser_client: Any, *, allow_real_placement: bool = False):
+    def __init__(self, browser_client: Any, *, allow_real_placement: bool = False,
+                 execution_gate=None):
         self.browser = browser_client
         self.allow_real_placement = bool(allow_real_placement)
+        self.execution_gate = execution_gate
         self._pending: list[dict] = []
 
     def name(self) -> str:
@@ -310,12 +312,25 @@ class RealBrowserBackend:
             )
 
     async def place(self, *, amount_bif: int, target_multiplier: float,
-                    bet_slot: int, decision_id: str) -> PlacementOutcome:
+                    bet_slot: int, decision_id: str, intent=None) -> PlacementOutcome:
         # The current selector probe cannot verify a platform acceptance
         # receipt, target-round identity, or a confirmed cashout. A click is
         # therefore unsafe even when the environment switch was enabled by
         # mistake.
         await self.ensure_ready()
+        if self.execution_gate is None or intent is None:
+            raise PlacementUnavailable(
+                "final_safety_gate_unavailable",
+                "Backend final safety authorization is unavailable; NO BET",
+            )
+        gate = self.execution_gate(intent)
+        if hasattr(gate, "__await__"):
+            gate = await gate
+        if not gate.get("allowed"):
+            raise PlacementUnavailable(
+                "final_safety_gate_blocked",
+                "NO BET: " + ", ".join(gate.get("reasons", [])),
+            )
         raise PlacementUnavailable(
             "platform_verification_incomplete",
             "Live platform acceptance, round and cashout evidence are "

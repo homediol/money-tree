@@ -10,7 +10,7 @@ import { FrameManager } from '../collector/FrameManager.js';
 import { LoginManager } from '../collector/LoginManager.js';
 import {
   appendRounds, inferNewMultipliers, normalizeMultiplier,
-  readRoundHistory, writeRoundHistory,
+  readRoundHistory, stableRoundId, writeRoundHistory,
 } from '../collector/HistoryManager.js';
 
 test('validates, orders, persists atomically and preserves normalized identity', () => {
@@ -34,9 +34,13 @@ test('validates, orders, persists atomically and preserves normalized identity',
 test('parses snapshots, detects only new rounds and appends chronologically', () => {
   assert.deepEqual(inferNewMultipliers([2, 1.1, 3], [5, 2, 1.1, 3]), [5]);
   assert.deepEqual(inferNewMultipliers([2, 1.1], [2, 1.1]), []);
-  const { history, added } = appendRounds([], [3, 2]);
+  const observedAt = '2026-09-26T12:00:00.000Z';
+  const { history, added } = appendRounds([], [3, 2], observedAt);
   assert.deepEqual(history.map(r => r.multiplier), [2, 3]);
-  assert.deepEqual(added.map(r => r.round_id), ['1', '2']);
+  assert.deepEqual(added.map(r => r.round_id), [
+    stableRoundId(observedAt, 2, 1),
+    stableRoundId(observedAt, 3, 2),
+  ]);
 });
 
 test('history page reuses one browser context and never launches another browser', async () => {
@@ -67,23 +71,56 @@ test('managed history page removes restored MetaBrandTitle and blank tabs', asyn
   let focused = 0;
   const historyPage = {
     isClosed: () => false,
-    url: () => 'about:blank',
-    goto: async () => {},
+    url: () => 'https://winner.rw/en/virtual/crash-games/aviator',
     bringToFront: async () => { focused += 1; },
   };
   const manager = new BrowserManager(true);
   manager.isAlive = () => true;
   manager._ownsBrowser = true;
   manager._page = staleWinner;
+  let newPages = 0;
   manager._context = {
     pages: () => [staleWinner, blank, historyPage],
-    newPage: async () => historyPage,
+    newPage: async () => { newPages += 1; throw new Error('must reuse Aviator tab'); },
   };
 
   assert.equal(await manager.getHistoryPage(), historyPage);
   assert.deepEqual(closed.sort(), ['blank', 'winner']);
   assert.equal(focused, 1);
+  assert.equal(newPages, 0);
   assert.equal(manager._page, null);
+});
+
+test('managed blank tab is reused, then later sportsbook tabs are removed after Aviator opens', async () => {
+  let url = 'about:blank';
+  let closed = false;
+  let focused = 0;
+  let extra = false;
+  const page = {
+    isClosed: () => false,
+    url: () => url,
+    bringToFront: async () => { focused += 1; },
+  };
+  const sportsbook = {
+    isClosed: () => closed,
+    url: () => 'https://winner.rw/sportsbook/upcoming',
+    close: async () => { closed = true; },
+  };
+  const manager = new BrowserManager(true);
+  manager.isAlive = () => true;
+  manager._ownsBrowser = true;
+  manager._page = page;
+  manager._context = {
+    pages: () => extra && !closed ? [page, sportsbook] : [page],
+    newPage: async () => { throw new Error('must reuse managed tab'); },
+  };
+  assert.equal(await manager.getHistoryPage(), page);
+  assert.equal(closed, false);
+  extra = true;
+  url = 'https://winner.rw/en/virtual/crash-games/aviator';
+  await manager.focusGamePage(page);
+  assert.equal(closed, true);
+  assert.equal(focused, 2);
 });
 
 test('attached user browser tabs are never cleaned up', async () => {
@@ -103,10 +140,11 @@ test('attached user browser tabs are never cleaned up', async () => {
 test('history page recovery stays in the existing browser context', async () => {
   let newPages = 0;
   let closed = 0;
+  const order = [];
   const oldPage = {
     isClosed: () => false,
     url: () => 'https://winner.rw/en/virtual/crash-games/aviator',
-    close: async () => { closed += 1; },
+    close: async () => { order.push('close'); closed += 1; },
   };
   const freshPage = {
     isClosed: () => false,
@@ -115,7 +153,7 @@ test('history page recovery stays in the existing browser context', async () => 
   };
   const context = {
     pages: () => [oldPage],
-    newPage: async () => { newPages += 1; return freshPage; },
+    newPage: async () => { order.push('new'); newPages += 1; return freshPage; },
   };
   const manager = new BrowserManager(true);
   manager.isAlive = () => true;
@@ -127,6 +165,7 @@ test('history page recovery stays in the existing browser context', async () => 
   assert.equal(manager._context, context);
   assert.equal(closed, 1);
   assert.equal(newPages, 1);
+  assert.deepEqual(order, ['new', 'close']);
 });
 
 test('navigation accepts a rendered Winner route after load timeout', async () => {
@@ -139,6 +178,20 @@ test('navigation accepts a rendered Winner route after load timeout', async () =
   };
   const manager = new LoginManager({ phone: 'test', password: 'test' });
   assert.equal(await manager._navigate(page, 'https://winner.rw/', null), true);
+});
+
+test('frame recovery reloads Aviator without visiting the sportsbook homepage', async () => {
+  const visits = [];
+  const page = {
+    url: () => 'https://winner.rw/en/virtual/crash-games/aviator',
+    locator: selector => selector === 'body'
+      ? { innerText: async () => 'Aviator' }
+      : { first: () => ({ isVisible: async () => false }) },
+  };
+  const manager = new LoginManager({ phone: 'test', password: 'test' });
+  manager._navigate = async (_page, url) => { visits.push(url); return true; };
+  assert.equal(await manager.goToAviator(page), true);
+  assert.deepEqual(visits, ['https://winner.rw/en/virtual/crash-games/aviator']);
 });
 
 test('frame manager uses direct CDP when Playwright omits the game OOPIF', async () => {

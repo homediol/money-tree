@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
+
+from app.api.readiness import schedule_evaluation
 
 router = APIRouter(prefix="/api/ml", tags=["ml"])
 
@@ -49,11 +51,5 @@ def recent_predictions(request: Request, limit: int = 25):
 
 
 @router.post("/train")
-def train(request: Request):
-    wp = request.app.state.wp
-    live = getattr(request.app.state, "live", None)
-    if live and live.live_active:
-        raise HTTPException(status_code=409, detail="Pause live betting before changing the model")
-    if wp.model_registry.status(wp.dataset_service)["status"] == "TRAINING":
-        raise HTTPException(status_code=409, detail="Training is already running")
-    return wp.model_registry.train(wp.dataset_service).model_dump()
+async def train(request: Request):
+    return await schedule_evaluation(request)

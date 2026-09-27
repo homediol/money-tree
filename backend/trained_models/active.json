@@ -1,5 +1,5 @@
 {
-  "model_version": "ml-20260925T031741Z-c6f8be83",
-  "metadata_path": "/home/diolo/winner predict/backend/trained_models/ml-20260925T031741Z-c6f8be83/metadata.json",
-  "artifact_path": "/home/diolo/winner predict/backend/trained_models/ml-20260925T031741Z-c6f8be83/model.joblib"
+  "model_version": "ml-20260927T013927Z-319d756e",
+  "metadata_path": "/home/diolo/winner predict/backend/trained_models/ml-20260927T013927Z-319d756e/metadata.json",
+  "artifact_path": "/home/diolo/winner predict/backend/trained_models/ml-20260927T013927Z-319d756e/model.joblib"
 }

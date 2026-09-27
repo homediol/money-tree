@@ -363,23 +363,34 @@ export class BrowserManager {
     return this._page;
   }
 
-  /** Return a dedicated collector Page in the existing BrowserContext. */
+  /** Return the managed game tab, or a dedicated tab in an attached context. */
   async getHistoryPage() {
     if (!this._context || !this.isAlive()) await this.launch();
     if (this._historyPage && !this._historyPage.isClosed()) return this._historyPage;
-    const source = this._page && !this._page.isClosed()
-      ? this._page
-      : this._context.pages().find(page => !page.isClosed() && isAviatorPage(page));
-    this._historyPage = await this._context.newPage();
-    if (source && source.url() && source.url() !== 'about:blank') {
-      await this._historyPage.goto(source.url(), { waitUntil: 'domcontentloaded' });
-    }
+    // The managed profile already has a tab. Cloning an Aviator URL into a
+    // second tab can make Winner redirect one of them to the sportsbook shell.
+    // Attached browsers belong to the user, so give the collector its own tab.
+    const managedPage = this._ownsBrowser && (
+      this._context.pages().find(page => !page.isClosed() && isAviatorPage(page)) ||
+      (this._page && !this._page.isClosed() ? this._page : null) ||
+      this._context.pages().find(page => !page.isClosed())
+    );
+    this._historyPage = managedPage || await this._context.newPage();
     await this._cleanupManagedStarterPages(this._historyPage);
     if (typeof this._historyPage.bringToFront === 'function') {
       await this._historyPage.bringToFront().catch(() => {});
     }
-    log.info('BrowserManager: dedicated history page ready in existing context');
+    log.info('BrowserManager: collector page ready in existing context');
     return this._historyPage;
+  }
+
+  /** Keep the managed Aviator tab visible after login or recovery. */
+  async focusGamePage(page) {
+    if (!page || page.isClosed() || !isAviatorPage(page)) return;
+    await this._cleanupManagedStarterPages(page);
+    if (typeof page.bringToFront === 'function') {
+      await page.bringToFront().catch(() => {});
+    }
   }
 
   /**
@@ -417,13 +428,18 @@ export class BrowserManager {
     }
     const previous = this._historyPage;
     const sourceUrl = previous && !previous.isClosed() ? previous.url() : '';
+    // Keep one tab alive while replacing the page. Closing Chrome's last tab
+    // first can tear down the entire managed context before newPage() runs.
+    const replacement = await this._context.newPage();
     if (previous && !previous.isClosed()) {
       await previous.close().catch(() => {});
     }
-    this._historyPage = await this._context.newPage();
+    this._historyPage = replacement;
+    if (this._page === previous) this._page = replacement;
     if (sourceUrl && sourceUrl !== 'about:blank') {
       await this._historyPage.goto(sourceUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
     }
+    await this._cleanupManagedStarterPages(this._historyPage);
     log.warn('BrowserManager: recreated history page in the existing browser context');
     return this._historyPage;
   }

@@ -145,6 +145,13 @@ export class LoginManager {
     return withRetry(async (attempt) => {
       if (signal?.aborted) throw new Error('Aborted');
 
+      // A restored Aviator tab may already have a valid session. Keep that
+      // page in place instead of bouncing through the sportsbook on recovery.
+      if (await this.isLoggedIn(page)) {
+        log.info('LoginManager: session valid on current page');
+        return true;
+      }
+
       // Navigate home first (avoids Cloudflare blocks on direct login URL)
       await this._navigate(page, HOME_URL, signal);
       await sleep(1500, signal);
@@ -279,6 +286,21 @@ export class LoginManager {
       if (await isAccessDeniedPage(page)) {
         await this._navigate(page, HOME_URL, signal);
         await sleep(2000, signal);
+      }
+
+      // During frame recovery the current tab is often already on Aviator.
+      // Reload that route directly if its frame vanished; routing through the
+      // homepage creates a visible MetaBrandTitle sportsbook tab in Chrome.
+      const currentUrl = page.url().toLowerCase();
+      if (currentUrl.includes('winner.rw') &&
+          (currentUrl.includes('aviator') || currentUrl.includes('crash-games'))) {
+        const iframePresent = await page.locator(
+          'iframe[src*="spribe"], iframe[src*="aviator"], iframe[src*="crash"]'
+        ).first().isVisible({ timeout: 1000 }).catch(() => false);
+        if (iframePresent || await this._navigate(page, AVIATOR_URLS[0], signal)) {
+          log.info(`LoginManager: Aviator page loaded — ${page.url()}`);
+          return true;
+        }
       }
 
       // Try clicking the Aviator link from the current page or homepage.

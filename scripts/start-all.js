@@ -141,6 +141,14 @@ const SERVICES = [
     port:    5001,
   },
   {
+    name:    "collector",
+    cmd:     NODE_BIN,
+    args:    [path.join(BOT_DIR, "roundhistory-collector.js")],
+    cwd:     BOT_DIR,
+    color:   "\x1b[36m",
+    restart: true,
+  },
+  {
     name:    "backend",
     cmd:     BACKEND_PY,
     args:    ["-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
@@ -149,7 +157,7 @@ const SERVICES = [
     port:    8000,
     healthPath: "/health",
     expectedService: "winner-predict-backend",
-    restart: true,
+    restart: false,
     // Winner Predict API — owns port 8000 (frontend defaults point here)
   },
   {
@@ -177,6 +185,48 @@ const SERVICES = [
 const serviceStates = new Map();
 const scheduledTimers = new Set();
 let shuttingDown = false;
+const lifecyclePath = path.join(ROOT, "data", "backend_lifecycle.jsonl");
+const collectorPidPath = path.join(ROOT, "data", "bot", "collector-supervisor.json");
+
+function existingCollectorPid() {
+  try {
+    const status = JSON.parse(fs.readFileSync(collectorPidPath, "utf8"));
+    const pid = Number(status.pid);
+    if (!status.running || !Number.isInteger(pid) || pid <= 0) return null;
+    process.kill(pid, 0);
+    if (process.platform === "linux") {
+      const command = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      if (!command.includes("roundhistory-collector.js")) return null;
+    }
+    return pid;
+  } catch (_) {
+    return null;
+  }
+}
+
+function recordCollector(child, running, reason = null) {
+  try {
+    fs.mkdirSync(path.dirname(collectorPidPath), { recursive: true });
+    fs.writeFileSync(collectorPidPath, JSON.stringify({
+      pid: child?.pid || null, running, reason, timestamp: timestamp(),
+      supervisor_pid: process.pid,
+    }) + "\n");
+  } catch (error) {
+    console.error(`[runner] could not persist collector status: ${error.message}`);
+  }
+}
+
+function recordBackend(event, fields = {}) {
+  try {
+    fs.mkdirSync(path.dirname(lifecyclePath), { recursive: true });
+    fs.appendFileSync(lifecyclePath, JSON.stringify({
+      event, service: "winner-predict-backend", timestamp: timestamp(),
+      supervisor_pid: process.pid, ...fields,
+    }) + "\n");
+  } catch (error) {
+    console.error(`[runner] could not persist backend lifecycle: ${error.message}`);
+  }
+}
 
 function label(svc) {
   return `${svc.color}[${svc.name}]\x1b[0m`;
@@ -329,7 +379,8 @@ function launch(svc, restarting = false) {
           state.external = true;
           state.restartAttempts = 0;
           console.warn(`${label(svc)} ${timestamp()} verified existing instance on port ${svc.port}; not starting a duplicate`);
-          monitorExisting(svc);
+          if (svc.name === "backend") recordBackend("supervisor_external_instance", { port: svc.port });
+          else monitorExisting(svc);
           resolve(null);
           return;
         }
@@ -337,6 +388,7 @@ function launch(svc, restarting = false) {
         console.log(`\x1b[90m[runner ${timestamp()}]\x1b[0m starting ${label(svc)}: ${svc.cmd} ${svc.args.join(" ")}`);
 
         const env = { ...process.env };
+        if (svc.name === "backend") env.WINNER_COLLECTOR_EXTERNAL = "1";
         const nvmBin = path.dirname(NODE_BIN);
         if (nvmBin !== "node" && fs.existsSync(nvmBin)) {
           env.PATH = `${nvmBin}:${env.PATH || ""}`;
@@ -353,21 +405,42 @@ function launch(svc, restarting = false) {
         state.child = child;
         state.external = false;
         state.startedAt = Date.now();
+        if (svc.name === "collector") recordCollector(child, true);
+        if (svc.name === "backend") recordBackend("supervisor_spawn", {
+          pid: child.pid, ppid: process.pid, startup_reason: restarting ? "supervisor_restart" : "supervisor_start",
+          command: [svc.cmd, ...svc.args],
+        });
         prefixLines(svc, child.stdout, process.stdout);
         prefixLines(svc, child.stderr, process.stderr);
 
         let handled = false;
-        const stopped = (reason) => {
+        const stopped = (reason, exitCode = null, exitSignal = null) => {
           if (handled) return;
           handled = true;
           if (state.child === child) state.child = null;
-          if (shuttingDown) return;
+          if (svc.name === "collector") recordCollector(child, false, reason);
+          if (shuttingDown) {
+            if (svc.name === "backend") recordBackend("supervisor_exit", {
+              pid: child.pid, reason: `supervisor_shutdown:${reason}`, unexpected: false,
+              exit_code: exitCode, signal: exitSignal,
+              uptime_seconds: Math.round((Date.now() - state.startedAt) / 1000),
+            });
+            return;
+          }
+          if (svc.name === "backend") {
+            recordBackend("supervisor_exit", {pid: child.pid, reason, unexpected: true,
+              exit_code: exitCode, signal: exitSignal,
+              uptime_seconds: Math.round((Date.now() - state.startedAt) / 1000)});
+            console.error(`${label(svc)} ${timestamp()} stopped unexpectedly (${reason}); backend restart disabled`);
+            process.exitCode = 1;
+            return;
+          }
           if (Date.now() - state.startedAt > 60000) state.restartAttempts = 0;
           console.error(`${label(svc)} ${timestamp()} stopped unexpectedly (${reason})`);
           scheduleRestart(svc);
         };
         child.once("error", (error) => stopped(`spawn error: ${error.message}`));
-        child.once("exit", (code, signal) => stopped(`code=${code} signal=${signal || "none"}`));
+        child.once("exit", (code, signal) => stopped(`code=${code} signal=${signal || "none"}`, code, signal));
 
         resolve(child);
       } catch (error) {
@@ -384,8 +457,8 @@ function launch(svc, restarting = false) {
 // ── Main ───────────────────────────────────────────────────────────────────
 (async () => {
   const backendOnly = process.argv.includes("--backend-only");
-  const selectedServices = backendOnly
-    ? SERVICES.filter((svc) => svc.name === "backend")
+  let selectedServices = backendOnly
+    ? SERVICES.filter((svc) => svc.name === "collector" || svc.name === "backend")
     : SERVICES;
   console.log("\x1b[1m\x1b[37m╔══════════════════════════════════════╗\x1b[0m");
   console.log(backendOnly
@@ -399,6 +472,19 @@ function launch(svc, restarting = false) {
   console.log("");
 
   const backendPython = ensureBackendEnvironment();
+  const backend = SERVICES.find((svc) => svc.name === "backend");
+  const backendPortBusy = await isPortInUse(backend.port);
+  if (backendPortBusy && !await expectedServiceOwnsPort(backend)) {
+    console.error(`[runner] ${timestamp()} PORT CONFLICT: ${backend.port} is owned by a different service`);
+    stopAll(1);
+    return;
+  }
+  const collectorPid = existingCollectorPid();
+  if (backendPortBusy || collectorPid) {
+    selectedServices = selectedServices.filter((svc) => svc.name !== "collector");
+    console.warn(`[runner] ${timestamp()} leaving existing collector ownership intact` +
+      (collectorPid ? ` (pid ${collectorPid})` : " (backend already running)"));
+  }
   for (const svc of selectedServices) {
     if (svc.name === "flask" || svc.name === "bot-api") {
       svc.cmd = backendPython;
