@@ -44,6 +44,12 @@ def estimate(request: Request):
             "estimate": wp.model_registry.fallback_estimate(wp.dataset_service)}
 
 
+@router.get("/experimental")
+def experimental(request: Request, limit: int = 50):
+    """Scored candidate observations. Explicitly unusable by decision/execution."""
+    return request.app.state.ml_observer.status(min(max(limit, 1), 200))
+
+
 @router.get("/predictions/recent")
 def recent_predictions(request: Request, limit: int = 25):
     rows = request.app.state.wp.model_registry.recent_predictions(min(max(limit, 1), 500))

@@ -143,6 +143,70 @@ def test_history_warmup_calculation_and_model_readiness_are_independent():
     assert snapshot["overall"]["status"] == "WARMING_UP"
 
 
+def timed_app(**options):
+    app, registry = make_app(continuous=10, **options)
+    now = datetime.now(timezone.utc)
+    app.state.wp.dataset_service.clean_rounds = pd.DataFrame([
+        {"round_id": str(i), "round_index": i,
+         "timestamp": (now - timedelta(seconds=(10-i)*10)).isoformat(), "multiplier": 1.5}
+        for i in range(1, 11)
+    ])
+    app.state.history_collector.status = lambda: {
+        "status": options.get("collector_status", "HEALTHY"),
+        "running": options.get("collector_status", "HEALTHY") == "HEALTHY",
+        "count": 10, "latest": {"round_id": "10"},
+    }
+    return app, registry
+
+
+def test_completion_estimate_uses_recent_pace_and_allows_cooldown_to_dominate():
+    app, registry = timed_app()
+    registry.last_training_round_index = 0
+    registry.trained_at = datetime.now(timezone.utc).isoformat()
+    result = SystemReadiness(app, required_rounds=20, min_new_rounds=20).snapshot()["completion_estimate"]
+    assert result["sample_intervals"] == 9
+    assert result["average_round_seconds"] == 10
+    assert 99 <= result["warmup_remaining_seconds"] <= 100
+    assert 3598 <= result["evaluation_start_remaining_seconds"] <= 3600
+    assert result["warmup_expected_at"]
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_stale_or_disconnected_collector_has_no_completion_countdown(offline):
+    app, _ = timed_app(collector_status="DISCONNECTED" if offline else "HEALTHY")
+    if not offline:
+        dataset = app.state.wp.dataset_service
+        dataset.clean_rounds["timestamp"] = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    result = SystemReadiness(app).snapshot()["completion_estimate"]
+    assert result["warmup_remaining_seconds"] is None
+    assert result["evaluation_start_expected_at"] is None
+    assert result["unavailable_reason"]
+
+
+def test_training_completion_uses_recorded_duration_and_never_claims_overdue_work_finished():
+    app, registry = timed_app()
+    original_performance = registry.performance
+    registry.performance = lambda: {**original_performance(), "cycle_time_seconds": 120}
+    service = SystemReadiness(app)
+    service._training["status"] = "EVALUATING"
+    service._training_started_monotonic = time.monotonic() - 70
+    estimate = service.snapshot()["completion_estimate"]
+    assert estimate["training_elapsed_seconds"] == 70
+    assert estimate["training_remaining_seconds"] == 50
+    assert estimate["evaluation_start_remaining_seconds"] is None
+    service._training_started_monotonic = time.monotonic() - 130
+    assert service.snapshot()["completion_estimate"]["training_expected_at"] is None
+
+
+def test_real_history_gap_overrides_older_persisted_continuity():
+    app, _ = make_app(continuous=2, deployable=False)
+    app.state.wp.collector_state = {"contiguous_rounds": 316, "total_history": 13142}
+    snapshot = SystemReadiness(app, automatic_training=False).status()
+    assert snapshot["history"]["continuous_rounds"] == 2
+    assert snapshot["history"]["progress_percentage"] == 2.0
+    assert snapshot["history"]["history_ready"] is False
+
+
 def test_cached_readiness_is_invalidated_when_history_source_changes(tmp_path):
     raw = tmp_path / "roundhistory.json"
     raw.write_text("[]", encoding="utf-8")
@@ -243,7 +307,7 @@ def test_http_readiness_uses_cached_snapshot_without_running_training(monkeypatc
         AssertionError("HTTP readiness must not compute a fresh snapshot")))
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(readiness=service)))
     started = time.perf_counter()
-    response = readiness_http_status(request)
+    response = asyncio.run(readiness_http_status(request))
     elapsed = time.perf_counter() - started
     assert elapsed < 0.5
     assert response["readiness"]["history"]["continuous_rounds"] == 100
@@ -255,14 +319,14 @@ def test_http_readiness_reports_starting_before_first_snapshot():
     app, _ = make_app()
     request = SimpleNamespace(app=SimpleNamespace(
         state=SimpleNamespace(readiness=SystemReadiness(app))))
-    response = readiness_http_status(request)
+    response = asyncio.run(readiness_http_status(request))
     assert response.status_code == 503
     assert json.loads(response.body)["status"] == "STARTING"
 
     service = request.app.state.readiness
     service._last_snapshot = service.snapshot()
     service._last_snapshot_monotonic = time.monotonic() - 16
-    stale = readiness_http_status(request)
+    stale = asyncio.run(readiness_http_status(request))
     assert stale.status_code == 503
     assert json.loads(stale.body)["status"] == "STALE"
 

@@ -1,78 +1,49 @@
-2026/09/27-06:34:27.566 39b6f Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/MANIFEST-000001
-2026/09/27-06:34:27.593 39b6f Recovering log #5260
-2026/09/27-06:34:27.595 39b6f Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/005260.log 
-2026/09/27-06:35:06.763 39b71 Level-0 table #5264: started
-2026/09/27-06:35:06.837 39b71 Level-0 table #5264: 612813 bytes OK
-2026/09/27-06:35:06.881 39b71 Delete type=0 #5260
-2026/09/27-06:35:06.882 39b71 Compacting 4@0 + 1@1 files
-2026/09/27-06:35:07.193 39b71 Generated table #5265@0: 395 keys, 895672 bytes
-2026/09/27-06:35:07.194 39b71 Compacted 4@0 + 1@1 files => 895672 bytes
-2026/09/27-06:35:07.287 39b71 compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/09/27-06:35:07.292 39b71 Delete type=2 #5257
-2026/09/27-06:35:07.292 39b71 Delete type=2 #5255
-2026/09/27-06:35:07.292 39b71 Delete type=2 #5259
-2026/09/27-06:35:07.292 39b71 Delete type=2 #5264
-2026/09/27-06:35:07.292 39b71 Delete type=2 #5261
-2026/09/27-06:38:42.202 39b71 Level-0 table #5267: started
-2026/09/27-06:38:42.261 39b71 Level-0 table #5267: 88304 bytes OK
-2026/09/27-06:38:42.317 39b71 Delete type=0 #5263
-2026/09/27-06:40:42.212 39b6f Level-0 table #5269: started
-2026/09/27-06:40:42.261 39b6f Level-0 table #5269: 94539 bytes OK
-2026/09/27-06:40:42.314 39b6f Delete type=0 #5266
-2026/09/27-06:42:42.212 39b71 Level-0 table #5271: started
-2026/09/27-06:42:42.266 39b71 Level-0 table #5271: 96328 bytes OK
-2026/09/27-06:42:42.579 39b71 Delete type=0 #5268
-2026/09/27-06:44:42.227 39b71 Level-0 table #5273: started
-2026/09/27-06:44:42.541 39b71 Level-0 table #5273: 96246 bytes OK
-2026/09/27-06:44:43.003 39b71 Delete type=0 #5270
-2026/09/27-06:44:43.004 39b71 Compacting 4@0 + 1@1 files
-2026/09/27-06:44:43.406 39b71 Generated table #5274@0: 396 keys, 847339 bytes
-2026/09/27-06:44:43.406 39b71 Compacted 4@0 + 1@1 files => 847339 bytes
-2026/09/27-06:44:43.583 39b71 compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/09/27-06:44:43.585 39b71 Delete type=2 #5265
-2026/09/27-06:44:43.586 39b71 Delete type=2 #5269
-2026/09/27-06:44:43.586 39b71 Delete type=2 #5273
-2026/09/27-06:44:43.586 39b71 Delete type=2 #5267
-2026/09/27-06:44:43.586 39b71 Delete type=2 #5271
-2026/09/27-06:45:29.828 39b6f Level-0 table #5276: started
-2026/09/27-06:45:29.976 39b6f Level-0 table #5276: 74024 bytes OK
-2026/09/27-06:45:30.029 39b6f Delete type=0 #5272
-2026/09/27-06:48:29.827 39b6f Level-0 table #5278: started
-2026/09/27-06:48:29.882 39b6f Level-0 table #5278: 94549 bytes OK
-2026/09/27-06:48:29.929 39b6f Delete type=0 #5275
-2026/09/27-06:50:29.824 39b71 Level-0 table #5280: started
-2026/09/27-06:50:29.900 39b71 Level-0 table #5280: 94351 bytes OK
-2026/09/27-06:50:29.940 39b71 Delete type=0 #5277
-2026/09/27-06:52:29.828 39b6f Level-0 table #5282: started
-2026/09/27-06:52:29.901 39b6f Level-0 table #5282: 95852 bytes OK
-2026/09/27-06:52:29.965 39b6f Delete type=0 #5279
-2026/09/27-06:52:29.966 39b71 Compacting 4@0 + 1@1 files
-2026/09/27-06:52:30.048 39b71 Generated table #5283@0: 396 keys, 847280 bytes
-2026/09/27-06:52:30.048 39b71 Compacted 4@0 + 1@1 files => 847280 bytes
-2026/09/27-06:52:30.092 39b71 compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/09/27-06:52:30.099 39b71 Delete type=2 #5278
-2026/09/27-06:52:30.099 39b71 Delete type=2 #5282
-2026/09/27-06:52:30.099 39b71 Delete type=2 #5276
-2026/09/27-06:52:30.099 39b71 Delete type=2 #5274
-2026/09/27-06:52:30.099 39b71 Delete type=2 #5280
-2026/09/27-06:54:29.825 39b71 Level-0 table #5285: started
-2026/09/27-06:54:29.876 39b71 Level-0 table #5285: 94459 bytes OK
-2026/09/27-06:54:29.922 39b71 Delete type=0 #5281
-2026/09/27-06:56:29.827 39b71 Level-0 table #5287: started
-2026/09/27-06:56:29.882 39b71 Level-0 table #5287: 94283 bytes OK
-2026/09/27-06:56:29.926 39b71 Delete type=0 #5284
-2026/09/27-06:58:29.860 39b71 Level-0 table #5289: started
-2026/09/27-06:58:29.942 39b71 Level-0 table #5289: 94483 bytes OK
-2026/09/27-06:58:30.083 39b71 Delete type=0 #5286
-2026/09/27-07:00:29.839 39b71 Level-0 table #5291: started
-2026/09/27-07:00:29.915 39b71 Level-0 table #5291: 94389 bytes OK
-2026/09/27-07:00:29.999 39b71 Delete type=0 #5288
-2026/09/27-07:00:30.003 39b71 Compacting 4@0 + 1@1 files
-2026/09/27-07:00:30.098 39b71 Generated table #5292@0: 396 keys, 847208 bytes
-2026/09/27-07:00:30.098 39b71 Compacted 4@0 + 1@1 files => 847208 bytes
-2026/09/27-07:00:30.141 39b71 compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/09/27-07:00:30.149 39b71 Delete type=2 #5291
-2026/09/27-07:00:30.150 39b71 Delete type=2 #5289
-2026/09/27-07:00:30.150 39b71 Delete type=2 #5285
-2026/09/27-07:00:30.150 39b71 Delete type=2 #5283
-2026/09/27-07:00:30.150 39b71 Delete type=2 #5287
+2026/10/03-17:15:35.340 2f8b3 Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/MANIFEST-000001
+2026/10/03-17:15:35.381 2f8b3 Recovering log #700
+2026/10/03-17:15:35.382 2f8b3 Level-0 table #703: started
+2026/10/03-17:15:35.605 2f8b3 Level-0 table #703: 123716 bytes OK
+2026/10/03-17:15:35.607 2f8b3 Recovering log #702
+2026/10/03-17:15:35.609 2f8b3 Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/000702.log 
+2026/10/03-17:15:35.775 2f8b3 Delete type=0 #700
+2026/10/03-17:16:25.799 2f8b5 Level-0 table #705: started
+2026/10/03-17:16:26.037 2f8b5 Level-0 table #705: 835012 bytes OK
+2026/10/03-17:16:26.105 2f8b5 Delete type=0 #702
+2026/10/03-17:16:26.112 2f8b5 Compacting 4@0 + 1@1 files
+2026/10/03-17:16:26.239 2f8b5 Generated table #706@0: 82 keys, 850394 bytes
+2026/10/03-17:16:26.239 2f8b5 Compacted 4@0 + 1@1 files => 850394 bytes
+2026/10/03-17:16:26.293 2f8b5 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/10/03-17:16:26.303 2f8b5 Delete type=2 #697
+2026/10/03-17:16:26.303 2f8b5 Delete type=2 #701
+2026/10/03-17:16:26.303 2f8b5 Delete type=2 #703
+2026/10/03-17:16:26.304 2f8b5 Delete type=2 #699
+2026/10/03-17:16:26.304 2f8b5 Delete type=2 #705
+2026/10/03-17:20:04.156 2f8b5 Level-0 table #708: started
+2026/10/03-17:20:04.275 2f8b5 Level-0 table #708: 62986 bytes OK
+2026/10/03-17:20:04.413 2f8b5 Delete type=0 #704
+2026/10/03-17:21:53.040 2f8b5 Level-0 table #710: started
+2026/10/03-17:21:53.098 2f8b5 Level-0 table #710: 124096 bytes OK
+2026/10/03-17:21:53.249 2f8b5 Delete type=0 #707
+2026/10/03-17:23:53.131 2f8b3 Level-0 table #712: started
+2026/10/03-17:23:53.209 2f8b3 Level-0 table #712: 121009 bytes OK
+2026/10/03-17:23:53.311 2f8b3 Delete type=0 #709
+2026/10/03-17:25:53.032 2f8b5 Level-0 table #714: started
+2026/10/03-17:25:53.247 2f8b5 Level-0 table #714: 120362 bytes OK
+2026/10/03-17:25:53.362 2f8b5 Delete type=0 #711
+2026/10/03-17:25:53.365 2f8b5 Compacting 4@0 + 1@1 files
+2026/10/03-17:25:53.486 2f8b5 Generated table #715@0: 82 keys, 849641 bytes
+2026/10/03-17:25:53.487 2f8b5 Compacted 4@0 + 1@1 files => 849641 bytes
+2026/10/03-17:25:53.609 2f8b5 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/10/03-17:25:53.613 2f8b5 Delete type=2 #710
+2026/10/03-17:25:53.613 2f8b5 Delete type=2 #714
+2026/10/03-17:25:53.614 2f8b5 Delete type=2 #712
+2026/10/03-17:25:53.614 2f8b5 Delete type=2 #706
+2026/10/03-17:25:53.614 2f8b5 Delete type=2 #708
+2026/10/03-17:27:53.033 2f8b5 Level-0 table #717: started
+2026/10/03-17:27:53.156 2f8b5 Level-0 table #717: 123597 bytes OK
+2026/10/03-17:27:53.345 2f8b5 Delete type=0 #713
+2026/10/03-17:28:22.053 2f8b3 Level-0 table #719: started
+2026/10/03-17:28:22.155 2f8b3 Level-0 table #719: 62860 bytes OK
+2026/10/03-17:28:22.242 2f8b3 Delete type=0 #716
+2026/10/03-17:31:37.707 2f8b5 Level-0 table #721: started
+2026/10/03-17:31:37.782 2f8b5 Level-0 table #721: 122032 bytes OK
+2026/10/03-17:31:37.818 2f8b5 Delete type=0 #718

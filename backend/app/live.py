@@ -62,6 +62,8 @@ class LiveActivationManager:
         health = getattr(app.state, "system_health", None)
         if health:
             try:
+                if platform_observation:
+                    health.record_browser_observation(platform_observation)
                 snap = health.refresh()
                 checks["system_health"] = snap.get("state")
                 if snap.get("state") not in {"HEALTHY"}:
@@ -74,17 +76,15 @@ class LiveActivationManager:
         else:
             checks["live_executor"] = "ENABLED"
         betting_status = getattr(app.state, "betting", None).status() if getattr(app.state, "betting", None) else {}
-        observation = platform_observation or {}
+        use_observation = (platform_observation is not None
+                           or health is not None and not betting_status.get("automatic_enabled"))
+        observation = (health.browser_observation() if use_observation and health
+                       else platform_observation or {})
         browser_status = observation.get("browser_status") or betting_status.get("browser_status")
-        ui_ready = observation.get("ui_ready") if platform_observation else betting_status.get("last_ui_ready")
-        balance = observation.get("balance") if platform_observation else betting_status.get("current_balance")
-        browser_ready = browser_status in {"CONNECTED", "READY"} and bool(ui_ready) and balance is not None
-        if platform_observation and health and browser_ready:
-            health.heartbeat("browser", ok=True, metadata={
-                "mode": "REAL", "browser_status": browser_status,
-                "ui_ready": bool(ui_ready), "balance_verified": True,
-                "source": "read_only_platform_observation",
-            }, stale_after_s=20)
+        ui_ready = observation.get("ui_ready") if use_observation else betting_status.get("last_ui_ready")
+        balance = observation.get("balance") if use_observation else betting_status.get("current_balance")
+        browser_ready = (browser_status in {"CONNECTED", "READY"} and bool(ui_ready) and balance is not None
+                         and (not use_observation or bool(observation.get("verified"))))
         checks["betting_page"] = "HEALTHY" if browser_ready else "NOT_READY"
         if bool(getattr(settings, "allow_real_placement", False)) and not browser_ready:
             reasons.append("betting page is not connected and UI-ready")

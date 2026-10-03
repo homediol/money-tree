@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.database.repository import Repository
@@ -59,7 +60,17 @@ def test_stale_history_pauses_without_fabricating_health(tmp_path):
     monitor = health(tmp_path, FakeHistory(age=1000))
     snapshot = monitor.refresh()
     assert snapshot["state"] == "PAUSED"
-    assert snapshot["components"]["history"]["state"] == "ERROR"
+    assert snapshot["components"]["history"]["state"] == "WAITING"
+    assert "1000 seconds old" in snapshot["components"]["history"]["last_error"]
+    assert monitor.can_bet_now(mode="REAL")["allowed"] is False
+
+
+def test_stopped_history_reports_process_state_and_stays_blocked(tmp_path):
+    monitor = health(tmp_path, FakeHistory(status="STOPPED", running=False))
+    snapshot = monitor.refresh()
+    history = snapshot["components"]["history"]
+    assert history["state"] == "ERROR"
+    assert history["last_error"] == "history collector process is stopped"
     assert monitor.can_bet_now(mode="REAL")["allowed"] is False
 
 
@@ -115,4 +126,70 @@ def test_active_real_session_with_unverified_browser_remains_error(tmp_path):
     browser = monitor.refresh()["components"]["browser"]
     assert browser["state"] == "ERROR"
     assert browser["error_count"] == 1
+    assert monitor.can_bet_now(mode="REAL")["allowed"] is False
+
+
+def idle_browser_health(tmp_path):
+    monitor = health(tmp_path)
+    monitor.betting_manager.session = None
+    monitor.betting_manager.status = lambda: {
+        "mode": "OFF", "browser_status": "NOT_CONNECTED", "automatic_enabled": False,
+        "current_balance": None,
+    }
+    return monitor
+
+
+def ui_balance_observation():
+    return {"verified": True, "balance": 1006.0, "balance_text": "1,006BIF",
+            "ui_ready": True, "browser_status": "CONNECTED",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "source": "existing_cdp_page_read_only"}
+
+
+def test_read_only_balance_survives_idle_health_refresh(tmp_path):
+    monitor = idle_browser_health(tmp_path)
+    monitor.record_browser_observation(ui_balance_observation())
+    for _ in range(3):
+        browser = monitor.refresh()["components"]["browser"]
+        assert browser["state"] == "HEALTHY"
+        assert browser["metadata"]["balance_verified"] is True
+        assert browser["metadata"]["balance"] == 1006
+        assert browser["last_error"] is None
+    assert monitor.betting_manager.status()["current_balance"] is None
+
+
+def test_read_only_balance_expires_even_without_health_refresh(tmp_path, monkeypatch):
+    monitor = idle_browser_health(tmp_path)
+    monitor.record_browser_observation(ui_balance_observation())
+    monitor.refresh()
+    observed = time.time()
+    monkeypatch.setattr(time, "time", lambda: observed + 21)
+    assert monitor.can_bet_now(mode="REAL")["allowed"] is False
+    browser = monitor.refresh()["components"]["browser"]
+    assert browser["state"] == "WAITING"
+    assert browser["metadata"]["balance"] is None
+    assert browser["metadata"]["balance_verified"] is False
+    assert "stale" in browser["last_error"]
+
+
+def test_failed_balance_read_clears_previous_verification(tmp_path):
+    monitor = idle_browser_health(tmp_path)
+    monitor.record_browser_observation(ui_balance_observation())
+    monitor.refresh()
+    monitor.record_browser_observation({**ui_balance_observation(), "verified": False,
+                                        "balance": None, "error": "CDP disconnected"})
+    assert monitor.can_bet_now(mode="REAL")["allowed"] is False
+    browser = monitor.refresh()["components"]["browser"]
+    assert browser["metadata"]["balance_verified"] is False
+    assert browser["last_error"] == "CDP disconnected"
+
+
+def test_read_only_balance_does_not_mask_failed_active_real_executor(tmp_path):
+    monitor = health(tmp_path)
+    monitor.record_browser_observation(ui_balance_observation())
+    monitor.betting_manager.status = lambda: {
+        "mode": "REAL", "browser_status": "NOT_CONNECTED", "automatic_enabled": True,
+        "current_balance": None,
+    }
+    assert monitor.refresh()["components"]["browser"]["state"] == "ERROR"
     assert monitor.can_bet_now(mode="REAL")["allowed"] is False

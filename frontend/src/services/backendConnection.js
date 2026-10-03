@@ -1,13 +1,16 @@
 import { useSyncExternalStore } from 'react';
 import { getHealthUrl } from './endpoints.js';
-import { reconnectDelay } from './reconnectPolicy.js';
+import { connectionStateAfterHealth, reconnectDelay } from './reconnectPolicy.js';
 
 export const BACKEND_RESTORED_EVENT = 'winner:backend-restored';
 
 const ONLINE_CHECK_MS = 10000;
-const REQUEST_TIMEOUT_MS = 4000;
+// A real health request in this workspace exceeded four seconds and still
+// returned HTTP 200. Avoid converting a slow response into a false disconnect.
+export const REQUEST_TIMEOUT_MS = 15000;
 
 let snapshot = {
+  state: 'INITIAL_CONNECT',
   status: 'checking',
   online: false,
   degraded: false,
@@ -15,6 +18,7 @@ let snapshot = {
   nextRetryMs: 0,
   message: null,
   health: null,
+  lastSuccessfulAt: null,
 };
 let timer = null;
 let scheduledAt = 0;
@@ -70,11 +74,13 @@ async function readHealth() {
 export function checkBackend() {
   if (inFlight) return inFlight;
   inFlight = (async () => {
-    const wasUnavailable = snapshot.status === 'reconnecting';
+    const wasUnavailable = !snapshot.online && snapshot.attempt > 0;
+    const previouslyConnected = wasUnavailable && snapshot.lastSuccessfulAt !== null;
     try {
       const health = await readHealth();
       const degraded = health.ok !== true;
       publish({
+        state: connectionStateAfterHealth({ online: true, degraded }),
         status: degraded ? 'degraded' : 'online',
         online: true,
         degraded,
@@ -82,23 +88,26 @@ export function checkBackend() {
         nextRetryMs: ONLINE_CHECK_MS,
         message: degraded ? 'Backend connected; database health is degraded' : null,
         health,
+        lastSuccessfulAt: Date.now(),
       });
-      if (wasUnavailable) {
+      if (previouslyConnected) {
         log('info', 'connection restored', `instance=${health.backend?.instance_id || 'unknown'}`);
         window.dispatchEvent(new CustomEvent(BACKEND_RESTORED_EVENT, { detail: health }));
       }
       schedule(ONLINE_CHECK_MS);
       return health;
     } catch (error) {
-      const attempt = snapshot.status === 'reconnecting' ? snapshot.attempt + 1 : 1;
+      const attempt = wasUnavailable ? snapshot.attempt + 1 : 1;
       const delay = reconnectDelay(attempt);
       const message = error?.name === 'AbortError'
         ? 'Backend health check timed out'
         : (error?.message || 'Backend connection failed');
-      if (snapshot.status !== 'reconnecting' || attempt === 1) {
+      if (snapshot.online || attempt === 1) {
         log('warn', 'connection unavailable; entering recovery loop', message);
       }
       publish({
+        state: connectionStateAfterHealth({ online: false,
+          lastSuccessfulAt: snapshot.lastSuccessfulAt, attempt }),
         status: 'reconnecting',
         online: false,
         degraded: false,

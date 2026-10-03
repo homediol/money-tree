@@ -6,8 +6,9 @@ export const API_UNAUTHORIZED_EVENT = 'winner:api-unauthorized';
 
 export function setApiToken(token) {
   const value = token?.trim();
-  if (value) sessionStorage.setItem(TOKEN_KEY, value);
-  else sessionStorage.removeItem(TOKEN_KEY);
+  if (value) localStorage.setItem(TOKEN_KEY, value);
+  else localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
 }
 
 // Compatibility for the legacy login screen: its password field is treated
@@ -19,11 +20,17 @@ export function login(_username, token) {
 }
 
 export function logout() {
+  localStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(TOKEN_KEY);
 }
 
 export function getApiToken() {
-  return sessionStorage.getItem(TOKEN_KEY) || '';
+  const saved = localStorage.getItem(TOKEN_KEY);
+  if (saved) return saved;
+  // Carry a token from an already-open tab into persistent browser storage.
+  const previous = sessionStorage.getItem(TOKEN_KEY);
+  if (previous) setApiToken(previous);
+  return previous || '';
 }
 
 export function getSession() {

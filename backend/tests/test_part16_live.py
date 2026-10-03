@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.live import LiveActivationManager
+from app.services.system_health import SystemHealth
 
 
 def test_live_activation_is_observing_and_requires_exact_confirmation():
@@ -58,6 +59,38 @@ def test_production_readiness_blocks_unverified_platform_execution():
     assert result["ready"] is False
     assert result["checks"]["platform_execution"] == "UNVERIFIED"
     assert "platform acceptance, round and cashout controls are unverified" in result["reasons"]
+
+
+def test_idle_readiness_uses_fresh_background_ui_balance(tmp_path):
+    from app.database.repository import Repository
+    repository = Repository(tmp_path / "health.sqlite3")
+    repository.init()
+    betting = SimpleNamespace(
+        session=None, settings=SimpleNamespace(allow_real_placement=False),
+        status=lambda: {"mode": "OFF", "browser_status": "NOT_CONNECTED",
+                        "current_balance": None, "automatic_enabled": False},
+    )
+    history = SimpleNamespace(status=lambda: {
+        "running": True, "status": "HEALTHY", "latest": {
+            "round_id": "101", "timestamp": datetime.now(timezone.utc).isoformat()},
+    })
+    health = SystemHealth(betting_manager=betting, history_collector=history, repository=repository)
+    health.record_browser_observation({
+        "verified": True, "balance": 1006.0, "ui_ready": True,
+        "browser_status": "CONNECTED", "observed_at": datetime.now(timezone.utc).isoformat(),
+        "source": "existing_cdp_page_read_only",
+    })
+    state = SimpleNamespace(
+        wp=SimpleNamespace(repository=repository), betting=betting,
+        history_collector=history, system_health=health,
+        reconciliation=object(), decision_engine=SimpleNamespace(current=lambda: None),
+        risk=SimpleNamespace(emergency_latched=False), orchestrator=object(),
+    )
+    result = asyncio.run(LiveActivationManager(SimpleNamespace(state=state)).production_readiness_check())
+    assert result["checks"]["betting_page"] == "HEALTHY"
+    assert result["ready"] is False
+    assert result["checks"]["platform_execution"] == "UNVERIFIED"
+    assert health.refresh()["components"]["browser"]["metadata"]["balance_verified"] is True
 
 
 def test_live_execution_uses_central_readiness_gate_and_fails_closed():

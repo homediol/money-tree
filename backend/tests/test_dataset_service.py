@@ -166,6 +166,7 @@ def test_realtime_history_update_emits_data_and_feature_events(monkeypatch):
     wp = SimpleNamespace(
         reload=lambda: None, current_analysis=lambda: {"recent_multipliers": [2.5]},
         rounds=[1], dataset_service=dataset,
+        analytics_report_engine=SimpleNamespace(report_progress_snapshot=lambda: {"persisted": True}),
         pattern_report=lambda: {"baseline": {"rate": 0.5}, "patterns": []},
         model_registry=SimpleNamespace(predict_latest=lambda _dataset: {"prediction_id": "p1"},
                                        status=lambda _dataset: {"status": "READY"}),

@@ -99,10 +99,16 @@ class BacktestEngine:
             raise ValueError("starting_balance must be positive and stake must meet profile minimum")
         if cfg.stake > profile.maximum_bet:
             raise ValueError("stake exceeds profile maximum")
-        service = DatasetService(self.data_path)
+        source_loader = (self.repository.load_rounds
+                         if self.repository is not None and self.repository.database_url else None)
+        service = DatasetService(self.data_path, source_loader=source_loader)
         rounds, quality, quarantine = service.load_validate()
         values = [float(v) for v in rounds["multiplier"].tolist()]
-        dataset_hash = hashlib.sha256(self.data_path.read_bytes()).hexdigest()
+        # Hash the validated source rows, not a legacy mirror file. This keeps
+        # a run reproducible against the exact database snapshot it analyzed.
+        canonical_rows = rounds[["round_id", "round_index", "multiplier", "timestamp"]].to_json(
+            orient="records", date_format="iso", double_precision=10)
+        dataset_hash = hashlib.sha256(canonical_rows.encode("utf-8")).hexdigest()
         normalized = cfg.normalized()
         run_id = hashlib.sha256(json.dumps({"version": self.VERSION, "dataset": dataset_hash,
                                             "config": normalized}, sort_keys=True).encode()).hexdigest()[:24]
@@ -174,7 +180,8 @@ class BacktestEngine:
         pnl = round(balance - cfg.starting_balance, 2)
         result = {"run_id": run_id, "version": self.VERSION, "mode": "HISTORICAL_SIMULATION",
                   "created_at": datetime.now(timezone.utc).isoformat(), "config": normalized,
-                  "dataset": {"path": str(self.data_path), "sha256": dataset_hash,
+                  "dataset": {"source": "PostgreSQL:aviator_rounds" if source_loader else str(self.data_path),
+                              "sha256": dataset_hash,
                               "quality": quality, "quarantined": len(quarantine)},
                   "reproducible": True, "stopped_reason": stopped_reason,
                   "summary": {"rounds": len(rows), "bets": bets, "wins": wins,

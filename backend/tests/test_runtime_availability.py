@@ -45,6 +45,26 @@ def test_health_reports_backend_and_database(tmp_path):
     assert payload["ok"] is True
 
 
+def test_health_reports_postgres_without_exposing_dsn_or_sqlite_path(tmp_path):
+    repository = prepare_runtime(tmp_path)
+    # Use a local probe connection while presenting PostgreSQL configuration.
+    repository.database_url = "postgresql://user:secret@host/database"
+    sqlite_probe = Repository(tmp_path / "health-probe.sqlite3")
+    sqlite_probe.init()
+    repository.connect = sqlite_probe.connect
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            return await client.get("/health")
+
+    response = run(scenario())
+    assert response.status_code == 200
+    assert response.json()["database"] == {"status": "ok", "backend": "postgresql"}
+    assert "secret" not in response.text
+
+
 def test_unhandled_request_returns_500_and_server_stays_healthy(tmp_path):
     repository = prepare_runtime(tmp_path)
 

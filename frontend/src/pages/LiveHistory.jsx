@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Clock3 } from 'lucide-react';
 import Card from '../components/Card.jsx';
 import Metric from '../components/Metric.jsx';
@@ -8,7 +9,11 @@ import { EmptyState, ErrorState, LoadingState } from '../components/PageState.js
 import DataFreshness from '../components/DataFreshness.jsx';
 
 export default function LiveHistory() {
-  const { history, historyStatus, historyStats, system, loading, error } = useLiveData();
+  const { history, historyStatus, historyStats, system, loading, error, refreshHistory } = useLiveData();
+  useEffect(() => {
+    const timer = setInterval(refreshHistory, 15000);
+    return () => clearInterval(timer);
+  }, [refreshHistory]);
   if (loading) return <LoadingState label="Loading round history…" />;
   if (error) return <ErrorState message={error} />;
   const rounds = history?.rounds || [];

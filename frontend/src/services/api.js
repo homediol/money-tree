@@ -2,11 +2,20 @@ import axios from 'axios';
 import { API_UNAUTHORIZED_EVENT, getApiToken, logout } from '../auth.js';
 import {
   backendRequestsAllowed,
+  getBackendSnapshot,
   reportBackendRequestFailure,
 } from './backendConnection.js';
 import { getApiBaseUrl } from './endpoints.js';
+import { safeReadRetryDelay, shouldRetryReadFailure } from './readRetryPolicy.js';
 
 export { getApiBaseUrl } from './endpoints.js';
+
+export const API_READ_RETRY_EVENT = 'winner:api-read-retry';
+export const API_READ_RETRY_DONE_EVENT = 'winner:api-read-retry-done';
+
+function announceRetry(eventName, detail) {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(eventName, { detail }));
+}
 
 export const api = axios.create({
   baseURL: getApiBaseUrl(),
@@ -14,7 +23,9 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  if (!backendRequestsAllowed() && config.url !== '/health') {
+  const retryingSafeRead = config.__allowReadDuringReconnect
+    && String(config.method || 'get').toLowerCase() === 'get';
+  if (!backendRequestsAllowed() && config.url !== '/health' && !retryingSafeRead) {
     const error = new axios.AxiosError(
       'Backend is reconnecting', 'ERR_BACKEND_RECONNECTING', config,
     );
@@ -27,11 +38,32 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (response) => response,
-  (error) => {
+  (response) => {
+    if (response.config?._safeReadRetryCount) {
+      announceRetry(API_READ_RETRY_DONE_EVENT, { url: response.config.url, recovered: true });
+    }
+    return response;
+  },
+  async (error) => {
+    const config = error?.config;
+    if (shouldRetryReadFailure(config, error)) {
+      config._safeReadRetryCount = (Number(config._safeReadRetryCount) || 0) + 1;
+      config.__allowReadDuringReconnect = true;
+      const delayMs = safeReadRetryDelay(config._safeReadRetryCount);
+      announceRetry(API_READ_RETRY_EVENT, {
+        url: config.url, attempt: config._safeReadRetryCount, delayMs,
+      });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return api.request(config);
+    }
     if (error?.response?.status === 401) {
       logout();
-      window.dispatchEvent(new Event(API_UNAUTHORIZED_EVENT));
+      if (!getBackendSnapshot().health?.public_read_only) {
+        window.dispatchEvent(new Event(API_UNAUTHORIZED_EVENT));
+      }
+    }
+    if (config?._safeReadRetryCount) {
+      announceRetry(API_READ_RETRY_DONE_EVENT, { url: config.url, recovered: false });
     }
     reportBackendRequestFailure(error);
     return Promise.reject(error);
@@ -54,8 +86,70 @@ export async function getPatterns() {
 }
 
 export async function getPatternReport(target = 2) {
-  const { data } = await api.get('/api/patterns/report', { params: { target } });
+  const { data } = await api.get('/api/patterns/report', { params: { target }, timeout: 60000 });
   return data;
+}
+
+export async function getAnalyticsCurrent() {
+  const { data } = await api.get('/api/analytics/current', { timeout: 60000 });
+  return data;
+}
+
+export async function getSelectiveOpportunity() {
+  const { data } = await api.get('/api/opportunities/selective', { timeout: 60000 });
+  return data;
+}
+
+export async function runSelectiveOpportunityResearch() {
+  const { data } = await api.post('/api/opportunities/selective/research', {}, { timeout: 900000 });
+  return data;
+}
+
+export async function getAnalyticsProgress() {
+  const { data } = await api.get('/api/analytics/progress', { timeout: 10000 });
+  return data;
+}
+
+export async function getAnalyticsReports(reportType, limit = 100, offset = 0) {
+  const { data } = await api.get('/api/analytics/reports', {
+    params: { report_type: reportType, limit, offset }, timeout: 60000,
+  });
+  return data;
+}
+
+export async function getAnalyticsReport(reportId) {
+  const { data } = await api.get(`/api/analytics/reports/${encodeURIComponent(reportId)}`, { timeout: 60000 });
+  return data;
+}
+
+export async function getAnalyticsRounds(limit = 100, beforeRoundIndex) {
+  const { data } = await api.get('/api/analytics/rounds', {
+    params: { limit, before_round_index: beforeRoundIndex },
+    timeout: 60000,
+  });
+  return data;
+}
+
+export async function getAnalyticsPastRound(roundId) {
+  const { data } = await api.get('/api/analytics/past-round', {
+    params: { through_round_id: roundId },
+    timeout: 60000,
+  });
+  return data;
+}
+
+export async function downloadAnalyticsReport(reportId, format = 'json') {
+  const response = await api.get(`/api/analytics/reports/${encodeURIComponent(reportId)}/export`, {
+    params: { format }, responseType: 'blob', timeout: 60000,
+  });
+  const url = URL.createObjectURL(response.data);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${reportId}.${format}`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export async function getHistory(limit = 250) {
@@ -98,13 +192,18 @@ export async function getModelPerformance() {
   return data;
 }
 
+export async function getExperimentalML(limit = 50) {
+  const { data } = await api.get('/api/ml/experimental', { params: { limit } });
+  return data;
+}
+
 export async function getSystemStatus() {
   const { data } = await api.get('/api/system/status');
   return data;
 }
 
 export async function getSystemReadiness() {
-  const { data } = await api.get('/api/readiness', { timeout: 4000 });
+  const { data } = await api.get('/api/readiness');
   return data.readiness;
 }
 

@@ -116,9 +116,7 @@ export class FrameManager {
    */
   async waitForFrame(page, { timeoutMs = FRAME_TIMEOUT_MS, signal } = {}) {
     const deadline    = Date.now() + timeoutMs;
-    const HINT_GRACE  = 20000; // ms to wait after first URL hint for payouts to appear
-    let hintedFrame   = null;
-    let hintDeadline  = 0;
+    let hintLogged = false;
 
     while (!signal?.aborted && Date.now() < deadline) {
       // Always re-scan — never use a cached reference
@@ -141,20 +139,13 @@ export class FrameManager {
       }
 
       if (found?.method === 'url-hint') {
-        if (!hintedFrame || !this.isFrameAlive(hintedFrame)) {
-          hintedFrame  = found.frame;
-          hintDeadline = Date.now() + HINT_GRACE;
+        if (!hintLogged) {
+          hintLogged = true;
           log.info(`FrameManager: frame hinted — waiting for game to initialise`);
-        }
-        if (Date.now() >= hintDeadline) {
-          log.info(`FrameManager: returning hinted frame after grace period`);
-          return hintedFrame;
         }
       }
 
-      const waitMs = hintedFrame
-        ? Math.min(1000, Math.max(0, hintDeadline - Date.now()))
-        : 2000;
+      const waitMs = found?.method === 'url-hint' ? 1000 : 2000;
 
       await Promise.race([
         page.waitForEvent('frameattached',  { timeout: waitMs }).catch(() => {}),
@@ -163,12 +154,7 @@ export class FrameManager {
       ]);
     }
 
-    if (hintedFrame && this.isFrameAlive(hintedFrame)) {
-      log.info('FrameManager: returning hinted frame (deadline fallback)');
-      return hintedFrame;
-    }
-
-    throw new Error('Timed out waiting for Aviator iframe');
+    throw new Error('Timed out waiting for Aviator iframe with payouts');
   }
 
   /**

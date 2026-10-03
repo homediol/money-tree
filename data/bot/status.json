@@ -5,21 +5,21 @@
   "frameConnected": true,
   "loggedIn": true,
   "state": "COLLECTING",
-  "lastRoundTime": "2026-09-27T05:00:41.147Z",
-  "lastObserverInstalledAt": "2026-09-27T04:45:09.532Z",
+  "lastRoundTime": "2026-10-03T15:32:56.563Z",
+  "lastObserverInstalledAt": "2026-10-03T15:28:24.669Z",
   "network": {
     "status": "ONLINE",
     "reason": null,
-    "checked_at": "2026-09-27T04:44:48.717Z"
+    "checked_at": "2026-10-03T15:28:04.082Z"
   },
   "lastRecovery": {
     "action": "FRAME_RECOVER",
-    "ts": "2026-09-27T04:44:48.982Z"
+    "ts": "2026-10-03T15:28:04.377Z"
   },
-  "recoveryCount": 105,
-  "browserRestartCount": 16,
-  "loginCount": 84,
-  "totalRoundsSaved": 972,
-  "uptime": 30571,
+  "recoveryCount": 33,
+  "browserRestartCount": 10,
+  "loginCount": 19,
+  "totalRoundsSaved": 516,
+  "uptime": 13389,
   "health": "HEALTHY"
 }

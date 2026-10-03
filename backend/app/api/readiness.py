@@ -27,12 +27,13 @@ async def schedule_evaluation(request: Request) -> dict:
 
 
 @router.get("")
-def status(request: Request):
+async def status(request: Request):
     readiness = request.app.state.readiness
     snapshot = readiness.cached_status()
     if snapshot is None:
         state = "STALE" if readiness._last_snapshot is not None else "STARTING"
-        return JSONResponse(status_code=503, content={"ok": False, "status": state})
+        return JSONResponse(status_code=503, content={"ok": False, "status": state,
+                                                     "reason": "readiness_snapshot_expired_or_history_changed"})
     return {"ok": True, "readiness": snapshot}
 
 

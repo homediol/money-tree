@@ -20,8 +20,8 @@ const AVIATOR_URLS = [
 // Selectors that indicate the user is logged in.
 // These are checked IN THE CURRENT PAGE without navigating away.
 const SESSION_SIGNALS = [
-  '.user-profile', '.account-dropdown', '.dashboard',
-  '[class*="balance"]', '[class*="wallet"]', '[class*="avatar"]',
+  '.user-profile', '.account-dropdown', '.user-avatar',
+  '.header__balance', '.header__wrap-balance',
   'a[href*="logout"]', '[data-testid="user-balance"]',
   // Spribe iframe presence = game loaded = definitely logged in
   'iframe[src*="spribe"]', 'iframe[src*="aviator"]',
@@ -32,6 +32,14 @@ const LOGOUT_SIGNALS = [
   '#user-menu-login', 'a.login-btn', '#phoneInput',
   '[data-testid="login-button"]',
 ];
+
+export class AuthRequiredError extends Error {
+  constructor(message = 'Winner requires an authenticated human session') {
+    super(message);
+    this.name = 'AuthRequiredError';
+    this.code = 'AUTH_REQUIRED';
+  }
+}
 
 async function isAccessDeniedPage(page) {
   try {
@@ -122,14 +130,6 @@ export class LoginManager {
         } catch {}
       }
 
-      // Winner's authenticated sportsbook currently uses a generic
-      // "Meta Brand" document title while its SPA hydrates. The route is the
-      // reliable signal here; there is intentionally no login form on it.
-      if (url.includes('winner.rw/sportsbook/')) {
-        log.info('LoginManager: authenticated sportsbook route detected');
-        return true;
-      }
-
       return false;
     } catch {
       return false;
@@ -197,7 +197,7 @@ export class LoginManager {
 
     const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
     if (/verify you are human|checking your browser|captcha|access denied/i.test(bodyText)) {
-      throw new Error(`Winner browser verification is blocking login (${await pageInfo()})`);
+      throw new AuthRequiredError('Winner human verification is required; browser session left untouched');
     }
 
     // Prefer stable semantic attributes. Winner has changed these element IDs
@@ -219,6 +219,9 @@ export class LoginManager {
       phoneInput = loginForm.locator('input:not([type="password"]):not([type="hidden"]):not([type="submit"])').first();
     }
     if (!await phoneInput.isVisible({ timeout: 10000 }).catch(() => false)) {
+      if (/\/login|\/authentication/i.test(page.url())) {
+        throw new AuthRequiredError('Winner login form is unavailable; manual verification may be required');
+      }
       throw new Error(`Winner phone/login input not found (${await pageInfo()})`);
     }
     await phoneInput.click({ clickCount: 3 });

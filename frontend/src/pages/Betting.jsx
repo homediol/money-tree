@@ -318,7 +318,10 @@ export default function Betting() {
           <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Consecutive Losses</div><div className="font-semibold">{risk?.consecutive_losses ?? '—'} / {risk?.maximum_consecutive_losses ?? '—'}</div><div className="text-xs text-zinc-500">available {risk?.available_balance ?? '—'} BIF</div></div>
         </div>
         <div className={`mt-3 rounded border p-3 text-sm ${risk?.risk_status === 'APPROVED' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : risk?.risk_status === 'WAITING' ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-rose-500/30 bg-rose-500/10 text-rose-200'}`}>
-          Risk Status: {risk?.risk_status || 'WAITING'} · {risk?.reason || 'Waiting for a fresh authorized decision'}
+          <span className="font-semibold">Risk check: {{ APPROVED: 'Approved', WAITING: 'Waiting', BLOCKED: 'Blocked' }[risk?.risk_status] || 'Waiting'}</span>
+          <span className="ml-2">{risk?.risk_status === 'WAITING'
+            ? 'No current bet approval yet. Betting stays paused until the latest round passes the safety checks.'
+            : risk?.reason || 'The system is checking whether a bet can be approved.'}</span>
           {risk?.emergency_stop && ' · Emergency stop is latched; no new bets can be approved.'}
         </div>
       </Card>

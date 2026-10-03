@@ -19,7 +19,7 @@ import { fileURLToPath } from 'url';
 
 import { log, formatError } from './Logger.js';
 import { StateMachine, State } from './StateMachine.js';
-import { BrowserManager }  from './BrowserManager.js';
+import { getBrowserSupervisor } from './BrowserManager.js';
 import { LoginManager }    from './LoginManager.js';
 import { FrameManager }    from './FrameManager.js';
 import { Collector }       from './Collector.js';
@@ -27,7 +27,7 @@ import { HealthMonitor }   from './HealthMonitor.js';
 import { RecoveryManager } from './RecoveryManager.js';
 import { Watchdog }        from './Watchdog.js';
 import { PostgresRoundStore } from './PostgresRoundStore.js';
-import { sleep, backoffMs } from './RetryManager.js';
+import { sleep, backoffMs, classifyError } from './RetryManager.js';
 import { waitForNetwork } from './NetworkMonitor.js';
 import {
   readRoundHistory,
@@ -37,6 +37,22 @@ import {
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(__dirname, '..', '..', 'data', 'bot', 'config.json');
+
+export function selectMissingLegacyRounds(fileHistory, persisted) {
+  const persistedIds = new Set(persisted.map(round => String(round.round_id)));
+  const persistedIndices = new Set(persisted.map(round => Number(round.round_index)));
+  const missing = [];
+  let indexConflicts = 0;
+  for (const round of fileHistory) {
+    if (persistedIds.has(String(round.round_id))) continue;
+    if (persistedIndices.has(Number(round.round_index))) {
+      indexConflicts += 1;
+      continue;
+    }
+    missing.push(round);
+  }
+  return { missing, indexConflicts };
+}
 
 // ── Load credentials ──────────────────────────────────────────────────────────
 
@@ -67,11 +83,12 @@ class AviatorCollector {
     this.signal  = signal;
 
     this.sm       = new StateMachine();
-    this.browser  = new BrowserManager(credentials.headless);
+    this.browser  = getBrowserSupervisor(credentials.headless);
     this.loginMgr = new LoginManager(credentials);
     this.frameMgr = new FrameManager();
     this.collector= new Collector();
     this.health   = new HealthMonitor();
+    this.browser.setHealthSource(this.health);
     this.recovery = new RecoveryManager({
       stateMachine:  this.sm,
       browserManager:this.browser,
@@ -98,19 +115,28 @@ class AviatorCollector {
 
     // Current page reference (shared with watchdog)
     this._page = null;
+    this._ownsBrowser = false;
 
     // Watchdog recovery signal — set when watchdog fires, cleared after recovery
     this._watchdogReason = null;
-    this._sameContextRecoveryUsed = false;
   }
 
   async _initRoundStore() {
-    await this.roundStore.init();
+    // Claim the PostgreSQL lease before touching the browser so a duplicate
+    // collector start cannot create a second browser or compete for round IDs.
+    await this.roundStore.init({ acquireCollectorLease: true });
 
-    const fileHistory = readRoundHistory();
-    if (fileHistory.length > 0) {
-      const { saved } = await this.roundStore.importRounds(fileHistory);
-      log.info(`Imported ${saved} round(s) into ${this.roundStore.backendName()}`);
+    if (!this.roundStore.usingFileFallback) {
+      const fileHistory = readRoundHistory();
+      const persisted = await this.roundStore.loadRounds();
+      const { missing, indexConflicts } = selectMissingLegacyRounds(fileHistory, persisted);
+      if (indexConflicts) {
+        log.warn(`Legacy history has ${indexConflicts} conflicting round IDs at persisted indices; PostgreSQL kept its authoritative rows`);
+      }
+      if (missing.length) {
+        const { saved } = await this.roundStore.importRounds(missing);
+        log.info(`Imported ${saved} missing round(s) into ${this.roundStore.backendName()}`);
+      }
     }
 
     this._history = await this.roundStore.loadRounds();
@@ -150,7 +176,9 @@ class AviatorCollector {
 
     // ── Step 1: Launch browser ────────────────────────────────────────────
     await this.browser.launch(this.signal);
+    this._ownsBrowser = true;
     this._page = await this.browser.getHistoryPage();
+    this.browser.startHeartbeat({ health: this.health });
     this.health.setBrowserConnected(true);
 
     // ── Step 2: Login ─────────────────────────────────────────────────────
@@ -158,6 +186,7 @@ class AviatorCollector {
     await this.loginMgr.ensureLoggedIn(this._page, this.signal);
     this.health.setLoggedIn(true);
     this.health.recordLogin();
+    await this.browser.persistSession(this._page);
 
     // ── Step 3: Navigate to Aviator ───────────────────────────────────────
     this.sm.transition(State.HOME, 'logged-in');
@@ -166,12 +195,12 @@ class AviatorCollector {
       await this.loginMgr.goToAviator(this._page, this.signal);
     } catch (err) {
       log.warn(`Aviator did not open; recreating the history page in the existing context: ${formatError(err)}`);
-      this._page = await this.browser.recoverHistoryPage(this.signal);
-      this._sameContextRecoveryUsed = true;
+      this._page = await this.recovery.recover(err, this._page, this.signal);
       await this.loginMgr.ensureLoggedIn(this._page, this.signal);
       await this.loginMgr.goToAviator(this._page, this.signal);
     }
     await this.browser.focusGamePage(this._page);
+    this.browser._persistMetadata?.();
 
     // ── Step 4: Start watchdog ────────────────────────────────────────────
     this.watchdog.setPage(this._page);
@@ -183,10 +212,16 @@ class AviatorCollector {
 
   async shutdown() {
     this.watchdog.stop();
+    this.browser.stopHeartbeat();
     this.health.setCollectorRunning(false);
     this.health.stop();
+    if (this._ownsBrowser) {
+      await this.browser.close().catch(err => log.warn(`Browser close failed: ${formatError(err)}`));
+      this._ownsBrowser = false;
+    }
+    // Release the singleton database lease only after the owned browser has
+    // closed, so another collector cannot launch during our shutdown window.
     await this.roundStore.close().catch(err => log.warn(`Round store close failed: ${formatError(err)}`));
-    await this.browser.close().catch(err => log.warn(`Browser close failed: ${formatError(err)}`));
   }
 
   async _collectionLoop() {
@@ -199,10 +234,19 @@ class AviatorCollector {
         this._watchdogReason = null;
         log.warn(`Collection loop: watchdog alert — ${reason}`);
         if (!await this._waitForNetwork()) break;
-        this._page = await this.recovery.recover(reason, this._page, this.signal).catch(err => {
+        try {
+          this._page = await this.recovery.recover(reason, this._page, this.signal);
+        } catch (err) {
           log.error(`Recovery failed: ${formatError(err)}`);
-          return this._page;
-        });
+          if (err?.code === 'AUTH_REQUIRED' || err?.message?.includes('CIRCUIT_BREAKER_OPEN')) {
+            if (err?.code === 'AUTH_REQUIRED') {
+              this.health.setLoggedIn(false);
+              if (this.sm.current !== State.RELOGIN) this.sm.transition(State.RELOGIN, 'AUTH_REQUIRED');
+              if (this.sm.current === State.RELOGIN) this.sm.transition(State.STOPPED, 'AUTH_REQUIRED');
+            }
+            break;
+          }
+        }
         this.watchdog.setPage(this._page);
         attempt = 0;
         continue;
@@ -214,32 +258,29 @@ class AviatorCollector {
       } catch (err) {
         if (this.signal?.aborted) break;
 
-        log.error(`Collection error: ${formatError(err)}`);
-        if (!await this._waitForNetwork()) break;
-
-        // If Winner opened the route but never created the game iframe, do
-        // not keep reloading that same page. Recreate only the history page
-        // inside the BrowserManager-owned context, then reopen Aviator.
-        if (!this._sameContextRecoveryUsed && /timed out waiting for aviator iframe/i.test(formatError(err))) {
-          log.warn('Aviator iframe missing; recreating history page in the existing context');
-          this.sm.transition(State.RECOVERING, 'iframe-timeout-page-recovery');
-          try {
-            this._page = await this.browser.recoverHistoryPage(this.signal);
-            // ensureLoggedIn always visits https://winner.rw/ before opening
-            // the login page, which is required for Winner/Cloudflare.
-            await this.loginMgr.ensureLoggedIn(this._page, this.signal);
-            this.sm.transition(State.GAME_LOADING, 'incognito-fallback');
-            await this.loginMgr.goToAviator(this._page, this.signal);
-            await this.browser.focusGamePage(this._page);
-            this._sameContextRecoveryUsed = true;
-            this.watchdog.setPage(this._page);
-            attempt = 0;
-            continue;
-          } catch (fallbackErr) {
-            log.error(`Same-context page recovery failed: ${formatError(fallbackErr)}`);
-            throw fallbackErr;
-          }
+        if (err?.code === 'AUTH_REQUIRED') {
+          this.health.setLoggedIn(false);
+          log.error('AUTH_REQUIRED: collector paused for human login or platform verification');
+          if (this.sm.current !== State.RELOGIN) this.sm.transition(State.RELOGIN, 'AUTH_REQUIRED');
+          this.sm.transition(State.STOPPED, 'AUTH_REQUIRED');
+          break;
         }
+
+        if (err?.message?.includes('CIRCUIT_BREAKER_OPEN')) {
+          log.error('CIRCUIT_BREAKER_OPEN: collector stopped automatic recovery for investigation');
+          if (this.sm.current === State.COLLECTING) this.sm.transition(State.STOPPED, 'CIRCUIT_BREAKER_OPEN');
+          break;
+        }
+
+        if (classifyError(err) === 'PERSISTENCE_ERROR') {
+          log.error(`Persistence failed; preserving the observation and browser session: ${formatError(err)}`);
+          await sleep(backoffMs(attempt++), this.signal);
+          continue;
+        }
+
+        log.error(`Collection error: ${formatError(err)}`);
+        if (classifyError(err) === 'FRAME_RECOVER') this.health.setFrameConnected(false);
+        if (!await this._waitForNetwork()) break;
 
         const delay = backoffMs(attempt++);
         log.warn(`Recovering in ${delay}ms (attempt ${attempt})`);
@@ -277,11 +318,7 @@ class AviatorCollector {
     // Always get a fresh frame — never reuse a cached reference
     const frame = await this.frameMgr.waitForFrame(this._page, {
       signal: this.signal,
-      // Detect a bad dedicated-profile load quickly. Once on the user's
-      // recovered page, allow the full configured game startup interval.
-      timeoutMs: this._sameContextRecoveryUsed
-        ? Number(process.env.BOT_FRAME_TIMEOUT || 120000)
-        : Number(process.env.BOT_INITIAL_FRAME_TIMEOUT || 30000),
+      timeoutMs: Number(process.env.BOT_INITIAL_FRAME_TIMEOUT || process.env.BOT_FRAME_TIMEOUT || 30000),
     });
     this.health.setFrameConnected(true);
 
@@ -299,13 +336,14 @@ class AviatorCollector {
       // Reconnected after reload — catch up missed rounds
       const inferred = inferNewMultipliers(this._prevSnapshot, initMults);
       if (inferred.length > 0) {
-          const { history, added } = appendRounds(this._history, inferred, new Date().toISOString());
+        const { history, added } = appendRounds(this._history, inferred, new Date().toISOString());
         if (added.length > 0) {
-          this._history = history;
-          await this.roundStore.saveRounds(added, 'collector_catchup');
-          this._totalAdded += added.length;
-          added.forEach(() => this.health.recordRound());
-          log.info(`Catch-up: saved ${added.length} missed round(s)`);
+          const result = await this.roundStore.saveRounds(added, 'collector_catchup');
+          this._history = result.rounds || history;
+          this._totalAdded += result.saved;
+          for (const round of added.slice(-result.saved)) this.health.recordRound(round);
+          if (result.saved > 0) await this.recovery.verifyRound(added.at(-1));
+          log.info(`Catch-up: saved ${result.saved} missed round(s)${result.duplicates ? `, skipped ${result.duplicates} duplicate observation(s)` : ''}`);
         }
       }
       this._prevSnapshot = initMults;
@@ -364,15 +402,13 @@ class AviatorCollector {
 
         const { history, added } = appendRounds(this._history, inferred, event.timestamp || new Date().toISOString());
         if (added.length > 0) {
-          this._history      = history;
+          const result = await this.roundStore.saveRounds(added, 'collector');
+          this._history = result.rounds || history;
           this._lastSavedSig = currSig;
-          this._totalAdded  += added.length;
-          await this.roundStore.saveRounds(added, 'collector');
-          added.forEach(() => this.health.recordRound());
-          if (this._watchdogReason?.startsWith('collector frozen')) {
-            this._watchdogReason = null;
-          }
-          log.info(`History updated: ${this._history.length} rounds saved`);
+          this._totalAdded += result.saved;
+          for (const round of added.slice(-result.saved)) this.health.recordRound(round);
+          if (result.saved > 0) await this.recovery.verifyRound(added.at(-1));
+          log.info(`History updated: ${this._history.length} rounds persisted${result.duplicates ? `, skipped ${result.duplicates} duplicate observation(s)` : ''}`);
         }
       }
 
@@ -405,6 +441,18 @@ export async function startCollector(signal) {
       await collector.run();
     } catch (err) {
       if (signal?.aborted) break;
+      if (err?.code === 'AUTH_REQUIRED') {
+        log.error('AUTH_REQUIRED: automatic collector restart stopped; human login or platform verification is required');
+        break;
+      }
+      if (err?.code === 'COLLECTOR_ALREADY_ACTIVE') {
+        log.error(`Collector start refused: ${err.message}`);
+        break;
+      }
+      if (err?.message?.includes('CIRCUIT_BREAKER_OPEN')) {
+        log.error('CIRCUIT_BREAKER_OPEN: automatic collector restart stopped for investigation');
+        break;
+      }
       log.error(`Outer loop error: ${formatError(err)} — restarting in 10s`);
       await sleep(10000, signal);
     } finally {

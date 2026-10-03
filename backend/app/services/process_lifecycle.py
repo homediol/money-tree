@@ -27,6 +27,27 @@ class ProcessLifecycle:
         self.started_monotonic = time.monotonic()
         self._lock = Lock()
         self._signals: list[str] = []
+        self.repository = None
+
+    def bind_repository(self, repository) -> None:
+        """Switch lifecycle history to PostgreSQL and migrate legacy file rows once."""
+        self.repository = repository
+        self.repository.save_process_lifecycle_events(self._file_events())
+
+    def _file_events(self) -> list[dict]:
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        result = []
+        for line in lines[-5000:]:
+            try:
+                value = json.loads(line)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict):
+                result.append(value)
+        return result
 
     def record(self, event: str, **fields) -> dict:
         payload = {
@@ -46,7 +67,15 @@ class ProcessLifecycle:
                 os.fsync(handle.fileno())
         except Exception:
             # Diagnostics must never be able to terminate the API.
-            return payload
+            pass
+        if self.repository is not None:
+            try:
+                self.repository.save_process_lifecycle_event(payload)
+            except Exception:
+                # File diagnostics remain a recovery trail if PostgreSQL itself
+                # is unavailable, but database backed APIs never claim the
+                # failed event was persisted.
+                pass
         return payload
 
     def start(self, *, startup_reason: str, previous_pid: int | None = None,
@@ -76,19 +105,12 @@ class ProcessLifecycle:
         )
 
     def events(self) -> list[dict]:
-        try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return []
-        result: list[dict] = []
-        for line in lines[-500:]:
+        if self.repository is not None:
             try:
-                value = json.loads(line)
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if isinstance(value, dict):
-                result.append(value)
-        return result
+                return self.repository.list_process_lifecycle_events(5000)
+            except Exception:
+                return []
+        return self._file_events()
 
     def status(self) -> dict:
         events = self.events()

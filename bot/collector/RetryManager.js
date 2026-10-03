@@ -40,6 +40,7 @@ export async function withRetry(fn, { maxAttempts = 6, label = 'op', signal } = 
     } catch (err) {
       lastErr = err;
       if (signal?.aborted) throw err;
+      if (err?.code === 'AUTH_REQUIRED' || err?.name === 'AuthRequiredError') throw err;
       const delay = backoffMs(attempt);
       log.warn(`${label} failed (attempt ${attempt + 1}/${maxAttempts}): ${formatError(err)} — retrying in ${delay}ms`);
       await sleep(delay, signal);
@@ -53,6 +54,14 @@ export async function withRetry(fn, { maxAttempts = 6, label = 'op', signal } = 
  */
 export function classifyError(err) {
   const msg = formatError(err).toLowerCase();
+
+  if (err?.code === 'AUTH_REQUIRED' || err?.name === 'AuthRequiredError'
+      || /human verification|manual verification|session expired|authentication\/login/.test(msg)) {
+    return 'AUTH_REQUIRED';
+  }
+  if (/duplicate key value violates unique constraint|postgres|database|sqlstate|round_index_key/.test(msg)) {
+    return 'PERSISTENCE_ERROR';
+  }
 
   const browserFatal = [
     'browser has been closed',

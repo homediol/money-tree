@@ -24,6 +24,9 @@ export class HealthMonitor {
       loggedIn:           false,
       state:              'STARTING',
       lastRoundTime:      null,
+      lastRoundId:        null,
+      lastSuccessfulCollection: null,
+      heartbeatAt:        null,
       lastObserverInstalledAt: null,
       network:            { status: 'UNKNOWN', reason: null, checked_at: null },
       lastRecovery:       null,
@@ -56,7 +59,13 @@ export class HealthMonitor {
   setLoggedIn(v)             { this._metrics.loggedIn = v; }
   setNetwork(value)          { this._metrics.network = value; }
   recordObserverInstalled()  { this._metrics.lastObserverInstalledAt = new Date().toISOString(); }
-  recordRound()              { this._metrics.lastRoundTime = new Date().toISOString(); this._metrics.totalRoundsSaved++; }
+  recordRound(round = null) {
+    this._metrics.lastRoundTime = round?.timestamp || new Date().toISOString();
+    if (round?.round_id != null) this._metrics.lastRoundId = String(round.round_id);
+    this._metrics.lastSuccessfulCollection = new Date().toISOString();
+    this._metrics.heartbeatAt = this._metrics.lastSuccessfulCollection;
+    this._metrics.totalRoundsSaved++;
+  }
   recordRecovery(action)     { this._metrics.recoveryCount++; this._metrics.lastRecovery = { action, ts: new Date().toISOString() }; }
   recordBrowserRestart()     { this._metrics.browserRestartCount++; }
   recordLogin()              { this._metrics.loginCount++; }
@@ -94,6 +103,7 @@ export class HealthMonitor {
 
   _flush() {
     try {
+      if (this._metrics.collectorRunning) this._metrics.heartbeatAt = new Date().toISOString();
       const snap = this.snapshot();
       fs.mkdirSync(path.dirname(STATUS_PATH), { recursive: true });
       const tmp = STATUS_PATH + '.tmp';

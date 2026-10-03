@@ -1,14 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { ErrorBoundary } from 'react-error-boundary';
 import { Toaster } from 'sonner';
-import { Activity, BarChart3, Bot, Brain, FlaskConical, GitBranch, History, LayoutDashboard, ReceiptText, Settings, ShieldCheck, Signal } from 'lucide-react';
+import { Activity, BarChart3, Bot, Brain, FlaskConical, GitBranch, History, LayoutDashboard, ReceiptText, Settings, ShieldCheck, Signal, Target } from 'lucide-react';
 import './styles/index.css';
 import Dashboard from './pages/Dashboard.jsx';
 import SystemDashboard from './pages/SystemDashboard.jsx';
 import LiveHistory from './pages/LiveHistory.jsx';
-import PatternExplorer from './pages/PatternExplorer.jsx';
 import SignalHistory from './pages/SignalHistory.jsx';
 import ModelPerformance from './pages/ModelPerformance.jsx';
 import Betting from './pages/Betting.jsx';
@@ -24,15 +23,19 @@ import StrategyResearch from './pages/StrategyResearch.jsx';
 import ShadowMode from './pages/ShadowMode.jsx';
 import LiveActivation from './pages/LiveActivation.jsx';
 import Recovery from './pages/Recovery.jsx';
-import { BACKEND_RESTORED_EVENT } from './services/backendConnection.js';
+import AnalyticsReports from './pages/AnalyticsReports.jsx';
+import SelectiveOpportunities from './pages/SelectiveOpportunities.jsx';
+import { useBackendConnection } from './services/backendConnection.js';
+import { getApiToken } from './auth.js';
 import ApiAccessGate from './components/ApiAccessGate.jsx';
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/history', label: 'Round History', icon: History },
-  { to: '/patterns', label: 'Patterns', icon: BarChart3 },
+  { to: '/analytics-reports', label: 'Patterns & Analytics', icon: BarChart3 },
   { to: '/signals', label: 'Signals', icon: Signal },
   { to: '/models', label: 'Models', icon: Brain },
+  { to: '/opportunities', label: 'Rare Opportunities', icon: Target },
   { to: '/evidence', label: 'Evidence', icon: ShieldCheck },
   { to: '/decisions', label: 'Decisions', icon: GitBranch },
   { to: '/betting', label: 'Betting', icon: Bot },
@@ -47,13 +50,8 @@ const nav = [
 ];
 
 function Shell() {
-  const [backendEpoch, setBackendEpoch] = useState(0);
-
-  useEffect(() => {
-    const restore = () => setBackendEpoch((value) => value + 1);
-    window.addEventListener(BACKEND_RESTORED_EVENT, restore);
-    return () => window.removeEventListener(BACKEND_RESTORED_EVENT, restore);
-  }, []);
+  const connection = useBackendConnection();
+  const visitor = connection.health?.public_read_only && !getApiToken();
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -88,13 +86,18 @@ function Shell() {
       </header>
       <main className="lg:pl-64">
         <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-          <Routes key={backendEpoch}>
+          {visitor && <div className="mb-5 rounded border border-amber-600/40 bg-amber-950/30 p-3 text-sm text-amber-200">
+            Visitor access is read only. Actions require the operator API token in <NavLink to="/settings" className="underline">Settings</NavLink>.
+          </div>}
+          <Routes>
             <Route path="/" element={<SystemDashboard />} />
             <Route path="/analytics" element={<Dashboard />} />
             <Route path="/history" element={<LiveHistory />} />
-            <Route path="/patterns" element={<PatternExplorer />} />
+            <Route path="/patterns" element={<Navigate to="/analytics-reports" replace />} />
+            <Route path="/analytics-reports" element={<AnalyticsReports />} />
             <Route path="/signals" element={<SignalHistory />} />
             <Route path="/models" element={<ModelPerformance />} />
+            <Route path="/opportunities" element={<SelectiveOpportunities />} />
             <Route path="/evidence" element={<EvidenceExplorer />} />
             <Route path="/decisions" element={<DecisionEngine />} />
             <Route path="/betting" element={<Betting />} />

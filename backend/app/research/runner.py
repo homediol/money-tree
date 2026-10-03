@@ -68,17 +68,21 @@ class StrategyExperimentRunner:
             raise ValueError("train and validation fractions must leave an untouched test period")
         if cfg.max_candidates < 1 or cfg.max_candidates > 24:
             raise ValueError("max_candidates must be between 1 and 24")
-        service = DatasetService(self.data_path)
+        source_loader = (self.repository.load_rounds
+                         if self.repository is not None and self.repository.database_url else None)
+        service = DatasetService(self.data_path, source_loader=source_loader)
         rounds, quality, quarantine = service.load_validate()
         n = len(rounds)
         validation_window = max(1, int(n * cfg.validation_fraction))
         test_window = max(1, n - int(n * cfg.train_fraction) - validation_window)
-        dataset_hash = hashlib.sha256(self.data_path.read_bytes()).hexdigest()
+        canonical_rows = rounds[["round_id", "round_index", "multiplier", "timestamp"]].to_json(
+            orient="records", date_format="iso", double_precision=10)
+        dataset_hash = hashlib.sha256(canonical_rows.encode("utf-8")).hexdigest()
         candidates = []
         for candidate in self._candidates(cfg):
             if self._stop:
                 break
-            result = BacktestEngine(self.data_path).run(BacktestConfig(
+            result = BacktestEngine(self.data_path, repository=self.repository).run(BacktestConfig(
                 profile=candidate["profile"], starting_balance=candidate["starting_balance"],
                 min_history=candidate["min_history"], probability_threshold=candidate["probability_threshold"],
                 validation_window=validation_window, test_window=test_window))
@@ -103,12 +107,12 @@ class StrategyExperimentRunner:
         for value in sorted({max(0.01, threshold - cfg.perturbation), threshold,
                              min(.99, threshold + cfg.perturbation)}):
             candidate = {**selected["config"], "probability_threshold": value}
-            result = BacktestEngine(self.data_path).run(BacktestConfig(
+            result = BacktestEngine(self.data_path, repository=self.repository).run(BacktestConfig(
                 **candidate, validation_window=validation_window, test_window=test_window))
             sensitivity.append({"parameter": "probability_threshold", "value": value,
                                 "validation": next(x for x in result["periods"] if x["period"] == "validation"),
                                 "test": next(x for x in result["periods"] if x["period"] == "test")})
-        final = BacktestEngine(self.data_path).run(BacktestConfig(
+        final = BacktestEngine(self.data_path, repository=self.repository).run(BacktestConfig(
             **selected["config"], validation_window=validation_window, test_window=test_window))
         train_score = self._score(final, "train")
         validation_score = self._score(final, "validation")
@@ -116,7 +120,8 @@ class StrategyExperimentRunner:
         result = {"research_id": hashlib.sha256(json.dumps({"version": self.VERSION,
                     "dataset": dataset_hash, "config": cfg.normalized()}, sort_keys=True).encode()).hexdigest()[:24],
                   "version": self.VERSION, "mode": cfg.mode.upper(), "created_at": datetime.now(timezone.utc).isoformat(),
-                  "config": cfg.normalized(), "dataset": {"sha256": dataset_hash, "path": str(self.data_path),
+                  "config": cfg.normalized(), "dataset": {"sha256": dataset_hash,
+                  "source": "PostgreSQL:aviator_rounds" if source_loader else str(self.data_path),
                   "quality": quality, "quarantined": len(quarantine)}, "partitions": {
                   "train": int(n * cfg.train_fraction), "validation": validation_window, "untouched_test": test_window},
                   "candidates": candidates, "robust_candidates": robust, "selected": selected,

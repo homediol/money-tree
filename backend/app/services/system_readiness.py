@@ -10,8 +10,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 
@@ -47,6 +48,7 @@ class SystemReadiness:
         self._last_signature: str | None = None
         self._last_history_fingerprint: tuple[int, int] | None = None
         self._training_task: asyncio.Task | None = None
+        self._training_started_monotonic: float | None = None
         self._source_fingerprint: tuple[int, int] | None = None
         self._source_hash: str | None = None
         self._last_attempt_index: int | None = None
@@ -85,7 +87,14 @@ class SystemReadiness:
             new_rounds = max(0, len(rounds) - int(last_index))
         raw_path = getattr(dataset, "raw_path", None)
         source_hash = None
-        if raw_path and raw_path.exists():
+        if getattr(dataset, "source_loader", None) is not None:
+            rounds = dataset.clean_rounds
+            if not rounds.empty:
+                import pandas as pd
+                source_hash = hashlib.sha256(pd.util.hash_pandas_object(
+                    rounds[["round_id", "round_index", "timestamp", "multiplier"]],
+                    index=False).values.tobytes()).hexdigest()
+        elif raw_path and raw_path.exists():
             source_stat = raw_path.stat()
             fingerprint = (source_stat.st_mtime_ns, source_stat.st_size)
             if fingerprint != self._source_fingerprint:
@@ -130,9 +139,92 @@ class SystemReadiness:
     def state(self):
         return self.app.state
 
+    def _completion_estimate(self, continuous, collector_raw, collector_healthy, training, busy):
+        """Estimate waiting time from the current uninterrupted stream only."""
+        now = datetime.now(timezone.utc)
+        rounds = self.state.wp.dataset_service.clean_rounds
+        remaining = max(0, self.required_rounds - continuous)
+        new_rounds = training["new_rounds_since_training"]
+        new_remaining = None if new_rounds is None else max(0, self.min_new_rounds - new_rounds)
+        intervals = []
+        reason = None
+        latest = None
+        if not collector_healthy:
+            reason = "collector_not_healthy"
+        elif "timestamp" not in rounds or rounds.empty:
+            reason = "recent_round_timestamps_unavailable"
+        else:
+            recent = rounds.tail(min(continuous, 31)).to_dict("records") if continuous else []
+            try:
+                times = [datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00")) for row in recent]
+                latest = times[-1] if times else None
+                if latest is None or latest.tzinfo is None or not 0 <= (now - latest).total_seconds() <= 120:
+                    reason = "waiting_for_fresh_rounds"
+                elif (collector_raw.get("latest") or {}).get("round_id") not in {None, recent[-1].get("round_id")}:
+                    reason = "processed_history_catching_up"
+                else:
+                    for previous, current in zip(times, times[1:]):
+                        delta = (current - previous).total_seconds()
+                        if not 0 < delta <= 120:
+                            intervals = []
+                            break
+                        intervals.append(delta)
+                    if len(intervals) < 5:
+                        reason = "measuring_recent_round_pace"
+            except (TypeError, ValueError, OverflowError):
+                reason = "recent_round_timestamps_unavailable"
+        pace = sum(intervals) / len(intervals) if intervals and reason is None else None
+        # Subtract time already spent in the current round, without promising
+        # zero seconds before the outstanding round has actually arrived.
+        age = (now - latest).total_seconds() if pace is not None else 0
+        def wait_seconds(count):
+            if count == 0:
+                return 0
+            if pace is None or count is None:
+                return None
+            return max(1, math.ceil(count * pace - age))
+        warmup_seconds = wait_seconds(remaining)
+        evaluation_seconds = None
+        if (not busy and self.automatic_training and collector_healthy
+                and not training["training_cursor_missing"] and pace is not None):
+            evaluation_seconds = max(warmup_seconds or 0, wait_seconds(new_remaining) or 0,
+                                     training["cooldown_remaining_s"])
+        elapsed = (max(0, int(time.monotonic() - self._training_started_monotonic))
+                   if busy and self._training_started_monotonic is not None else None)
+        previous_duration = self.state.wp.model_registry.performance().get("cycle_time_seconds")
+        try:
+            previous_duration = float(previous_duration)
+            if not math.isfinite(previous_duration) or previous_duration <= 0:
+                previous_duration = None
+        except (TypeError, ValueError):
+            previous_duration = None
+        training_seconds = (math.ceil(previous_duration - elapsed)
+                            if elapsed is not None and previous_duration and elapsed < previous_duration else None)
+        def expected_at(seconds):
+            return (now + timedelta(seconds=seconds)).isoformat() if seconds is not None else None
+        return {
+            "basis": "recent_contiguous_rounds", "sample_intervals": len(intervals) if pace else 0,
+            "average_round_seconds": round(pace, 2) if pace else None,
+            "unavailable_reason": reason, "remaining_warmup_rounds": remaining,
+            "warmup_remaining_seconds": warmup_seconds, "warmup_expected_at": expected_at(warmup_seconds),
+            "remaining_new_rounds": new_remaining,
+            "evaluation_start_remaining_seconds": evaluation_seconds,
+            "evaluation_start_expected_at": expected_at(evaluation_seconds),
+            "training_elapsed_seconds": elapsed, "previous_cycle_seconds": previous_duration,
+            "training_remaining_seconds": training_seconds,
+            "training_expected_at": expected_at(training_seconds),
+        }
+
     def _history_fingerprint(self) -> tuple[int, int] | None:
         """Return the raw history identity without reading or parsing it."""
-        path = getattr(self.state.wp.dataset_service, "raw_path", None)
+        dataset = self.state.wp.dataset_service
+        if getattr(dataset, "source_loader", None) is not None:
+            rounds = dataset.clean_rounds
+            if rounds.empty:
+                return None
+            latest = rounds.iloc[-1]
+            return (int(latest["round_index"]), hash((str(latest["round_id"]), str(latest["timestamp"]), float(latest["multiplier"]))))
+        path = getattr(dataset, "raw_path", None)
         if path is None:
             return None
         try:
@@ -152,7 +244,8 @@ class SystemReadiness:
         registry = wp.model_registry
         dataset = wp.dataset_service
         health = registry.status(dataset)
-        metadata = registry.performance() or {}
+        metadata = ((registry.model_info() if hasattr(registry, "model_info") else registry.performance())
+                    if health.get("deployable") else registry.performance()) or {}
         algorithm = metadata.get("algorithm")
         model_metrics = (metadata.get("models") or {}).get(algorithm, {}) if algorithm else {}
         checks = metadata.get("overfitting_checks") or {}
@@ -245,10 +338,9 @@ class SystemReadiness:
                          else collector.status())
         collector_status, collector_healthy = self._collector_health(collector_raw)
         persisted_collector = getattr(self.state.wp, "collector_state", None) or {}
-        continuous = max(
-            _as_int(dataset.quality.get("latest_contiguous_rounds")),
-            _as_int(persisted_collector.get("contiguous_rounds")),
-        )
+        # The processed history is the current authority. A persisted count
+        # from before a real collection gap must not keep warm-up at 100%.
+        continuous = _as_int(dataset.quality.get("latest_contiguous_rounds"))
         progress = min(100.0, round(continuous * 100.0 / self.required_rounds, 1))
         history_ready = continuous >= self.required_rounds
         model = self._model()
@@ -309,7 +401,7 @@ class SystemReadiness:
         if registry_lock is not None:
             registry_busy = registry_busy or registry_lock.locked()
         task_busy = bool(self._training_task and not self._training_task.done())
-        training_busy = registry_busy or task_busy or self._training["status"] in {"TRAINING", "EVALUATING"}
+        training_busy = registry_busy or task_busy or self._training["status"] in {"TRAINING", "EVALUATING", "VERIFYING"}
         evaluation_blockers = []
         if not self.automatic_training:
             evaluation_blockers.append("automatic_training_disabled")
@@ -327,7 +419,7 @@ class SystemReadiness:
         if training_busy:
             evaluation_blockers.append("training_lock_busy")
         eligible = not evaluation_blockers
-        if self._training["status"] in {"TRAINING", "EVALUATING"} or registry_busy:
+        if self._training["status"] in {"TRAINING", "EVALUATING", "VERIFYING"} or registry_busy:
             next_evaluation = "TRAINING"
         elif self._training["last_result"] is not None and training["new_rounds_since_training"] == 0:
             next_evaluation = "COMPLETED"
@@ -378,6 +470,8 @@ class SystemReadiness:
             },
             "automatic_training": {
                 **self._training, **training,
+                "candidate_cycle": {key: registry.performance().get(key) for key in
+                                    ("cycle_id", "ranking", "models", "model_concurrency", "deployment_outcome", "active_model_version")},
                 "latest_candidate": self._training.get("model_id") or model["model_id"],
                 "training_lock": "BUSY" if training_busy else "FREE",
                 "next_evaluation": next_evaluation,
@@ -387,6 +481,8 @@ class SystemReadiness:
                 "prospective_evidence_status": "UNSEEN_BEFORE_NEXT_EVALUATION",
                 "latest_candidate_evidence_status": "HISTORICAL_CHRONOLOGICAL_EVALUATION",
             },
+            "completion_estimate": self._completion_estimate(
+                continuous, collector_raw, collector_healthy, training, training_busy),
             "updated_at": _utcnow(),
         }
 
@@ -416,7 +512,8 @@ class SystemReadiness:
             await self.broadcaster(payload)
 
     async def _run_training(self) -> None:
-        self._training.update(status="TRAINING", reason=None)
+        self._training_started_monotonic = time.monotonic()
+        self._training.update(status="TRAINING", reason=None, started_at=_utcnow(), completed_at=None)
         await self.refresh(trigger_training=False, force_emit=True)
         try:
             progress = self._training_progress()
@@ -456,10 +553,12 @@ class SystemReadiness:
             await self._emit({"type": "model:training_failed", "reason": str(exc)})
         finally:
             self._last_attempt_at = datetime.now(timezone.utc)
+            self._training["completed_at"] = _utcnow()
+            self._training["duration_seconds"] = round(time.monotonic() - self._training_started_monotonic, 1)
             await self.refresh(trigger_training=False, force_emit=True)
 
     def _set_training_phase(self, phase: str) -> None:
-        if self._training["status"] in {"TRAINING", "EVALUATING"}:
+        if self._training["status"] in {"TRAINING", "EVALUATING", "VERIFYING"}:
             self._training["status"] = phase
             asyncio.create_task(self.refresh(trigger_training=False, force_emit=True))
 

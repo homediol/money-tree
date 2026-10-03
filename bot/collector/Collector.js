@@ -107,7 +107,7 @@ export class Collector {
     }
     const multipliers = result.multipliers.map(normalizeMultiplier).filter(v => v !== null);
     log.info(`Collector: observer installed — ${multipliers.length} rounds visible`);
-    return { multipliers, signature: snapshotSignature(multipliers), timestamp: raw?.ts || null };
+    return { multipliers, signature: snapshotSignature(multipliers) };
   }
 
   async waitForMutation(frame, idleMs = MUTATION_IDLE_MS) {
@@ -115,7 +115,7 @@ export class Collector {
     if (raw?.error) return { error: raw.error };
     if (raw?.timeout) return { timeout: true };
     const multipliers = (raw?.multipliers ?? []).map(normalizeMultiplier).filter(v => v !== null);
-    return { multipliers, signature: snapshotSignature(multipliers) };
+    return { multipliers, signature: snapshotSignature(multipliers), timestamp: raw?.ts || null };
   }
 
   async isInstalled(frame) {

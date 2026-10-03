@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
+import pytest
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
@@ -18,6 +19,33 @@ from app.services.betting_mode import (
     SHADOW_REALISTIC,
     BettingModeManager,
 )
+
+
+@pytest.mark.parametrize("balance,verified", [(1006.0, True), (0.0, True),
+    (None, False), ("1006", False), (True, False), (-1.0, False),
+    (float("nan"), False), (float("inf"), False)])
+def test_platform_balance_requires_finite_numeric_ui_evidence(tmp_path, monkeypatch, balance, verified):
+    repository = Repository(tmp_path / "modes.sqlite3")
+    repository.init()
+    observations = []
+    class Browser:
+        def __init__(self, _settings):
+            pass
+        async def snapshot(self):
+            return {"ok": True, "balance": balance, "ui_ready": True}
+        async def close(self):
+            pass
+    monkeypatch.setattr("app.betting.browser_client.AviatorBrowserClient", Browser)
+    app = SimpleNamespace(state=SimpleNamespace(
+        wp=SimpleNamespace(repository=repository),
+        betting=SimpleNamespace(settings=object()),
+        system_health=SimpleNamespace(record_browser_observation=observations.append),
+    ))
+    modes = BettingModeManager(app)
+    result = asyncio.run(modes._read_platform_balance())
+    assert result["verified"] is verified
+    assert result["balance"] == balance if verified else result["balance"] is None
+    assert observations == [result]
 
 
 def test_restart_never_restores_live_authorization(tmp_path):
@@ -130,6 +158,9 @@ def test_modes_are_mutually_exclusive_and_emergency_safe(tmp_path):
     )
     modes = BettingModeManager(SimpleNamespace(state=state))
     state.betting_mode = modes
+
+    blocked_new_config = asyncio.run(modes.switch_live({"configuration": {"mode": "MANUAL"}}))
+    assert blocked_new_config["error"] == "two_panel_live_configuration_not_qualified"
 
     modes.mode = LIVE_REAL
     modes.live_authorized = True

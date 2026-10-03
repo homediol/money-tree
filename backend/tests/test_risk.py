@@ -81,6 +81,67 @@ def test_valid_decision_is_approved_and_audited():
     assert {e["type"] for e in events} >= {"risk:evaluated", "risk:approved"}
 
 
+def test_manual_panels_use_per_panel_limits_and_one_combined_bankroll_limit():
+    fake = FakeBetting(current_balance=40_000, goal_balance=60_000)
+    fake.data["mode"] = "SHADOW"
+    fake.data["automatic_enabled"] = True
+    fake.data["automatic_enabled"] = True
+    fake.data["session_configuration"] = {"mode": "MANUAL", "panels": [
+        {"enabled": True, "stake": 1000, "cashout": 2.0},
+        {"enabled": True, "stake": 1000, "cashout": 2.0},
+    ]}
+    risk, _, _ = manager(fake)
+    evaluated = run(risk.evaluate(intent(bet_amount=2000), fake.status()))
+    assert evaluated.approved is True
+    assert evaluated.approved_bet == 2000
+    decision = {"status": "READY_FOR_EXECUTION", "profile": "PROFILE_A",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+        "risk_evaluation": {"approved": True, "status": "APPROVED", "approved_bet": 2000}}
+    assert risk.validate_execution(decision, fake.status()) == []
+
+
+def test_manual_combined_exposure_over_bankroll_percentage_is_rejected():
+    fake = FakeBetting(current_balance=10_000)
+    fake.data["session_configuration"] = {"mode": "MANUAL", "panels": [
+        {"enabled": True, "stake": 300, "cashout": 2.0},
+        {"enabled": True, "stake": 300, "cashout": 2.0},
+    ]}
+    risk, _, _ = manager(fake)
+    evaluated = run(risk.evaluate(intent(bet_amount=600), fake.status()))
+    assert evaluated.approved is False
+    assert evaluated.reason == "Combined manual exposure exceeds bankroll limits"
+
+
+def test_manual_panels_use_per_panel_limits_and_one_combined_bankroll_limit():
+    fake = FakeBetting(current_balance=40_000, goal_balance=60_000)
+    fake.data["mode"] = "SHADOW"
+    fake.data["automatic_enabled"] = True
+    fake.data["session_configuration"] = {"mode": "MANUAL", "panels": [
+        {"enabled": True, "stake": 1000, "cashout": 2.0},
+        {"enabled": True, "stake": 1000, "cashout": 2.0},
+    ]}
+    risk, _, _ = manager(fake)
+    evaluated = run(risk.evaluate(intent(bet_amount=2000), fake.status()))
+    assert evaluated.approved is True
+    assert evaluated.approved_bet == 2000
+    decision = {"status": "READY_FOR_EXECUTION", "profile": "PROFILE_A",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+        "risk_evaluation": {"approved": True, "status": "APPROVED", "approved_bet": 2000}}
+    assert risk.validate_execution(decision, fake.status()) == []
+
+
+def test_manual_combined_exposure_over_bankroll_percentage_is_rejected():
+    fake = FakeBetting(current_balance=10_000)
+    fake.data["session_configuration"] = {"mode": "MANUAL", "panels": [
+        {"enabled": True, "stake": 300, "cashout": 2.0},
+        {"enabled": True, "stake": 300, "cashout": 2.0},
+    ]}
+    risk, _, _ = manager(fake)
+    evaluated = run(risk.evaluate(intent(bet_amount=600), fake.status()))
+    assert evaluated.approved is False
+    assert evaluated.reason == "Combined manual exposure exceeds bankroll limits"
+
+
 @pytest.mark.parametrize("amount,reason", [
     (1100, "configured maximum"),
     (600, "balance percentage"),

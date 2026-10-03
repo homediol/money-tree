@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import secrets
 import time
 from datetime import datetime, timezone
@@ -38,6 +39,7 @@ class BettingModeManager:
         self.last_change = _now()
         self.recovered_live = bool(persisted and persisted.get("mode") == LIVE_REAL)
         self._lock = asyncio.Lock()
+        self._balance_read_lock = asyncio.Lock()
         self._reviews: dict[str, dict[str, Any]] = {}
         self._persist("startup_safe_mode", previous_mode=(persisted or {}).get("mode"))
 
@@ -92,6 +94,20 @@ class BettingModeManager:
         return self.app.state.betting.status()
 
     async def _read_platform_balance(self) -> dict[str, Any]:
+        async with self._balance_read_lock:
+            try:
+                observation = await asyncio.wait_for(self._snapshot_platform_balance(), timeout=12)
+            except Exception as exc:
+                observation = {"verified": False, "balance": None, "ui_ready": False,
+                               "browser_status": "UNAVAILABLE", "observed_at": _now(),
+                               "source": "existing_cdp_page_read_only",
+                               "error": str(exc) or "browser balance read timed out"}
+            health = getattr(self.app.state, "system_health", None)
+            if health is not None:
+                health.record_browser_observation(observation)
+            return observation
+
+    async def _snapshot_platform_balance(self) -> dict[str, Any]:
         """Read the existing CDP-owned page; never launch or create a browser."""
         from app.betting.browser_client import AviatorBrowserClient
 
@@ -100,16 +116,19 @@ class BettingModeManager:
             snapshot = await client.snapshot()
             payload = snapshot.as_dict() if hasattr(snapshot, "as_dict") else snapshot
             balance = payload.get("balance") if isinstance(payload, dict) else None
+            numeric_balance = (isinstance(balance, (int, float)) and not isinstance(balance, bool)
+                               and math.isfinite(balance) and balance >= 0)
+            verified = bool(payload and payload.get("ok") and numeric_balance)
             return {
-                "verified": bool(payload and payload.get("ok") and balance is not None),
-                "balance": balance if isinstance(balance, (int, float)) else None,
+                "verified": verified,
+                "balance": balance if verified else None,
                 "balance_text": payload.get("balance_text") if isinstance(payload, dict) else None,
                 "ui_ready": bool(payload.get("ui_ready")) if isinstance(payload, dict) else False,
                 "snapshot_ok": bool(payload and payload.get("ok")),
                 "browser_status": "CONNECTED" if payload and payload.get("ok") else "UNAVAILABLE",
                 "observed_at": _now(),
                 "source": "existing_cdp_page_read_only",
-                "error": None if payload and payload.get("ok") else (payload or {}).get("error", "balance unavailable"),
+                "error": None if verified else (payload or {}).get("error") or "UI balance unavailable or invalid",
             }
         except Exception as exc:
             return {"verified": False, "balance": None, "balance_text": None,
@@ -199,7 +218,12 @@ class BettingModeManager:
             except asyncio.TimeoutError:
                 session.request_stop("mode_switch_timeout")
 
-    async def switch_shadow(self, *, profile: str = "PROFILE_A", goal_balance: float | None = None) -> dict:
+    async def switch_shadow(self, *, profile: str = "PROFILE_A", goal_balance: float | None = None,
+                            starting_balance: float | None = None,
+                            configuration: dict[str, Any] | None = None) -> dict:
+        if not isinstance(configuration, dict) or str(configuration.get("mode", "")).upper() not in {"MANUAL", "AUTOMATIC"}:
+            return {"ok": False, "error": "session_configuration_required",
+                    "reasons": ["Choose MANUAL or AUTOMATIC and review the two-panel configuration before starting"]}
         async with self._lock:
             self.transitioning = True
             self.reason = "stopping current mode and reconciling pending executions"
@@ -241,17 +265,40 @@ class BettingModeManager:
                     await self._broadcast()
                     return {"ok": False, "error": "platform_balance_unverified",
                             "reasons": [self.reason], "status": self.status()}
+                if starting_balance is not None and not math.isclose(
+                        float(starting_balance), float(platform["balance"]), rel_tol=0, abs_tol=0.01):
+                    self.reason = "entered starting balance does not match the verified platform balance"
+                    self._persist(self.reason)
+                    await self._broadcast()
+                    return {"ok": False, "error": "starting_balance_mismatch",
+                            "reasons": [self.reason], "status": self.status(),
+                            "platform_balance": platform}
+                if goal_balance is not None and float(goal_balance) <= float(platform["balance"]):
+                    return {"ok": False, "error": "invalid_goal",
+                            "reasons": ["goal must exceed the verified starting balance"],
+                            "platform_balance": platform}
                 await self.app.state.risk.on_session_start(profile)
                 await shadow.start(profile=profile, starting_balance=float(platform["balance"]),
-                                   goal_balance=goal_balance, health=self.app.state.system_health)
+                                   goal_balance=goal_balance, health=self.app.state.system_health,
+                                   configuration=configuration)
                 self.mode = SHADOW_REALISTIC
                 self.live_authorized = False
                 self.shadow_ready = True
                 self.reason = "shadow realistic session active; platform balance was read-only"
                 self._persist(self.reason, starting_balance=platform["balance"], profile=profile,
-                              goal_balance=goal_balance)
+                              goal_balance=goal_balance,
+                              session_configuration=(shadow.session or {}).get("config"))
                 await self._broadcast()
                 return {"ok": True, "status": self.status(), "platform_balance": platform}
+            except ValueError as exc:
+                self.mode = SHADOW_REALISTIC
+                self.live_authorized = False
+                self.shadow_ready = False
+                self.reason = f"session_configuration_invalid:{exc}"
+                self._persist(self.reason)
+                await self._broadcast()
+                return {"ok": False, "error": "session_configuration_invalid",
+                        "reasons": [str(exc)], "status": self.status()}
             except Exception as exc:
                 self.mode = SHADOW_REALISTIC
                 self.live_authorized = False
@@ -268,6 +315,9 @@ class BettingModeManager:
                 self.transitioning = False
 
     async def switch_live(self, payload: dict[str, Any]) -> dict:
+        if payload.get("configuration") or payload.get("session_configuration"):
+            return {"ok": False, "error": "two_panel_live_configuration_not_qualified",
+                    "reasons": ["Run and verify the MANUAL and AUTOMATIC configurations in SHADOW_REALISTIC before using them in LIVE_REAL"]}
         async with self._lock:
             review_id = str(payload.get("review_id") or "")
             review = self._reviews.pop(review_id, None)
@@ -359,6 +409,13 @@ class BettingModeManager:
         """Disarm LIVE after any health, browser, database or safety failure."""
         async with self._lock:
             if self.mode != LIVE_REAL and not self.live_authorized:
+                if (self.mode == SHADOW_REALISTIC
+                        and getattr(getattr(self.app.state, "shadow", None), "mode", None) == "SHADOW"):
+                    await self.app.state.shadow.pause()
+                    self.shadow_ready = False
+                    self.reason = reason
+                    self._persist(reason)
+                    await self._broadcast()
                 return self.status()
             self.transitioning = True
             self.mode = SHADOW_REALISTIC

@@ -4,10 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { BrowserManager } from '../collector/BrowserManager.js';
+import { BrowserSupervisor } from '../collector/BrowserManager.js';
 import { Collector } from '../collector/Collector.js';
 import { FrameManager } from '../collector/FrameManager.js';
 import { LoginManager } from '../collector/LoginManager.js';
+import { selectMissingLegacyRounds } from '../collector/index.js';
 import {
   appendRounds, inferNewMultipliers, normalizeMultiplier,
   readRoundHistory, stableRoundId, writeRoundHistory,
@@ -43,10 +44,22 @@ test('parses snapshots, detects only new rounds and appends chronologically', ()
   ]);
 });
 
+test('PostgreSQL startup imports only rounds absent by both ID and index', () => {
+  const persisted = [{ round_id: 'platform-1', round_index: 1 }];
+  const file = [
+    { round_id: 'platform-1', round_index: 1 },
+    { round_id: 'old-hash-1', round_index: 1 },
+    { round_id: 'platform-2', round_index: 2 },
+  ];
+  assert.deepEqual(selectMissingLegacyRounds(file, persisted), {
+    missing: [file[2]], indexConflicts: 1,
+  });
+});
+
 test('history page reuses one browser context and never launches another browser', async () => {
   let newPages = 0;
   const page = { isClosed: () => false, url: () => 'about:blank' };
-  const manager = new BrowserManager(true);
+  const manager = new BrowserSupervisor(true);
   manager.isAlive = () => true;
   manager.launch = async () => { throw new Error('must not launch'); };
   manager._context = { pages: () => [page], newPage: async () => { newPages += 1; return page; } };
@@ -74,7 +87,7 @@ test('managed history page removes restored MetaBrandTitle and blank tabs', asyn
     url: () => 'https://winner.rw/en/virtual/crash-games/aviator',
     bringToFront: async () => { focused += 1; },
   };
-  const manager = new BrowserManager(true);
+  const manager = new BrowserSupervisor(true);
   manager.isAlive = () => true;
   manager._ownsBrowser = true;
   manager._page = staleWinner;
@@ -106,7 +119,7 @@ test('managed blank tab is reused, then later sportsbook tabs are removed after 
     url: () => 'https://winner.rw/sportsbook/upcoming',
     close: async () => { closed = true; },
   };
-  const manager = new BrowserManager(true);
+  const manager = new BrowserSupervisor(true);
   manager.isAlive = () => true;
   manager._ownsBrowser = true;
   manager._page = page;
@@ -130,7 +143,7 @@ test('attached user browser tabs are never cleaned up', async () => {
     url: () => 'https://winner.rw/sportsbook/upcoming',
     close: async () => { closed += 1; },
   };
-  const manager = new BrowserManager(true);
+  const manager = new BrowserSupervisor(true);
   manager._ownsBrowser = false;
   manager._context = { pages: () => [userPage] };
   await manager._cleanupManagedStarterPages(null);
@@ -155,7 +168,7 @@ test('history page recovery stays in the existing browser context', async () => 
     pages: () => [oldPage],
     newPage: async () => { order.push('new'); newPages += 1; return freshPage; },
   };
-  const manager = new BrowserManager(true);
+  const manager = new BrowserSupervisor(true);
   manager.isAlive = () => true;
   manager.launch = async () => { throw new Error('must not launch'); };
   manager._context = context;
@@ -211,15 +224,51 @@ test('frame manager uses direct CDP when Playwright omits the game OOPIF', async
   assert.equal(await manager.waitForFrame(page, { timeoutMs: 100 }), direct);
 });
 
+test('frame manager does not return an outer Aviator iframe without payouts', async () => {
+  let checks = 0;
+  const outer = {
+    isDetached: () => false,
+    name: () => 'aviator',
+    url: () => 'https://aviaport.spribegaming.com/aviator',
+    locator: () => ({ first: () => ({ waitFor: async () => { throw new Error('no payouts'); } }) }),
+  };
+  const direct = {
+    isDetached: () => false,
+    name: () => 'aviator-next-cdp',
+    url: () => 'https://aviator-next.spribegaming.com/',
+    locator: () => ({ first: () => ({ waitFor: async () => {
+      if (++checks < 2) throw new Error('game still loading');
+    } }) }),
+  };
+  const main = {};
+  const page = {
+    frames: () => [main, outer],
+    mainFrame: () => main,
+    waitForEvent: async () => {},
+  };
+  const manager = new FrameManager();
+  manager._connectDirectFrame = async () => direct;
+  assert.equal(await manager.waitForFrame(page, { timeoutMs: 1000 }), direct);
+  assert.equal(checks, 2);
+});
+
 test('collector uses Node-side mutation polling for a direct CDP frame', async () => {
   let requestedIdle = null;
   const frame = {
     waitForCollectorMutation: async idleMs => {
       requestedIdle = idleMs;
-      return { multipliers: [2.5, 1.1], sig: '2.50|1.10' };
+      return { multipliers: [2.5, 1.1], sig: '2.50|1.10', ts: '2026-09-27T10:00:00Z' };
     },
   };
   const result = await new Collector().waitForMutation(frame, 1234);
   assert.equal(requestedIdle, 1234);
   assert.deepEqual(result.multipliers, [2.5, 1.1]);
+  assert.equal(result.timestamp, '2026-09-27T10:00:00Z');
+});
+
+test('collector installs an observer from a ready frame', async () => {
+  const frame = { evaluate: async () => ({ ok: true, multipliers: [1.2, 2.5] }) };
+  const result = await new Collector().install(frame);
+  assert.deepEqual(result.multipliers, [1.2, 2.5]);
+  assert.equal(result.signature, '1.20|2.50');
 });

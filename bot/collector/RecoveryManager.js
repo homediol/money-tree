@@ -1,181 +1,105 @@
-/**
- * RecoveryManager.js — Orchestrates all recovery sequences.
- *
- * Recovery ladder (least disruptive → most disruptive):
- *   1. FRAME_RECOVER  — discard frame ref, re-scan, reinstall observer
- *   2. PAGE_RECOVER   — reload/re-navigate page, re-login if needed
- *   3. BROWSER_FATAL  — full browser restart
- *
- * Every recovery is logged with reason, duration, success, and retry count.
- */
-
+/** Controlled, single-flight recovery for collector-owned browser components. */
 import { log, formatError } from './Logger.js';
 import { State } from './StateMachine.js';
-import { classifyError, sleep, backoffMs } from './RetryManager.js';
-
-const FROZEN_THRESHOLD_S = 60; // seconds without a new round before triggering recovery
+import { classifyError } from './RetryManager.js';
 
 export class RecoveryManager {
   constructor({ stateMachine, browserManager, loginManager, health }) {
-    this.sm      = stateMachine;
+    this.sm = stateMachine;
     this.browser = browserManager;
-    this.login   = loginManager;
-    this.health  = health;
-    this._recoveryInProgress = false;
+    this.login = loginManager;
+    this.health = health;
+    this._recoveryPromise = null;
+    this._pendingVerification = false;
   }
 
-  /**
-   * Main recovery entry point.
-   * Called whenever an error is caught in the main loop or watchdog fires.
-   *
-   * @param {Error|string} errOrReason
-   * @param {Page|null} page
-   * @param {AbortSignal} signal
-   * @returns {Promise<Page>} — a usable page after recovery
-   */
   async recover(errOrReason, page, signal) {
     if (signal?.aborted) throw new Error('Aborted');
-    if (this._recoveryInProgress) {
-      // Another recovery is already running — wait for it
-      await sleep(3000, signal);
-      return page;
-    }
+    if (this._recoveryPromise) return this._recoveryPromise;
+    this._recoveryPromise = this.browser.withRecoveryLock
+      ? this.browser.withRecoveryLock(() => this._recover(errOrReason, page, signal))
+      : this._recover(errOrReason, page, signal);
+    try { return await this._recoveryPromise; }
+    finally { this._recoveryPromise = null; }
+  }
 
-    this._recoveryInProgress = true;
-    const reason  = typeof errOrReason === 'string' ? errOrReason : formatError(errOrReason);
+  async _recover(errOrReason, page, signal) {
+    const reason = typeof errOrReason === 'string' ? errOrReason : formatError(errOrReason);
     const errClass = classifyError(errOrReason);
-    const start   = Date.now();
-    let attempt   = 0;
+    const error = typeof errOrReason === 'object' ? errOrReason : null;
+    if (errClass === 'AUTH_REQUIRED') {
+      this.health.setLoggedIn(false);
+      this.sm.transition(State.RELOGIN, 'AUTH_REQUIRED');
+      this.browser.authRequired?.(reason);
+      throw Object.assign(new Error('AUTH_REQUIRED: human login or verification is required'), { code: 'AUTH_REQUIRED' });
+    }
+    if (errClass === 'PERSISTENCE_ERROR') throw error || new Error(reason);
+    if (this.browser._circuitBreaker?.state === 'OPEN') {
+      this.sm.transition(State.RECOVERING, 'CIRCUIT_BREAKER_OPEN');
+      throw new Error('CIRCUIT_BREAKER_OPEN: automatic browser recovery paused');
+    }
 
     this.sm.transition(State.RECOVERING, reason);
     this.health.recordRecovery(errClass);
-
+    this.browser.beginRecovery?.(reason, { playwrightError: error?.message || null });
+    const started = Date.now();
     try {
-      log.warn(`RecoveryManager: starting recovery class=${errClass} reason="${reason}"`);
-
-      if (errClass === 'BROWSER_FATAL') {
-        page = await this._recoverBrowser(signal);
-      } else if (errClass === 'PAGE_RECOVER') {
-        page = await this._recoverPage(page, signal);
+      log.warn(`RecoveryManager: starting class=${errClass} reason="${reason}"`);
+      if (!this.browser.isAlive()) {
+        // Level 5 is allowed only after browser disconnection is observable.
+        this.sm.transition(State.RESTART_BROWSER, 'browser-disconnected-confirmed');
+        this.health.recordBrowserRestart();
+        await this.browser.restart(signal);
+        this.sm.transition(State.STARTING, 'browser-connection-restored');
+        this.sm.transition(State.LOGIN, 'verify-restored-session');
+        page = await this.browser.getHistoryPage();
+      } else if (!page || page.isClosed()) {
+        // Level 3: replace the failed page in the same context.
+        page = await this.browser.recoverHistoryPage(signal);
       } else {
-        // FRAME_RECOVER — cheapest, try first
-        page = await this._recoverFrame(page, signal);
-      }
-
-      const duration = Date.now() - start;
-      log.recovery(errClass, reason, duration, true, attempt);
-      log.info(`RecoveryManager: recovery complete in ${duration}ms`);
-      return page;
-
-    } catch (err) {
-      const duration = Date.now() - start;
-      log.recovery(errClass, reason, duration, false, attempt);
-      log.error(`RecoveryManager: recovery failed — ${formatError(err)}`);
-
-      // Escalate to browser restart as last resort
-      if (errClass !== 'BROWSER_FATAL') {
-        log.warn('RecoveryManager: escalating to browser restart');
-        try {
-          page = await this._recoverBrowser(signal);
-          return page;
-        } catch (fatal) {
-          log.error(`RecoveryManager: browser restart also failed — ${formatError(fatal)}`);
-          // Wait and let the outer loop retry
-          await sleep(backoffMs(5), signal);
-          throw fatal;
+        // Level 1: discard cached frame references and rescan on the next pass.
+        const onAviator = /aviator|crash-games|\/crash/i.test(page.url());
+        if (/page unresponsive/i.test(reason)) {
+          // Level 2: reload only the page whose responsiveness probe failed.
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+        } else if (!onAviator) {
+          // Level 2: only reload the affected page when it navigated away.
+          const current = page.url();
+          const last = this.browser._safeUrl?.(current) || '';
+          if (/authentication\/login|\/login/i.test(last)) {
+            this.health.setLoggedIn(false);
+            throw Object.assign(new Error('AUTH_REQUIRED: platform redirected to login'), { code: 'AUTH_REQUIRED' });
+          }
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
         }
       }
-      throw err;
-    } finally {
-      this._recoveryInProgress = false;
+
+      if (!this.browser.isAlive() || !page || page.isClosed()) throw new Error('recovery evidence check failed: browser/page unavailable');
+      const loggedIn = await this.login.isLoggedIn(page).catch(() => false);
+      this.health.setLoggedIn(loggedIn);
+      if (!loggedIn) throw Object.assign(new Error('AUTH_REQUIRED: session could not be verified after recovery'), { code: 'AUTH_REQUIRED' });
+      this.health.setBrowserConnected(true);
+      this.health.setPageConnected(true);
+      this.health.setFrameConnected(false);
+      this._pendingVerification = true;
+      if (this.sm.is(State.LOGIN)) this.sm.transition(State.HOME, 'restored-session-verified');
+      if (this.sm.is(State.HOME)) this.sm.transition(State.GAME_LOADING, 'browser-restarted');
+      this.sm.transition(State.WAITING_IFRAME, 'page-ready-awaiting-real-round');
+      this.browser._persistMetadata?.();
+      log.warn(`RecoveryManager: browser/page available; waiting for persisted real round verification (${Date.now() - started}ms)`);
+      return page;
+    } catch (recoveryError) {
+      if (recoveryError?.code === 'AUTH_REQUIRED') this.browser.authRequired?.(recoveryError.message);
+      else this.browser.failRecovery?.(reason, recoveryError);
+      throw recoveryError;
     }
   }
 
-  // ── Recovery levels ───────────────────────────────────────────────────────
-
-  /** Level 1: Frame recovery — just discard the stale frame reference.
-   *  The main loop will re-scan for a fresh frame on its next iteration. */
-  async _recoverFrame(page, signal) {
-    log.info('RecoveryManager: frame recovery — discarding stale frame ref');
-    await sleep(1000, signal);
-
-    // Verify the page is still alive
-    if (!page || page.isClosed()) {
-      log.warn('RecoveryManager: page is closed during frame recovery — escalating');
-      return this._recoverPage(null, signal);
-    }
-
-    // Check if we're still on the Aviator page
-    const url = page.url().toLowerCase();
-    if (!url.includes('aviator') && !url.includes('crash')) {
-      log.warn('RecoveryManager: not on Aviator page — navigating back');
-      await this._ensureOnAviator(page, signal);
-    }
-
-    this.sm.transition(State.WAITING_IFRAME, 'frame-recovery');
-    return page;
-  }
-
-  /** Level 2: Page recovery — reload or re-navigate, re-login if needed. */
-  async _recoverPage(page, signal) {
-    log.info('RecoveryManager: page recovery');
-
-    if (!page || page.isClosed()) {
-      log.warn('RecoveryManager: page closed — getting new page from browser');
-      try {
-        page = await this.browser.getPage();
-      } catch {
-        return this._recoverBrowser(signal);
-      }
-    }
-
-    // Check login status
-    this.sm.transition(State.RELOGIN, 'page-recovery');
-    try {
-      await this.login.ensureLoggedIn(page, signal);
-      this.health.recordLogin();
-    } catch (err) {
-      log.error(`RecoveryManager: re-login failed — ${formatError(err)}`);
-      return this._recoverBrowser(signal);
-    }
-
-    await this._ensureOnAviator(page, signal);
-    return page;
-  }
-
-  /** Level 3: Browser restart — only when browser is truly dead. */
-  async _recoverBrowser(signal) {
-    log.warn('RecoveryManager: browser restart');
-    this.sm.transition(State.RESTART_BROWSER, 'browser-fatal');
-    this.health.recordBrowserRestart();
-
-    await this.browser.restart(signal);
-    const page = await this.browser.getPage();
-
-    this.sm.transition(State.STARTING, 'browser-restarted');
-    this.sm.transition(State.LOGIN, 'post-restart-login');
-
-    await this.login.ensureLoggedIn(page, signal);
-    this.health.recordLogin();
-
-    await this._ensureOnAviator(page, signal);
-    return page;
-  }
-
-  async _ensureOnAviator(page, signal) {
-    this.sm.transition(State.GAME_LOADING, 'navigating-to-aviator');
-    await this.login.goToAviator(page, signal);
-    await this.browser.focusGamePage(page);
-    this.sm.transition(State.WAITING_IFRAME, 'on-aviator-page');
-  }
-
-  /**
-   * Check if the collector appears frozen (no new rounds for too long).
-   * Returns true if recovery should be triggered.
-   */
-  isFrozen(health) {
-    const secs = health.secondsSinceLastRound();
-    if (secs === null) return false; // no rounds yet — not frozen
-    return secs > FROZEN_THRESHOLD_S;
+  async verifyRound(round) {
+    if (!this._pendingVerification) return;
+    if (!round || !this.browser.isAlive()) return;
+    this._pendingVerification = false;
+    this.browser.completeRecovery?.(round);
+    log.recovery('ROUND_VERIFIED', 'real round persisted after recovery', 0, true, 0);
   }
 }

@@ -11,7 +11,6 @@ import { fileURLToPath } from 'url';
 import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { log } from './Logger.js';
-import { withRetry } from './RetryManager.js';
 
 chromium.use(StealthPlugin());
 
@@ -19,6 +18,9 @@ const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const ROOT       = path.resolve(__dirname, '..', '..');
 const PROFILE_DIR = path.join(ROOT, 'data', 'bot', 'chrome-profile-new-email');
 const GOOGLE_SNAPSHOT_DIR = path.join(ROOT, 'data', 'bot', 'chrome-google-fallback');
+const SUPERVISOR_LOCK = path.join(ROOT, 'data', 'bot', 'browser-supervisor.lock');
+const RELIABILITY_PATH = path.join(ROOT, 'data', 'bot', 'browser-reliability.json');
+const DIAGNOSTICS_PATH = path.join(ROOT, 'data', 'bot', 'browser-diagnostics.jsonl');
 const GOOGLE_USER_DATA_DIR = process.env.BOT_GOOGLE_USER_DATA_DIR || path.join(os.homedir(), '.config', 'google-chrome');
 const DEFAULT_CDP_PORT = process.env.BOT_CDP_PORT || '9222';
 
@@ -233,7 +235,7 @@ function createGoogleProfileSnapshot(profileName) {
   return GOOGLE_SNAPSHOT_DIR;
 }
 
-export class BrowserManager {
+export class BrowserSupervisor {
   constructor(headless = false) {
     this.headless  = headless;
     this._context  = null;
@@ -244,6 +246,366 @@ export class BrowserManager {
     this._profileDir = PROFILE_DIR;
     this._profileName = null;
     this.restartCount = 0;
+    this._lockOwned = false;
+    this._browserStartedAt = null;
+    this._lastBrowserEvent = { event: 'created', at: new Date().toISOString() };
+    this._lastDisconnect = null;
+    this._lastRecovery = null;
+    this._historyPage = null;
+    this._bettingPage = null;
+    this._healthTimer = null;
+    this._healthBusy = false;
+    this._health = null;
+    this._sessionStorage = null;
+    this._pageProbeFailures = 0;
+    this._circuitBreaker = { state: 'CLOSED', failures: [] };
+    this._recoveryCount = 0;
+    this._recoveryPromise = null;
+    this._contextClosed = false;
+    try {
+      const saved = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'bot', 'browser-session-state.json'), 'utf8'));
+      this._sessionStorage = saved.sessionStorage || null;
+      this._lastKnownUrls = saved.last_known_urls || {};
+    } catch { this._lastKnownUrls = {}; }
+    try {
+      const previous = JSON.parse(fs.readFileSync(RELIABILITY_PATH, 'utf8'));
+      this.restartCount = Number(previous.browser?.restart_count || 0);
+      this._recoveryCount = Number(previous.recovery_count || 0);
+      this._lastDisconnect = previous.last_disconnect || null;
+      this._lastRecovery = previous.last_recovery || null;
+      const cutoff = Date.now() - 10 * 60 * 1000;
+      const failures = Array.isArray(previous.circuit_breaker?.failure_timestamps)
+        ? previous.circuit_breaker.failure_timestamps.filter(ts => Number(ts) >= cutoff)
+        : [];
+      this._circuitBreaker = {
+        state: previous.circuit_breaker?.state === 'OPEN' && failures.length >= 5 ? 'OPEN' : 'CLOSED',
+        failures,
+      };
+    } catch {}
+  }
+
+  _event(event, fields = {}) {
+    this._lastBrowserEvent = { event, at: new Date().toISOString(), ...fields };
+  }
+
+  _acquireSingletonLock() {
+    if (this._lockOwned) return;
+    fs.mkdirSync(path.dirname(SUPERVISOR_LOCK), { recursive: true });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const fd = fs.openSync(SUPERVISOR_LOCK, 'wx', 0o600);
+        fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }));
+        fs.closeSync(fd);
+        this._lockOwned = true;
+        return;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+        let ownerPid = null;
+        try { ownerPid = Number(JSON.parse(fs.readFileSync(SUPERVISOR_LOCK, 'utf8')).pid); } catch {}
+        if (pidIsAlive(ownerPid)) throw new Error('BROWSER_SUPERVISOR_ALREADY_ACTIVE pid=' + ownerPid);
+        try { fs.unlinkSync(SUPERVISOR_LOCK); } catch {}
+      }
+    }
+    throw new Error('Could not acquire the browser supervisor lock');
+  }
+
+  _releaseSingletonLock() {
+    if (!this._lockOwned) return;
+    try {
+      const lock = JSON.parse(fs.readFileSync(SUPERVISOR_LOCK, 'utf8'));
+      if (Number(lock.pid) === process.pid) fs.unlinkSync(SUPERVISOR_LOCK);
+    } catch {}
+    this._lockOwned = false;
+  }
+
+  setHealthSource(health) { this._health = health; }
+  isPageResponsive() { return this._pageProbeFailures < 3; }
+
+  async withRecoveryLock(operation) {
+    if (this._recoveryPromise) return this._recoveryPromise;
+    this._recoveryPromise = Promise.resolve().then(operation);
+    try { return await this._recoveryPromise; }
+    finally { this._recoveryPromise = null; }
+  }
+
+  _safeUrl(raw) {
+    try { const url = new URL(raw); return url.origin + url.pathname; }
+    catch { return ''; }
+  }
+
+  _trackPage(page, role) {
+    if (!page || page.__winnerSupervisorTracked) return;
+    try { page.__winnerSupervisorTracked = true; } catch {}
+    page.on?.('close', () => {
+      this._event('page_closed', { role, url: this._safeUrl(page.url?.()) });
+      this._persistMetadata();
+    });
+    page.on?.('crash', error => {
+      this._event('page_crashed', { role, error: String(error?.message || error || 'page crashed') });
+      this._persistMetadata();
+    });
+    page.on?.('pageerror', error => {
+      this._event('page_error', { role, error: String(error?.message || error || 'page error') });
+    });
+  }
+
+  async _persistSession(page = this._historyPage || this._page) {
+    if (!this._context) return;
+    try {
+      const storageState = await this._context.storageState();
+      const sessionStorage = page && !page.isClosed()
+        ? await page.evaluate(() => ({
+          origin: location.origin,
+          entries: Object.fromEntries(Array.from({ length: sessionStorage.length }, (_, i) => {
+            const key = sessionStorage.key(i);
+            return [key, sessionStorage.getItem(key)];
+          })),
+        })).catch(() => null)
+        : this._sessionStorage;
+      const payload = {
+        saved_at: new Date().toISOString(), storageState, sessionStorage,
+        last_known_urls: {
+          history: this._safeUrl((this._historyPage || page)?.url?.()),
+          betting: this._safeUrl(this._bettingPage?.url?.()),
+        },
+        collector_checkpoint: this._health?.snapshot?.().lastRoundId || null,
+      };
+      const target = path.join(ROOT, 'data', 'bot', 'browser-session-state.json');
+      const temp = target + '.' + process.pid + '.tmp';
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(temp, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
+      fs.chmodSync(temp, 0o600);
+      fs.renameSync(temp, target);
+      this._sessionStorage = sessionStorage;
+      this._lastSessionPersistAt = Date.now();
+    } catch (err) {
+      this._event('session_persist_failed', { error: String(err?.message || err) });
+    }
+  }
+
+  async _restoreSessionStorage(page) {
+    if (!page || !this._sessionStorage?.origin || !this._sessionStorage?.entries) return;
+    const state = this._sessionStorage;
+    await page.addInitScript(({ origin, entries }) => {
+      if (location.origin !== origin) return;
+      for (const [key, value] of Object.entries(entries)) {
+        try { sessionStorage.setItem(key, value); } catch {}
+      }
+    }, state).catch(() => {});
+  }
+
+  async persistSession(page) { await this._persistSession(page); }
+
+  _readProcessMemoryMb(pid) {
+    if (!pid) return null;
+    try {
+      const status = fs.readFileSync('/proc/' + pid + '/status', 'utf8');
+      const rss = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
+      return rss ? Math.round(Number(rss[1]) / 1024) : null;
+    } catch { return null; }
+  }
+
+  _readProcessUptimeSeconds(pid) {
+    if (!pid) return null;
+    try {
+      const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+      const startedTicks = Number(fields[19]);
+      return Number.isFinite(startedTicks) ? Math.max(0, Math.floor(os.uptime() - startedTicks / 100)) : null;
+    } catch { return null; }
+  }
+
+  _readProcessCpuPercent(pid) {
+    if (!pid) return null;
+    try {
+      const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+      const ticks = Number(fields[11]) + Number(fields[12]);
+      const total = fs.readFileSync('/proc/stat', 'utf8').split(/\r?\n/)[0].trim().split(/\s+/)
+        .slice(1).reduce((sum, item) => sum + Number(item || 0), 0);
+      const previous = this._cpuSample;
+      this._cpuSample = { pid, ticks, total, at: Date.now() };
+      if (!previous || previous.pid !== pid || total <= previous.total) return null;
+      return Math.max(0, Math.round((ticks - previous.ticks) / (total - previous.total) * os.cpus().length * 100));
+    } catch { return null; }
+  }
+
+  _backendStatus() {
+    try {
+      const file = path.join(ROOT, 'data', 'backend_lifecycle.jsonl');
+      const lines = fs.readFileSync(file, 'utf8').trim().split(/\r?\n/).slice(-1000);
+      const events = lines.map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
+      const starts = events.filter(event => event.event === 'backend_start');
+      const latest = starts.at(-1);
+      const latestExit = latest && events.findLast(event => event.pid === latest.pid
+        && ['supervisor_exit', 'backend_shutdown'].includes(event.event));
+      return {
+        pid: latest?.pid || null, ppid: latest?.ppid || null,
+        started_at: latest?.timestamp || null, restart_count: Math.max(0, starts.length - 1),
+        unexpected_restart_count: events.filter(event => event.event === 'supervisor_exit' && event.unexpected).length,
+        uptime_seconds: latest?.timestamp ? Math.max(0, Math.floor((Date.now() - Date.parse(latest.timestamp)) / 1000)) : null,
+        memory_rss_mb: this._readProcessMemoryMb(latest?.pid),
+        cpu_percent: this._readProcessCpuPercent(latest?.pid),
+        running: Boolean(latest && !latestExit),
+        last_exit: latestExit ? { signal: latestExit.signal || null, code: latestExit.exit_code ?? null } : null,
+      };
+    } catch { return { pid: null, restart_count: null, running: null }; }
+  }
+
+  _persistMetadata() {
+    const health = this._health?.snapshot?.() || {};
+    const pages = (() => { try { return this._context?.pages?.() || []; } catch { return []; } })();
+    const history = this._historyPage || this._page;
+    const browserPid = profileOwnerPid(this._profileDir);
+    const lastRound = health.lastRoundTime || null;
+    const lastSuccessfulCollection = health.lastSuccessfulCollection || null;
+    const state = this._circuitBreaker.state === 'OPEN' ? 'FAILED' : !this.isAlive() ? 'DISCONNECTED'
+      : this._lastRecovery?.state === 'RECOVERING' ? 'RECOVERING'
+      : !history || history.isClosed?.() || !this.isPageResponsive() ? 'DEGRADED'
+        : health.state === 'RECOVERING' ? 'RECOVERING'
+          : !health.frameConnected || (lastRound && Date.now() - Date.parse(lastRound) > 180000)
+            ? 'DEGRADED' : 'HEALTHY';
+    const status = {
+      updated_at: new Date().toISOString(), state,
+      browser: {
+        connected: this.isAlive(), pid: browserPid,
+        uptime_seconds: this._readProcessUptimeSeconds(browserPid)
+          ?? (this._ownsBrowser && this._browserStartedAt ? Math.floor((Date.now() - this._browserStartedAt) / 1000) : null),
+        memory_rss_mb: this._readProcessMemoryMb(browserPid), restart_count: this.restartCount,
+        cpu_percent: this._readProcessCpuPercent(browserPid),
+      },
+      context: { alive: Boolean(this._context && !this._contextClosed && this.isAlive()), page_count: pages.length },
+      history_page: { alive: Boolean(history && !history.isClosed?.()), url: this._safeUrl(history?.url?.()) },
+      // Betting observes the collector-owned Aviator page through CDP. Keep an
+      // explicit shared state instead of opening a second browser or tab.
+      betting_page: this._bettingPage && !this._bettingPage.isClosed?.()
+        ? { state: /^about:blank/i.test(this._bettingPage.url?.() || '') ? 'NOT_READY' : 'PAGE_OPEN', url: this._safeUrl(this._bettingPage.url?.()) }
+        : { state: 'NOT_PROVISIONED', url: null },
+      session: health.loggedIn === true ? 'AUTHENTICATED' : health.loggedIn === false ? 'AUTH_REQUIRED' : 'UNKNOWN',
+      collector: {
+        running: Boolean(health.collectorRunning), state: health.state || 'UNKNOWN',
+        last_round_id: health.lastRoundId || null, last_round_timestamp: lastRound,
+        last_successful_collection: lastSuccessfulCollection, heartbeat_at: health.heartbeatAt || null,
+        iframe_attached: Boolean(health.frameConnected),
+      },
+      backend: this._backendStatus(), last_disconnect: this._lastDisconnect,
+      last_browser_event: this._lastBrowserEvent, last_recovery: this._lastRecovery,
+      recovery_count: this._recoveryCount || health.recoveryCount || 0,
+      circuit_breaker: {
+        state: this._circuitBreaker.state, failures_10m: this._circuitBreaker.failures.length,
+        failure_timestamps: this._circuitBreaker.failures,
+      },
+      diagnostics: {
+        page_responsive: this._pageProbeFailures < 3, page_count: pages.length,
+        node_memory_rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      },
+    };
+    try {
+      fs.mkdirSync(path.dirname(RELIABILITY_PATH), { recursive: true });
+      const temp = RELIABILITY_PATH + '.' + process.pid + '.tmp';
+      fs.writeFileSync(temp, JSON.stringify(status, null, 2), { encoding: 'utf8', mode: 0o600 });
+      fs.renameSync(temp, RELIABILITY_PATH);
+    } catch {}
+  }
+
+  startHeartbeat({ intervalMs = 5000, health = this._health } = {}) {
+    this._health = health;
+    if (this._healthTimer) return;
+    const tick = async () => {
+      if (this._healthBusy) return;
+      this._healthBusy = true;
+      try {
+        const page = this._historyPage || this._page;
+        if (page && !page.isClosed?.()) {
+          await Promise.race([
+            page.evaluate(() => document.readyState),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('page responsiveness probe timed out')), 2500)),
+          ]);
+          this._pageProbeFailures = 0;
+        } else this._pageProbeFailures += 1;
+      } catch (err) {
+        this._pageProbeFailures += 1;
+        this._event('heartbeat_probe_failed', { error: String(err?.message || err) });
+      } finally {
+        if (Date.now() - (this._lastSessionPersistAt || 0) >= 60000) {
+          await this._persistSession(page);
+        }
+        this._persistMetadata();
+        this._healthBusy = false;
+      }
+    };
+    this._healthTimer = setInterval(tick, intervalMs);
+    this._healthTimer.unref?.();
+    void tick();
+  }
+
+  stopHeartbeat() {
+    if (this._healthTimer) clearInterval(this._healthTimer);
+    this._healthTimer = null;
+  }
+
+  recoveryDiagnostics(reason, extra = {}) {
+    const health = this._health?.snapshot?.() || {};
+    const pid = profileOwnerPid(this._profileDir);
+    const page = this._historyPage || this._page;
+    const backend = this._backendStatus();
+    const payload = {
+      timestamp: new Date().toISOString(), reason, browser_pid: pid, backend_pid: backend.pid,
+      browser_uptime_seconds: this._readProcessUptimeSeconds(pid)
+        ?? (this._ownsBrowser && this._browserStartedAt ? Math.floor((Date.now() - this._browserStartedAt) / 1000) : null),
+      memory_rss_mb: this._readProcessMemoryMb(pid), cpu_percent: this._readProcessCpuPercent(pid),
+      last_round_id: health.lastRoundId || null, last_round_received: health.lastRoundTime || null,
+      last_browser_event: this._lastBrowserEvent, page_url: this._safeUrl(page?.url?.()),
+      page_closed: !page || Boolean(page.isClosed?.()), context_closed: !this._context || this._contextClosed,
+      browser_disconnected: !this.isAlive(), iframe_detached: !health.frameConnected,
+      playwright_error: extra.playwrightError || null, backend_restart_count: backend.restart_count,
+      backend_last_exit: backend.last_exit, os_signal: extra.signal || null, ...extra,
+    };
+    try {
+      fs.mkdirSync(path.dirname(DIAGNOSTICS_PATH), { recursive: true });
+      fs.appendFileSync(DIAGNOSTICS_PATH, JSON.stringify(payload) + '\n', { mode: 0o600 });
+    } catch {}
+    return payload;
+  }
+
+  beginRecovery(reason, extra = {}) {
+    const diagnostic = this.recoveryDiagnostics(reason, extra);
+    this._lastRecovery = { state: 'RECOVERING', at: diagnostic.timestamp, reason };
+    this._recoveryCount += 1;
+    this._event('recovery_started', { reason });
+    this._persistMetadata();
+    return diagnostic;
+  }
+
+  failRecovery(reason, error) {
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    this._circuitBreaker.failures = this._circuitBreaker.failures.filter(ts => ts >= cutoff);
+    this._circuitBreaker.failures.push(Date.now());
+    if (this._circuitBreaker.failures.length >= 5) this._circuitBreaker.state = 'OPEN';
+    this._lastRecovery = {
+      state: this._circuitBreaker.state === 'OPEN' ? 'CIRCUIT_BREAKER_OPEN' : 'FAILED',
+      at: new Date().toISOString(), reason, error: String(error?.message || error),
+    };
+    this._event('recovery_failed', { reason, error: String(error?.message || error) });
+    this._persistMetadata();
+  }
+
+  authRequired(reason) {
+    this._lastRecovery = { state: 'AUTH_REQUIRED', at: new Date().toISOString(), reason };
+    this._event('auth_required', { reason });
+    this._persistMetadata();
+  }
+
+  completeRecovery(round) {
+    this._circuitBreaker.failures = [];
+    this._circuitBreaker.state = 'CLOSED';
+    this._lastRecovery = {
+      state: 'HEALTHY', at: new Date().toISOString(),
+      verified_round_id: round?.round_id || null,
+      verified_round_timestamp: round?.timestamp || null,
+    };
+    this._event('recovery_verified', { round_id: round?.round_id || null });
+    this._persistMetadata();
   }
 
   /** True if the browser process is alive and connected. */
@@ -258,27 +620,42 @@ export class BrowserManager {
 
   /** True if the context is still usable. */
   hasContext() {
-    return !!this._context;
+    if (!this._context || this._contextClosed || !this.isAlive()) return false;
+    try { this._context.pages(); return true; } catch { return false; }
   }
 
   /** Connect to an existing browser or launch a managed browser. */
   async launch(signal, { reconnect = false } = {}) {
-    if (this.isAlive() && this._context) {
+    if (this.isAlive() && this.hasContext()) {
       log.info('BrowserManager: reusing existing browser');
       return this._context;
     }
-
+    if (signal?.aborted) throw new Error('Aborted');
+    this._acquireSingletonLock();
     await this._close();
+    const connected = await this._connectExisting();
+    if (connected) return connected;
+    const ownerPid = profileOwnerPid(this._profileDir);
+    if (ownerPid) {
+      throw new Error('BROWSER_PROCESS_STILL_ALIVE pid=' + ownerPid
+        + '; refusing to start another Chromium while its profile lock is held');
+    }
+    if (this._cdpResponsiveEndpoint) {
+      throw new Error('BROWSER_CDP_UNRESPONSIVE endpoint=' + this._cdpResponsiveEndpoint
+        + '; browser process is present, so launch was withheld');
+    }
+    return this._launchManaged();
+  }
 
-    return withRetry(async () => {
-      const connected = await this._connectExisting();
-      if (connected) return connected;
-
-      return this._launchManaged();
-    }, { maxAttempts: reconnect ? 5 : 3, label: 'browser-launch', signal });
+  async _cdpEndpointResponds(endpoint) {
+    try {
+      const response = await fetch(new URL('/json/version', endpoint), { signal: AbortSignal.timeout(1000) });
+      return response.ok;
+    } catch { return false; }
   }
 
   async _connectExisting() {
+    this._cdpResponsiveEndpoint = null;
     for (const endpoint of cdpEndpointCandidates(this._profileDir)) {
       try {
         log.info(`BrowserManager: checking existing browser at ${endpoint}`);
@@ -293,14 +670,21 @@ export class BrowserManager {
 
         this._browser = browser;
         this._context = context;
+        this._contextClosed = false;
+        context.once('close', () => {
+          this._contextClosed = true;
+          this._event('context_closed', { source: 'attached_context' });
+          this._persistMetadata();
+        });
         this._page = context.pages().find(page => !page.isClosed() && isAviatorPage(page)) || null;
+        this._historyPage = this._page;
         this._ownsBrowser = false;
+        this._event('browser_attached', { endpoint: this._safeUrl(endpoint) });
 
         browser.once('disconnected', () => {
-          log.warn('BrowserManager: CDP browser connection lost');
-          this._browser = null;
-          this._context = null;
-          this._page = null;
+          this._lastDisconnect = { at: new Date().toISOString(), reason: 'Playwright CDP disconnected' };
+          this._event('browser_disconnected', this._lastDisconnect);
+          log.warn('BrowserSupervisor: CDP connection lost; checking process state before recovery');
           this._ownsBrowser = false;
         });
 
@@ -309,6 +693,7 @@ export class BrowserManager {
           : 'BrowserManager: connected to existing browser; Aviator tab not open');
         return this._context;
       } catch (err) {
+        if (await this._cdpEndpointResponds(endpoint)) this._cdpResponsiveEndpoint = endpoint;
         log.info(`BrowserManager: no CDP browser at ${endpoint}: ${err.message}`);
       }
     }
@@ -328,6 +713,7 @@ export class BrowserManager {
       ...CTX_OPTS,
       headless: this.headless,
     });
+    this._contextClosed = false;
 
     this._browser = this._context.browser();
     this._page = this._context.pages().find(page => !page.isClosed() && isAviatorPage(page)) ||
@@ -335,37 +721,50 @@ export class BrowserManager {
       null;
     this._ownsBrowser = true;
     this.restartCount += 1;
+    this._browserStartedAt = Date.now();
+    this._event('browser_launched', { restart_count: this.restartCount });
 
     this._context.once('close', () => {
+      this._contextClosed = true;
       log.warn('BrowserManager: managed context closed');
-      this._context = null;
-      this._browser = null;
-      this._page = null;
+      this._lastDisconnect = { at: new Date().toISOString(), reason: 'managed context closed' };
+      this._event('context_closed', this._lastDisconnect);
       this._ownsBrowser = false;
     });
 
+    this._browser?.once?.('disconnected', () => {
+      this._lastDisconnect = { at: new Date().toISOString(), reason: 'managed browser disconnected' };
+      this._event('browser_disconnected', this._lastDisconnect);
+    });
+    this._persistMetadata();
     log.info('BrowserManager: managed browser ready');
     return this._context;
   }
 
   /** Get or create a page. Reuses an existing Aviator tab before creating anything. */
   async getPage() {
-    if (!this._context || !this.isAlive()) await this.launch();
+    if (!this.hasContext()) await this.launch();
     const pages = this._context.pages().filter(page => !page.isClosed());
     const aviatorPage = pages.find(isAviatorPage);
     if (aviatorPage) {
       this._page = aviatorPage;
+      this._trackPage(aviatorPage, 'shared_aviator');
       await aviatorPage.bringToFront().catch(() => {});
       return aviatorPage;
     }
-    if (this._page && !this._page.isClosed()) return this._page;
+    if (this._page && !this._page.isClosed()) {
+      this._trackPage(this._page, 'shared_aviator');
+      return this._page;
+    }
     this._page = await this._context.newPage();
+    await this._restoreSessionStorage(this._page);
+    this._trackPage(this._page, 'shared_aviator');
     return this._page;
   }
 
   /** Return the managed game tab, or a dedicated tab in an attached context. */
   async getHistoryPage() {
-    if (!this._context || !this.isAlive()) await this.launch();
+    if (!this.hasContext()) await this.launch();
     if (this._historyPage && !this._historyPage.isClosed()) return this._historyPage;
     // The managed profile already has a tab. Cloning an Aviator URL into a
     // second tab can make Winner redirect one of them to the sportsbook shell.
@@ -376,12 +775,35 @@ export class BrowserManager {
       this._context.pages().find(page => !page.isClosed())
     );
     this._historyPage = managedPage || await this._context.newPage();
+    this._trackPage(this._historyPage, 'history');
+    if (this._ownsBrowser && /^about:blank/i.test(this._historyPage.url()) && this._lastKnownUrls?.history) {
+      try {
+        const target = new URL(this._lastKnownUrls.history);
+        if (target.hostname === 'winner.rw' && /aviator|crash-games/i.test(target.pathname)) {
+          await this._restoreSessionStorage(this._historyPage);
+          await this._historyPage.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        }
+      } catch (err) {
+        this._event('last_known_url_restore_failed', { role: 'history', error: String(err?.message || err) });
+      }
+    }
     await this._cleanupManagedStarterPages(this._historyPage);
     if (typeof this._historyPage.bringToFront === 'function') {
       await this._historyPage.bringToFront().catch(() => {});
     }
     log.info('BrowserManager: collector page ready in existing context');
     return this._historyPage;
+  }
+
+  /** Lazily provision the execution page in the same persistent context. */
+  async getBettingPage() {
+    if (!this.hasContext()) await this.launch();
+    if (this._bettingPage && !this._bettingPage.isClosed()) return this._bettingPage;
+    this._bettingPage = await this._context.newPage();
+    await this._restoreSessionStorage(this._bettingPage);
+    this._trackPage(this._bettingPage, 'betting');
+    this._persistMetadata();
+    return this._bettingPage;
   }
 
   /** Keep the managed Aviator tab visible after login or recovery. */
@@ -423,14 +845,17 @@ export class BrowserManager {
   /** Recreate only the collector page while preserving this browser/context. */
   async recoverHistoryPage(signal) {
     if (signal?.aborted) throw new Error('Aborted');
-    if (!this._context || !this.isAlive()) {
+    if (!this.hasContext()) {
       await this.restart(signal);
     }
     const previous = this._historyPage;
     const sourceUrl = previous && !previous.isClosed() ? previous.url() : '';
+    if (previous && !previous.isClosed()) await this._persistSession(previous);
     // Keep one tab alive while replacing the page. Closing Chrome's last tab
     // first can tear down the entire managed context before newPage() runs.
     const replacement = await this._context.newPage();
+    await this._restoreSessionStorage(replacement);
+    this._trackPage(replacement, 'history');
     if (previous && !previous.isClosed()) {
       await previous.close().catch(() => {});
     }
@@ -446,6 +871,10 @@ export class BrowserManager {
 
   /** Close everything cleanly. */
   async _close() {
+    this.stopHeartbeat();
+    if (this._bettingPage && this._bettingPage !== this._historyPage && !this._bettingPage.isClosed()) {
+      try { await this._bettingPage.close(); } catch {}
+    }
     if (!this._ownsBrowser && this._historyPage && this._historyPage !== this._page &&
         !this._historyPage.isClosed()) {
       try { await this._historyPage.close(); } catch {}
@@ -464,48 +893,61 @@ export class BrowserManager {
     }
     this._page = null;
     this._historyPage = null;
+    this._bettingPage = null;
     this._ownsBrowser = false;
+    this._contextClosed = false;
   }
 
   /** Release this manager's resources. Attached user browsers are left open. */
   async close() {
+    await this._persistSession();
     await this._close();
+    this._releaseSingletonLock();
   }
 
   /** Reconnect or relaunch after browser connection loss. */
   async restart(signal) {
-    log.warn('BrowserManager: restarting browser session');
+    if (this.isAlive() && this.hasContext()) return this._context;
+    const ownerPid = profileOwnerPid(this._profileDir);
+    if (ownerPid) {
+      const reconnected = await this._connectExisting();
+      if (reconnected) return reconnected;
+      throw new Error('BROWSER_PROCESS_STILL_ALIVE pid=' + ownerPid
+        + '; recovery is paused to prevent a second Chromium process');
+    }
+    log.warn('BrowserSupervisor: confirmed browser process absence; reconnecting or starting one managed process');
     await this._close();
-    this.restartCount += 1;
     return this.launch(signal, { reconnect: true });
   }
 
   /** Switch to the user's last-used Google Chrome profile after bot-profile failure. */
   async restartWithGoogleProfile(signal) {
-    await this._close();
-    this._profileName = lastUsedGoogleProfile();
-    const ownerPid = profileOwnerPid(GOOGLE_USER_DATA_DIR);
-    if (ownerPid) {
-      log.warn(`BrowserManager: Google Chrome profile is live in PID ${ownerPid}; using an isolated session snapshot`);
-      this._profileDir = createGoogleProfileSnapshot(this._profileName);
-    } else {
-      this._profileDir = GOOGLE_USER_DATA_DIR;
-    }
-    log.warn(`BrowserManager: falling back to Google Chrome profile ${this._profileName}`);
-    try {
-      return await this.launch(signal, { reconnect: true });
-    } catch (err) {
-      throw new Error(
-        `Google Chrome profile ${this._profileName} could not be opened. ` +
-        `Close normal Chrome first, or start it with remote debugging on port ${DEFAULT_CDP_PORT}. ` +
-        `Cause: ${err.message}`,
-      );
-    }
+    void signal;
+    throw new Error('Independent Google-profile fallback is disabled by BrowserSupervisor');
   }
 
   /** Compatibility alias retained for older callers; never opens a second browser. */
   async restartIncognito(signal) {
     await this.recoverHistoryPage(signal);
     return this._context;
+  }
+}
+
+let supervisorInstance = null;
+export function getBrowserSupervisor(headless = false) {
+  if (!supervisorInstance) supervisorInstance = new BrowserSupervisor(headless);
+  else if (supervisorInstance.headless !== headless && !supervisorInstance.isAlive()) {
+    supervisorInstance.headless = headless;
+  }
+  return supervisorInstance;
+}
+
+// Kept as a source-compatible name for existing imports. There is still only
+// one production owner: callers receive the process-wide BrowserSupervisor.
+export class BrowserManager extends BrowserSupervisor {
+  constructor(headless = false) {
+    super(headless);
+    if (supervisorInstance && supervisorInstance.isAlive()) return supervisorInstance;
+    supervisorInstance = this;
   }
 }

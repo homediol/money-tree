@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -55,6 +56,30 @@ class SystemHealth:
         self._last_snapshot: dict[str, Any] | None = None
         self._last_alert_key: str | None = None
         self._lock = asyncio.Lock()
+        self._browser_observation: dict[str, Any] | None = None
+
+    def record_browser_observation(self, observation: dict[str, Any]) -> None:
+        """Retain current read-only UI evidence, independently of a bet session."""
+        self._browser_observation = dict(observation)
+
+    def browser_observation(self) -> dict[str, Any]:
+        observation = dict(self._browser_observation or {})
+        balance = observation.get("balance")
+        try:
+            age = time.time() - datetime.fromisoformat(observation["observed_at"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            age = None
+        valid_balance = (isinstance(balance, (int, float)) and not isinstance(balance, bool)
+                         and math.isfinite(balance) and balance >= 0)
+        fresh = age is not None and 0 <= age <= 20
+        observation.update(age_s=age, fresh=fresh,
+                           verified=bool(observation.get("verified") and valid_balance and fresh))
+        if not observation["verified"]:
+            observation["balance"] = None
+            observation["error"] = observation.get("error") or (
+                "browser balance observation stale" if age is not None and not fresh
+                else "execution browser idle; no verified UI balance")
+        return observation
 
     async def emit(self, payload: dict) -> None:
         if self.broadcaster:
@@ -98,11 +123,29 @@ class SystemHealth:
             if stamp:
                 age = max(0.0, now - datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp())
             running = bool(status.get("running"))
-            healthy = str(status.get("status", "UNKNOWN")).upper() in {"HEALTHY", "COLLECTING"}
+            collector_state = str(status.get("status", "UNKNOWN")).upper()
+            healthy = collector_state in {"HEALTHY", "COLLECTING"}
             fresh = age is not None and age <= 120
             ok = running and healthy and fresh
-            reason = None if ok else ("history stale" if running and healthy and not fresh else "history collector not healthy")
-            return ok, reason, {"status": status.get("status"), "age_s": age, "count": status.get("count", 0)}
+            if ok:
+                reason = None
+            elif not running or collector_state == "STOPPED":
+                reason = status.get("last_error") or "history collector process is stopped"
+            elif collector_state in {"CONNECTING", "WAITING", "WAITING_FOR_NETWORK", "RECOVERING", "STARTING"}:
+                reason = status.get("last_error") or f"history collector is {collector_state.lower().replace('_', ' ')}"
+            elif collector_state == "STALE" or (running and healthy and not fresh):
+                reason = ("history collector has not saved a new round yet" if age is None
+                          else f"latest saved round is {int(round(age))} seconds old; waiting for a fresh round")
+            else:
+                reason = status.get("last_error") or f"history collector status is {collector_state.lower().replace('_', ' ')}"
+            waiting_state = collector_state in {
+                "CONNECTING", "WAITING", "WAITING_FOR_NETWORK", "RECOVERING", "STARTING", "STALE",
+            } or (running and healthy and not fresh)
+            metadata = {"status": status.get("status"), "age_s": age,
+                        "count": status.get("count", 0)}
+            if not ok and waiting_state:
+                metadata["waiting"] = True
+            return ok, reason, metadata
         except Exception as exc:
             return False, f"history check failed: {exc}", {}
 
@@ -128,7 +171,8 @@ class SystemHealth:
         self.heartbeat("history", ok=history_ok, error=history_reason,
                        metadata=history_meta,
                        latency_ms=round((time.perf_counter() - history_started) * 1000, 3),
-                       stale_after_s=120)
+                       stale_after_s=120,
+                       waiting=bool(history_meta.get("waiting")))
         if not history_ok:
             reasons.append(history_reason or "history unavailable")
 
@@ -140,16 +184,30 @@ class SystemHealth:
                     bs.get("browser_status") in {"CONNECTED", "READY"} and bool(bs.get("last_ui_ready"))
                     and bs.get("current_balance") is not None
                 )
+                observation = self.browser_observation()
+                # A preflight UI read may establish browser health while idle.
+                # An active REAL executor must still verify its own session.
+                use_observation = not bs.get("automatic_enabled") and mode != "SIMULATION"
+                if use_observation:
+                    browser_ok = bool(observation.get("verified") and observation.get("ui_ready")
+                                      and observation.get("browser_status") in {"CONNECTED", "READY"})
                 browser_waiting = (not browser_ok and not bs.get("automatic_enabled")
                                    and not bs.get("last_error"))
                 browser_reason = None if browser_ok else (
-                    "execution browser idle; no verified UI balance" if browser_waiting
+                    (observation.get("error") or "betting panel is not UI-ready") if browser_waiting
                     else bs.get("last_error") or "browser not connected and UI-ready with verified balance"
                 )
+                browser_metadata = {"mode": mode, "browser_status": bs.get("browser_status"),
+                                    "ui_ready": bs.get("last_ui_ready"),
+                                    "balance": bs.get("current_balance"),
+                                    "balance_verified": browser_ok and mode != "SIMULATION"}
+                if use_observation:
+                    browser_metadata.update({key: observation.get(key) for key in (
+                        "browser_status", "ui_ready", "balance", "balance_text", "observed_at", "source")})
+                    browser_metadata["balance_verified"] = observation.get("verified", False)
                 self.heartbeat("browser", ok=browser_ok,
                                waiting=browser_waiting, error=browser_reason,
-                               metadata={"mode": mode, "browser_status": bs.get("browser_status"),
-                                         "ui_ready": bs.get("last_ui_ready")}, stale_after_s=20)
+                               metadata=browser_metadata, stale_after_s=20)
                 if not browser_ok and mode == "REAL" and bs.get("automatic_enabled"):
                     reasons.append("browser unsafe")
                 # An active execution is expected while a round is in flight;
@@ -204,6 +262,10 @@ class SystemHealth:
         blocked = []
         for name in required:
             c = self._components[name]
+            if (name == "browser" and (c.metadata or {}).get("source") == "existing_cdp_page_read_only"
+                    and not self.browser_observation().get("verified")):
+                blocked.append("browser:" + self.browser_observation().get("error", "balance unverified"))
+                continue
             if c.last_success is None or c.state != "HEALTHY":
                 blocked.append(f"{name}:{c.last_error or c.state.lower()}")
             elif c.last_heartbeat is None or time.time() - c.last_heartbeat > c.stale_after_s:

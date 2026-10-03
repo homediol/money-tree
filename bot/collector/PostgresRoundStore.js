@@ -42,16 +42,24 @@ export class PostgresRoundStore {
     this.tableIdent = quoteIdent(table);
     this.connectionString = connectionString;
     this.pool = null;
+    this.collectorLease = null;
     this.usingFileFallback = false;
-    this.requirePostgres = Boolean(this.connectionString || process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.WINNER_DATABASE_URL || process.env.REQUIRE_POSTGRES === 'true');
+    // Collector history is project data: silently changing to a JSON file on
+    // a database outage creates two diverging sources of truth. Require a
+    // real database unless explicitly running a local isolated test.
+    this.requirePostgres = process.env.REQUIRE_POSTGRES !== 'false';
   }
 
-  async init() {
+  async init({ acquireCollectorLease = false } = {}) {
     try {
+      const connectionString = this.connectionString || process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.WINNER_DATABASE_URL;
+      if (!connectionString && !process.env.PGHOST) {
+        throw new Error('PostgreSQL is required for Aviator history; configure DATABASE_URL or PGHOST');
+      }
       const { Pool } = await import('pg');
 
       this.pool = new Pool({
-        connectionString: this.connectionString || process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.WINNER_DATABASE_URL,
+        connectionString,
         host: process.env.PGHOST,
         port: process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
         database: process.env.PGDATABASE,
@@ -80,6 +88,12 @@ export class PostgresRoundStore {
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ALTER COLUMN round_id SET NOT NULL`);
       await this.pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${this.table}_round_id_idx ON ${this.tableIdent} (round_id)`);
       await this.pool.query(`CREATE INDEX IF NOT EXISTS ${this.table}_timestamp_idx ON ${this.tableIdent} (timestamp)`);
+
+      // A transaction advisory lock only serializes individual insert batches.
+      // Hold a session lock for the lifetime of the history collector so a
+      // stale supervisor, backend-owned collector, or manual start cannot run
+      // a second browser/collector against the same round stream.
+      if (acquireCollectorLease) await this._acquireCollectorLease();
       await this.pool.query(`
         CREATE TABLE IF NOT EXISTS collector_state (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -98,7 +112,10 @@ export class PostgresRoundStore {
       await this.pool?.end?.().catch(() => {});
       this.pool = null;
       this.usingFileFallback = true;
-      if (this.requirePostgres) throw err;
+      // A supervised collector cannot safely fall back to local JSON because
+      // doing so would bypass both PostgreSQL deduplication and its singleton
+      // collector lease.
+      if (this.requirePostgres || acquireCollectorLease) throw err;
       log.warn(`PostgreSQL unavailable; using data/roundhistory.json fallback: ${formatError(err)}`);
     }
   }
@@ -107,8 +124,34 @@ export class PostgresRoundStore {
     return this.usingFileFallback ? 'data/roundhistory.json' : 'PostgreSQL';
   }
 
+  async _acquireCollectorLease() {
+    this.collectorLease = await this.pool.connect();
+    const lease = await this.collectorLease.query(
+      'SELECT pg_try_advisory_lock(hashtext($1)) AS acquired',
+      [`winner-predict:collector:${this.table}`],
+    );
+    if (lease.rows[0]?.acquired) return;
+
+    this.collectorLease.release();
+    this.collectorLease = null;
+    const error = new Error(`Another history collector already owns PostgreSQL lease for ${this.table}`);
+    error.code = 'COLLECTOR_ALREADY_ACTIVE';
+    throw error;
+  }
+
   async close() {
     if (!this.pool) return;
+    if (this.collectorLease) {
+      try {
+        await this.collectorLease.query(
+          'SELECT pg_advisory_unlock(hashtext($1))',
+          [`winner-predict:collector:${this.table}`],
+        );
+      } finally {
+        this.collectorLease.release();
+        this.collectorLease = null;
+      }
+    }
     await this.pool.end();
     this.pool = null;
   }
@@ -161,31 +204,60 @@ export class PostgresRoundStore {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      // Multiple collector processes can observe the same next round index.
+      // Serialize the short insert batch so each writer sees committed indices.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [this.table]);
+      const maxResult = await client.query(
+        `SELECT COALESCE(MAX(round_index), 0) AS max_round_index FROM ${this.tableIdent}`,
+      );
+      let maxRoundIndex = Number(maxResult.rows[0]?.max_round_index || 0);
       let saved = 0;
+      let duplicates = 0;
 
       for (const record of normalized) {
-        const result = await client.query(
-          `
-            INSERT INTO ${this.tableIdent} (round_id, round_index, multiplier, timestamp, source, raw)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-            ON CONFLICT (round_id) DO UPDATE SET
-              round_index = EXCLUDED.round_index,
-              multiplier = EXCLUDED.multiplier,
-              timestamp = COALESCE(EXCLUDED.timestamp, ${this.tableIdent}.timestamp),
-              source = EXCLUDED.source,
-              raw = EXCLUDED.raw,
-              updated_at = NOW()
-          `,
-          [
-            record.round_id,
-            record.round_index,
-            record.multiplier,
-            record.timestamp,
-            source,
-            JSON.stringify(record),
-          ],
-        );
-        saved += result.rowCount || 0;
+        const candidate = { ...record };
+        let resolved = false;
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const byId = await client.query(
+            `SELECT round_id FROM ${this.tableIdent} WHERE round_id = $1 LIMIT 1`,
+            [candidate.round_id],
+          );
+          if (byId.rowCount) {
+            duplicates += 1;
+            resolved = true;
+            break;
+          }
+
+          const byIndex = await client.query(
+            `SELECT round_id FROM ${this.tableIdent} WHERE round_index = $1 LIMIT 1`,
+            [candidate.round_index],
+          );
+          if (byIndex.rowCount) {
+            // A different observation already owns this index. Keep both rows
+            // by assigning the incoming observation the next available index.
+            candidate.round_index = ++maxRoundIndex;
+            continue;
+          }
+
+          const result = await client.query(
+            `INSERT INTO ${this.tableIdent} (round_id, round_index, multiplier, timestamp, source, raw)
+             VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+             ON CONFLICT DO NOTHING`,
+            [candidate.round_id, candidate.round_index, candidate.multiplier,
+              candidate.timestamp, source, JSON.stringify(candidate)],
+          );
+          if (result.rowCount) {
+            saved += result.rowCount;
+            maxRoundIndex = Math.max(maxRoundIndex, candidate.round_index);
+            resolved = true;
+            break;
+          }
+          // A writer not using this advisory lock may have inserted between
+          // the check and insert. Re-read both unique keys on the next pass.
+        }
+        if (!resolved) {
+          throw new Error(`Could not persist round ${candidate.round_id} after resolving unique-index conflicts`);
+        }
       }
 
       await client.query('COMMIT');
@@ -194,7 +266,7 @@ export class PostgresRoundStore {
       await this.saveState(state);
       // PostgreSQL is authoritative when configured. The JSON file is only a
       // legacy import/export fallback for environments without a DSN.
-      return { saved };
+      return { saved, duplicates, rounds: allRounds };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
       throw err;

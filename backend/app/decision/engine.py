@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,17 +37,21 @@ class DecisionEngine:
         self._lock = asyncio.Lock()
 
     def _load_config(self) -> DecisionConfig:
+        persisted = self.repository.load_application_state("decision_config")
+        if persisted:
+            try:
+                return DecisionConfig.model_validate(persisted)
+            except Exception:
+                pass
+        # One-time migration for existing installations. PostgreSQL becomes
+        # authoritative as soon as the validated value is copied.
         try:
-            return DecisionConfig.model_validate_json(self.config_path.read_text(encoding="utf-8"))
+            config = DecisionConfig.model_validate_json(self.config_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return DecisionConfig()
-
-    @staticmethod
-    def _atomic_json(path: Path, payload: dict) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(temporary, path)
+            config = DecisionConfig()
+        self.repository.save_application_state("decision_config", config.model_dump(mode="json"),
+                                               datetime.now(timezone.utc).isoformat())
+        return config
 
     async def _emit(self, event: str, decision: dict) -> None:
         if self.broadcaster:
@@ -64,15 +66,15 @@ class DecisionEngine:
 
     def _persist(self, record: dict) -> dict:
         validated = DecisionRecord.model_validate(record).model_dump(mode="json")
-        self._atomic_json(self.path, validated)
         self.repository.save_decision(validated)
         return validated
 
     def current(self) -> dict | None:
-        if not self.path.exists():
-            return self.repository.latest_decision()
+        latest = self.repository.latest_decision()
+        if latest is None:
+            return None
         try:
-            record = DecisionRecord.model_validate_json(self.path.read_text(encoding="utf-8"))
+            record = DecisionRecord.model_validate(latest)
             payload = record.model_dump(mode="json")
             if record.status not in TERMINAL and record.expires_at <= datetime.now(timezone.utc):
                 self._transition(payload, DecisionStatus.EXPIRED, "decision TTL elapsed")
@@ -85,7 +87,9 @@ class DecisionEngine:
 
     def update_config(self, payload: dict) -> dict:
         self.config = DecisionConfig.model_validate(self.config.model_dump() | payload)
-        self._atomic_json(self.config_path, self.config.model_dump(mode="json"))
+        result = self.config.model_dump(mode="json")
+        self.repository.save_application_state("decision_config", result,
+                                               datetime.now(timezone.utc).isoformat())
         return self.config.model_dump()
 
     async def evaluate(self, prediction: dict | None, evidence: dict | None, *,
@@ -147,8 +151,15 @@ class DecisionEngine:
             record["risk_status"] = "PENDING"
             await self._emit("decision:risk_pending", self._persist(record))
             profile = get_profile(profile_key)
+            configuration = betting_status.get("session_configuration") or {}
+            requested_amount = None
+            if configuration.get("mode") == "MANUAL":
+                enabled_panels = [panel for panel in configuration.get("panels", [])
+                                  if panel.get("enabled")]
+                requested_amount = sum(int(panel.get("stake") or 0) for panel in enabled_panels)
             intent = DecisionIntent(decision_id=record["decision_id"], round_id=target,
                                     execute=True, profile=profile_key, cashout=profile.base_target,
+                                    bet_amount=requested_amount,
                                     expires_at=record["expires_at"], source="part8-decision-engine")
             risk = await risk_manager.evaluate(intent, betting_status)
             record["risk_evaluation"] = risk.public()

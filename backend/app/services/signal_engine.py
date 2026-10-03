@@ -84,9 +84,9 @@ class SignalEngine:
             "status": status,
             "why": [
                 "The signal combines current streak evidence, similar historical sequences, model validation, and the historical base rate.",
-                "All probabilities are statistical estimates from roundhistory.json and do not guarantee the next outcome.",
+                "All probabilities are statistical estimates from stored PostgreSQL rounds and do not guarantee the next outcome.",
             ],
-            "data_source": "roundhistory.json",
+            "data_source": "PostgreSQL:aviator_rounds",
         }
         return result
 

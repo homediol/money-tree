@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import os
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -13,7 +15,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import analysis, backtesting, betting as betting_api, data, decisions, evidence, history, health, ml, models, patterns, readiness as readiness_api, research, results, risk as risk_api, shadow, signals, statistics, live as live_api, operations as operations_api, recovery as recovery_api
+from app.api import analysis, analytics, backtesting, betting as betting_api, data, decisions, evidence, history, health, ml, models, opportunities, patterns, readiness as readiness_api, research, results, risk as risk_api, shadow, signals, statistics, live as live_api, operations as operations_api, recovery as recovery_api
 from app.api import betting_mode as betting_mode_api, stability as stability_api
 from app.betting.config import get_betting_settings
 from app.betting.session import BettingManager, configure_default_manager
@@ -26,6 +28,8 @@ from app.services.monitoring_engine import MonitoringEngine
 from app.services.system_health import SystemHealth
 from app.services.system_orchestrator import SystemOrchestrator
 from app.services.system_readiness import SystemReadiness
+from app.ml.candidate_observer import CandidateObserver
+from app.ml.opportunity import OpportunityResearchEngine
 from app.services.betting_mode import BettingModeManager
 from app.shadow import ShadowManager
 from app.risk.engine import RiskManager
@@ -70,6 +74,23 @@ manager = ConnectionManager()
 async def process_history_update(app: FastAPI):
     """Process one Part 3 history event and publish dependent live views."""
     await asyncio.to_thread(app.state.wp.reload)
+    dataset = app.state.wp.dataset_service
+    observer = getattr(app.state, "ml_observer", None)
+    if observer is not None:
+        await asyncio.to_thread(observer.reconcile, dataset.clean_rounds.copy())
+        collector_latest = app.state.history_collector.status().get("latest") or {}
+        observation = await asyncio.to_thread(observer.observe, dataset,
+                                              collector_latest_round_id=collector_latest.get("round_id"))
+        if observation is not None:
+            await manager.broadcast({"type": "ml:experimental_observation", "observation": observation})
+    opportunity = getattr(app.state, "opportunity_engine", None)
+    if opportunity is not None:
+        await asyncio.to_thread(opportunity.reconcile, dataset.clean_rounds.copy())
+        collector_latest = app.state.history_collector.status().get("latest") or {}
+        opportunity_observation = await asyncio.to_thread(
+            opportunity.observe, dataset, collector_latest_round_id=collector_latest.get("round_id"))
+        if opportunity_observation is not None:
+            await manager.broadcast({"type": "opportunity:observation", "observation": opportunity_observation})
     analysis_payload = await asyncio.to_thread(app.state.wp.current_analysis)
     await manager.broadcast(
         {
@@ -83,12 +104,13 @@ async def process_history_update(app: FastAPI):
     status = history.status()
     await manager.broadcast({"type": "history:new_round", "round": status["latest"]})
     await manager.broadcast({"type": "history:updated", "history": {"count": status["count"]}})
+    progress = await asyncio.to_thread(app.state.wp.analytics_report_engine.report_progress_snapshot)
+    await manager.broadcast({"type": "analytics:progress", "report_progress": progress})
     await manager.broadcast({"type": "history:stats", "stats": history.stats()})
     if status.get("latest") and hasattr(app.state, "shadow"):
         await app.state.shadow.reconcile_round(status["latest"])
     if status.get("latest") and hasattr(app.state, "reconciliation"):
         await app.state.reconciliation.reconcile_round(status["latest"])
-    dataset = app.state.wp.dataset_service
     await manager.broadcast({"type": "data:updated", "quality": dataset.quality, "dataset": dataset.status()})
     readiness = getattr(app.state, "readiness", None)
     if readiness is not None:
@@ -137,7 +159,37 @@ async def process_history_update(app: FastAPI):
                             "decision_id": decision.get("decision_id"),
                             "reasons": shadow_blocks})
                         return
-                    shadow_result = await app.state.shadow.submit_decision(decision, prediction)
+                    # Shadow never places platform bets, but its two-panel
+                    # exposure still must fit a fresh read-only real balance.
+                    observation = await mode_manager._read_platform_balance()
+                    if not observation.get("verified"):
+                        await manager.broadcast({"type": "execution:rejected",
+                            "decision_id": decision.get("decision_id"),
+                            "reasons": ["real_balance_unverified_before_shadow_execution",
+                                        observation.get("error") or "UNKNOWN"]})
+                        return
+                    try:
+                        from app.risk.config import get_risk_profile
+                        risk_profile = get_risk_profile(decision.get("profile", "PROFILE_A"))
+                        real_balance = float(observation["balance"])
+                        approved_exposure = float((decision.get("risk_evaluation") or {}).get(
+                            "approved_bet", (decision.get("risk") or {}).get("approved_bet", 0)))
+                        real_exposure_limit = real_balance * risk_profile.maximum_balance_percentage
+                        configured_limit = float((app.state.shadow.session or {}).get("config", {}).get(
+                            "maximum_combined_exposure", 0))
+                        if (approved_exposure <= 0 or approved_exposure > real_balance
+                                or approved_exposure > real_exposure_limit
+                                or approved_exposure > configured_limit):
+                            raise ValueError("combined_exposure_exceeds_fresh_real_balance_or_session_limit")
+                    except Exception as exc:
+                        await manager.broadcast({"type": "execution:rejected",
+                            "decision_id": decision.get("decision_id"),
+                            "reasons": [str(exc)]})
+                        return
+                    app.state.shadow.record_real_balance(observation)
+                    shadow_result = await app.state.shadow.submit_decision(
+                        decision, prediction,
+                        emergency_stop=bool(app.state.risk.emergency_latched))
                     if not shadow_result.get("accepted"):
                         await manager.broadcast({"type": "execution:rejected",
                             "decision_id": decision.get("decision_id"),
@@ -177,10 +229,18 @@ async def process_history_update(app: FastAPI):
 
 async def monitor_file(app: FastAPI):
     monitor = MonitoringEngine(app.state.wp.settings.data_path)
+    repository = app.state.wp.repository
+    last_round_marker = None
     while True:
         try:
             await asyncio.sleep(3)
-            if monitor.has_changed():
+            if repository.database_url:
+                marker = await asyncio.to_thread(repository.latest_round_marker)
+                changed = marker != last_round_marker
+                last_round_marker = marker
+            else:
+                changed = monitor.has_changed()
+            if changed:
                 # File parsing, database sync and statistical analysis are
                 # synchronous/CPU-bound. Keep them off FastAPI's event loop so
                 # health checks and UI requests remain responsive.
@@ -212,6 +272,34 @@ async def monitor_health(app: FastAPI):
         except Exception:
             log.exception("system health monitor cycle failed; retrying")
             await asyncio.sleep(2)
+
+
+async def monitor_analytics_reports(app: FastAPI):
+    """Catch up immutable completed-period reports and check once per minute."""
+    while True:
+        try:
+            result = await asyncio.to_thread(app.state.wp.analytics_report_engine.generate_due_reports)
+            if result.get("generated"):
+                progress = await asyncio.to_thread(app.state.wp.analytics_report_engine.report_progress_snapshot)
+                await manager.broadcast({"type": "analytics:reports_updated", **result,
+                                         "report_progress": progress})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("analytics report generation failed; scheduler will retry")
+        await asyncio.sleep(60)
+
+
+async def monitor_platform_balance(app: FastAPI):
+    """Keep UI balance fresh using the collector's existing CDP browser."""
+    while True:
+        try:
+            await app.state.betting_mode._read_platform_balance()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("read-only browser balance monitor failed; retrying")
+        await asyncio.sleep(5)
 
 
 async def monitor_operations(app: FastAPI):
@@ -272,6 +360,21 @@ async def backend_stability_snapshot(app: FastAPI) -> dict:
             snapshot["browser"] = {"status": browser["state"], "reason": browser["last_error"]}
         except Exception as exc:
             snapshot["browser"] = {"status": "ERROR", "reason": str(exc)}
+    reliability_path = Path(__file__).resolve().parents[1] / "data" / "bot" / "browser-reliability.json"
+    try:
+        browser_reliability = await asyncio.to_thread(
+            lambda: json.loads(reliability_path.read_text(encoding="utf-8"))
+        )
+        updated = datetime.fromisoformat(browser_reliability["updated_at"])
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - updated).total_seconds() > 15:
+            browser_reliability["snapshot_stale"] = True
+            browser_reliability["state"] = "DEGRADED"
+            browser_reliability["reason"] = "Supervisor heartbeat is stale"
+        snapshot["browser_reliability"] = browser_reliability
+    except (OSError, ValueError, KeyError, TypeError):
+        snapshot["browser_reliability"] = {"state": "UNKNOWN", "reason": "Supervisor snapshot unavailable"}
     return snapshot
 
 
@@ -304,6 +407,15 @@ async def lifespan(app: FastAPI):
         app.state.started_at = datetime.now(timezone.utc).isoformat()
         app.state.instance_id = uuid.uuid4().hex
         app.state.wp = await initialize_app_state(settings)
+        lifecycle.bind_repository(app.state.wp.repository)
+        app.state.wp.model_registry.retrain_interval = settings.ml_retrain_min_new_rounds
+        app.state.ml_observer = CandidateObserver(app.state.wp.repository, app.state.wp.model_registry,
+                                                   settings.ml_max_history_age)
+        await asyncio.to_thread(app.state.ml_observer.reconcile, app.state.wp.dataset_service.clean_rounds.copy())
+        app.state.opportunity_engine = OpportunityResearchEngine(
+            app.state.wp.repository, settings.model_dir, max_feature_age_s=settings.ml_max_history_age)
+        await asyncio.to_thread(app.state.opportunity_engine.reconcile,
+                                app.state.wp.dataset_service.clean_rounds.copy())
         log.info("[DATA] Loaded %s rounds", len(app.state.wp.rounds))
 
         # Betting automation module (Part 1 — read-only browser verification).
@@ -328,8 +440,13 @@ async def lifespan(app: FastAPI):
             settings.decision_path, app.state.wp.repository,
             broadcaster=manager.broadcast,
         )
-        app.state.history_collector = HistoryCollectorManager(settings.data_path, manager.broadcast)
+        app.state.history_collector = HistoryCollectorManager(
+            settings.data_path, manager.broadcast,
+            round_loader=app.state.wp.repository.load_rounds if app.state.wp.repository.database_url else None,
+            repository=app.state.wp.repository,
+        )
         app.state.shadow = ShadowManager(repository=app.state.wp.repository, broadcaster=manager.broadcast)
+        app.state.shadow.risk_manager = app.state.risk
         app.state.system_health = SystemHealth(
             broadcaster=manager.broadcast, betting_manager=betting_manager,
             history_collector=app.state.history_collector, repository=app.state.wp.repository,
@@ -354,7 +471,9 @@ async def lifespan(app: FastAPI):
             )
         betting_manager.safety_gate = app.state.system_health.can_bet_now
         app.state.history_monitor = monitor_file
+        app.state.analytics_report_monitor = monitor_analytics_reports
         app.state.system_health_monitor = monitor_health
+        app.state.platform_balance_monitor = monitor_platform_balance
         app.state.operations_monitor = monitor_operations
         orchestrator = SystemOrchestrator(app)
         app.state.orchestrator = orchestrator
@@ -442,10 +561,11 @@ async def request_logging(request: Request, call_next):
 async def require_api_key(request: Request, call_next):
     """Require a bearer token when API_KEY is configured.
 
-    Authentication is opt-in so existing local development and tests continue
-    to work. Production deployments should always set API_KEY.
+    Public read-only mode permits dashboard GET requests, but all API writes
+    still require the backend key.
     """
-    if settings.api_key and request.url.path.startswith("/api/"):
+    public_read = settings.public_read_only and request.method == "GET"
+    if settings.api_key and request.url.path.startswith("/api/") and not public_read:
         supplied = request.headers.get("authorization", "")
         expected = f"Bearer {settings.api_key}"
         if not hmac.compare_digest(supplied, expected):
@@ -470,6 +590,7 @@ app.include_router(signals.router)
 app.include_router(history.router)
 app.include_router(data.router)
 app.include_router(patterns.router)
+app.include_router(analytics.router)
 app.include_router(models.router)
 app.include_router(ml.router)
 app.include_router(evidence.router)
@@ -487,6 +608,7 @@ app.include_router(recovery_api.router)
 app.include_router(readiness_api.router)
 app.include_router(betting_mode_api.router)
 app.include_router(stability_api.router)
+app.include_router(opportunities.router)
 
 
 @app.get("/", tags=["system"])
@@ -512,7 +634,10 @@ async def health(request: Request):
         try:
             with repository.connect() as conn:
                 conn.execute("SELECT 1").fetchone()
-            database = {"status": "ok", "path": str(repository.database_path)}
+            if repository.database_url:
+                database = {"status": "ok", "backend": "postgresql"}
+            else:
+                database = {"status": "ok", "backend": "sqlite", "path": str(repository.database_path)}
         except Exception as exc:
             database = {"status": "error", "error": str(exc)}
             log.exception("database health check failed")
@@ -522,6 +647,7 @@ async def health(request: Request):
         "ok": ready and database_ok,
         "service": "winner-predict-backend",
         "auth_required": bool(settings.api_key),
+        "public_read_only": settings.public_read_only,
         "status": "healthy" if ready and database_ok else "degraded",
         "backend": {
             "status": "ok" if ready else "starting",
@@ -549,7 +675,7 @@ async def system_status(request: Request):
     wp = request.app.state.wp
     # Freshness metadata is already available from the loader; do not wait on
     # statistical analysis while the collector is updating a large dataset.
-    quality = wp.quality.model_dump()
+    quality = wp.quality.model_dump() if hasattr(wp.quality, "model_dump") else dict(wp.quality or {})
     cfg = wp.settings
     return {
         "ok": True,
@@ -572,7 +698,7 @@ async def system_status(request: Request):
 
 @app.websocket("/ws/live")
 async def websocket_live(websocket: WebSocket):
-    if settings.api_key:
+    if settings.api_key and not settings.public_read_only:
         supplied = websocket.query_params.get("token", "")
         if not hmac.compare_digest(supplied, settings.api_key):
             await websocket.close(code=1008, reason="Invalid API credentials")

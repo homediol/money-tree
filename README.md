@@ -8,7 +8,7 @@ The research target is:
 NEXT OUTCOME >= 2.00x
 ```
 
-This project does not provide guaranteed predictions. Every output is labeled as `STATISTICAL PATTERN ANALYSIS` and includes probability, confidence, sample size, historical evidence, sequence similarity, and model validation context.
+This project  provide guaranteed predictions. Every output is labeled as `STATISTICAL PATTERN ANALYSIS` and includes probability, confidence, sample size, historical evidence, sequence similarity, and model validation context.
 
 > The repository root also contains an older Flask-based "Aviator Prediction System"
 > prototype (`backend/utils.py` era), the `bot/` collector, and the sibling
@@ -24,8 +24,8 @@ backend/
   app/services/        data loading, patterns, probabilities, similarity, signals
   app/ml/              walk-forward model training and ensemble prediction
   app/core/config.py   pydantic-settings configuration (see .env.example)
-  app/database/        SQLite repository
-  data/                roundhistory.json copy used by the backend
+  app/database/        PostgreSQL repository (SQLite only for isolated tests)
+  data/                legacy roundhistory.json import source
   tests/               pytest suite
 frontend/
   src/pages/           dashboard, history, patterns, signals, models, settings
@@ -75,19 +75,28 @@ reloader process.
 
 - Interactive API docs (Swagger): <http://localhost:8000/docs>
 - Process/database health: <http://localhost:8000/health>
-- Live file monitor: when `backend/data/roundhistory.json` changes the app
-  reloads and broadcasts `updated_analysis` over the WebSocket.
+- Round history, analytics snapshots, betting state, decisions, executions,
+  and settings are read from PostgreSQL. The collector and API share the same
+  `aviator_rounds` table; a legacy JSON history is imported once if needed.
 
-Configuration is optional — copy `backend/.env.example` to `backend/.env`
-and edit if you need different paths, thresholds, or CORS origins. Defaults
-point at `data/roundhistory.json`, `backend/trained_models/`, and
-`backend/winner_predict.sqlite3`.
+Copy `backend/.env.example` to `backend/.env`, set a reachable `DATABASE_URL`,
+and keep `REQUIRE_POSTGRES=true`. Production startup fails closed if PostgreSQL
+is unavailable; this prevents the frontend from silently reading local JSON or
+an empty SQLite database. `data/roundhistory.json` is only a one-time legacy
+import source. Isolated unit tests may explicitly use SQLite.
 
 For any deployment reachable by other machines, set `API_KEY` to a random
-value of at least 16 characters. The backend will then require that value as a
+value of at least 16 characters. By default, the backend requires that value as a
 Bearer token for every `/api/*` endpoint and for `/ws/live`. Enter the same
-value on the dashboard's Settings page; it is kept only in session storage.
+value on the dashboard's Settings page; it is kept in browser storage.
 Keep `CORS_ORIGINS` restricted to the exact dashboard origins.
+
+To let visitors open the dashboard without a token, set `PUBLIC_READ_ONLY=true`
+alongside `API_KEY` in `backend/.env` and restart the backend. Visitors can read
+dashboard data through GET endpoints and receive live WebSocket updates. API
+actions that change state still require the key, which an operator can enter
+on the Settings page. This setting also makes read-only betting status, balance,
+and execution history visible to anyone who can reach the backend.
 
 > Python 3.13 note: `requirements.txt` uses version ranges so the newest
 > NumPy/Pandas/scikit-learn wheels install on 3.13. The pinned legacy versions
@@ -186,8 +195,10 @@ alpine image. Dependencies are installed inside the containers on every `up`.
 
 ## Dataset
 
-The current FastAPI backend uses `data/roundhistory.json`. The loader detects the JSON
-shape before parsing. The current dataset is an array of round records:
+The collector writes real rounds directly to PostgreSQL. The backend, analytics,
+patterns, backtests, and research load the validated history from that database.
+The former `data/roundhistory.json` format is accepted only for a one-time
+legacy import:
 
 ```json
 {
@@ -249,6 +260,28 @@ calibration bins, PR/ROC-AUC, precision/recall/F1, log loss, Brier, confusion
 matrices, three test-period checks, and block-bootstrap Brier advantage against
 simple frozen/causal/rolling frequency baselines.
 
+Each eligible automatic evaluation cycle attempts **all six registered binary
+models**, including explicit `UNAVAILABLE` entries for missing optional
+dependencies. Model IDs, elapsed training/evaluation time, validation rank,
+Brier advantages, all three folds, final-test results and rejection reasons
+are persisted and displayed on ML Model and System Operations dashboards.
+Ranking is frozen using validation alone before each fitted candidate's final
+test is opened once. A failed rank-1 verification never promotes a runner-up
+using its test score. Only a gate-passing rank-1 candidate replaces the deployed
+champion; a rejected cycle retains a champion only while its gates, schema,
+target, history freshness and continuity remain valid, otherwise it reports
+`NOT_DEPLOYABLE`. PostgreSQL owns active/candidate reports, pointers, and the
+model artifact bytes with their SHA-256 hashes. Versioned local copies remain
+for compatibility, while database artifacts are authoritative on restore.
+
+`ML_RETRAIN_MIN_NEW_ROUNDS` (250) and `ML_RETRAIN_COOLDOWN_S` (3600) remain
+cycle-start triggers, not per-model throttles. A single training lock covers the
+whole cycle through persistence. Set `ML_MODEL_CONCURRENCY=1` (default; range
+1–4) to limit concurrent models; each worker's native threads are capped at two
+and tree estimators use one job. The separate enterprise five-category/sequence
+pipeline is not substituted for this approved past-only binary feature contract.
+None of these settings starts betting or enables `LIVE_REAL`.
+
 If no candidate demonstrates a stable out-of-sample advantage, `/api/ml/estimate`
 returns an informational, **non-usable** 250-round frequency. No unvalidated
 ML output enters the Evidence → Decision → Risk path. Even a validated ML
@@ -264,5 +297,5 @@ Do not load model artifacts from untrusted sources (joblib uses pickle).
 
 Aviator multiplier sequences may be random or adversarially generated.
 Historical relationships can disappear. Small samples are unreliable. The
-project is designed for transparent research and monitoring, not guaranteed
+project is designed for transparent research and monitoring, guaranteed
 outcome prediction.

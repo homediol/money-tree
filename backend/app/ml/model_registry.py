@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import logging
 import os
 import uuid
@@ -24,8 +25,9 @@ log = logging.getLogger("APP.ML")
 class ModelRegistry:
     """Versioned model persistence, health checks and lightweight inference."""
 
-    def __init__(self, target: float = 2.0, model_dir: Path | None = None, repository=None, max_feature_age_s: int = 600):
-        self.trainer = ModelTrainer(target)
+    def __init__(self, target: float = 2.0, model_dir: Path | None = None, repository=None,
+                 max_feature_age_s: int = 600, model_concurrency: int = 1):
+        self.trainer = ModelTrainer(target, model_concurrency=model_concurrency)
         self.target = target
         self.model_dir = Path(model_dir or Path(__file__).resolve().parents[2] / "trained_models")
         self.active_path = self.model_dir / "active.json"
@@ -60,14 +62,20 @@ class ModelRegistry:
         try:
             with getattr(dataset_service, "_lock", Lock()):
                 snapshot = dataset_service.dataset.copy()
+                source_rows = getattr(dataset_service, "clean_rounds", snapshot).copy()
             raw_path = getattr(dataset_service, "raw_path", None)
-            source_hash = (hashlib.sha256(raw_path.read_bytes()).hexdigest()
-                           if not getattr(dataset_service, "source_loader", None) and raw_path and raw_path.exists()
-                           else hashlib.sha256(pd.util.hash_pandas_object(snapshot, index=False).values.tobytes()).hexdigest())
+            if not getattr(dataset_service, "source_loader", None) and raw_path and raw_path.exists():
+                source_hash = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+            else:
+                source_hash = hashlib.sha256(pd.util.hash_pandas_object(
+                    source_rows[["round_id", "round_index", "timestamp", "multiplier"]]
+                    if {"round_id", "round_index", "timestamp", "multiplier"}.issubset(source_rows.columns)
+                    else snapshot, index=False).values.tobytes()).hexdigest()
             # Limit native BLAS/OpenMP work so collection and API serving retain CPU.
             with threadpool_limits(limits=2):
-                result = (self.trainer.train_validate(snapshot, progress=progress)
-                          if progress else self.trainer.train_validate(snapshot))
+                extra = {"rounds": source_rows.copy()} if getattr(dataset_service, "source_loader", None) else {}
+                result = (self.trainer.train_validate(snapshot, progress=progress, **extra)
+                          if progress else self.trainer.train_validate(snapshot, **extra))
             result.source_sha256 = source_hash
             if not snapshot.empty:
                 result.last_training_round_index = int(snapshot.iloc[-1]["round_index"])
@@ -75,14 +83,43 @@ class ModelRegistry:
             result.model_version = result.model_version or f"attempt-{uuid.uuid4().hex}"
             metadata = result.model_dump()
             candidate_model = getattr(result, "_model", None)
-            if candidate_model is not None:
+            records = []
+            for name, model in getattr(result, "_models", {}).items():
+                row = result.models[name]
+                version = row["model_id"]
+                record = {**metadata, "model_version": version, "algorithm": name,
+                          "validated": row.get("deployable", False), "status": row["status"],
+                          "training_time_seconds": row["training_time_seconds"],
+                          "rank": row["rank"], "hyperparameters": row["hyperparameters"],
+                          "ensemble": {"validated": row.get("deployable", False),
+                                       "weights": {name: 1.0}, "feature_columns": result.feature_names},
+                          "feature_importance": None,
+                          "validation_metrics": row["validation"], "test_metrics": row.get("test"),
+                          "walk_forward": row["walk_forward"], "calibration": row["calibration"],
+                          "overfitting_checks": row["overfitting_checks"],
+                          "deployment_status": "VERIFIED_NOT_SELECTED" if row.get("deployable") else "NOT_DEPLOYABLE",
+                          "rejection_reason": "; ".join(row["rejection_reasons"]) or None}
+                # The summary is stored on the selected candidate below.
+                record.pop("models", None)
+                version_dir = self.model_dir / version
+                version_dir.mkdir(parents=True, exist_ok=False)
+                artifact_path = version_dir / "model.joblib"
+                joblib.dump({"model": model, "feature_names": result.feature_names,
+                             "feature_version": result.feature_version, "schema_hash": result.feature_schema_hash}, artifact_path)
+                record["artifact_path"] = str(artifact_path.resolve())
+                record["validation_folds"], record["metrics"] = record["walk_forward"], record["test_metrics"]
+                self._atomic_json(version_dir / "metadata.json", record)
+                records.append(record)
+                if name == result.algorithm and version == result.model_version:
+                    metadata["artifact_path"] = record["artifact_path"]
+            # Preserve compatibility with older/custom trainers returning only _model.
+            if candidate_model is not None and "artifact_path" not in metadata:
                 version_dir = self.model_dir / result.model_version
                 version_dir.mkdir(parents=True, exist_ok=False)
                 artifact_path = version_dir / "model.joblib"
                 joblib.dump({"model": candidate_model, "feature_names": result.feature_names,
                              "feature_version": result.feature_version, "schema_hash": result.feature_schema_hash}, artifact_path)
                 metadata["artifact_path"] = str(artifact_path.resolve())
-                self._atomic_json(version_dir / "metadata.json", metadata)
             metadata.update(
                 validation_folds=metadata.get("walk_forward") or [],
                 metrics=metadata.get("test_metrics") or {},
@@ -90,16 +127,48 @@ class ModelRegistry:
                 deployment_status="DEPLOYED" if result.validated else "NOT_DEPLOYABLE",
                 next_evaluation_checkpoint=(result.last_training_round_index or 0) + getattr(self, "retrain_interval", 250),
             )
-            champion_valid = bool(self._metadata and self._metadata.get("overfitting_checks", {}).get("deployable"))
-            promote = candidate_model is not None and (result.validated or not champion_valid)
-            active_metadata = metadata if promote else self._metadata
+            champion_valid = self._champion_valid(dataset_service)
+            promote = bool(candidate_model is not None and result.validated
+                           and (result.overfitting_checks or {}).get("deployable")
+                           and result.ensemble.get("validated"))
+            active_metadata = metadata if promote else self._metadata if champion_valid else None
+            metadata["deployment_outcome"] = "DEPLOYED" if promote else "RETAINED_VALID_CHAMPION" if champion_valid else "NOT_DEPLOYABLE"
+            metadata["deployment_status"] = "DEPLOYED" if promote else "NOT_DEPLOYABLE"
+            metadata["active_model_version"] = active_metadata.get("model_version") if active_metadata else None
+            self._atomic_json(self.model_dir / result.model_version / "metadata.json", metadata)
             if self.repository:
+                # Also record unsuccessful/unavailable model attempts, not just weights.
+                recorded = {record["model_version"] for record in records}
+                for name, row in result.models.items():
+                    if row.get("model_id") and row["model_id"] not in recorded:
+                        records.append({**metadata, "model_version": row["model_id"], "algorithm": name,
+                                        "models": {}, "validated": False, "status": row["status"],
+                                        "rank": row.get("rank"), "training_time_seconds": row["training_time_seconds"],
+                                        "artifact_path": None, "validation_folds": row.get("walk_forward", []),
+                                        "metrics": row.get("test"), "test_metrics": row.get("test"),
+                                        "overfitting_checks": {"deployable": False, "rejection_reasons": row.get("rejection_reasons", [])},
+                                        "ensemble": {"validated": False}, "feature_importance": None,
+                                        "rejection_reason": "; ".join(row.get("rejection_reasons", [])),
+                                        "deployment_status": "NOT_DEPLOYABLE"})
+                for record in records:
+                    self.repository.save_model_candidate(record)
+                    if record.get("artifact_path"):
+                        self.repository.save_model_version(record["model_version"], record["algorithm"], record["artifact_path"], record)
+                        artifact_bytes = Path(record["artifact_path"]).read_bytes()
+                        self.repository.save_model_artifact(
+                            record["model_version"], artifact_bytes,
+                            hashlib.sha256(artifact_bytes).hexdigest())
                 self.repository.save_model_candidate(metadata)
                 if candidate_model is not None:
                     self.repository.save_model_version(result.model_version, result.algorithm or "unknown", metadata["artifact_path"], metadata)
+                    artifact_bytes = Path(metadata["artifact_path"]).read_bytes()
+                    self.repository.save_model_artifact(
+                        result.model_version, artifact_bytes,
+                        hashlib.sha256(artifact_bytes).hexdigest())
                 # PostgreSQL owns both pointers. Binary weights remain artifacts.
-                self.repository.save_application_state("ml_registry", {"active": active_metadata, "candidate": metadata})
-            elif candidate_model is not None:
+                self.repository.save_application_state("ml_registry", {"active": active_metadata, "candidate": metadata},
+                                                       datetime.now(timezone.utc).isoformat())
+            else:
                 self._atomic_json(self.model_dir / "candidate.json", {"model_version": result.model_version})
             self._candidate_model, self._candidate_metadata = candidate_model, metadata
             if promote:
@@ -109,6 +178,9 @@ class ModelRegistry:
                                                      "artifact_path": metadata["artifact_path"]})
                 self._model, self._metadata = candidate_model, metadata
                 self._latest_prediction = None
+            elif not champion_valid:
+                self._model, self._metadata, self._latest_prediction = None, None, None
+                self._atomic_json(self.active_path, {"model_version": None, "artifact_path": None})
             return result
         except Exception as exc:
             self._error = str(exc)
@@ -117,12 +189,33 @@ class ModelRegistry:
             self._training = False
             self._train_lock.release()
 
+    def _champion_valid(self, dataset_service) -> bool:
+        if (self._model is None or not self._metadata or not self._metadata.get("validated")
+                or not self._metadata.get("ensemble", {}).get("validated")
+                or not self._metadata.get("overfitting_checks", {}).get("deployable")):
+            return False
+        names, digest, version = feature_schema(dataset_service.dataset)
+        return (names == self._metadata.get("feature_names")
+                and digest == self._metadata.get("feature_schema_hash")
+                and version == self._metadata.get("feature_version")
+                and self._metadata.get("target_definition") == "next_round_ge_2x"
+                and not self._features_stale(dataset_service)
+                and dataset_service.quality.get("latest_contiguous_rounds", 0) >= 100)
+
     def _read_artifact(self, metadata: dict):
         version_dir = self.model_dir / metadata["model_version"]
         artifact_path = version_dir / "model.joblib"
+        persisted_artifact = (self.repository.load_model_artifact(metadata["model_version"])
+                              if self.repository and hasattr(self.repository, "load_model_artifact") else None)
+        artifact_source = io.BytesIO(persisted_artifact) if persisted_artifact else artifact_path
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Setting the shape on a NumPy array has been deprecated", category=DeprecationWarning)
-            artifact = joblib.load(artifact_path)
+            artifact = joblib.load(artifact_source)
+        if persisted_artifact is None and self.repository and hasattr(self.repository, "save_model_artifact"):
+            artifact_bytes = artifact_path.read_bytes()
+            self.repository.save_model_artifact(
+                metadata["model_version"], artifact_bytes,
+                hashlib.sha256(artifact_bytes).hexdigest())
         if (artifact.get("feature_names") != metadata.get("feature_names")
                 or artifact.get("schema_hash") != metadata.get("feature_schema_hash")
                 or artifact.get("feature_version") != metadata.get("feature_version")):
@@ -140,14 +233,16 @@ class ModelRegistry:
                 if not self.active_path.exists():
                     return
                 active = json.loads(self.active_path.read_text(encoding="utf-8"))
-                self._metadata = json.loads((self.model_dir / active["model_version"] / "metadata.json").read_text())
+                self._metadata = (json.loads((self.model_dir / active["model_version"] / "metadata.json").read_text())
+                                  if active.get("model_version") else None)
                 self._candidate_metadata = self._metadata
                 if not self.repository and (self.model_dir / "candidate.json").exists():
                     candidate = json.loads((self.model_dir / "candidate.json").read_text())
                     self._candidate_metadata = json.loads((self.model_dir / candidate["model_version"] / "metadata.json").read_text())
                 if self.repository:
                     self.repository.save_model_candidate(self._candidate_metadata)
-                    self.repository.save_application_state("ml_registry", {"active": self._metadata, "candidate": self._candidate_metadata})
+                    self.repository.save_application_state("ml_registry", {"active": self._metadata, "candidate": self._candidate_metadata},
+                                                           datetime.now(timezone.utc).isoformat())
             if self._metadata:
                 self._model = self._read_artifact(self._metadata)
             if self._candidate_metadata and self._candidate_metadata.get("artifact_path"):
@@ -167,7 +262,7 @@ class ModelRegistry:
         elif self._error:
             state = "ERROR"
         elif self._model is None or self._metadata is None:
-            state = "NOT_TRAINED"
+            state = "NOT_DEPLOYABLE" if self._candidate_metadata else "NOT_TRAINED"
         else:
             state = "READY"
         compatible = None
@@ -184,6 +279,7 @@ class ModelRegistry:
         if state == "READY" and not model_validated:
             state = "NOT_VALIDATED"
         return {"status": state, "candidate_version": (self._candidate_metadata or {}).get("model_version"),
+                "deployment_outcome": (self._candidate_metadata or {}).get("deployment_outcome"),
                 "active_model_version": self._metadata.get("model_version") if model_validated else None,
                 "model_version": self._metadata.get("model_version") if self._metadata else None,
                 "feature_version": self._metadata.get("feature_version") if self._metadata else None,
@@ -192,7 +288,7 @@ class ModelRegistry:
                 "deployable": model_validated and state == "READY",
                 "quality_state": ("NOT_EVALUATED" if not self._metadata else
                                   "BASELINE_OUTPERFORMED" if self._metadata.get("overfitting_checks", {}).get("deployable") else "BELOW_BASELINE"),
-                "validation_message": self._metadata.get("message") if self._metadata else "No trained model is available.",
+                "validation_message": (self._metadata or self._candidate_metadata or {}).get("message", "No trained model is available."),
                 "last_error": self._error,
                 "latest_prediction_id": self._latest_prediction.get("prediction_id") if self._latest_prediction else None}
 

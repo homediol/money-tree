@@ -12,6 +12,7 @@ from app.services.signal_engine import SignalEngine
 from app.services.statistics_service import statistics
 from app.services.dataset_service import DatasetService
 from app.services.evidence_engine import EvidenceEngine
+from app.services.analytics_report_engine import AnalyticsReportEngine
 
 
 class AppState:
@@ -21,6 +22,19 @@ class AppState:
                                      settings.require_postgres)
         self.repository.init()
         self.loader = RoundHistoryLoader(settings.data_path)
+        if (self.repository.database_url
+                and self.repository.load_application_state("legacy_rounds_imported") is None):
+            # Keep platform/hash IDs when importing the old JSON history.
+            # RoundHistoryLoader is for legacy statistics and drops round_id.
+            legacy_rounds, _, _ = DatasetService(settings.data_path).load_validate()
+            if not legacy_rounds.empty:
+                self.repository.import_legacy_rounds([
+                    {"round_id": str(row.round_id), "round_index": int(row.round_index),
+                     "multiplier": float(row.multiplier), "timestamp": row.timestamp}
+                    for row in legacy_rounds.itertuples(index=False)
+                ])
+        # PostgreSQL is authoritative for the service process. A caller can
+        # still explicitly opt into SQLite for isolated tests/development.
         source_loader = self.repository.load_rounds if self.repository.database_url else None
         self.dataset_service = DatasetService(
             settings.data_path, settings.processed_data_dir, settings.features_data_dir,
@@ -29,6 +43,7 @@ class AppState:
         self._cache_lock = RLock()
         self._patterns_cache: list[dict] | None = None
         self._pattern_report_cache: dict | None = None
+        self._pattern_cache_size = 0
         self._analysis_cache: dict | None = None
         self._statistics_cache: dict | None = None
         self.dataset_service.build_training_dataset()
@@ -38,16 +53,25 @@ class AppState:
         else:
             self.rounds, self.quality = self.loader.load()
         self.sync_database()
+        self.analytics_report_engine = AnalyticsReportEngine(self.repository, self.dataset_service)
+        previous_collector_state = self.repository.load_collector_state()
         self.collector_state = self.repository.rebuild_collector_state(
             required_rounds=settings.readiness_required_rounds,
+            collector_session_id=(previous_collector_state or {}).get("collector_session_id"),
         )
         self.model_registry = ModelRegistry(settings.target_multiplier, settings.model_dir, self.repository,
-                                            max_feature_age_s=settings.ml_max_history_age)
+                                            max_feature_age_s=settings.ml_max_history_age,
+                                            model_concurrency=settings.ml_model_concurrency)
         self.evidence_engine = EvidenceEngine(self.repository, self.model_registry,
                                               target=settings.target_multiplier,
-                                              min_sample_size=settings.min_sample_size)
+                                              min_sample_size=settings.min_sample_size,
+                                              analytics_report_engine=self.analytics_report_engine)
 
     def sync_database(self) -> None:
+        # PostgreSQL's aviator_rounds is the single authoritative history.
+        # Never mirror project history into a local SQLite database.
+        if self.repository.database_url:
+            return
         if self.rounds.empty:
             return
         rows = [
@@ -78,8 +102,12 @@ class AppState:
                 rounds = self.dataset_service.clean_rounds.copy()
                 quality = dict(self.dataset_service.quality)
             self.rounds, self.quality = rounds, quality
-            self._patterns_cache = None
-            self._pattern_report_cache = None
+            # Pattern discovery scans all historical sequences. Refresh it
+            # periodically; its generated_at stays visible to API clients.
+            if (self.dataset_service.last_mode == "full" or self._patterns_cache is None
+                    or len(rounds) - self._pattern_cache_size >= 25):
+                self._patterns_cache = None
+                self._pattern_report_cache = None
             self._analysis_cache = None
             self._statistics_cache = None
         self.sync_database()
@@ -92,6 +120,7 @@ class AppState:
                 self.repository.save_patterns(items)
                 self._patterns_cache = items
                 self._pattern_report_cache = report
+                self._pattern_cache_size = len(self.rounds)
             return self._patterns_cache
 
     def pattern_report(self, target: float | None = None) -> dict:
@@ -126,7 +155,9 @@ class AppState:
                 self._statistics_cache = {
                     "data_quality": quality,
                     "statistics": statistics(self.rounds, self.settings.target_multiplier),
+                    "data_source": ("PostgreSQL:aviator_rounds" if self.repository.database_url else "SQLite:rounds"),
                 }
+                self.repository.save_statistics("current", self._statistics_cache)
             return self._statistics_cache
 
     def build_evidence(self, prediction: dict | None) -> dict | None:

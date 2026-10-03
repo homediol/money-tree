@@ -1,5 +1,4 @@
 {
-  "model_version": "ml-20260927T013927Z-319d756e",
-  "metadata_path": "/home/diolo/winner predict/backend/trained_models/ml-20260927T013927Z-319d756e/metadata.json",
-  "artifact_path": "/home/diolo/winner predict/backend/trained_models/ml-20260927T013927Z-319d756e/model.joblib"
+  "model_version": null,
+  "artifact_path": null
 }

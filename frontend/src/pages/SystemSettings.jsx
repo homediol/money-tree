@@ -19,16 +19,16 @@ export default function SystemSettings() {
   return (
     <div className="space-y-5">
       <PageHeader eyebrow="System configuration" title="Settings" icon={Settings2}
-        description="Manage this browser session’s API access and review read-only backend configuration and data quality." />
+        description="Manage this browser’s API access and review read-only backend configuration and data quality." />
       <Card title="API Security">
         <form onSubmit={saveToken} className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <label className="block flex-1">
             <span className="flex items-center gap-2 text-sm text-zinc-400"><KeyRound size={15} />API token</span>
             <input type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Required when backend API_KEY is configured" className="mt-2 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-300" />
           </label>
-          <button type="submit" className="rounded bg-emerald-500 px-4 py-2 font-medium text-zinc-950 hover:bg-emerald-400">Save for this tab</button>
+          <button type="submit" className="rounded bg-emerald-500 px-4 py-2 font-medium text-zinc-950 hover:bg-emerald-400">Save for this browser</button>
         </form>
-        <p className="mt-3 text-sm text-zinc-500">Stored only in session storage and cleared when the browser tab session ends.</p>
+        <p className="mt-3 text-sm text-zinc-500">Saved in this browser until you clear its site data or the backend token changes.</p>
       </Card>
       {loading && <div className="text-zinc-400">Loading settings...</div>}
       {error && <div className="rounded border border-rose-900 bg-rose-950/40 p-3 text-rose-300">{error}. If API security is enabled, save the matching token above.</div>}

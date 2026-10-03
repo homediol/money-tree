@@ -64,12 +64,14 @@ def agreement_state(ml: float | None, pattern: float | None, baseline: float | N
 
 class EvidenceEngine:
     def __init__(self, repository, model_registry, *, target: float = 2.0,
-                 min_sample_size: int = 30, freshness_seconds: int = 600):
+                 min_sample_size: int = 30, freshness_seconds: int = 600,
+                 analytics_report_engine=None):
         self.repository = repository
         self.model_registry = model_registry
         self.target = float(target)
         self.minimum = int(min_sample_size)
         self.freshness_seconds = freshness_seconds
+        self.analytics_report_engine = analytics_report_engine
 
     def _cutoff(self, dataset_service, source_round_id: str) -> pd.DataFrame:
         rounds = dataset_service.clean_rounds
@@ -196,6 +198,8 @@ class EvidenceEngine:
         selected = {key: features.get(key) for key in ("last_1", "last_2", "last_3", "last_4", "last_5",
                     "streak_below_2", "rate_2x_last_50", "mean_last_25", "std_last_25") if features and key in features}
         now = datetime.now(timezone.utc).isoformat()
+        analytics_research = (self.analytics_report_engine.research_features_through(
+            prediction["source_round_id"]) if self.analytics_report_engine else None)
         snapshot = {
             "evidence_id": uuid.uuid4().hex, "prediction_id": prediction["prediction_id"],
             "source_round_id": prediction["source_round_id"], "target": prediction.get("target", "next_round_ge_2x"),
@@ -208,6 +212,7 @@ class EvidenceEngine:
             "evidence_strength": strength, "confidence": confidence_label(score), "confidence_score": score,
             "confidence_components": components, "confidence_weights": SCORE_WEIGHTS,
             "evidence_index": index, "explanations": explanations,
+            "analytics_research_evidence": analytics_research,
             "calculated_at": now, "immutable": True,
             "notice": "Historical evidence and model estimates are uncertain and are not betting decisions.",
         }

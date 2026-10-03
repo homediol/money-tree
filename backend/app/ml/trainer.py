@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -18,6 +21,7 @@ from sklearn.metrics import (accuracy_score, average_precision_score, brier_scor
                              recall_score, roc_auc_score)
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from threadpoolctl import threadpool_limits
 from app.services.dataset_service import DatasetService
 
 TARGET_COLUMN = "target_2x"
@@ -70,9 +74,27 @@ class TrainingResult:
     selection_reason: str | None = None
     source_sha256: str | None = None
     last_training_round_index: int | None = None
+    cycle_id: str | None = None
+    ranking: list[str] | None = None
+    model_concurrency: int = 1
+    training_time_seconds: float | None = None
+    cycle_time_seconds: float | None = None
 
     def model_dump(self) -> dict[str, Any]:
         return {key: value for key, value in self.__dict__.items() if not key.startswith("_")}
+
+
+def eligible_round_ids(rounds: pd.DataFrame, required_prior_rounds: int = 100) -> set[str]:
+    """Admit targets only after a complete observed prior window."""
+    if rounds.empty:
+        return set()
+    ordered = rounds.sort_values("round_index", kind="stable").reset_index(drop=True)
+    times = pd.to_datetime(ordered["timestamp"], format="mixed", utc=True, errors="coerce")
+    seconds = times.diff().dt.total_seconds()
+    adjacent = (ordered["round_index"].diff().eq(1) & seconds.between(0, MAX_HISTORY_GAP_S)).fillna(False)
+    episode = (~adjacent).cumsum()
+    prior_observed = ordered.groupby(episode, sort=False).cumcount()
+    return set(ordered.loc[prior_observed >= required_prior_rounds, "round_id"].astype(str))
 
 
 def feature_schema(dataset: pd.DataFrame) -> tuple[list[str], str, str]:
@@ -108,7 +130,11 @@ def block_bootstrap_brier_advantage(y: np.ndarray, model_p: np.ndarray, baseline
 
 
 def evaluate_probabilities(y_true: np.ndarray, probabilities: np.ndarray) -> dict[str, Any]:
-    probabilities = np.clip(np.asarray(probabilities, dtype=float), 1e-8, 1 - 1e-8)
+    probabilities = np.asarray(probabilities, dtype=float)
+    if (probabilities.ndim != 1 or len(probabilities) != len(y_true)
+            or not np.isfinite(probabilities).all() or ((probabilities < 0) | (probabilities > 1)).any()):
+        raise ValueError("Model probabilities must be finite, aligned and within [0, 1]")
+    probabilities = np.clip(probabilities, 1e-8, 1 - 1e-8)
     y_true = np.asarray(y_true, dtype=int)
     predicted = (probabilities >= 0.5).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_true, predicted, labels=[0, 1]).ravel()
@@ -172,8 +198,11 @@ def _baseline(y_train: np.ndarray, y_eval: np.ndarray) -> dict[str, Any]:
 
 
 class ModelTrainer:
-    def __init__(self, target: float = 2.0, min_samples: int = 300):
+    def __init__(self, target: float = 2.0, min_samples: int = 300, model_concurrency: int = 1):
         self.target, self.min_samples = target, min_samples
+        if not 1 <= model_concurrency <= 4:
+            raise ValueError("model_concurrency must be between 1 and 4")
+        self.model_concurrency = model_concurrency
         self.latest: TrainingResult | None = None
 
     @staticmethod
@@ -183,33 +212,52 @@ class ModelTrainer:
                 C=.1, max_iter=800, class_weight=class_weight, random_state=SEED)),
             "random_forest": lambda: RandomForestClassifier(
                 n_estimators=100, max_depth=6, min_samples_leaf=35,
-                max_features=.3, class_weight=class_weight, random_state=SEED, n_jobs=2),
+                max_features=.3, class_weight=class_weight, random_state=SEED, n_jobs=1),
             "extra_trees": lambda: ExtraTreesClassifier(
                 n_estimators=120, max_depth=6, min_samples_leaf=35,
-                max_features=.3, class_weight=class_weight, random_state=SEED, n_jobs=2),
+                max_features=.3, class_weight=class_weight, random_state=SEED, n_jobs=1),
             "gradient_boosting": lambda: HistGradientBoostingClassifier(
                 max_iter=80, max_leaf_nodes=7, min_samples_leaf=40,
-                learning_rate=.04, l2_regularization=10, random_state=SEED),
+                learning_rate=.04, l2_regularization=10, random_state=SEED, early_stopping=False),
         }
         try:
             from xgboost import XGBClassifier
             factories["xgboost"] = lambda: XGBClassifier(n_estimators=90, max_depth=2, learning_rate=.04,
-                subsample=.85, colsample_bytree=.7, reg_lambda=10, random_state=SEED, n_jobs=2, eval_metric="logloss")
+                subsample=.85, colsample_bytree=.7, reg_lambda=10, random_state=SEED, n_jobs=1, eval_metric="logloss")
         except ImportError:
-            pass
+            factories["xgboost"] = lambda: ModelTrainer._unavailable("xgboost")
         try:
             from lightgbm import LGBMClassifier
             factories["lightgbm"] = lambda: LGBMClassifier(n_estimators=90, max_depth=3, num_leaves=7,
-                min_child_samples=40, learning_rate=.04, reg_lambda=10, random_state=SEED, n_jobs=2, verbosity=-1)
+                min_child_samples=40, learning_rate=.04, reg_lambda=10, random_state=SEED, n_jobs=1, verbosity=-1)
         except ImportError:
-            pass
+            factories["lightgbm"] = lambda: ModelTrainer._unavailable("lightgbm")
         return factories
 
-    def train_validate(self, dataset: pd.DataFrame, progress: Callable[[str], None] | None = None) -> TrainingResult:
+    @staticmethod
+    def _unavailable(dependency):
+        raise ImportError(f"optional model dependency unavailable: {dependency}")
+
+    @staticmethod
+    def rank_candidates(models):
+        """Freeze ranking before final verification; never read test metrics."""
+        return sorted((name for name, row in models.items() if "selection_score" in row),
+                      key=lambda name: (not models[name]["passes_selection_gate"],
+                                        models[name]["selection_score"],
+                                        models[name]["selection"]["log_loss"], name))
+
+    @threadpool_limits.wrap(limits=2)
+    def train_validate(self, dataset: pd.DataFrame, progress: Callable[[str], None] | None = None,
+                       *, rounds: pd.DataFrame | None = None) -> TrainingResult:
+        cycle_started = time.perf_counter()
+        cycle_id = f"cycle-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
         if TARGET_COLUMN not in dataset or len(dataset) < self.min_samples:
             return self._empty("INSUFFICIENT_DATA", f"At least {self.min_samples} Part 4 rows with target_2x are required.", len(dataset))
-        if not dataset["round_index"].is_monotonic_increasing:
+        if (not dataset["round_index"].is_monotonic_increasing or dataset["round_index"].duplicated().any()
+                or dataset["round_id"].duplicated().any()):
             return self._empty("ERROR", "Dataset is not chronologically ordered.", len(dataset))
+        if not dataset[TARGET_COLUMN].isin([0, 1]).all():
+            return self._empty("INCOMPATIBLE", "Only binary target_2x labels are allowed.", len(dataset))
         feature_names, schema_hash, feature_version = feature_schema(dataset)
         prohibited = {"multiplier", "target_multiplier", "next_multiplier", "actual_multiplier", "result"}
         allowed = {item.name for item in DatasetService._build_metadata() if item.type != "categorical_sequence"}
@@ -217,15 +265,20 @@ class ModelTrainer:
                 any(name in prohibited or name.startswith(("future_", "next_", "outcome_")) for name in feature_names)):
             return self._empty("INCOMPATIBLE", "Feature schema differs from the approved past-only feature definitions.", len(dataset))
         ordered = dataset.dropna(subset=feature_names + [TARGET_COLUMN]).reset_index(drop=True)
-        # Do not pretend the first observed round after a collection gap was
-        # immediately next. Timestamp defects are also excluded as labels.
-        timestamps = pd.to_datetime(ordered["timestamp"], utc=True, errors="coerce")
-        seconds = timestamps.diff().dt.total_seconds()
-        index_delta = ordered["round_index"].diff()
-        bad_boundary = ((seconds > MAX_HISTORY_GAP_S) | (seconds < 0) | (index_delta != 1)).fillna(False)
-        bad_boundary.iloc[0] = False
-        clean = ordered.loc[~bad_boundary].reset_index(drop=True)
-        excluded = int(bad_boundary.sum())
+        if rounds is not None:
+            admitted = eligible_round_ids(rounds)
+            clean = ordered.loc[ordered["round_id"].astype(str).isin(admitted)].reset_index(drop=True)
+            excluded = len(ordered) - len(clean)
+        else:
+            # Without the full round history, at least exclude broken target
+            # boundaries. Production passes the full PostgreSQL snapshot above.
+            timestamps = pd.to_datetime(ordered["timestamp"], format="mixed", utc=True, errors="coerce")
+            seconds = timestamps.diff().dt.total_seconds()
+            index_delta = ordered["round_index"].diff()
+            bad_boundary = ((seconds > MAX_HISTORY_GAP_S) | (seconds < 0) | (index_delta != 1)).fillna(False)
+            bad_boundary.iloc[0] = False
+            clean = ordered.loc[~bad_boundary].reset_index(drop=True)
+            excluded = int(bad_boundary.sum())
         n = len(clean); train_end, selection_end, validation_end = int(n * .70), int(n * .80), int(n * .85)
         train = clean.iloc[:train_end]; selection = clean.iloc[train_end:selection_end]
         calibration_holdout = clean.iloc[selection_end:validation_end]
@@ -236,7 +289,6 @@ class ModelTrainer:
         X_selection, y_selection = selection[feature_names].to_numpy(float), selection[TARGET_COLUMN].to_numpy(int)
         X_calibration, y_calibration = calibration_holdout[feature_names].to_numpy(float), calibration_holdout[TARGET_COLUMN].to_numpy(int)
         X_validation, y_validation = validation[feature_names].to_numpy(float), validation[TARGET_COLUMN].to_numpy(int)
-        X_test, y_test = test[feature_names].to_numpy(float), test[TARGET_COLUMN].to_numpy(int)
         if len(np.unique(y_train)) < 2:
             return self._empty("INSUFFICIENT_DATA", "Training split contains only one class.", n)
         if not np.isfinite(clean[feature_names].to_numpy(float)).all():
@@ -244,10 +296,8 @@ class ModelTrainer:
         all_y = clean[TARGET_COLUMN].to_numpy(int)
         selection_baseline = _baseline(y_train, y_selection)
         validation_baseline = _baseline(y_train, y_validation)
-        test_baseline = _baseline(y_train, y_test)
         for label, start, stop, frame in (("selection", train_end, selection_end, selection_baseline),
-                                          ("validation", train_end, validation_end, validation_baseline),
-                                          ("test", validation_end, n, test_baseline)):
+                                          ("validation", train_end, validation_end, validation_baseline)):
             ys = all_y[start:stop]
             frame["causal_frequency"] = evaluate_probabilities(ys, causal_frequency(all_y, start, stop))
             frame["rolling_250"] = evaluate_probabilities(ys, causal_frequency(all_y, start, stop, 250))
@@ -256,7 +306,11 @@ class ModelTrainer:
             progress("EVALUATING")
         factories = self.factories(class_weight)
         models, fitted, candidate_errors = {}, {}, {}
-        for name, factory in factories.items():
+        # Each worker sees exactly the same immutable snapshot and boundaries.
+        def evaluate_candidate(item):
+            name, factory = item
+            started = time.perf_counter()
+            model_id = f"ml-{cycle_id.removeprefix('cycle-')}-{name}"
             try:
                 model = factory(); model.fit(X_train, y_train)
                 selection_metrics = evaluate_probabilities(y_selection, model.predict_proba(X_selection)[:, 1])
@@ -268,25 +322,146 @@ class ModelTrainer:
                                               if isinstance(v, dict) and "brier_score" in v)
                 selection_advantage = best_selection_baseline - selection_metrics["brier_score"]
                 fold_wins = sum(score <= -.001 for score in fold_scores)
-                models[name] = {"selection": selection_metrics,
+                row = {"model_id": model_id, "algorithm": name, "status": "EVALUATED",
+                                "hyperparameters": {key: value if isinstance(value, (str, int, float, bool, type(None))) else repr(value)
+                                                    for key, value in model.get_params(deep=False).items()},
+                                "selection": selection_metrics,
                                 "validation": evaluate_probabilities(y_validation, model.predict_proba(X_validation)[:, 1]),
                                 "train": evaluate_probabilities(y_train, model.predict_proba(X_train)[:, 1]),
                                 "walk_forward": folds,
                                 "selection_score": selection_metrics["brier_score"] + .5 * float(np.mean([f["metrics"]["brier_score"] for f in folds])) + .25 * float(np.std(fold_scores)),
                                 "selection_brier_advantage": selection_advantage,
                                 "folds_beating_baseline": fold_wins,
-                                "passes_selection_gate": selection_advantage >= .001 and fold_wins >= 2}
-                fitted[name] = model
+                                "passes_selection_gate": selection_advantage >= .001 and fold_wins >= 2,
+                                "training_time_seconds": time.perf_counter() - started}
+                return name, row, model
             except Exception as exc:
-                candidate_errors[name] = f"{type(exc).__name__}: {exc}"
-        if not models:
-            return self._empty("ERROR", f"Every candidate failed: {candidate_errors}", n)
-        qualified = [name for name in models if models[name]["passes_selection_gate"]]
+                reason = f"{type(exc).__name__}: {exc}"
+                return name, {"model_id": model_id, "algorithm": name,
+                              "status": "UNAVAILABLE" if isinstance(exc, ImportError) else "FAILED",
+                              "rank": None, "training_time_seconds": time.perf_counter() - started,
+                              "passes_selection_gate": False, "deployable": False,
+                              "walk_forward": [], "test": None, "rejection_reasons": [reason]}, None
+        # OpenMP's limit is thread-local; initialize each worker as well as the
+        # surrounding process-wide BLAS context, restored after workers join.
+        with ThreadPoolExecutor(max_workers=self.model_concurrency, thread_name_prefix="ml-candidate",
+                                initializer=lambda: threadpool_limits(limits=2)) as pool:
+            for name, row, model in pool.map(evaluate_candidate, factories.items()):
+                models[name] = row
+                if model is not None:
+                    fitted[name] = model
+                else:
+                    candidate_errors[name] = row["rejection_reasons"][0]
+        ranking = self.rank_candidates(models)
+        if not ranking:
+            result = self._empty("NOT_DEPLOYABLE", f"Every candidate failed: {candidate_errors}", n)
+            result.models, result.cycle_id, result.ranking = models, cycle_id, []
+            result.model_concurrency = self.model_concurrency
+            result.cycle_time_seconds = time.perf_counter() - cycle_started
+            self.latest = result
+            return result
+        qualified = [name for name in ranking if models[name]["passes_selection_gate"]]
         # Never discard a candidate that passes the earlier validation gate
         # merely because an unqualified candidate has a lower composite score.
-        pool = qualified or list(models)
-        selected = min(pool, key=lambda name: (models[name]["selection_score"], models[name]["selection"]["log_loss"]))
+        selected = ranking[0]
+        # Seal the order before any final-test probability is requested. A veto
+        # of rank 1 must not turn this test set into a search over runners-up.
+        for rank, name in enumerate(ranking, 1):
+            models[name]["rank"] = rank
+        if progress:
+            progress("VERIFYING")
+        X_test, y_test = test[feature_names].to_numpy(float), test[TARGET_COLUMN].to_numpy(int)
+        test_baseline = _baseline(y_train, y_test)
+        test_baseline["causal_frequency"] = evaluate_probabilities(y_test, causal_frequency(all_y, validation_end, n))
+        test_baseline["rolling_250"] = evaluate_probabilities(y_test, causal_frequency(all_y, validation_end, n, 250))
+        verified = {}
+        for name in ranking:
+            started = time.perf_counter()
+            try:
+                model, report = self._verify_candidate(
+                    fitted[name], models[name], X_selection, y_selection, X_calibration, y_calibration,
+                    X_test, y_test, test, y_train, all_y, validation_end, test_baseline)
+                models[name].update(report)
+                verified[name] = model
+            except Exception as exc:
+                models[name].update(status="FAILED", deployable=False, test=None,
+                                    rejection_reasons=[f"final_verification_failed: {type(exc).__name__}: {exc}"])
+            models[name]["training_time_seconds"] += time.perf_counter() - started
+            models[name]["selected"] = name == selected
+        winner = models[selected]
+        if selected not in verified:
+            result = self._empty("NOT_DEPLOYABLE", "; ".join(winner["rejection_reasons"]), n)
+            result.models, result.cycle_id, result.ranking = models, cycle_id, ranking
+            result.algorithm, result.model_version = selected, winner["model_id"]
+            result.feature_names, result.feature_schema_hash, result.feature_version = feature_names, schema_hash, feature_version
+            result.model_concurrency = self.model_concurrency
+            result.cycle_time_seconds = time.perf_counter() - cycle_started
+            result._models = verified
+            self.latest = result
+            return result
         selected_train_model = fitted[selected]
+        final_model = verified[selected]
+        test_metrics = winner["test"]
+        validation_metrics = winner["validation"]
+        selection_advantage = winner["selection_brier_advantage"]
+        test_advantage = winner["test_brier_advantage"]
+        best_test_name = winner["overfitting_checks"]["best_test_baseline"]
+        best_uncertainty = winner["overfitting_checks"]["best_baseline_test_uncertainty"]
+        fold_count, fold_wins = len(winner["walk_forward"]), winner["folds_beating_baseline"]
+        deployable, rejection_reasons = winner["deployable"], winner["rejection_reasons"]
+        walk_forward = winner["walk_forward"]
+        version = winner["model_id"]
+        distribution = {"total": n, "positive": int(clean[TARGET_COLUMN].sum()), "negative": int(n-clean[TARGET_COLUMN].sum()),
+                        "positive_rate": float(clean[TARGET_COLUMN].mean()), "negative_rate": float(1-clean[TARGET_COLUMN].mean()),
+                        "splits": {label: {"n": len(frame), "positive_rate": float(frame[TARGET_COLUMN].mean())}
+                                   for label, frame in (("train", train), ("selection", selection),
+                                                        ("calibration", calibration_holdout), ("test", test))}}
+        dataset_hash = hashlib.sha256(pd.util.hash_pandas_object(clean[["round_id", "timestamp", TARGET_COLUMN] + feature_names], index=False).values.tobytes()).hexdigest()
+        importance = self._feature_importance(selected_train_model, feature_names, X_selection, y_selection)
+        selection_reason = (f"{selected} ranked first using selection/walk-forward validation only among "
+                            f"{len(qualified)} pre-test qualified candidates; "
+                            f"selection Brier advantage {selection_advantage:+.6f}, "
+                            f"{fold_wins}/{fold_count} earlier folds beat frequency, "
+                            f"untouched test Brier advantage {test_advantage:+.6f} "
+                            f"versus {best_test_name}; bootstrap lower bound {best_uncertainty['ci95'][0]:+.6f}.")
+        if rejection_reasons:
+            selection_reason += " Rejection gates: " + ", ".join(rejection_reasons) + "."
+        drift = {}
+        for label, frame in (("selection", selection), ("calibration", calibration_holdout), ("test", test)):
+            shift = ((frame[feature_names].mean() - train[feature_names].mean()).abs()
+                     / train[feature_names].std().replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).dropna()
+            drift[label] = {"base_rate_shift": float(frame[TARGET_COLUMN].mean() - train[TARGET_COLUMN].mean()),
+                            "largest_standardized_feature_shifts": {key: float(value) for key, value in shift.nlargest(10).items()}}
+        result = TrainingResult(
+            deployable, "READY" if deployable else "NOT_DEPLOYABLE", selection_reason,
+            n, models, {"validated": deployable, "weights": {selected: 1.0}, "feature_columns": feature_names},
+            {"selection": selection_baseline, "validation": validation_baseline, "test": test_baseline,
+             "historical_base_rate": distribution["positive_rate"], "base_rate": test_baseline["base_rate_probability"]},
+            winner["calibration"], datetime.now(timezone.utc).isoformat(),
+            version, feature_version, feature_names, schema_hash, "next_round_ge_2x", selected,
+            {key: value if isinstance(value, (str, int, float, bool, type(None))) else repr(value)
+             for key, value in selected_train_model.get_params(deep=False).items()}, distribution,
+            {"train": len(train), "validation": len(validation), "test": len(test)},
+            {"start": str(clean.iloc[0]["timestamp"]), "end": str(clean.iloc[-1]["timestamp"])},
+            validation_metrics, test_metrics, walk_forward,
+            {**winner["overfitting_checks"], "candidate_errors": candidate_errors,
+             "qualified_candidates_before_test": qualified},
+            dataset_hash, importance, {"excluded_gap_or_clock_rows": excluded,
+                                       "required_prior_contiguous_rounds": 100 if rounds is not None else None,
+                                       "class_weight": class_weight or "none", "max_history_gap_s": MAX_HISTORY_GAP_S,
+                                       "drift": drift,
+                                       "removed_deterministic_features": ["rolling_count_from_rate", "variance_from_std", "range_from_extrema"]}, selection_reason)
+        result.cycle_id, result.ranking, result.model_concurrency = cycle_id, ranking, self.model_concurrency
+        result.training_time_seconds = winner["training_time_seconds"]
+        result.cycle_time_seconds = time.perf_counter() - cycle_started
+        result._model, result._models = final_model, verified
+        self.latest = result
+        return result
+
+    @staticmethod
+    def _verify_candidate(selected_train_model, row, X_selection, y_selection, X_calibration, y_calibration,
+                          X_test, y_test, test, y_train, all_y, validation_end, test_baseline):
+        """Fit calibration using validation only, then open this candidate's test once."""
         validation_raw = selected_train_model.predict_proba(X_selection)[:, 1]
         calibration_choice = {"method": "none", "applied": False, "material_improvement_threshold": .001}
         calibrator = None
@@ -326,24 +501,23 @@ class ModelTrainer:
             final_model = ProbabilityCalibratedModel(final_model, calibrator)
         test_probability = final_model.predict_proba(X_test)[:, 1]
         test_metrics = evaluate_probabilities(y_test, test_probability)
-        validation_metrics = models[selected]["validation"]
-        best_selection_baseline = min(x["brier_score"] for k,x in selection_baseline.items() if isinstance(x,dict) and "brier_score" in x)
+        validation_metrics = row["validation"]
         best_test_baseline = min(x["brier_score"] for k,x in test_baseline.items() if isinstance(x,dict) and "brier_score" in x)
-        selection_advantage = best_selection_baseline - models[selected]["selection"]["brier_score"]
+        selection_advantage = row["selection_brier_advantage"]
         test_advantage = best_test_baseline - test_metrics["brier_score"]
         best_test_name = min((key for key, value in test_baseline.items() if isinstance(value, dict) and "brier_score" in value),
                              key=lambda name: test_baseline[name]["brier_score"])
         frozen_p = np.full(len(y_test), float(y_train.mean()))
         baseline_probabilities = {"base_rate_probability": frozen_p,
                                   "majority_class": np.full(len(y_test), int(float(y_train.mean()) >= .5)),
-                                  "causal_frequency": causal_frequency(all_y, validation_end, n),
-                                  "rolling_250": causal_frequency(all_y, validation_end, n, 250)}
+                                  "causal_frequency": causal_frequency(all_y, validation_end, len(all_y)),
+                                  "rolling_250": causal_frequency(all_y, validation_end, len(all_y), 250)}
         uncertainty = block_bootstrap_brier_advantage(y_test, test_probability, frozen_p)
         best_uncertainty = block_bootstrap_brier_advantage(
             y_test, test_probability, baseline_probabilities[best_test_name], baseline_name=best_test_name)
-        fold_count = len(models[selected]["walk_forward"])
-        fold_wins = models[selected]["folds_beating_baseline"]
-        robust = bool(qualified) and models[selected]["passes_selection_gate"] and fold_count >= 3
+        fold_count = len(row["walk_forward"])
+        fold_wins = row["folds_beating_baseline"]
+        robust = row["passes_selection_gate"] and fold_count >= 3
         # A sealed chronological test is a final *veto*, not a ranking set.
         deployable = (robust and test_advantage >= .001 and uncertainty["ci95"][0] > 0
                       and best_uncertainty["ci95"][0] > 0)
@@ -358,7 +532,7 @@ class ModelTrainer:
             rejection_reasons.append("base_rate_test_bootstrap_lower_bound_not_positive")
         if best_uncertainty["ci95"][0] <= 0:
             rejection_reasons.append("best_baseline_test_bootstrap_lower_bound_not_positive")
-        walk_forward = models[selected]["walk_forward"]
+        walk_forward = row["walk_forward"]
         test_periods = []
         for start, stop in zip(np.linspace(0, len(test), 4, dtype=int)[:-1],
                                np.linspace(0, len(test), 4, dtype=int)[1:]):
@@ -368,71 +542,26 @@ class ModelTrainer:
                                  "model": evaluate_probabilities(y_test[start:stop], test_probability[start:stop]),
                                  "baseline": evaluate_probabilities(y_test[start:stop],
                                                                     baseline_probabilities[best_test_name][start:stop])})
-        version_seed = f"{datetime.now(timezone.utc).isoformat()}|{schema_hash}|{selected}"
-        version = f"ml-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{hashlib.sha256(version_seed.encode()).hexdigest()[:8]}"
-        distribution = {"total": n, "positive": int(clean[TARGET_COLUMN].sum()), "negative": int(n-clean[TARGET_COLUMN].sum()),
-                        "positive_rate": float(clean[TARGET_COLUMN].mean()), "negative_rate": float(1-clean[TARGET_COLUMN].mean()),
-                        "splits": {label: {"n": len(frame), "positive_rate": float(frame[TARGET_COLUMN].mean())}
-                                   for label, frame in (("train", train), ("selection", selection),
-                                                        ("calibration", calibration_holdout), ("test", test))}}
-        gap = validation_metrics["brier_score"] - models[selected]["train"]["brier_score"]
+        gap = validation_metrics["brier_score"] - row["train"]["brier_score"]
         calibration = calibration_diagnostics(y_test, test_probability)
         calibration.update(calibration_choice)
         calibration["selection_data"] = "70-80% selection; 80-85% calibration holdout; 85-100% untouched test"
-        dataset_hash = hashlib.sha256(pd.util.hash_pandas_object(clean[["round_id", "timestamp", TARGET_COLUMN] + feature_names], index=False).values.tobytes()).hexdigest()
-        importance = self._feature_importance(selected_train_model, feature_names, X_selection, y_selection)
-        selection_reason = (f"{selected} had the lowest selection/walk-forward score among "
-                            f"{len(qualified)} pre-test qualified candidates" if qualified else
-                            f"No candidate qualified before the test; {selected} is reported for diagnostics only")
-        selection_reason += ("; "
-                            f"selection Brier advantage {selection_advantage:+.6f}, "
-                            f"{fold_wins}/{fold_count} earlier folds beat frequency, "
-                            f"untouched test Brier advantage {test_advantage:+.6f} "
-                            f"versus {best_test_name}; its block-bootstrap lower bound was "
-                            f"{best_uncertainty['ci95'][0]:+.6f}.")
-        if rejection_reasons:
-            selection_reason += " Rejection gates: " + ", ".join(rejection_reasons) + "."
-        drift = {}
-        for label, frame in (("selection", selection), ("calibration", calibration_holdout), ("test", test)):
-            shift = ((frame[feature_names].mean() - train[feature_names].mean()).abs()
-                     / train[feature_names].std().replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).dropna()
-            drift[label] = {"base_rate_shift": float(frame[TARGET_COLUMN].mean() - train[TARGET_COLUMN].mean()),
-                            "largest_standardized_feature_shifts": {key: float(value) for key, value in shift.nlargest(10).items()}}
-        result = TrainingResult(
-            deployable, "READY" if deployable else "NOT_VALIDATED", selection_reason +
-            (" Validated for inference." if deployable else " Live ML inference disabled; historical frequency remains an informational fallback."),
-            n, models, {"validated": deployable, "weights": {selected: 1.0}, "feature_columns": feature_names},
-            {"selection": selection_baseline, "validation": validation_baseline, "test": test_baseline, "historical_base_rate": distribution["positive_rate"],
-             "base_rate": test_baseline["base_rate_probability"]},
-            calibration, datetime.now(timezone.utc).isoformat(),
-            version, feature_version, feature_names, schema_hash, "next_round_ge_2x", selected,
-            {key: value if isinstance(value, (str, int, float, bool, type(None))) else repr(value)
-             for key, value in (final_model.model if isinstance(final_model, ProbabilityCalibratedModel) else final_model).get_params(deep=False).items()}, distribution,
-            {"train": len(train), "validation": len(validation), "test": len(test)},
-            {"start": str(clean.iloc[0]["timestamp"]), "end": str(clean.iloc[-1]["timestamp"])},
-            validation_metrics, test_metrics, walk_forward,
-            {"train_validation_brier_gap": gap,
+        return final_model, {"status": "PASSED" if deployable else "REJECTED",
+            "test": test_metrics, "test_brier_advantage": test_advantage,
+            "calibration": calibration, "deployable": deployable, "rejection_reasons": rejection_reasons,
+            "overfitting_checks": {"train_validation_brier_gap": gap,
              "validation_test_brier_degradation": test_metrics["brier_score"] - validation_metrics["brier_score"],
-             "suspicious_perfect_metrics": any(metric["validation"]["accuracy"] >= .999 for metric in models.values()),
+             "suspicious_perfect_metrics": validation_metrics["accuracy"] >= .999,
              "outperforms_validation_baseline": selection_advantage >= .001,
              "outperforms_test_baseline": test_advantage >= .001,
              "folds_beating_baseline": fold_wins, "fold_count": fold_count,
-             "candidate_errors": candidate_errors,
              "test_brier_advantage_uncertainty": uncertainty,
              "best_baseline_test_uncertainty": best_uncertainty,
              "best_test_baseline": best_test_name,
-             "qualified_candidates_before_test": qualified,
              "rejection_reasons": rejection_reasons,
              "test_periods": test_periods,
              "deployable": deployable,
-             "walk_forward_brier_std": float(np.std([fold["metrics"]["brier_score"] for fold in walk_forward])) if walk_forward else None},
-            dataset_hash, importance, {"excluded_gap_or_clock_rows": excluded, "class_weight": class_weight or "none",
-                                       "max_history_gap_s": MAX_HISTORY_GAP_S, "drift": drift,
-                                       "removed_deterministic_features": ["rolling_count_from_rate", "variance_from_std", "range_from_extrema"]}, selection_reason)
-        result._model = final_model  # type: ignore[attr-defined]
-        result._models = {selected: final_model}  # type: ignore[attr-defined]
-        self.latest = result
-        return result
+             "walk_forward_brier_std": float(np.std([fold["metrics"]["brier_score"] for fold in walk_forward]))}}
 
     @staticmethod
     def _feature_importance(model, names: list[str], X_selection: np.ndarray,
@@ -462,10 +591,17 @@ class ModelTrainer:
             train, evaluate = data.iloc[:end], data.iloc[end:stop]
             if len(evaluate) == 0 or train[TARGET_COLUMN].nunique() < 2:
                 continue
-            model = (factories or self.factories())[algorithm](); model.fit(train[feature_names], train[TARGET_COLUMN])
-            metrics = evaluate_probabilities(evaluate[TARGET_COLUMN].to_numpy(int), model.predict_proba(evaluate[feature_names])[:, 1])
-            baseline = evaluate_probabilities(evaluate[TARGET_COLUMN].to_numpy(int), np.full(len(evaluate), float(train[TARGET_COLUMN].mean())))
+            model = (factories or self.factories())[algorithm]()
+            # Imbalance decisions for a fold must not see later training labels.
+            weight = "balanced" if min(float(train[TARGET_COLUMN].mean()), 1 - float(train[TARGET_COLUMN].mean())) < .20 else None
+            parameters = model.get_params(deep=True)
+            weights = {key: weight for key in parameters if key == "class_weight" or key.endswith("__class_weight")}
+            if weights:
+                model.set_params(**weights)
+            model.fit(train[feature_names], train[TARGET_COLUMN])
             probabilities = model.predict_proba(evaluate[feature_names])[:, 1]
+            metrics = evaluate_probabilities(evaluate[TARGET_COLUMN].to_numpy(int), probabilities)
+            baseline = evaluate_probabilities(evaluate[TARGET_COLUMN].to_numpy(int), np.full(len(evaluate), float(train[TARGET_COLUMN].mean())))
             frozen = np.full(len(evaluate), float(train[TARGET_COLUMN].mean()))
             results.append({"train_end": end, "evaluation_start": end, "evaluation_end": stop,
                             "metrics": metrics, "baseline": baseline, "baseline_name": "base_rate_probability",

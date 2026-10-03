@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  connectionStateAfterHealth,
   MAX_RECONNECT_BACKOFF_MS,
   reconnectDelay,
 } from '../src/services/reconnectPolicy.js';
@@ -20,3 +21,10 @@ test('invalid attempts cannot produce a rapid zero-delay loop', () => {
   assert.equal(reconnectDelay(undefined), 1000);
 });
 
+test('connection state distinguishes initial connect, recovery, and prolonged disconnect', () => {
+  assert.equal(connectionStateAfterHealth({ online: false, attempt: 1 }), 'INITIAL_CONNECT');
+  assert.equal(connectionStateAfterHealth({ online: true, degraded: false }), 'CONNECTED');
+  assert.equal(connectionStateAfterHealth({ online: true, degraded: true }), 'DEGRADED');
+  assert.equal(connectionStateAfterHealth({ online: false, lastSuccessfulAt: 123, attempt: 1 }), 'RECONNECTING');
+  assert.equal(connectionStateAfterHealth({ online: false, lastSuccessfulAt: 123, attempt: 5 }), 'DISCONNECTED');
+});

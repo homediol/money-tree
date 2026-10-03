@@ -20,7 +20,6 @@ import { sleep } from './RetryManager.js';
 const WATCHDOG_INTERVAL_MS  = 3000;
 // Legitimate Aviator rounds can run beyond one minute. A 60-second threshold
 // caused healthy high-multiplier rounds to be treated as collector failures.
-const FROZEN_THRESHOLD_S    = Number(process.env.BOT_FROZEN_THRESHOLD_SECONDS || 180);
 const LOGIN_CHECK_INTERVAL  = 30000; // only check login every 30s, not every 3s
 const POST_RECOVERY_QUIET_MS = 15000; // silence watchdog for 15s after any recovery
 
@@ -97,6 +96,10 @@ export class Watchdog {
       return this._alert('page closed', page);
     }
 
+    if (this.browser.isPageResponsive && !this.browser.isPageResponsive()) {
+      return this._alert('page unresponsive', page);
+    }
+
     // 3. Correct URL — only check when COLLECTING
     if (this.sm.is(State.COLLECTING)) {
       const url = page.url().toLowerCase();
@@ -119,13 +122,8 @@ export class Watchdog {
       }
     }
 
-    // 5. Frozen collector check
-    const secs = this.health.secondsSinceCollectionActivity();
-    if (secs !== null && secs > FROZEN_THRESHOLD_S && this.sm.is(State.COLLECTING)) {
-      return this._alert(`collector frozen — no round for ${Math.round(secs)}s`, page);
-    }
-
-    // All good
+    // No new round by itself is not a browser fault. Heartbeat and the
+    // collector mutation loop detect actual page/frame/observer failures.
     this.health.setBrowserConnected(true);
     this.health.setPageConnected(true);
   }

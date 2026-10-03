@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Iterable
@@ -82,10 +83,14 @@ class PatternEngine:
                 "failures": n - successes, "rate": _rate(successes, n),
                 "confidence_interval": wilson_interval(successes, n)}
 
-    def _measure(self, values: list[float], mask: Mask, start: int = 0, end: int | None = None) -> dict:
+    def _measure(self, values: list[float], mask: Mask, start: int = 0, end: int | None = None,
+                 indices: list[int] | None = None) -> dict:
         end = len(values) if end is None else min(end, len(values))
-        indices = [index for index in range(max(0, start), end) if mask(values, index)]
-        successes, n = sum(values[index] >= self.target for index in indices), len(indices)
+        if indices is None:
+            selected = [index for index in range(max(0, start), end) if mask(values, index)]
+        else:
+            selected = indices[bisect_left(indices, max(0, start)):bisect_left(indices, end)]
+        successes, n = sum(values[index] >= self.target for index in selected), len(selected)
         return {"sample_size": n, "next_outcomes_observed": n, "successes": successes,
                 "failures": n - successes, "success_rate": _rate(successes, n),
                 "failure_rate": _rate(n - successes, n), "confidence_interval": wilson_interval(successes, n)}
@@ -93,18 +98,20 @@ class PatternEngine:
     def _evidence(self, *, pattern_id: str, pattern: str, kind: str, definition: dict,
                   values: list[float], mask: Mask, timestamps: list[str] | None = None) -> dict:
         baseline = _rate(sum(value >= self.target for value in values), len(values))
-        full = self._measure(values, mask)
+        indices = [index for index in range(len(values)) if mask(values, index)]
+        full = self._measure(values, mask, indices=indices)
         difference, relative = _comparison(full["success_rate"], baseline)
         recent: dict[str, dict] = {}
         for window in RECENT_WINDOWS:
             start = max(0, len(values) - window)
-            measured = self._measure(values, mask, start=start)
+            measured = self._measure(values, mask, start=start, indices=indices)
             segment = values[start:]
             measured["baseline_rate"] = _rate(sum(value >= self.target for value in segment), len(segment))
             measured["difference_from_baseline"], measured["relative_difference"] = _comparison(measured["success_rate"], measured["baseline_rate"])
             recent[str(window)] = measured
         split = max(1, min(len(values) - 1, int(len(values) * self.rules.train_fraction))) if len(values) > 1 else 0
-        train, test = self._measure(values, mask, end=split), self._measure(values, mask, start=split)
+        train, test = (self._measure(values, mask, end=split, indices=indices),
+                       self._measure(values, mask, start=split, indices=indices))
         for measured, segment in ((train, values[:split]), (test, values[split:])):
             measured["baseline_rate"] = _rate(sum(value >= self.target for value in segment), len(segment))
             measured["difference_from_baseline"], measured["relative_difference"] = _comparison(measured["success_rate"], measured["baseline_rate"])
@@ -162,11 +169,15 @@ class PatternEngine:
         timestamps = rounds.get("timestamp", pd.Series(dtype=str)).astype(str).tolist() or None
         evidence = []
         for threshold in thresholds:
+            streaks = []
+            streak = 0
+            for value in values:
+                streaks.append(streak)
+                streak = streak + 1 if value < threshold else 0
             for length in range(1, 7):
                 is_plus = length == 6
-                def mask(vals: list[float], index: int, t=threshold, size=length, plus=is_plus) -> bool:
-                    streak = _streak_before(vals, index, t) if index > 0 else 0
-                    return streak >= size if plus else streak == size
+                def mask(_vals: list[float], index: int, size=length, plus=is_plus) -> bool:
+                    return streaks[index] >= size if plus else streaks[index] == size
                 label_length = "6+" if is_plus else str(length)
                 evidence.append(self._evidence(
                     pattern_id=f"streak_below_{str(threshold).replace('.', '_')}_{'6_plus' if is_plus else length}_target_{str(self.target).replace('.', '_')}",

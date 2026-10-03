@@ -25,8 +25,11 @@ class HistoryCollectorManager:
 
     STATES = {"HEALTHY", "WAITING", "CONNECTING", "DISCONNECTED", "STALE", "ERROR", "STOPPED"}
 
-    def __init__(self, data_path: Path, broadcaster: Broadcaster | None = None):
+    def __init__(self, data_path: Path, broadcaster: Broadcaster | None = None, round_loader=None,
+                 repository=None):
         self.data_path = Path(data_path)
+        self.round_loader = round_loader
+        self.repository = repository
         self.status_path = ROOT / "data" / "bot" / "status.json"
         self.external_pid_path = ROOT / "data" / "bot" / "collector-supervisor.json"
         self.external = os.environ.get("WINNER_COLLECTOR_EXTERNAL") == "1"
@@ -173,14 +176,24 @@ class HistoryCollectorManager:
             state = "CONNECTING"
         elif not running and state not in {"ERROR", "STOPPED"}:
             state = "STOPPED"
-        return {
+        snapshot = {
             "status": state, "running": running, "paused": self._paused,
             "started_at": self.started_at, "last_error": self.last_error,
             "last_update": node.get("lastRoundTime"),
             "browser_connected": bool(node.get("browserConnected", False)),
             "frame_connected": bool(node.get("frameConnected", False)),
             "recovery_count": int(node.get("recoveryCount", 0) or 0),
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "data_source": "collector_observation",
         }
+        if self.repository is not None:
+            try:
+                self.repository.save_application_state("collector_status", snapshot, snapshot["observed_at"])
+                # Return the exact persisted snapshot used by dashboard clients.
+                return self.repository.load_application_state("collector_status") or snapshot
+            except Exception:
+                snapshot["persistence_state"] = "UNAVAILABLE"
+        return snapshot
 
     def status(self) -> dict:
         health = self.health_status()
@@ -194,6 +207,8 @@ class HistoryCollectorManager:
         }
 
     def rows(self) -> list[dict]:
+        if self.round_loader is not None:
+            return self.round_loader()
         try:
             payload = json.loads(self.data_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):

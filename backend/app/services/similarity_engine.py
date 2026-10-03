@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from statistics import mean, pstdev
 
 import numpy as np
@@ -31,6 +30,18 @@ def _dtw(a: list[float], b: list[float]) -> float:
     return float(dp[n, m])
 
 
+def _dtw_batch(current: np.ndarray, candidates: np.ndarray) -> np.ndarray:
+    """Compute all short DTW distances with nine array operations for 3 rounds."""
+    count, size = candidates.shape
+    cells = [[np.full(count, np.inf) for _ in range(size + 1)] for _ in range(size + 1)]
+    cells[0][0] = np.zeros(count)
+    for i in range(1, size + 1):
+        for j in range(1, size + 1):
+            cells[i][j] = (np.abs(current[i - 1] - candidates[:, j - 1])
+                           + np.minimum(np.minimum(cells[i - 1][j], cells[i][j - 1]), cells[i - 1][j - 1]))
+    return cells[size][size]
+
+
 class SimilarityEngine:
     def __init__(self, target: float = 2.0, min_sample_size: int = 30):
         self.target = target
@@ -43,25 +54,39 @@ class SimilarityEngine:
 
         current = values[-sequence_length:]
         current_norm = _normalize(current)
+        values_array = np.asarray(values, dtype=float)
+        windows = np.lib.stride_tricks.sliding_window_view(values_array, sequence_length)[:-1]
+        next_values = values_array[sequence_length:]
+        centered = windows - windows.mean(axis=1, keepdims=True)
+        deviations = windows.std(axis=1)
+        normalized = np.divide(centered, deviations[:, None],
+                               out=np.zeros_like(centered), where=deviations[:, None] != 0)
+        euclidean_distances = np.linalg.norm(normalized - current_norm, axis=1)
+        current_length = np.linalg.norm(current_norm)
+        candidate_lengths = np.linalg.norm(normalized, axis=1)
+        denominators = candidate_lengths * current_length
+        cosine_scores = np.divide(normalized @ current_norm, denominators,
+                                  out=np.zeros(len(windows)), where=denominators != 0)
+        dtw_distances = _dtw_batch(current_norm, normalized)
+        scores = (0.45 / (1 + euclidean_distances)
+                  + 0.35 * ((cosine_scores + 1) / 2)
+                  + 0.20 / (1 + dtw_distances))
+        round_indices = rounds["round_index"].to_numpy()[sequence_length - 1:-1]
         cases = []
         exact_success = exact_total = 0
-        for idx in range(0, len(values) - sequence_length):
-            seq = values[idx : idx + sequence_length]
-            if idx + sequence_length >= len(values):
-                continue
-            next_value = values[idx + sequence_length]
+        for idx, seq in enumerate(windows):
+            next_value = next_values[idx]
             exact = all(round(a, 2) == round(b, 2) for a, b in zip(seq, current))
             if exact:
                 exact_total += 1
                 exact_success += int(next_value >= self.target)
-            seq_norm = _normalize(seq)
-            euclidean = float(np.linalg.norm(current_norm - seq_norm))
-            cosine = _cosine(current_norm, seq_norm)
-            dtw = _dtw(current_norm.tolist(), seq_norm.tolist())
-            score = (1 / (1 + euclidean)) * 0.45 + ((cosine + 1) / 2) * 0.35 + (1 / (1 + dtw)) * 0.20
+            euclidean = float(euclidean_distances[idx])
+            cosine = float(cosine_scores[idx])
+            dtw = float(dtw_distances[idx])
+            score = float(scores[idx])
             cases.append(
                 {
-                    "round_index": int(rounds["round_index"].iloc[idx + sequence_length - 1]),
+                    "round_index": int(round_indices[idx]),
                     "sequence": [round(float(v), 2) for v in seq],
                     "next_multiplier": round(float(next_value), 2),
                     "next_target": int(next_value >= self.target),
@@ -105,4 +130,3 @@ class SimilarityEngine:
             "exact_matches": 0,
             "cases": [],
         }
-

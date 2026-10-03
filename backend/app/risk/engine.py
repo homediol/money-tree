@@ -10,7 +10,7 @@ from typing import Awaitable, Callable, Optional
 from app.betting.schemas import DecisionIntent
 from app.risk.config import RISK_PROFILES, get_risk_profile
 from app.risk.schemas import RiskDecision, RiskLevel
-from app.risk.sizing import BetSizing
+from app.risk.sizing import BetSizeResult, BetSizing
 
 log = logging.getLogger("risk.engine")
 Broadcaster = Callable[[dict], Awaitable[None]]
@@ -210,11 +210,25 @@ class RiskManager:
                 if betting_status.get("browser_status") != "CONNECTED" or not betting_status.get("last_ui_ready"):
                     return await self._finish(result(False, "Browser is not healthy and ready"))
 
-            size = self.sizing.calculate(
-                current_balance=float(current), profile=profile,
-                requested_bet=requested, risk_level=profile.default_risk_level,
-                session_state=betting_status,
-            )
+            configuration = betting_status.get("session_configuration") or {}
+            if configuration.get("mode") == "MANUAL":
+                panels = [panel for panel in configuration.get("panels", []) if panel.get("enabled")]
+                amounts = [int(panel.get("stake") or 0) for panel in panels]
+                total = sum(amounts)
+                balance_limit = float(current) * profile.maximum_balance_percentage
+                invalid_panel = any(amount < profile.minimum_bet or amount > profile.maximum_bet
+                                    for amount in amounts)
+                if not panels or invalid_panel:
+                    return await self._finish(result(False, "Manual panel stake is outside Risk profile limits"))
+                if total > balance_limit or total > float(current):
+                    return await self._finish(result(False, "Combined manual exposure exceeds bankroll limits"))
+                size = BetSizeResult(True, total, "Manual stakes approved within combined bankroll limits")
+            else:
+                size = self.sizing.calculate(
+                    current_balance=float(current), profile=profile,
+                    requested_bet=requested, risk_level=profile.default_risk_level,
+                    session_state=betting_status,
+                )
             if not size.approved:
                 return await self._finish(result(False, size.reason))
             self._evaluated.add(key)
@@ -244,7 +258,16 @@ class RiskManager:
         elif goal is not None and current >= goal: reasons.append("goal_reached")
         elif start is not None and start - current >= profile.maximum_session_loss: reasons.append("session_loss_limit")
         if betting_status.get("consecutive_losses", 0) >= profile.maximum_consecutive_losses: reasons.append("consecutive_loss_limit")
-        if amount is None or current is None or not self.sizing.calculate(
+        configuration = betting_status.get("session_configuration") or {}
+        if configuration.get("mode") == "MANUAL":
+            panels = [panel for panel in configuration.get("panels", []) if panel.get("enabled")]
+            amounts = [int(panel.get("stake") or 0) for panel in panels]
+            combined = sum(amounts)
+            if (amount is None or current is None or not panels or combined != int(amount)
+                    or any(x < profile.minimum_bet or x > profile.maximum_bet for x in amounts)
+                    or combined > float(current or 0) * profile.maximum_balance_percentage):
+                reasons.append("approved_amount_no_longer_safe")
+        elif amount is None or current is None or not self.sizing.calculate(
             current_balance=float(current or 0), profile=profile, requested_bet=int(amount or 0),
             risk_level=profile.default_risk_level, session_state=betting_status,
         ).approved: reasons.append("approved_amount_no_longer_safe")

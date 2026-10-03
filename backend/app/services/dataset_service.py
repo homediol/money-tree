@@ -486,7 +486,7 @@ class DatasetService:
         train, validation, test = self.chronological_split() if len(self.dataset) else ([], [], [])
         return {
             "status": "READY" if len(self.dataset) else "WAITING",
-            "source": str(self.raw_path), "processed_path": str(self.dataset_path),
+            "source": "PostgreSQL:aviator_rounds" if self.source_loader else str(self.raw_path),
             "feature_rows": len(self.dataset), "feature_count": len(self.metadata),
             "last_processing_mode": self.last_mode,
             "splits": {"train": len(train), "validation": len(validation), "test": len(test)},

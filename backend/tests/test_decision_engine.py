@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -97,6 +96,16 @@ def test_qualifying_decision_requires_risk_and_never_calls_executor(setup):
     assert risk.calls[0][0].amount_bif is None  # risk owns sizing
 
 
+def test_manual_configuration_requests_combined_stake_from_existing_risk(setup):
+    bet = betting(session_configuration={"mode": "MANUAL", "panels": [
+        {"enabled": True, "stake": 1000, "cashout": 2.0},
+        {"enabled": True, "stake": 1000, "cashout": 2.0},
+    ]})
+    result, risk = evaluate(setup[0], bet=bet)
+    assert result["status"] == "READY_FOR_EXECUTION"
+    assert risk.calls[0][0].effective_amount() == 2000
+
+
 @pytest.mark.parametrize(("pred","ev","mod","reason"), [
     (prediction(probability_2x=.54), evidence(), model(), "probability_below_threshold"),
     (prediction(), evidence(confidence="LOW"), model(), "confidence_below_threshold"),
@@ -167,19 +176,19 @@ def test_idempotency_and_concurrency_create_one_decision(setup):
     assert len(risk.calls) == 1
 
 
-def test_ttl_expiration_and_atomic_validated_contract(tmp_path):
+def test_ttl_expiration_and_database_validated_contract(tmp_path):
     repo = Repository(tmp_path / "db.sqlite3"); repo.init()
     path = tmp_path / "decision.json"
     engine = DecisionEngine(path, repo, config=DecisionConfig(automatic_mode=True, decision_ttl_seconds=1))
     result, _ = evaluate(engine)
-    payload = json.loads(path.read_text())
+    payload = repo.latest_decision()
     payload["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
-    path.write_text(json.dumps(payload))
+    repo.save_decision(payload)
     expired = engine.current()
     assert expired["status"] == "EXPIRED"
     assert expired["execution_status"] == "EXPIRED"
-    DecisionRecord.model_validate_json(path.read_text())
-    assert not path.with_suffix(".json.tmp").exists()
+    DecisionRecord.model_validate(repo.latest_decision())
+    assert not path.exists()
 
 
 def test_audit_history_contains_risk_handoff_and_ready(setup):
@@ -192,7 +201,9 @@ def test_audit_history_contains_risk_handoff_and_ready(setup):
 
 def test_api_has_no_direct_create_or_execute_bypass():
     from main import app
-    decision_routes = {(route.path, tuple(sorted(route.methods or []))) for route in app.routes if route.path.startswith("/api/decisions")}
+    decision_routes = {(path, tuple(sorted(method.upper() for method in operations)))
+                       for path, operations in app.openapi()["paths"].items()
+                       if path.startswith("/api/decisions")}
     assert not any(path.endswith("/create") or path.endswith("/execute") for path, _ in decision_routes)
     evaluate_routes = [methods for path, methods in decision_routes if path == "/api/decisions/evaluate"]
     assert evaluate_routes == [("POST",)]

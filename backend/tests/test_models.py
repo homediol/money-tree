@@ -13,7 +13,7 @@ import pytest
 from app.api.ml import estimate, latest_prediction, metrics, model, recent_predictions, status
 from app.database.repository import Repository
 from app.ml.model_registry import ModelRegistry
-from app.ml.trainer import TARGET_COLUMN, ModelTrainer, block_bootstrap_brier_advantage, causal_frequency, evaluate_probabilities, feature_schema
+from app.ml.trainer import TARGET_COLUMN, ModelTrainer, block_bootstrap_brier_advantage, causal_frequency, eligible_round_ids, evaluate_probabilities, feature_schema
 from app.services.dataset_service import DatasetService
 
 
@@ -378,9 +378,25 @@ def test_block_bootstrap_advantage_is_reproducible():
     assert first["ci95"][0] > 0
 
 
+def test_training_target_requires_complete_observed_prior_window():
+    rows = raw_rows(210)
+    for row in rows[105:]:
+        row["timestamp"] = (datetime.fromisoformat(row["timestamp"]) + timedelta(minutes=10)).isoformat()
+    admitted = eligible_round_ids(pd.DataFrame(rows))
+    assert "100" not in admitted
+    assert "101" in admitted
+    assert "105" in admitted
+    assert "106" not in admitted
+    assert "205" not in admitted
+    assert "206" in admitted
+
+
 def test_fold_reports_base_rate_advantage_and_calibration(trained):
     result = trained[-1]
     for candidate in result.models.values():
+        if candidate.get("status") in {"UNAVAILABLE", "FAILED"}:
+            assert candidate["rejection_reasons"]
+            continue
         assert len(candidate["walk_forward"]) == 3
         for fold in candidate["walk_forward"]:
             assert fold["baseline_name"] == "base_rate_probability"

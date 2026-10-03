@@ -34,10 +34,12 @@ export default function SystemHealth() {
   }
 
   return (
-    <div role="status" aria-live="polite" title={connection.message || ''} className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full border border-amber-500/40 bg-zinc-950/95 px-3 py-2 text-xs font-semibold text-amber-100 shadow-xl backdrop-blur">
+    <div role="status" aria-live="polite" title={connection.message || ''} className="fixed bottom-4 right-4 z-50 flex max-w-[min(92vw,34rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-amber-500/40 bg-zinc-950/95 px-3 py-2 text-xs font-semibold text-amber-100 shadow-xl backdrop-blur">
       <RefreshCw size={14} className="animate-spin" />
-      <span>{connection.status === 'checking' ? 'Connecting…' : 'Reconnecting…'}</span>
+      <span>{connection.state === 'INITIAL_CONNECT' ? 'Connecting to backend…' : connection.state === 'DISCONNECTED' ? 'Backend disconnected · retrying…' : 'Backend reconnecting…'}</span>
       {connection.attempt > 1 && <span className="text-amber-300/70">#{connection.attempt}</span>}
+      {connection.nextRetryMs > 0 && <span className="text-amber-200/70">Retry in {Math.ceil(connection.nextRetryMs / 1000)}s</span>}
+      {connection.lastSuccessfulAt && <span className="w-full text-[10px] font-normal text-zinc-400">Last successful connection: {new Date(connection.lastSuccessfulAt).toLocaleTimeString()}</span>}
     </div>
   );
 }

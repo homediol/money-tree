@@ -17,5 +17,5 @@ async def status(request: Request):
         "dataset_loaded": not wp.rounds.empty,
         "valid_rounds": int(len(wp.rounds)),
         "model_status": wp.model_registry.performance().get("status"),
-        "data_source": str(wp.settings.data_path),
+        "data_source": "PostgreSQL:aviator_rounds" if wp.repository.database_url else "SQLite:rounds (isolated development)",
     }

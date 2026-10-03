@@ -26,6 +26,13 @@ const BOT_DIR = path.join(ROOT, "bot");
 const FRONTEND = path.join(ROOT, "frontend");
 const ENTERPRISE = path.join(ROOT, "aviator_enterprise");
 
+// The Python backend reads backend/.env itself. Share the same database
+// configuration with the Node collector so both use one PostgreSQL history.
+const backendEnv = path.join(BACKEND, ".env");
+if (fs.existsSync(backendEnv) && typeof process.loadEnvFile === "function") {
+  process.loadEnvFile(backendEnv);
+}
+
 // ── Resolve Python binary (prefers root .venv with TensorFlow) ────────────
 function findPython() {
   const candidates = [
@@ -157,6 +164,14 @@ const SERVICES = [
     port:    8000,
     healthPath: "/health",
     expectedService: "winner-predict-backend",
+    // Probe every capability the combined analytics page requires. Checking
+    // reports alone misses older workers that have reports/current but lack
+    // the progress route used by its live countdown cards.
+    requiredApiPaths: [
+      "/api/analytics/progress",
+      "/api/analytics/reports?report_type=ROUND_100_REPORT&limit=1",
+      "/api/backend/capabilities",
+    ],
     restart: false,
     // Winner Predict API — owns port 8000 (frontend defaults point here)
   },
@@ -262,9 +277,9 @@ function stateFor(svc) {
   return serviceStates.get(svc.name);
 }
 
-function probeJson(port, pathname) {
+function probeJson(port, pathname, headers = {}, timeoutMs = 5000) {
   return new Promise((resolve) => {
-    const request = http.get({ host: "127.0.0.1", port, path: pathname, timeout: 1500 }, (response) => {
+    const request = http.get({ host: "127.0.0.1", port, path: pathname, timeout: timeoutMs, headers }, (response) => {
       let body = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => { if (body.length < 65536) body += chunk; });
@@ -280,8 +295,71 @@ function probeJson(port, pathname) {
 
 async function expectedServiceOwnsPort(svc) {
   if (!svc.healthPath || !svc.expectedService) return true;
-  const response = await probeJson(svc.port, svc.healthPath);
-  return response?.data?.service === svc.expectedService;
+  // /health verifies PostgreSQL and includes lifecycle diagnostics; allow for
+  // a slow but responsive database instead of treating it as an unknown owner.
+  const response = await probeJson(svc.port, svc.healthPath, {}, 20000);
+  if (!response) return null;
+  const actualService = response?.data?.service;
+  if (actualService !== svc.expectedService) {
+    console.warn(`[runner] ${timestamp()} health probe on port ${svc.port} returned HTTP ${response.status} with service ${actualService || "UNKNOWN"}; expected ${svc.expectedService}`);
+    return false;
+  }
+  return true;
+}
+
+async function stopVerifiedStaleBackend(pid, svc) {
+  // A restart is allowed only when the health response gave us a PID whose
+  // command and working directory prove it is this checkout's uvicorn app.
+  // Never kill an arbitrary process that happens to use port 8000.
+  if (process.platform !== "linux" || !Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false;
+  const isVerifiedBackend = () => {
+    try {
+      const processDir = fs.realpathSync(`/proc/${pid}/cwd`);
+      const command = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
+      return processDir === fs.realpathSync(BACKEND)
+        && command.includes("uvicorn") && command.includes("main:app");
+    } catch (_) {
+      return false;
+    }
+  };
+  if (!isVerifiedBackend()) return false;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (_) {
+    return false;
+  }
+  // Uvicorn closes its listening socket before lifespan teardown releases the
+  // single-instance flock. Waiting for the port alone can race the next start
+  // into SingleInstanceError while the old worker is still shutting down.
+  const exitedAndReleased = async () => {
+    let processExited = false;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      processExited = error.code === "ESRCH";
+    }
+    return processExited && !await isPortInUse(svc.port);
+  };
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await exitedAndReleased()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  // A verified obsolete backend can stop serving HTTP but remain alive in a
+  // stuck background task, retaining the singleton lock forever. Escalate
+  // only after TERM grace and only if PID identity still matches this app.
+  if (!isVerifiedBackend()) return await exitedAndReleased();
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") return false;
+  }
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await exitedAndReleased()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  console.error(`[runner] ${timestamp()} verified stale backend PID ${pid} did not exit after TERM/KILL; not starting a duplicate`);
+  return false;
 }
 
 function prefixLines(svc, stream, writer) {
@@ -369,20 +447,71 @@ function launch(svc, restarting = false) {
       scheduledTimers.delete(timer);
       try {
         if (svc.port && await isPortInUse(svc.port)) {
-          if (!await expectedServiceOwnsPort(svc)) {
+          const ownerMatches = await expectedServiceOwnsPort(svc);
+          if (ownerMatches === false) {
             console.error(`${label(svc)} ${timestamp()} PORT CONFLICT: ${svc.port} is owned by a different service`);
             resolve(null);
-            stopAll(1);
+            // A backend port conflict must not shut down independently useful
+            // services such as the history collector. Never replace an owner
+            // we cannot prove belongs to this checkout.
+            if (svc.name !== "backend") stopAll(1);
             return;
           }
-          const state = stateFor(svc);
-          state.external = true;
-          state.restartAttempts = 0;
-          console.warn(`${label(svc)} ${timestamp()} verified existing instance on port ${svc.port}; not starting a duplicate`);
-          if (svc.name === "backend") recordBackend("supervisor_external_instance", { port: svc.port });
-          else monitorExisting(svc);
-          resolve(null);
-          return;
+          if (ownerMatches === null) {
+            console.error(`${label(svc)} ${timestamp()} could not verify the service on port ${svc.port}; leaving it untouched`);
+            resolve(null);
+            if (svc.name !== "backend") stopAll(1);
+            return;
+          }
+          let compatible = true;
+          let health = null;
+          const requiredApiPaths = svc.requiredApiPaths || (svc.requiredApiPath ? [svc.requiredApiPath] : []);
+          if (requiredApiPaths.length) {
+            health = await probeJson(svc.port, svc.healthPath);
+            const capabilities = await Promise.all(requiredApiPaths.map(async (apiPath) => ({
+              apiPath, response: await probeJson(svc.port, apiPath, process.env.API_KEY
+                ? { Authorization: `Bearer ${process.env.API_KEY}` } : {}),
+            })));
+            // Probe with the configured API key so middleware cannot mask a
+            // missing route as a successful 401. A 404 means the route is
+            // absent; 422 means a known capability rejects its query. Timeout
+            // is inconclusive and must never terminate a healthy backend.
+            const incompatible = capabilities.find(({ apiPath, response }) =>
+              response?.status === 404
+              || (apiPath.includes("ROUND_100_REPORT") && response?.status === 422));
+            compatible = !incompatible;
+            if (incompatible) {
+              const { apiPath, response: capability } = incompatible;
+              const stalePid = Number(health?.data?.backend?.pid);
+              console.warn(`${label(svc)} ${timestamp()} healthy backend PID ${stalePid || "unknown"} failed compatibility probe (${capability.status}) ${apiPath}; checking whether it is safe to replace`);
+              const stopped = await stopVerifiedStaleBackend(stalePid, svc);
+              if (!stopped) {
+                console.error(`${label(svc)} ${timestamp()} OUTDATED BACKEND: HTTP health passed but compatibility probe returned ${capability.status} for ${apiPath}. It was not replaced because its PID could not be verified as this checkout's uvicorn process.`);
+                resolve(null);
+                // Preserve the independent collector and leave an unverified
+                // backend untouched. Its incompatibility remains visible in
+                // the log, while collection can still recover.
+                return;
+              }
+              recordBackend("supervisor_replaced_stale_backend", {
+                pid: stalePid, port: svc.port, incompatible_probe: apiPath,
+                probe_status: capability.status,
+                missing_route: capability.status === 404 ? apiPath : undefined,
+                reason: capability.status === 404 ? "required_api_route_missing" : "required_api_feature_rejected",
+              });
+              console.warn(`${label(svc)} ${timestamp()} stopped verified stale backend PID ${stalePid}; starting the current application`);
+            }
+          }
+          if (compatible) {
+            const state = stateFor(svc);
+            state.external = true;
+            state.restartAttempts = 0;
+            console.warn(`${label(svc)} ${timestamp()} verified existing instance on port ${svc.port}; not starting a duplicate`);
+            if (svc.name === "backend") recordBackend("supervisor_external_instance", { port: svc.port });
+            else monitorExisting(svc);
+            resolve(null);
+            return;
+          }
         }
 
         console.log(`\x1b[90m[runner ${timestamp()}]\x1b[0m starting ${label(svc)}: ${svc.cmd} ${svc.args.join(" ")}`);
@@ -457,11 +586,16 @@ function launch(svc, restarting = false) {
 // ── Main ───────────────────────────────────────────────────────────────────
 (async () => {
   const backendOnly = process.argv.includes("--backend-only");
-  let selectedServices = backendOnly
+  const apiOnly = process.argv.includes("--api-only");
+  let selectedServices = apiOnly
+    ? SERVICES.filter((svc) => svc.name === "backend")
+    : backendOnly
     ? SERVICES.filter((svc) => svc.name === "collector" || svc.name === "backend")
     : SERVICES;
   console.log("\x1b[1m\x1b[37m╔══════════════════════════════════════╗\x1b[0m");
-  console.log(backendOnly
+  console.log(apiOnly
+    ? "\x1b[1m\x1b[37m║   Winner Predict — API Only            ║\x1b[0m"
+    : backendOnly
     ? "\x1b[1m\x1b[37m║   Winner Predict — Backend Supervisor ║\x1b[0m"
     : "\x1b[1m\x1b[37m║   Aviator ML — Starting All Services  ║\x1b[0m");
   console.log("\x1b[1m\x1b[37m╚══════════════════════════════════════╝\x1b[0m");
@@ -474,16 +608,21 @@ function launch(svc, restarting = false) {
   const backendPython = ensureBackendEnvironment();
   const backend = SERVICES.find((svc) => svc.name === "backend");
   const backendPortBusy = await isPortInUse(backend.port);
-  if (backendPortBusy && !await expectedServiceOwnsPort(backend)) {
-    console.error(`[runner] ${timestamp()} PORT CONFLICT: ${backend.port} is owned by a different service`);
-    stopAll(1);
-    return;
+  if (backendPortBusy) {
+    const ownerMatches = await expectedServiceOwnsPort(backend);
+    if (ownerMatches === false) {
+      console.error(`[runner] ${timestamp()} PORT CONFLICT: ${backend.port} is owned by a different service`);
+      selectedServices = selectedServices.filter((svc) => svc.name !== "backend");
+    }
+    if (ownerMatches === null) {
+      console.error(`[runner] ${timestamp()} could not verify the service on port ${backend.port}; leaving it untouched`);
+      selectedServices = selectedServices.filter((svc) => svc.name !== "backend");
+    }
   }
   const collectorPid = existingCollectorPid();
-  if (backendPortBusy || collectorPid) {
+  if (collectorPid) {
     selectedServices = selectedServices.filter((svc) => svc.name !== "collector");
-    console.warn(`[runner] ${timestamp()} leaving existing collector ownership intact` +
-      (collectorPid ? ` (pid ${collectorPid})` : " (backend already running)"));
+    console.warn(`[runner] ${timestamp()} leaving verified existing collector ownership intact (pid ${collectorPid})`);
   }
   for (const svc of selectedServices) {
     if (svc.name === "flask" || svc.name === "bot-api") {

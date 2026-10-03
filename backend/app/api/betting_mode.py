@@ -34,6 +34,15 @@ async def status(request: Request):
     return {"ok": True, "mode": request.app.state.betting_mode.status()}
 
 
+@router.get("/shadow-review")
+async def shadow_review(request: Request):
+    """Read the existing platform balance for the SHADOW session confirmation."""
+    observation = await request.app.state.betting_mode._read_platform_balance()
+    return {"ok": bool(observation.get("verified")), "platform_balance": observation,
+            "configuration_live_enabled": False,
+            "reason": None if observation.get("verified") else observation.get("error")}
+
+
 @router.get("/live-review")
 async def live_review(request: Request, profile: str = "PROFILE_A", goal_balance: float | None = None):
     # This endpoint is read-only. It deliberately exposes the complete
@@ -55,6 +64,8 @@ async def switch_mode(request: Request, body: dict):
         result = await modes.switch_shadow(
             profile=str(body.get("profile") or "PROFILE_A").upper(),
             goal_balance=body.get("goal_balance"),
+            starting_balance=body.get("starting_balance"),
+            configuration=body.get("configuration"),
         )
     elif requested == LIVE_REAL:
         await _require_live_credentials(request)

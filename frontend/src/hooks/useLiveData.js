@@ -5,6 +5,7 @@ import { getWebSocketUrl } from '../auth.js';
 export function useLiveData() {
   const [state, setState] = useState({ loading: true, error: null });
   const loadingRef = useRef(false);
+  const historyRefreshRef = useRef(false);
   const lastLoadRef = useRef(0);
 
   const load = useCallback(async (force = false) => {
@@ -44,6 +45,24 @@ export function useLiveData() {
     }
   }, []);
 
+  // Keep collector-backed history fresh when the WebSocket is unavailable.
+  // This deliberately refreshes only history endpoints instead of replaying
+  // the full dashboard's expensive ML, pattern, and decision requests.
+  const refreshHistory = useCallback(async () => {
+    if (historyRefreshRef.current) return;
+    historyRefreshRef.current = true;
+    try {
+      const [history, historyStatus, historyStats] = await Promise.all([
+        getHistory(), getHistoryStatus(), getHistoryStats(),
+      ]);
+      setState((prev) => ({ ...prev, history, historyStatus, historyStats }));
+    } catch {
+      // Keep the last verified snapshot and its observed timestamp visible.
+    } finally {
+      historyRefreshRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     let ws = null;
     let retryTimer = null;
@@ -78,5 +97,5 @@ export function useLiveData() {
     };
   }, [load]);
 
-  return { ...state, refresh: () => load(true) };
+  return { ...state, refresh: () => load(true), refreshHistory };
 }
