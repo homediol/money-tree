@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class HistoryCollectorManager:
     """Own one Node collector subprocess; the Node side owns BrowserManager."""
 
-    STATES = {"HEALTHY", "WAITING", "CONNECTING", "DISCONNECTED", "STALE", "ERROR", "STOPPED"}
+    STATES = {"HEALTHY", "WAITING", "CONNECTING", "DISCONNECTED", "STALE", "ERROR", "STOPPED", "AUTH_REQUIRED"}
 
     def __init__(self, data_path: Path, broadcaster: Broadcaster | None = None, round_loader=None,
                  repository=None):
@@ -179,6 +179,9 @@ class HistoryCollectorManager:
         snapshot = {
             "status": state, "running": running, "paused": self._paused,
             "started_at": self.started_at, "last_error": self.last_error,
+            "auth_required": bool(node.get("authRequired", False)),
+            "auth_required_reason": node.get("authRequiredReason"),
+            "logged_in": bool(node.get("loggedIn", False)),
             "last_update": node.get("lastRoundTime"),
             "browser_connected": bool(node.get("browserConnected", False)),
             "frame_connected": bool(node.get("frameConnected", False)),

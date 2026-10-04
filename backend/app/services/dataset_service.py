@@ -101,12 +101,13 @@ class DatasetService:
         valid: list[dict[str, Any]] = []
         quarantine: list[dict[str, Any]] = []
         seen: set[str] = set()
+        seen_indices: set[int] = set()
         duplicates = 0
         missing = {"round_id": 0, "timestamp": 0, "multiplier": 0}
         # Parse the column once. Parsing each scalar invokes pandas' format
         # inference thousands of times and delays the live stream.
         parsed_times = pd.to_datetime([
-            item.get("timestamp", item.get("time", item.get("ts"))) if isinstance(item, dict) else None
+            item.get("platform_timestamp", item.get("timestamp", item.get("time", item.get("ts")))) if isinstance(item, dict) else None
             for item in raw_rows
         ], format="mixed", errors="coerce", utc=True)
 
@@ -120,6 +121,20 @@ class DatasetService:
                 missing["round_id"] += 1
                 reasons.append("missing_round_id")
             round_id = str(raw_id).strip() if raw_id is not None else ""
+            platform_round_id = item.get("platform_round_id")
+            try:
+                platform_round_index = int(item["platform_round_index"]) if item.get("platform_round_index") is not None else None
+            except (TypeError, ValueError):
+                platform_round_index = None
+            try:
+                local_round_index = int(item.get("local_round_index", item.get("round_index")))
+            except (TypeError, ValueError):
+                local_round_index = order
+            try:
+                order = int(item["round_index"])
+            except (KeyError, TypeError, ValueError):
+                order = None
+                reasons.append("missing_or_invalid_platform_round_index")
             raw_multiplier = item.get("multiplier", item.get("crashPoint", item.get("value")))
             if raw_multiplier is None:
                 missing["multiplier"] += 1
@@ -131,33 +146,51 @@ class DatasetService:
             except (TypeError, ValueError):
                 multiplier = math.nan
                 reasons.append("invalid_multiplier")
-            raw_timestamp = item.get("timestamp", item.get("time", item.get("ts")))
+            raw_timestamp = item.get("platform_timestamp", item.get("timestamp", item.get("time", item.get("ts"))))
             if not raw_timestamp:
                 missing["timestamp"] += 1
-                reasons.append("missing_timestamp")
                 parsed_timestamp = pd.NaT
             else:
                 parsed_timestamp = parsed_times[position]
-                if pd.isna(parsed_timestamp):
-                    reasons.append("invalid_timestamp")
             if round_id and round_id in seen:
                 duplicates += 1
                 reasons.append("duplicate_round_id")
+            if order is not None and order in seen_indices:
+                duplicates += 1
+                reasons.append("duplicate_round_index")
             if reasons:
                 quarantine.append({"position": position, "reason": reasons, "record": item})
                 continue
             seen.add(round_id)
-            try:
-                order = int(item.get("round_index", raw_id))
-            except (TypeError, ValueError):
-                order = position + 1
+            seen_indices.add(order)
+            observed_at = item.get("observed_at")
+            observed_at_dt = pd.to_datetime(observed_at, format="mixed", utc=True, errors="coerce")
+            platform_time_text = parsed_timestamp.isoformat().replace("+00:00", "Z") if not pd.isna(parsed_timestamp) else None
+            # `timestamp` remains a compatibility/operational clock for reports
+            # and freshness UI. Time-derived model features continue to use
+            # timestamp_dt, which is strictly the verified platform timestamp.
+            observed_time_text = (observed_at_dt.isoformat().replace("+00:00", "Z")
+                                  if not pd.isna(observed_at_dt) else None)
             valid.append({
                 "round_id": round_id, "round_index": order,
-                "timestamp": parsed_timestamp.isoformat().replace("+00:00", "Z"),
+                "platform_round_id": str(platform_round_id) if platform_round_id is not None else None,
+                "platform_round_index": platform_round_index,
+                "local_round_index": local_round_index,
+                "timestamp": platform_time_text or observed_time_text,
+                "platform_timestamp": platform_time_text,
+                "observed_at": observed_at,
+                "observed_at_dt": observed_at_dt,
+                "stored_at": item.get("stored_at", item.get("created_at")),
+                "round_identity_type": item.get("round_identity_type", "LEGACY_UNKNOWN"),
+                "round_index_source": item.get("round_index_source", "LEGACY_UNKNOWN"),
+                "identity_confidence": item.get("identity_confidence", "UNKNOWN"),
+                "continuity_verified": bool(item.get("continuity_verified", False)),
+                "gap_before": bool(item.get("gap_before", False)),
+                "continuity_proof": item.get("continuity_proof", "LEGACY_UNVERIFIED"),
                 "timestamp_dt": parsed_timestamp, "multiplier": round(multiplier, 4),
             })
 
-        frame = pd.DataFrame(valid, columns=["round_id", "round_index", "timestamp", "timestamp_dt", "multiplier"])
+        frame = pd.DataFrame(valid, columns=["round_id", "platform_round_id", "platform_round_index", "local_round_index", "round_index", "timestamp", "platform_timestamp", "observed_at", "observed_at_dt", "stored_at", "round_identity_type", "round_index_source", "identity_confidence", "continuity_verified", "gap_before", "continuity_proof", "timestamp_dt", "multiplier"])
         if not frame.empty:
             # The collector's numeric round index is the game sequence. A
             # clock correction must not change which outcome follows a round.
@@ -165,19 +198,51 @@ class DatasetService:
         values = frame["multiplier"].tolist() if not frame.empty else []
         quality = self._quality(len(raw_rows), len(frame), duplicates, values, frame.to_dict("records"), missing)
         if len(frame) > 1:
-            delta = frame["timestamp_dt"].diff().dt.total_seconds()
+            observation_clock = frame["observed_at_dt"].where(
+                frame["observed_at_dt"].notna(), frame["timestamp_dt"])
+            delta = observation_clock.diff().dt.total_seconds()
             quality["timestamp_inversions"] = int((delta < 0).sum())
             quality["collection_gaps_over_120s"] = int((delta > 120).sum())
             quality["round_index_gaps"] = int((frame["round_index"].diff().fillna(1) != 1).sum())
-            breaks = np.flatnonzero((~delta.between(0, 120) | frame["round_index"].diff().ne(1)).to_numpy())
-            quality["latest_contiguous_rounds"] = int(len(frame) - breaks[-1])
+            index_delta = frame["round_index"].diff().fillna(1)
+            index_breaks = np.flatnonzero(index_delta.ne(1).to_numpy())
+            index_gap_count = int(np.maximum(index_delta.to_numpy()[1:] - 1, 0).sum())
+            source_is_platform = frame["round_index_source"].eq("PLATFORM").all()
+            quality["round_index_gap_events"] = int(index_delta.iloc[1:].ne(1).sum())
+            quality["round_index_missing_values"] = index_gap_count
+            quality["genuine_gaps"] = index_gap_count if source_is_platform else None
+            verified = frame["continuity_verified"].astype(bool).to_numpy()
+            gap_before = frame["gap_before"].astype(bool).to_numpy()
+            verified_suffix = 0
+            for idx in range(len(frame) - 1, -1, -1):
+                if not verified[idx]: break
+                if idx < len(frame) - 1 and (gap_before[idx + 1] or int(frame.iloc[idx + 1].round_index) != int(frame.iloc[idx].round_index) + 1): break
+                verified_suffix += 1
+            quality["verified_contiguous_rounds"] = verified_suffix
+            quality["observed_consecutive_index_suffix"] = int(len(frame) - (np.flatnonzero(index_delta.ne(1).to_numpy())[-1] if index_delta.ne(1).any() else 0))
+            gap_flags = int(frame["gap_before"].astype(bool).sum())
+            quality["collector_gaps"] = gap_flags if frame["continuity_verified"].astype(bool).any() else None
+            adjacent_time_delta = delta.iloc[1:]
+            quality["timestamp_anomalies"] = int((adjacent_time_delta.isna() | adjacent_time_delta.lt(0) | adjacent_time_delta.gt(120)).sum())
+            quality["timestamp_order_reversals"] = int(adjacent_time_delta.lt(0).sum())
+            quality["timestamp_gaps_over_120s"] = int(adjacent_time_delta.gt(120).sum())
+            quality["timestamps_missing_or_invalid"] = int(adjacent_time_delta.isna().sum())
+            quality["latest_contiguous_rounds"] = quality["verified_contiguous_rounds"]
         else:
             quality["latest_contiguous_rounds"] = len(frame)
+            quality["verified_contiguous_rounds"] = int(bool(frame.iloc[0].continuity_verified)) if len(frame) else 0
+            quality["observed_consecutive_index_suffix"] = len(frame)
+            quality["genuine_gaps"] = 0 if len(frame) and frame.iloc[0].round_index_source == "PLATFORM" else None
+            quality["collector_gaps"] = int(bool(frame.iloc[0].gap_before)) if len(frame) else None
+            quality["timestamp_anomalies"] = 0
+            quality["timestamp_order_reversals"] = 0
+            quality["timestamp_gaps_over_120s"] = 0
+            quality["timestamps_missing_or_invalid"] = int(quality["missing_values"].get("timestamp", 0))
         return frame, quality, quarantine
 
     @staticmethod
     def _empty_rounds() -> pd.DataFrame:
-        return pd.DataFrame(columns=["round_id", "round_index", "timestamp", "timestamp_dt", "multiplier"])
+        return pd.DataFrame(columns=["round_id", "platform_round_id", "platform_round_index", "local_round_index", "round_index", "timestamp", "platform_timestamp", "observed_at", "observed_at_dt", "stored_at", "round_identity_type", "round_index_source", "identity_confidence", "continuity_verified", "gap_before", "continuity_proof", "timestamp_dt", "multiplier"])
 
     @staticmethod
     def _quality(total: int, valid: int, duplicates: int, values: list[float], rows: list[dict], missing: dict | None = None) -> dict:
@@ -265,8 +330,7 @@ class DatasetService:
                     "sequence_2": "|".join(buckets[-2:]),
                     "sequence_3": "|".join(buckets[-3:])}
             if previous is not None:
-                seconds = (row.timestamp_dt - previous.timestamp_dt).total_seconds()
-                if 0 <= seconds <= 120 and row.round_index - previous.round_index == 1:
+                if row.round_index - previous.round_index == 1 and row.round_id != previous.round_id:
                     for name, key in keys.items():
                         pair = totals[name].setdefault(key, [0, 0])
                         pair[0] += 1
@@ -369,8 +433,8 @@ class DatasetService:
         # This mirrors PatternEngine's capped low-streak and LOW/MEDIUM/HIGH
         # sequence definitions, but each historical label is only available to
         # later rows. Do not count outcomes across a collector gap as "next".
-        seconds = pd.to_datetime(rounds["timestamp"], utc=True, errors="coerce").diff().dt.total_seconds()
-        eligible = ((seconds >= 0) & (seconds <= 120) & (rounds["round_index"].diff() == 1)).fillna(False)
+        eligible = ((rounds["round_index"].diff() == 1)
+                    & rounds["round_id"].ne(rounds["round_id"].shift(1))).fillna(False)
         prior_successes = binary.cumsum() - binary
         historical_rate = (prior_successes + 10) / (np.arange(len(rounds)) + 20)
         pattern_keys = {"streak": columns["streak_below_2"].clip(upper=6)}
@@ -417,8 +481,7 @@ class DatasetService:
                     if position is not None:
                         for name, value in features.items():
                             appended.at[position, name] = value
-                    seconds = (row.timestamp_dt - previous.timestamp_dt).total_seconds()
-                    if 0 <= seconds <= 120 and row.round_index - previous.round_index == 1:
+                    if row.round_index - previous.round_index == 1 and row.round_id != previous.round_id:
                         keys = {"streak": min(streaks[2.0], 6),
                                 "sequence_2": "|".join(buckets[-2:]),
                                 "sequence_3": "|".join(buckets[-3:])}

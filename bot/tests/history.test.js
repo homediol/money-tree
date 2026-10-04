@@ -33,7 +33,9 @@ test('validates, orders, persists atomically and preserves normalized identity',
 });
 
 test('parses snapshots, detects only new rounds and appends chronologically', () => {
-  assert.deepEqual(inferNewMultipliers([2, 1.1, 3], [5, 2, 1.1, 3]), [5]);
+  const overlap = [1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0];
+  assert.deepEqual(inferNewMultipliers(overlap, [5, ...overlap]), [5]);
+  assert.equal(inferNewMultipliers([2, 1.1, 3], [5, 2, 1.1, 3]), null);
   assert.deepEqual(inferNewMultipliers([2, 1.1], [2, 1.1]), []);
   const observedAt = '2026-09-26T12:00:00.000Z';
   const { history, added } = appendRounds([], [3, 2], observedAt);
@@ -42,6 +44,9 @@ test('parses snapshots, detects only new rounds and appends chronologically', ()
     stableRoundId(observedAt, 2, 1),
     stableRoundId(observedAt, 3, 2),
   ]);
+  assert.equal(added[0].round_identity_type, 'COLLECTOR_OBSERVATION_HASH');
+  assert.equal(added[0].continuity_verified, true);
+  assert.equal(added[0].continuity_proof, 'HISTORY_SNAPSHOT_OVERLAP');
 });
 
 test('PostgreSQL startup imports only rounds absent by both ID and index', () => {
@@ -163,6 +168,7 @@ test('history page recovery stays in the existing browser context', async () => 
     isClosed: () => false,
     url: () => 'about:blank',
     goto: async () => {},
+    addInitScript: async () => {},
   };
   const context = {
     pages: () => [oldPage],
@@ -181,6 +187,46 @@ test('history page recovery stays in the existing browser context', async () => 
   assert.deepEqual(order, ['new', 'close']);
 });
 
+test('history page recovery preserves the existing betting page and context', async () => {
+  const pages = [];
+  const oldHistory = {
+    isClosed: () => false,
+    url: () => 'https://winner.rw/en/virtual/crash-games/aviator',
+    close: async () => { pages.splice(pages.indexOf(oldHistory), 1); },
+  };
+  const bettingPage = {
+    isClosed: () => false,
+    url: () => 'https://winner.rw/en/sportsbook/upcoming',
+  };
+  pages.push(oldHistory, bettingPage);
+  const replacement = {
+    isClosed: () => false,
+    url: () => 'about:blank',
+    goto: async () => {},
+  };
+  const context = {
+    pages: () => pages,
+    newPage: async () => { pages.push(replacement); return replacement; },
+  };
+  const manager = new BrowserSupervisor(true);
+  manager.isAlive = () => true;
+  manager._context = context;
+  manager._contextClosed = false;
+  manager._historyPage = oldHistory;
+  manager._page = oldHistory;
+  manager._bettingPage = bettingPage;
+  manager._ownsBrowser = true;
+  manager._persistSession = async () => {};
+  manager._restoreSessionStorage = async () => {};
+  manager._trackPage = () => {};
+  manager._cleanupManagedStarterPages = async () => {};
+
+  assert.equal(await manager.recoverHistoryPage(), replacement);
+  assert.equal(manager._context, context);
+  assert.equal(manager._bettingPage, bettingPage);
+  assert.deepEqual(pages, [bettingPage, replacement]);
+});
+
 test('navigation accepts a rendered Winner route after load timeout', async () => {
   const body = { count: async () => 1, innerText: async () => 'Winner sportsbook' };
   const page = {
@@ -191,6 +237,19 @@ test('navigation accepts a rendered Winner route after load timeout', async () =
   };
   const manager = new LoginManager({ phone: 'test', password: 'test' });
   assert.equal(await manager._navigate(page, 'https://winner.rw/', null), true);
+});
+
+test('logout popup route cannot be mistaken for an authenticated session', async () => {
+  const page = {
+    isClosed: () => false,
+    url: () => 'https://winner.rw/en/user/logout/popup',
+    locator: selector => ({
+      first: () => ({ isVisible: async () => selector === 'a[href*="logout"]' }),
+      innerText: async () => 'Sport Betting',
+    }),
+  };
+  const manager = new LoginManager({ phone: 'test', password: 'test' });
+  assert.equal(await manager.isLoggedIn(page), false);
 });
 
 test('frame recovery reloads Aviator without visiting the sportsbook homepage', async () => {

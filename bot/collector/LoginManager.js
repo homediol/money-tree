@@ -17,12 +17,24 @@ const AVIATOR_URLS = [
   'https://winner.rw/en/games/aviator',
 ];
 
+function isLoginRoute(url) {
+  try {
+    return /\/(?:authentication\/login|login)(?:\/|$)/i.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 // Selectors that indicate the user is logged in.
 // These are checked IN THE CURRENT PAGE without navigating away.
 const SESSION_SIGNALS = [
   '.user-profile', '.account-dropdown', '.user-avatar',
   '.header__balance', '.header__wrap-balance',
   'a[href*="logout"]', '[data-testid="user-balance"]',
+  // Current Winner navigation marks the authenticated account container with
+  // these classes and exposes its balance through .usr-balance. Older logout
+  // and header-balance selectors are absent on the live sportsbook shell.
+  '.au-m-nav-u.login-area.usr-lgd-in', 'a.usr-balance',
   // Spribe iframe presence = game loaded = definitely logged in
   'iframe[src*="spribe"]', 'iframe[src*="aviator"]',
 ];
@@ -105,7 +117,10 @@ export class LoginManager {
       if (await isAccessDeniedPage(page)) return false;
 
       // On login/auth page = definitely not logged in
-      if (url.includes('/login') || url.includes('/authentication')) return false;
+      // Winner's session expiry opens /user/logout/popup inside the shell.
+      // That page can still expose the global logout link, so route evidence
+      // must take precedence over broad "session is present" selectors.
+      if (isLoginRoute(url) || url.includes('/logout')) return false;
 
       // If we're on the Aviator page and the iframe is present = logged in
       // This is the most reliable check and requires no extra navigation
@@ -114,6 +129,21 @@ export class LoginManager {
           'iframe[src*="spribe"], iframe[src*="aviator"], iframe[src*="crash"]'
         ).first().isVisible({ timeout: 1000 }).catch(() => false);
         if (hasIframe) return true;
+        // Chromium may expose the authenticated Spribe game as an OOPIF
+        // target even when Playwright's parent-page iframe locator is not
+        // visible. Accept only the real game origin with both session
+        // parameters present; never log or persist the token in diagnostics.
+        const hasAuthenticatedGameFrame = page.frames().some(frame => {
+          try {
+            if (frame === page.mainFrame()) return false;
+            const gameUrl = new URL(frame.url());
+            return /(^|\.)spribegaming\.com$/i.test(gameUrl.hostname)
+              && /aviator/i.test(gameUrl.pathname)
+              && gameUrl.searchParams.has('token')
+              && gameUrl.searchParams.has('user');
+          } catch { return false; }
+        });
+        if (hasAuthenticatedGameFrame) return true;
       }
 
       // Check session signals in current DOM (no navigation)
@@ -152,13 +182,17 @@ export class LoginManager {
         return true;
       }
 
-      // Navigate home first (avoids Cloudflare blocks on direct login URL)
-      await this._navigate(page, HOME_URL, signal);
-      await sleep(1500, signal);
+      // Keep an already-rendered login page in place. Navigating to Home first
+      // can restart Winner's SPA before its Angular login controls attach,
+      // which used to make the collector incorrectly pause for manual auth.
+      if (!isLoginRoute(page.url())) {
+        await this._navigate(page, HOME_URL, signal);
+        await sleep(1500, signal);
 
-      if (await this.isLoggedIn(page)) {
-        log.info('LoginManager: session valid');
-        return true;
+        if (await this.isLoggedIn(page)) {
+          log.info('LoginManager: session valid');
+          return true;
+        }
       }
 
       log.info(`LoginManager: not logged in — starting login (attempt ${attempt + 1})`);
@@ -169,21 +203,72 @@ export class LoginManager {
         log.info(`LoginManager: login successful (total logins: ${this.loginCount})`);
         return true;
       }
-      throw new Error('Login completed but session not detected');
+
+      // Do not resubmit configured credentials repeatedly when Winner accepts
+      // the login form but the session cannot be verified. Leave the existing
+      // tab on the game route so an operator can complete any remaining
+      // account step there; collection remains paused until session evidence
+      // appears.
+      let aviatorRouteOpened = false;
+      for (const candidate of AVIATOR_URLS) {
+        if (!await this._navigate(page, candidate, signal)) continue;
+        await sleep(2000, signal);
+        if (await this.isLoggedIn(page)) {
+          this.loginCount++;
+          log.info(`LoginManager: session verified after opening Aviator route — ${page.url()}`);
+          return true;
+        }
+        const currentUrl = page.url().toLowerCase();
+        if (currentUrl.includes('aviator') || currentUrl.includes('crash-games')) {
+          aviatorRouteOpened = true;
+          break;
+        }
+      }
+      const routeState = aviatorRouteOpened ? 'Aviator route is open' : 'Aviator route could not be opened';
+      throw new AuthRequiredError(`Winner login did not produce a verifiable session; ${routeState}; manual login or verification is required`);
     }, { maxAttempts: 4, label: 'ensure-logged-in', signal });
   }
 
   async _doLogin(page, signal) {
     // Try clicking the login link from homepage first
-    const loginLink = page.locator('#user-menu-login, a.login-btn, a[href*="/login"]').first();
-    const linkVisible = await loginLink.isVisible({ timeout: 3000 }).catch(() => false);
+    const loginLinkSelectors = [
+      '#user-menu-login',
+      'a.login-btn',
+      'a[href*="/login"]',
+      'button:has-text("Log in")',
+      'button:has-text("Login")',
+      'a:has-text("Log in")',
+      'a:has-text("Login")',
+      '[role="button"]:has-text("Log in")',
+      '[role="button"]:has-text("Login")',
+    ];
+    const firstVisible = async (selectors) => {
+      for (const selector of selectors) {
+        const matches = page.locator(selector);
+        const count = await matches.count().catch(() => 0);
+        for (let index = 0; index < count; index += 1) {
+          const candidate = matches.nth(index);
+          if (await candidate.isVisible().catch(() => false)) return candidate;
+        }
+      }
+      return null;
+    };
+    const alreadyOnLoginRoute = isLoginRoute(page.url());
+    let loginLink = alreadyOnLoginRoute ? null : await firstVisible(loginLinkSelectors);
 
-    if (linkVisible) {
-      await loginLink.click();
-      await sleep(2000, signal);
-    } else {
-      await this._navigate(page, LOGIN_URL, signal);
-      await sleep(2000, signal);
+    if (!alreadyOnLoginRoute) {
+      if (loginLink) {
+        await loginLink.click();
+      } else {
+        await this._navigate(page, LOGIN_URL, signal);
+      }
+      await sleep(1000, signal);
+      // Winner redirects a valid session away from its login route. Confirm
+      // that evidence before treating the missing login form as expired auth.
+      if (await this.isLoggedIn(page)) {
+        log.info('LoginManager: authenticated game session verified after login-route redirect');
+        return true;
+      }
     }
 
     // Dismiss any modal/popup that might be blocking the form
@@ -200,13 +285,33 @@ export class LoginManager {
       throw new AuthRequiredError('Winner human verification is required; browser session left untouched');
     }
 
-    // Prefer stable semantic attributes. Winner has changed these element IDs
-    // more than once, so IDs are only one option rather than a requirement.
-    const loginForm = page.locator('form:has(input[type="password"])').first();
+    // Winner hydrates its login form asynchronously after the route renders.
+    // Search visible matches individually: a combined selector's .first()
+    // may bind to a hidden duplicate and report the form missing.
+    const findVisibleControl = async (selectors) => {
+      for (const selector of selectors) {
+        const matches = page.locator(selector);
+        const count = await matches.count().catch(() => 0);
+        for (let index = 0; index < count; index += 1) {
+          const candidate = matches.nth(index);
+          if (await candidate.isVisible().catch(() => false)) return candidate;
+        }
+      }
+      return null;
+    };
+    const waitForVisible = async (selectors, timeoutMs) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline && !signal?.aborted) {
+        const candidate = await findVisibleControl(selectors);
+        if (candidate) return candidate;
+        await sleep(250, signal);
+      }
+      return null;
+    };
 
-    // Fill phone
-    let phoneInput = page.locator([
+    const phoneSelectors = [
       '#phoneInput',
+      'input[name="phoneInput"]',
       'input[name="phone"]',
       'input[name="username"]',
       'input[name="login"]',
@@ -214,52 +319,116 @@ export class LoginManager {
       'input[autocomplete="username"]',
       'input[placeholder*="phone" i]',
       'input[placeholder*="mobile" i]',
-    ].join(', ')).first();
-    if (!await phoneInput.isVisible({ timeout: 5000 }).catch(() => false)) {
-      phoneInput = loginForm.locator('input:not([type="password"]):not([type="hidden"]):not([type="submit"])').first();
-    }
-    if (!await phoneInput.isVisible({ timeout: 10000 }).catch(() => false)) {
-      if (/\/login|\/authentication/i.test(page.url())) {
-        throw new AuthRequiredError('Winner login form is unavailable; manual verification may be required');
-      }
-      throw new Error(`Winner phone/login input not found (${await pageInfo()})`);
-    }
-    await phoneInput.click({ clickCount: 3 });
-    await phoneInput.fill(this.phone);
-
-    // Fill password
-    const passInput = page.locator([
+    ];
+    const passwordSelectors = [
       '#password',
       'input[name="password"]',
       'input[type="password"]',
       'input[autocomplete="current-password"]',
-    ].join(', ')).first();
-    if (!await passInput.isVisible({ timeout: 10000 }).catch(() => false)) {
-      throw new Error(`Winner password input not found (${await pageInfo()})`);
+    ];
+    let phoneInput = await waitForVisible(phoneSelectors, 25000);
+    let passInput = await waitForVisible(passwordSelectors, phoneInput ? 10000 : 0);
+
+    if (!phoneInput || !passInput) {
+      // A valid session can redirect the login route to Aviator before the
+      // Spribe OOPIF is exposed to Playwright. Allow that evidence to attach
+      // before asking for manual authentication.
+      const authDeadline = Date.now() + 10000;
+      while (Date.now() < authDeadline && !signal?.aborted) {
+        if (await this.isLoggedIn(page)) {
+          log.info('LoginManager: authenticated session verified after game-frame attachment');
+          return true;
+        }
+        await sleep(500, signal);
+      }
+      if (signal?.aborted) throw new Error('Aborted');
+
+      // If Winner already routed to its login page, leave that page open for
+      // the operator. Do not navigate away while a delayed login form renders.
+      if (isLoginRoute(page.url())) {
+        throw new AuthRequiredError(`Winner login controls did not become visible; the existing login page was left open (${await pageInfo()})`);
+      }
+
+      // Winner can redirect its login route to the sportsbook shell even
+      // when no login form was opened. Try the canonical Aviator route from
+      // that shell so the single managed tab reaches the game or the platform
+      // can present its actual authentication/verification screen. Collection
+      // remains blocked unless isLoggedIn() confirms a real session and the
+      // frame manager later finds live payout elements.
+      for (const candidate of AVIATOR_URLS) {
+        log.info(`LoginManager: login form missing; probing Aviator route ${candidate}`);
+        if (!await this._navigate(page, candidate, signal)) continue;
+        await sleep(2000, signal);
+        if (await this.isLoggedIn(page)) {
+          log.info(`LoginManager: authenticated session verified on Aviator route — ${page.url()}`);
+          return true;
+        }
+        const route = page.url().toLowerCase();
+        if (route.includes('aviator') || route.includes('crash-games')) {
+          log.warn(`LoginManager: Aviator route opened without verified authentication — ${page.url()}`);
+          // Some Winner shells expose login as a game-page modal instead of
+          // the /authentication/login route. Open that form and continue with
+          // the same configured credentials when it is actually present.
+          loginLink = await firstVisible(loginLinkSelectors);
+          if (loginLink) {
+            await loginLink.click({ timeout: 5000 }).catch(() => {});
+            await sleep(1500, signal);
+            phoneInput = await waitForVisible(phoneSelectors, 15000);
+            passInput = await waitForVisible(passwordSelectors, 10000);
+            if (phoneInput && passInput) {
+              log.info('LoginManager: login form opened from Aviator page');
+              break;
+            }
+          }
+          break;
+        }
+      }
+      if (signal?.aborted) throw new Error('Aborted');
+      if (!phoneInput || !passInput) {
+        const bodyAfterRoute = await page.locator('body').innerText({ timeout: 1000 }).catch(() => '');
+        if (/verify you are human|checking your browser|captcha|access denied/i.test(bodyAfterRoute)) {
+          throw new AuthRequiredError('Winner human verification is required; browser session left untouched');
+        }
+        throw new AuthRequiredError(`Winner login form is unavailable after redirect; manual login or verification is required (${await pageInfo()})`);
+      }
     }
+
+    if (!this.phone || !this.password) {
+      throw new AuthRequiredError('Winner login controls are ready, but configured credentials are missing; manual login is required');
+    }
+    await phoneInput.click({ clickCount: 3 });
+    await phoneInput.fill(this.phone);
+
     await passInput.click({ clickCount: 3 });
     await passInput.fill(this.password);
 
     // Submit
-    const submitBtn = page.locator([
+    const submitSelectors = [
       '#buttonLoginSubmit',
-      '#buttonLoginSubmitLabel',
       'button[type="submit"]',
       'input[type="submit"]',
       'button:has-text("Log in")',
       'button:has-text("Login")',
       'button:has-text("Sign in")',
-    ].join(', ')).first();
-    await submitBtn.waitFor({ state: 'visible', timeout: 10000 });
+    ];
+    const submitBtn = await waitForVisible(submitSelectors, 10000);
+    if (!submitBtn) throw new AuthRequiredError('Winner login submit control is unavailable; manual login is required');
     await submitBtn.click();
 
-    // Wait for navigation away from login page
-    await Promise.race([
-      page.waitForURL(url => !url.includes('/login') && !url.includes('/authentication'), { timeout: 20000 }),
-      sleep(20000, signal),
-    ]).catch(() => {});
-
-    await sleep(2000, signal);
+    // Wait for real authenticated page evidence, rather than treating a URL
+    // transition alone as a successful login. Leave the login page open if
+    // Winner rejects credentials or requires additional human verification.
+    const authDeadline = Date.now() + 25000;
+    while (Date.now() < authDeadline && !signal?.aborted) {
+      if (await this.isLoggedIn(page)) return true;
+      const text = await page.locator('body').innerText({ timeout: 1000 }).catch(() => '');
+      if (/verify you are human|checking your browser|captcha|access denied/i.test(text)) {
+        throw new AuthRequiredError('Winner human verification is required; browser session left untouched');
+      }
+      await sleep(500, signal);
+    }
+    if (signal?.aborted) throw new Error('Aborted');
+    throw new AuthRequiredError('Winner login was submitted but no authenticated session was verified; manual login or verification is required');
   }
 
   /** Dismiss cookie banners, modals, popups. */
@@ -306,41 +475,75 @@ export class LoginManager {
         }
       }
 
-      // Try clicking the Aviator link from the current page or homepage.
-      const aviatorLink = page.locator([
-        'a[href*="/aviator"]',
-        'a[href*="crash-games"]',
-        'a:has-text("Aviator")',
-        '[role="link"]:has-text("Aviator")',
-        'button:has-text("Aviator")',
-      ].join(', ')).first();
-      let linkVisible = await aviatorLink.isVisible({ timeout: 3000 }).catch(() => false);
+      // Winner renders the Aviator tile as either an anchor, button, or
+      // accessible card depending on viewport and login state. A combined CSS
+      // selector with .first() can select a hidden duplicate and miss the
+      // visible control, so inspect each visible role candidate individually.
+      await this._dismissModals(page);
+      const getControls = () => [
+        page.getByRole('link', { name: /aviator/i }),
+        page.getByRole('button', { name: /aviator/i }),
+        page.locator('a[href*="aviator" i], a[href*="crash-games" i]'),
+        page.locator('[role="link"]:has-text("Aviator"), [role="button"]:has-text("Aviator")'),
+        page.locator('button:has-text("Aviator")'),
+        page.getByText('Aviator', { exact: true }),
+      ];
 
-      if (!linkVisible) {
+      const clickAviatorControl = async () => {
+        for (const locator of getControls()) {
+          const count = await locator.count().catch(() => 0);
+          for (let index = 0; index < count; index += 1) {
+            const control = locator.nth(index);
+            if (!await control.isVisible().catch(() => false)) continue;
+            try {
+              await control.scrollIntoViewIfNeeded({ timeout: 2000 });
+              const routeChanged = page.waitForURL(
+                url => /aviator|crash-games|\/crash/i.test(url),
+                { timeout: 7000 },
+              ).then(() => true).catch(() => false);
+              await control.click({ timeout: 7000 });
+              await routeChanged;
+              await sleep(1500, signal);
+              const current = page.url().toLowerCase();
+              const gameFrameVisible = await page.locator(
+                'iframe[src*="spribe"], iframe[src*="aviator"], iframe[src*="crash"]'
+              ).first().isVisible().catch(() => false);
+              if (current.includes('aviator') || current.includes('crash') || gameFrameVisible) {
+                log.info(`LoginManager: Aviator control opened game page — ${page.url()}`);
+                return true;
+              }
+              log.warn(`LoginManager: Aviator control was clickable but did not open the game route — ${page.url()}`);
+            } catch (err) {
+              log.warn(`LoginManager: visible Aviator control click failed: ${err.message}`);
+            }
+          }
+        }
+        return false;
+      };
+
+      let opened = await clickAviatorControl();
+      if (!opened) {
         await this._navigate(page, HOME_URL, signal);
         await sleep(2000, signal);
-        linkVisible = await aviatorLink.isVisible({ timeout: 5000 }).catch(() => false);
+        opened = await clickAviatorControl();
       }
 
-      if (linkVisible) {
-        await aviatorLink.click({ timeout: 10000 });
-        await sleep(4000, signal);
-      } else {
-        // Winner changes its home-page tiles regularly. A missing link should
-        // not strand the collector forever: try known canonical routes.
-        let opened = false;
+      if (!opened) {
+        // Winner changes its home-page tiles regularly. A missing, hidden, or
+        // inert control should not strand collection; try known canonical routes.
         for (const candidate of AVIATOR_URLS) {
-          log.warn(`LoginManager: Aviator link not visible; trying ${candidate}`);
+          log.warn(`LoginManager: Aviator control unavailable; trying ${candidate}`);
           if (await this._navigate(page, candidate, signal)) {
             await sleep(4000, signal);
             const candidateUrl = page.url().toLowerCase();
             if (candidateUrl.includes('aviator') || candidateUrl.includes('crash')) {
               opened = true;
+              log.info(`LoginManager: Aviator page opened by canonical route — ${page.url()}`);
               break;
             }
           }
         }
-        if (!opened) throw new Error('Could not open Aviator from link or known direct routes');
+        if (!opened) throw new Error('Could not click the Aviator control or open its canonical route');
       }
 
       const url = page.url().toLowerCase();

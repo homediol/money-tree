@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 import hmac
 import json
 import os
@@ -91,6 +93,10 @@ async def process_history_update(app: FastAPI):
             opportunity.observe, dataset, collector_latest_round_id=collector_latest.get("round_id"))
         if opportunity_observation is not None:
             await manager.broadcast({"type": "opportunity:observation", "observation": opportunity_observation})
+    # Frozen V3 prospective assessments are owned by the independent durable
+    # marker monitor below. Do not also score through this general history
+    # refresh path: it competes for workers and can finish after the target
+    # outcome has already been written.
     analysis_payload = await asyncio.to_thread(app.state.wp.current_analysis)
     await manager.broadcast(
         {
@@ -104,8 +110,10 @@ async def process_history_update(app: FastAPI):
     status = history.status()
     await manager.broadcast({"type": "history:new_round", "round": status["latest"]})
     await manager.broadcast({"type": "history:updated", "history": {"count": status["count"]}})
-    progress = await asyncio.to_thread(app.state.wp.analytics_report_engine.report_progress_snapshot)
-    await manager.broadcast({"type": "analytics:progress", "report_progress": progress})
+    analytics_report_engine = getattr(app.state.wp, "analytics_report_engine", None)
+    if analytics_report_engine is not None:
+        progress = await asyncio.to_thread(analytics_report_engine.report_progress_snapshot)
+        await manager.broadcast({"type": "analytics:progress", "report_progress": progress})
     await manager.broadcast({"type": "history:stats", "stats": history.stats()})
     if status.get("latest") and hasattr(app.state, "shadow"):
         await app.state.shadow.reconcile_round(status["latest"])
@@ -252,6 +260,578 @@ async def monitor_file(app: FastAPI):
             await asyncio.sleep(2)
 
 
+async def _frozen_observer_call(app: FastAPI, function, *args, **kwargs):
+    """Run observer/PostgreSQL work outside request and general history pools."""
+    executor = getattr(app.state, "frozen_observer_executor", None)
+    if executor is None:
+        return await asyncio.to_thread(function, *args, **kwargs)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(executor, partial(function, *args, **kwargs))
+
+
+def _collector_marker_readiness(status: dict, marker: tuple | None) -> tuple[bool, str | None]:
+    if not marker:
+        return False, "no PostgreSQL round marker is available"
+    if status.get("authRequired") is True or status.get("loggedIn") is not True:
+        return False, "collector authentication is not verified"
+    if status.get("collectorRunning") is not True or status.get("state") != "COLLECTING":
+        return False, "collector is not actively collecting"
+    if status.get("health") != "HEALTHY" or status.get("browserConnected") is not True:
+        return False, "collector browser is not healthy"
+    if status.get("pageConnected") is not True or status.get("frameConnected") is not True:
+        return False, "collector History page or Aviator frame is disconnected"
+    if str(status.get("lastRoundId")) != str(marker[1]):
+        return False, "collector latest round ID does not match PostgreSQL"
+    collected_at = _utc_timestamp(status.get("lastSuccessfulCollection"))
+    if collected_at is None:
+        return False, "collector has no verified recent collection timestamp"
+    age = (datetime.now(timezone.utc) - collected_at).total_seconds()
+    if age < 0 or age > 120:
+        return False, "collector latest verified round is stale"
+    return True, None
+
+
+async def process_frozen_opportunity_marker(app: FastAPI, marker: tuple | None = None,
+                                            collector_status: dict | None = None) -> bool:
+    """Assess the current next target from the authoritative PostgreSQL snapshot.
+
+    Keep this path independent of dashboard/report refresh work. The repository
+    rechecks that the source is still the latest round and the target is absent
+    while holding the same advisory lock as collector inserts.
+    """
+    engine = getattr(app.state, "opportunity_v4_engine", None)
+    repository = getattr(getattr(app.state, "wp", None), "repository", None)
+    total_started = time.monotonic()
+    if engine is None or repository is None or not repository.database_url:
+        return False
+    collector_status = collector_status if collector_status is not None else _collector_alignment_status()
+    collector_ready, collector_reason = _collector_marker_readiness(collector_status, marker)
+    if not collector_ready:
+        app.state.frozen_observer_attempt_reason = collector_reason
+        return False
+    app.state.frozen_observer_attempt_reason = None
+    load_suffix = getattr(repository, "load_verified_round_suffix", repository.load_rounds)
+    rows = await _frozen_observer_call(app, load_suffix)
+    if not rows:
+        app.state.frozen_observer_attempt_reason = "FEATURES_UNAVAILABLE_NO_VERIFIED_SUFFIX"
+        return False
+    import pandas as pd
+    from app.ml.opportunity import validated_rounds
+
+    rounds = pd.DataFrame(rows)
+    validation_started = time.monotonic()
+    clean, _ = validated_rounds(rounds, include_time_diagnostics=False)
+    validation_seconds = time.monotonic() - validation_started
+    if clean.empty:
+        app.state.frozen_observer_attempt_reason = "FEATURES_UNAVAILABLE_NO_VALID_ROUNDS"
+        return False
+    latest = clean.iloc[-1]
+    if marker is not None and (int(latest.round_index), str(latest.round_id)) != (int(marker[0]), str(marker[1])):
+        app.state.frozen_observer_attempt_reason = "SOURCE_SNAPSHOT_CHANGED_BEFORE_SCORING"
+        return False
+    # Startup performs a full durable reconciliation. During steady collection
+    # only the assessment targeting this arriving result can become resolvable.
+    reconcile_started = time.monotonic()
+    await _frozen_observer_call(app, engine.reconcile, clean, int(marker[0]), already_validated=True)
+    reconcile_seconds = time.monotonic() - reconcile_started
+    observe_started = time.monotonic()
+    observation = await _frozen_observer_call(
+        app, engine.observe, clean, str(latest.round_id), already_validated=True)
+    observe_seconds = time.monotonic() - observe_started
+    if observation is not None:
+        await manager.broadcast({"type": "opportunity:v4_assessment", "assessment": observation})
+    # A marker is not complete just because its snapshot was read. Require a
+    # durable assessment row (including a warm-up assessment) before advancing
+    # the observer checkpoint. This prevents silent gaps when outcome-order
+    # proof or persistence rejects a score.
+    getter = getattr(repository, "get_v4_assessment", None)
+    persisted = observation
+    if persisted is None and getter is not None:
+        persisted = await _frozen_observer_call(app, getter, str(latest.round_id))
+    if persisted is None:
+        newest = await _frozen_observer_call(app, repository.latest_round_marker)
+        changed = bool(newest and marker and (int(newest[0]), str(newest[1])) !=
+                       (int(marker[0]), str(marker[1])))
+        app.state.frozen_observer_attempt_reason = (
+            "TARGET_ARRIVED_BEFORE_ASSESSMENT" if changed else "OBSERVER_RETURNED_NO_DURABLE_ASSESSMENT")
+        log.warning("[OPPORTUNITY_V4] no durable assessment source=%s latest=%s suffix=%s total_ms=%.1f reconcile_ms=%.1f observe_ms=%.1f reason=%s",
+                    marker[0] if marker else None, newest[0] if newest else None, len(rows),
+                    (time.monotonic() - total_started) * 1000, reconcile_seconds * 1000,
+                    observe_seconds * 1000, app.state.frozen_observer_attempt_reason)
+    else:
+        log.info("[OPPORTUNITY_V4] assessment phases source=%s suffix=%s validation_ms=%.1f reconcile_ms=%.1f observe_persist_ms=%.1f total_ms=%.1f scorable=%s",
+                 marker[0] if marker else None, len(clean), validation_seconds * 1000,
+                 reconcile_seconds * 1000, observe_seconds * 1000,
+                 (time.monotonic() - total_started) * 1000, persisted.get("scorable"))
+    return persisted is not None
+
+
+async def persist_frozen_observer_runtime(app: FastAPI, **updates) -> dict | None:
+    repository = getattr(getattr(app.state, "wp", None), "repository", None)
+    if repository is None or not repository.database_url:
+        return None
+    from app.ml.opportunity_v4 import OBSERVER_RUNTIME_KEY
+
+    now = datetime.now(timezone.utc).isoformat()
+    current = getattr(app.state, "frozen_observer_runtime", None)
+    if current is None:
+        try:
+            current = await _frozen_observer_call(app, repository.load_application_state, OBSERVER_RUNTIME_KEY) or {}
+        except Exception:
+            current = {}
+    payload = {**current, **updates, "heartbeat_at": now}
+    await _frozen_observer_call(app, repository.save_application_state, OBSERVER_RUNTIME_KEY, payload, now)
+    app.state.frozen_observer_runtime = payload
+    return payload
+
+
+def _collector_alignment_status() -> dict:
+    status_path = Path(__file__).resolve().parents[1] / "data" / "bot" / "status.json"
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _utc_timestamp(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_timestamp(value):
+    """Convert database datetime values to JSON-safe ISO timestamps."""
+    if not isinstance(value, datetime):
+        return value
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat()
+
+
+async def _alignment_gap_details(app: FastAPI, repository, previous_index: int, current_index: int,
+                                 configuration_hash: str | None) -> dict:
+    """Explain a break between successful live alignment records without backfilling scores."""
+    if current_index - previous_index > 101:
+        return {"failed_round_index": previous_index + 1, "reason": "OTHER",
+                "missing_assessment": None, "detail": "alignment audit skipped more than 100 indexes"}
+    rows = await _frozen_observer_call(
+        app, repository.round_continuity_range, previous_index + 1, current_index - 1)
+    for index in range(previous_index + 1, current_index):
+        row = rows.get(index)
+        if row is None:
+            return {"failed_round_index": index, "reason": "MISSING_ROUND",
+                    "missing_assessment": None, "detail": "no PostgreSQL row exists for this local index"}
+        if row.get("gap_before"):
+            return {"failed_round_index": index, "reason": "COLLECTOR_GAP",
+                    "missing_assessment": None, "detail": "round is marked as following an unverified collector gap"}
+        if not row.get("continuity_verified"):
+            return {"failed_round_index": index, "reason": "IDENTITY_UNVERIFIED",
+                    "missing_assessment": None, "detail": "round continuity identity is not verified"}
+        assessment = await _frozen_observer_call(app, repository.get_v4_assessment, str(row["round_id"]))
+        if assessment is None:
+            return {"failed_round_index": index, "reason": "MISSING_ASSESSMENT",
+                    "missing_assessment": True, "detail": "no frozen V3 assessment was persisted before this target arrived"}
+        if not app.state.opportunity_v4_engine._assessment_order_proof_verified(
+                assessment, configuration_hash):
+            return {"failed_round_index": index, "reason": "IDENTITY_UNVERIFIED",
+                    "missing_assessment": False, "detail": "assessment exists but its pre-outcome order proof is invalid"}
+    return {"failed_round_index": previous_index + 1, "reason": "OBSERVER_OFFLINE",
+            "missing_assessment": None, "detail": "the live alignment audit did not record the intervening round"}
+
+
+async def _record_alignment_audit_round(app: FastAPI, marker, assessment: dict | None) -> dict:
+    """Append one match only when collector, PostgreSQL and pre-outcome V3 agree."""
+    from app.ml.opportunity_v4 import (
+        CONFIG_KEY, REAL_DATA_ALIGNMENT_AUDIT_VERSION, real_data_alignment_snapshot,
+    )
+
+    repository = app.state.wp.repository
+    runtime = getattr(app.state, "frozen_observer_runtime", None) or {}
+    started_at = _utc_timestamp(runtime.get("alignment_audit_started_at"))
+    details = await _frozen_observer_call(app, repository.latest_round_live_details)
+    collector = _collector_alignment_status()
+    config = await _frozen_observer_call(app, repository.load_application_state, CONFIG_KEY) or {}
+    now = datetime.now(timezone.utc)
+    collector_fresh_at = _utc_timestamp(collector.get("lastSuccessfulCollection"))
+    source_stored_at = _utc_timestamp((details or {}).get("stored_at"))
+    assessment_created_at = _utc_timestamp((assessment or {}).get("created_at"))
+    source_after_audit_start = bool(started_at and source_stored_at and source_stored_at >= started_at)
+    collector_ok = bool(
+        collector.get("lastRoundId") == str(marker[1])
+        and collector.get("collectorRunning") is True
+        and collector.get("state") == "COLLECTING"
+        and collector.get("health") == "HEALTHY"
+        and collector.get("browserConnected") is True
+        and collector.get("pageConnected") is True
+        and collector.get("frameConnected") is True
+        and collector.get("loggedIn") is True
+        and collector.get("authRequired") is not True
+        and collector_fresh_at is not None
+        and (now - collector_fresh_at).total_seconds() <= 120
+    )
+    database_ok = bool(details and int(details.get("round_index", -1)) == int(marker[0])
+                       and str(details.get("round_id")) == str(marker[1])
+                       and bool(details.get("continuity_verified"))
+                       and not bool(details.get("gap_before")))
+    # Alignment verifies identity and pre-outcome persistence, not score
+    # availability. An immutable continuity-warmup assessment is valid proof
+    # that the observer saw the real round before its target existed. Scoring
+    # remains separately blocked until the frozen 102-round warm-up completes.
+    proof_ok = bool(
+        assessment and assessment.get("assessment_immutable") is True
+        and assessment.get("round_id") == str(marker[1])
+        and int(assessment.get("round_index", -1)) == int(marker[0])
+        and assessment.get("model_configuration_hash") == config.get("configuration_hash")
+        and assessment_created_at is not None and started_at is not None
+        and assessment_created_at >= started_at
+        and source_after_audit_start
+        and app.state.opportunity_v4_engine._assessment_order_proof_verified(
+            assessment, config.get("configuration_hash"))
+    )
+
+    records = list(runtime.get("alignment_audit_rounds") or [])
+    tracker_active = runtime.get("alignment_tracker_version") == 1
+    now_text = now.isoformat()
+    legacy_snapshot = real_data_alignment_snapshot(runtime) if not tracker_active else None
+    legacy_complete = bool(legacy_snapshot and legacy_snapshot.get("status") == "VERIFIED_10_ROUND")
+    batch_progress = int(runtime.get("alignment_batch_progress", min(len(records), 10)))
+    completed_batches = int(runtime.get("alignment_completed_batches") or (1 if legacy_complete else 0))
+    passed_batches = int(runtime.get("alignment_passed_batches") or (1 if legacy_complete else 0))
+    failed_batches = int(runtime.get("alignment_failed_batches") or 0)
+    total_verified = int(runtime.get("alignment_total_rounds_verified", len(records)))
+    consecutive_aligned = int(runtime.get("alignment_consecutive_rounds", len(records)))
+    had_verified_batch = bool(runtime.get("alignment_had_verified_batch") or legacy_complete)
+    last_completed_batch = runtime.get("alignment_last_completed_batch")
+    if not tracker_active and legacy_complete and not last_completed_batch:
+        legacy_batch = records[-10:]
+        last_row = legacy_batch[-1]
+        last_completed_batch = {
+            "start_round_index": int(legacy_batch[0]["round_index"]),
+            "end_round_index": int(last_row["round_index"]), "rounds": 10,
+            "result": "PASS",
+            "completed_at": last_row.get("stored_at") or last_row.get("assessment_created_at"),
+            "reconstructed_from_retained_audit": True,
+        }
+    last_failure = runtime.get("alignment_last_failure")
+    last_reset = runtime.get("alignment_last_reset")
+    last_pass_at = runtime.get("alignment_last_pass_at")
+    legacy_started_at = (records[0].get("stored_at") or records[0].get("assessment_created_at")
+                         if not tracker_active and records else None)
+    tracking_started_at = runtime.get("alignment_tracking_started_at") or legacy_started_at or now_text
+    if not tracker_active and records and not last_failure:
+        # Migrate the most recent legacy reset once. Older versions retained
+        # only the current audit suffix, so inspect the immediately preceding
+        # durable source round before initializing the richer batch counters.
+        try:
+            first_index = int(records[0]["round_index"])
+            prior_rows = await _frozen_observer_call(
+                app, repository.round_continuity_range, first_index - 1, first_index - 1)
+            prior_row = prior_rows.get(first_index - 1)
+            prior_stored = _utc_timestamp((prior_row or {}).get("stored_at"))
+            if (prior_row and prior_stored and started_at and prior_stored >= started_at
+                    and await _frozen_observer_call(
+                        app, repository.get_v4_assessment, str(prior_row["round_id"])) is None):
+                previous_progress = 0
+                probe = first_index - 2
+                while probe >= 1:
+                    probe_rows = await _frozen_observer_call(app, repository.round_continuity_range, probe, probe)
+                    probe_row = probe_rows.get(probe)
+                    if (not probe_row or not probe_row.get("continuity_verified") or probe_row.get("gap_before")):
+                        break
+                    prior_assessment = await _frozen_observer_call(
+                        app, repository.get_v4_assessment, str(probe_row["round_id"]))
+                    if (not prior_assessment or not app.state.opportunity_v4_engine._assessment_order_proof_verified(
+                            prior_assessment, config.get("configuration_hash"))):
+                        break
+                    previous_progress += 1
+                    if previous_progress >= 10:
+                        break
+                    probe -= 1
+                failure = {
+                    "failed_round_index": first_index - 1,
+                    "reason": ("COLLECTOR_GAP" if prior_row.get("gap_before") else
+                               "IDENTITY_UNVERIFIED" if not prior_row.get("continuity_verified") else
+                               "MISSING_ASSESSMENT"),
+                    "collector_index": int(marker[0]),
+                    "observer_index": int(runtime.get("last_processed_round_index") or records[-1].get("round_index", -1)),
+                    "observer_lag": max(0, int(marker[0]) - int(runtime.get("last_processed_round_index") or records[-1].get("round_index", -1))),
+                    "missing_assessment": True,
+                    "detail": "reconstructed from durable rows; collector/observer indexes are current, not failure-time",
+                    "indices_are_current_snapshot": True,
+                    "detected_at": now_text,
+                }
+                last_failure = failure
+                last_reset = {"previous_progress": min(10, previous_progress),
+                              "current_progress": 1, "round_index": first_index,
+                              "failed_round_index": first_index - 1,
+                              "reason": failure["reason"], "detected_at": now_text,
+                              "reconstructed": True}
+                failed_batches = max(1, failed_batches)
+                completed_batches = max(1, completed_batches)
+                    # A database row plus an assessment proves continuity and
+                    # pre-outcome ordering, but cannot reconstruct the old
+                    # collector-side audit records that were discarded.
+        except (KeyError, TypeError, ValueError):
+            pass
+    reason = None
+    failure = None
+    if source_after_audit_start:
+        if not collector_ok:
+            reason = "collector latest round ID or health did not match PostgreSQL"
+        elif not database_ok:
+            reason = "latest PostgreSQL round identity or continuity proof did not qualify"
+        elif not proof_ok:
+            reason = "no matching frozen V3 assessment with verified pre-outcome order proof"
+        else:
+            record = {
+                "round_index": int(marker[0]),
+                "collector_round_id": str(collector.get("lastRoundId")),
+                "postgres_round_id": str(details["round_id"]),
+                "multiplier": float(details["multiplier"]),
+                "stored_at": _json_timestamp(details.get("stored_at")),
+                "assessment_id": assessment.get("assessment_id"),
+                "assessment_source_round_id": assessment.get("round_id"),
+                "assessment_source_round_index": int(assessment.get("round_index")),
+                "assessment_created_at": _json_timestamp(assessment.get("created_at")),
+                "configuration_hash": config.get("configuration_hash"),
+                "pre_outcome_proof_verified": True,
+                "assessment_immutable": True,
+                "scorable": assessment.get("scorable") is True,
+                "failed_gate": assessment.get("failed_gate"),
+                "warmup_rounds": (assessment.get("feature_snapshot") or {}).get("verified_segment_rounds"),
+            }
+            is_duplicate = bool(records and int(records[-1].get("round_index", -1)) == int(marker[0]))
+            is_consecutive = bool(records and int(records[-1].get("round_index", -1)) + 1 == int(marker[0]))
+            reset_previous_progress = batch_progress
+            if records and not is_duplicate and not is_consecutive:
+                gap = await _alignment_gap_details(
+                    app, repository, int(records[-1].get("round_index", -1)), int(marker[0]),
+                    config.get("configuration_hash"))
+                failure = {
+                    **gap,
+                    "collector_index": int(marker[0]),
+                    "observer_index": int(runtime.get("last_processed_round_index") or records[-1].get("round_index", -1)),
+                    "observer_lag": max(0, int(marker[0]) - int(runtime.get("last_processed_round_index") or records[-1].get("round_index", -1))),
+                    "detected_at": now_text,
+                }
+                failed_batches += 1
+                completed_batches += 1
+                batch_progress = 0
+                consecutive_aligned = 0
+                last_failure = failure
+                last_reset = {
+                    "previous_progress": reset_previous_progress,
+                    "current_progress": 1,
+                    "round_index": int(marker[0]),
+                    "failed_round_index": gap["failed_round_index"],
+                    "reason": gap["reason"],
+                    "detected_at": now_text,
+                }
+                had_verified_batch = had_verified_batch or passed_batches > 0
+                reason = gap["reason"]
+                records = []
+            if is_duplicate:
+                records[-1] = record
+            else:
+                if batch_progress >= 10:
+                    batch_progress = 0
+                batch_progress += 1
+                total_verified += 1
+                consecutive_aligned += 1
+                if batch_progress == 10:
+                    completed_batches += 1
+                    passed_batches += 1
+                    had_verified_batch = True
+                    last_pass_at = now_text
+                    last_completed_batch = {
+                        "start_round_index": int(records[-9]["round_index"]) if len(records) >= 9 else int(marker[0]) - 9,
+                        "end_round_index": int(marker[0]), "rounds": 10, "result": "PASS",
+                        "completed_at": now_text,
+                    }
+                records.append(record)
+    if source_after_audit_start and reason and failure is None:
+        failure = {
+            "failed_round_index": int(marker[0]),
+            "reason": ("COLLECTOR_GAP" if not database_ok and details and details.get("gap_before") else
+                       "IDENTITY_UNVERIFIED" if not database_ok else
+                       "MISSING_ASSESSMENT" if assessment is None else "OTHER"),
+            "collector_index": int(marker[0]),
+            "observer_index": int(runtime.get("last_processed_round_index") or marker[0]),
+            "observer_lag": max(0, int(marker[0]) - int(runtime.get("last_processed_round_index") or marker[0])),
+            "missing_assessment": assessment is None,
+            "detail": reason,
+            "detected_at": now_text,
+        }
+        failed_batches += 1
+        completed_batches += 1
+        reset_previous_progress = batch_progress
+        batch_progress = 0
+        consecutive_aligned = 0
+        last_failure = failure
+        records = []
+        last_reset = {"previous_progress": reset_previous_progress, "current_progress": 0,
+                      "round_index": int(marker[0]), "failed_round_index": int(marker[0]),
+                      "reason": failure["reason"], "detected_at": now_text}
+    alignment_runtime = {
+        "alignment_audit_version": REAL_DATA_ALIGNMENT_AUDIT_VERSION,
+        "alignment_audit_rounds": records[-10:],
+        "alignment_audit_reason": reason,
+        "alignment_tracker_version": 1,
+        "alignment_tracking_started_at": tracking_started_at,
+        "alignment_batch_progress": batch_progress,
+        "alignment_completed_batches": completed_batches,
+        "alignment_passed_batches": passed_batches,
+        "alignment_failed_batches": failed_batches,
+        "alignment_total_rounds_verified": total_verified,
+        "alignment_consecutive_rounds": consecutive_aligned,
+        "alignment_had_verified_batch": had_verified_batch,
+        "alignment_last_completed_batch": last_completed_batch,
+        "alignment_last_failure": last_failure,
+        "alignment_last_reset": last_reset,
+        "alignment_last_pass_at": last_pass_at,
+    }
+    return {**runtime, **alignment_runtime,
+            "real_data_alignment": real_data_alignment_snapshot({**runtime, **alignment_runtime})}
+
+
+async def monitor_frozen_opportunities(app: FastAPI):
+    """Drain the durable, chronological prospective-observer round queue."""
+    repository = app.state.wp.repository
+    last_heartbeat_write = 0.0
+    log.info("[OPPORTUNITY_V4] durable prospective observer queue started")
+    try:
+        from app.ml.opportunity_v4 import REAL_DATA_ALIGNMENT_AUDIT_VERSION
+
+        queue_state = await _frozen_observer_call(app, repository.initialize_frozen_observer_queue)
+        policy_report = await _frozen_observer_call(
+            app, app.state.opportunity_v4_engine.ensure_rare_opportunity_selection_policy)
+        prior_runtime = await _frozen_observer_call(
+            app, repository.load_application_state, "opportunity_v4_observer_runtime") or {}
+        app.state.frozen_observer_runtime = prior_runtime
+        if prior_runtime.get("alignment_audit_version") != REAL_DATA_ALIGNMENT_AUDIT_VERSION:
+            await persist_frozen_observer_runtime(
+                app, alignment_audit_version=REAL_DATA_ALIGNMENT_AUDIT_VERSION,
+                alignment_audit_started_at=datetime.now(timezone.utc).isoformat(),
+                alignment_audit_rounds=[], alignment_audit_reason="Waiting for 10 new consecutive collector-to-assessment matches.")
+        await persist_frozen_observer_runtime(
+            app, state="RUNNING", reason=None, process_pid=os.getpid(),
+            started_at=datetime.now(timezone.utc).isoformat(), last_error=None,
+            durable_queue=await _frozen_observer_call(app, repository.frozen_observer_queue_snapshot),
+            queue_initialized_at=queue_state.get("initialized_at"),
+            queue_cursor_round_index=queue_state.get("last_enqueued_round_index"),
+            rare_selection_policy={key: policy_report.get(key) for key in (
+                "status", "policy_id", "policy_hash", "development_cutoff_round",
+                "development_sample_count", "reason", "activation_target_index")})
+        log.info("[OPPORTUNITY_V4] Rare Opportunity Selection Policy status=%s hash=%s dev_n=%s",
+                 policy_report.get("status"), policy_report.get("policy_hash"),
+                 policy_report.get("development_sample_count"))
+    except Exception:
+        log.exception("could not persist frozen observer startup state")
+    while True:
+        try:
+            # Poll the durable queue frequently enough to assess a newly
+            # persisted source while its next target is still absent. One
+            # atomic DB tick handles marker + enqueue + expiry + queue head.
+            await asyncio.sleep(0.25)
+            if not repository.database_url:
+                await persist_frozen_observer_runtime(
+                    app, state="PAUSED_REQUIRES_OPERATOR",
+                    reason="authoritative PostgreSQL is unavailable")
+                continue
+            tick = await _frozen_observer_call(app, repository.frozen_observer_queue_tick)
+            marker = tick.get("marker")
+            if marker is None:
+                if time.monotonic() - last_heartbeat_write >= 5:
+                    await persist_frozen_observer_runtime(
+                        app, state="RUNNING", reason="waiting for the first verified round marker",
+                        last_error=None)
+                    last_heartbeat_write = time.monotonic()
+                continue
+            stale_items = tick.get("stale_items") or []
+            if stale_items:
+                stale_indexes = sorted(int(row["round_index"]) for row in stale_items)
+                log.warning("[OPPORTUNITY_V4] expired %s queued source(s) whose targets already arrived: %s..%s",
+                            len(stale_indexes), stale_indexes[0], stale_indexes[-1])
+            queue_item = tick.get("queue_item")
+            if queue_item and int(queue_item["round_index"]) == int(marker[0]):
+                process_started = time.monotonic()
+                collector_status = _collector_alignment_status()
+                # Resolve the just-arrived target from an earlier frozen
+                # assessment, then score this source for its next target.
+                await _frozen_observer_call(
+                    app, app.state.opportunity_v4_engine.sync_prospective_experiment)
+                processed = await process_frozen_opportunity_marker(app, marker, collector_status)
+            else:
+                processed = False
+            if processed:
+                assessment = await _frozen_observer_call(app, repository.get_v4_assessment, str(marker[1]))
+                await _frozen_observer_call(
+                    app, repository.finish_frozen_observer_queue_item,
+                    int(marker[0]), status="PROCESSED",
+                    assessment_id=(assessment or {}).get("assessment_id"))
+                alignment = await _record_alignment_audit_round(app, marker, assessment)
+                queue_status = await _frozen_observer_call(app, repository.frozen_observer_queue_snapshot)
+                await persist_frozen_observer_runtime(
+                    app, state="RUNNING", reason=None, last_error=None,
+                    last_processed_round_index=int(marker[0]),
+                    last_processed_round_id=str(marker[1]),
+                    last_processed_at=datetime.now(timezone.utc).isoformat(),
+                    last_assessment_id=(assessment or {}).get("assessment_id"),
+                    last_assessment_round_index=(assessment or {}).get("round_index"),
+                    last_assessment_round_id=(assessment or {}).get("round_id"),
+                    alignment_audit_version=alignment.get("alignment_audit_version"),
+                    alignment_audit_rounds=alignment.get("alignment_audit_rounds", []),
+                    alignment_audit_reason=alignment.get("alignment_audit_reason"),
+                    alignment_tracker_version=alignment.get("alignment_tracker_version"),
+                    alignment_tracking_started_at=alignment.get("alignment_tracking_started_at"),
+                    alignment_batch_progress=alignment.get("alignment_batch_progress"),
+                    alignment_completed_batches=alignment.get("alignment_completed_batches"),
+                    alignment_passed_batches=alignment.get("alignment_passed_batches"),
+                    alignment_failed_batches=alignment.get("alignment_failed_batches"),
+                    alignment_total_rounds_verified=alignment.get("alignment_total_rounds_verified"),
+                    alignment_consecutive_rounds=alignment.get("alignment_consecutive_rounds"),
+                    alignment_had_verified_batch=alignment.get("alignment_had_verified_batch"),
+                    alignment_last_completed_batch=alignment.get("alignment_last_completed_batch"),
+                    alignment_last_failure=alignment.get("alignment_last_failure"),
+                    alignment_last_reset=alignment.get("alignment_last_reset"),
+                    alignment_last_pass_at=alignment.get("alignment_last_pass_at"),
+                    real_data_alignment=alignment.get("real_data_alignment"),
+                    durable_queue=queue_status)
+                last_heartbeat_write = time.monotonic()
+                duration_ms = max(0.0, (time.monotonic() - process_started) * 1000)
+                log.info("[OPPORTUNITY_V4] prospective queue item processed source_round_index=%s duration_ms=%.1f assessment_id=%s scorable=%s",
+                         marker[0], duration_ms, (assessment or {}).get("assessment_id"),
+                         (assessment or {}).get("scorable"))
+            elif time.monotonic() - last_heartbeat_write >= 5:
+                queue_status = await _frozen_observer_call(app, repository.frozen_observer_queue_snapshot)
+                await persist_frozen_observer_runtime(
+                    app, state="RUNNING",
+                    reason=(getattr(app.state, "frozen_observer_attempt_reason", None)
+                            or ("waiting for the next queued real round" if not queue_item
+                                else "waiting for a durable assessment of the queued source round")),
+                    last_error=None, durable_queue=queue_status)
+                last_heartbeat_write = time.monotonic()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            try:
+                await persist_frozen_observer_runtime(
+                    app, state="DEGRADED", reason="observer marker processing failed",
+                    last_error=f"{type(exc).__name__}: {str(exc)[:240]}",
+                    last_error_at=datetime.now(timezone.utc).isoformat())
+            except Exception:
+                log.exception("could not persist frozen observer failure state")
+            log.exception("frozen prospective observer cycle failed; retrying")
+            await asyncio.sleep(2)
+
+
 async def monitor_health(app: FastAPI):
     while True:
         try:
@@ -381,9 +961,15 @@ async def backend_stability_snapshot(app: FastAPI) -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    instance_lock = InstanceLock(settings.instance_lock_path)
+    app.state.instance_id = uuid.uuid4().hex
+    app.state.started_at = datetime.now(timezone.utc).isoformat()
+    instance_lock = InstanceLock(settings.instance_lock_path, port=settings.backend_port,
+                                 instance_id=app.state.instance_id)
+    app.state.instance_lock = instance_lock
     lifecycle = ProcessLifecycle(settings.data_path.parent / "backend_lifecycle.jsonl")
     app.state.lifecycle = lifecycle
+    observer_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="frozen-v3-observer")
+    app.state.frozen_observer_executor = observer_executor
     orchestrator = None
     started = time.monotonic()
     shutdown_reason = "graceful_lifespan_exit"
@@ -404,8 +990,6 @@ async def lifespan(app: FastAPI):
                  settings.backend_host, settings.backend_port)
         app.state.manager = manager
         app.state.started_monotonic = started
-        app.state.started_at = datetime.now(timezone.utc).isoformat()
-        app.state.instance_id = uuid.uuid4().hex
         app.state.wp = await initialize_app_state(settings)
         lifecycle.bind_repository(app.state.wp.repository)
         app.state.wp.model_registry.retrain_interval = settings.ml_retrain_min_new_rounds
@@ -416,6 +1000,33 @@ async def lifespan(app: FastAPI):
             app.state.wp.repository, settings.model_dir, max_feature_age_s=settings.ml_max_history_age)
         await asyncio.to_thread(app.state.opportunity_engine.reconcile,
                                 app.state.wp.dataset_service.clean_rounds.copy())
+        from app.ml.opportunity_v3 import OpportunityDiscoveryV3
+        app.state.opportunity_v3_engine = OpportunityDiscoveryV3(app.state.wp.repository)
+        from app.ml.opportunity_v4 import OpportunityStabilityV4
+        app.state.opportunity_v4_engine = OpportunityStabilityV4(app.state.wp.repository)
+        frozen = await asyncio.to_thread(app.state.opportunity_v4_engine.freeze_v3,
+                                         app.state.wp.dataset_service.clean_rounds.copy())
+        if frozen.get("status") != "FROZEN":
+            log.error("[OPPORTUNITY_V4] frozen V3 model unavailable: %s", frozen.get("reason"))
+        else:
+            log.info("[OPPORTUNITY_V4] V3_FROZEN hash=%s; prospective assessment observer armed",
+                     frozen.get("configuration_hash"))
+            try:
+                prior_experiment = (await asyncio.to_thread(
+                    app.state.wp.repository.active_opportunity_experiment)
+                    or await asyncio.to_thread(app.state.wp.repository.latest_opportunity_experiment))
+                log.info("[OPPORTUNITY_EXPERIMENT] restored id=%s status=%s; a new timeline requires explicit operator start",
+                         (prior_experiment or {}).get("experiment_id"),
+                         (prior_experiment or {}).get("status", "NOT_STARTED"))
+            except Exception:
+                log.exception("[OPPORTUNITY_EXPERIMENT] durable experiment state could not be restored")
+            try:
+                diagnostic = await asyncio.to_thread(app.state.opportunity_v4_engine.historical_diagnostics,
+                                                      app.state.wp.dataset_service.clean_rounds.copy())
+                log.info("[OPPORTUNITY_V4] immutable diagnostic created status=%s eval_targets=%s",
+                         diagnostic.get("status"), diagnostic.get("evaluation_targets"))
+            except Exception:
+                log.exception("[OPPORTUNITY_V4] historical diagnostics unavailable; frozen observer remains armed")
         log.info("[DATA] Loaded %s rounds", len(app.state.wp.rounds))
 
         # Betting automation module (Part 1 — read-only browser verification).
@@ -471,6 +1082,7 @@ async def lifespan(app: FastAPI):
             )
         betting_manager.safety_gate = app.state.system_health.can_bet_now
         app.state.history_monitor = monitor_file
+        app.state.opportunity_v4_monitor = monitor_frozen_opportunities
         app.state.analytics_report_monitor = monitor_analytics_reports
         app.state.system_health_monitor = monitor_health
         app.state.platform_balance_monitor = monitor_platform_balance
@@ -507,6 +1119,7 @@ async def lifespan(app: FastAPI):
         log.info("backend graceful shutdown begin pid=%s", os.getpid())
         if orchestrator is not None:
             await orchestrator.shutdown()
+        observer_executor.shutdown(wait=True, cancel_futures=True)
         instance_lock.release()
         log.info("backend graceful shutdown complete pid=%s", os.getpid())
 
@@ -659,6 +1272,8 @@ async def health(request: Request):
                 3,
             ),
         },
+        "single_instance": (getattr(request.app.state, "instance_lock", None).status()
+                            if getattr(request.app.state, "instance_lock", None) else None),
         "database": database,
         "stability": (getattr(request.app.state, "lifecycle", None).status()
                       if getattr(request.app.state, "lifecycle", None) else None),

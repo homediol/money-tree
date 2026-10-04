@@ -22,6 +22,8 @@ export class HealthMonitor {
       pageConnected:      false,
       frameConnected:     false,
       loggedIn:           false,
+      authRequired:       false,
+      authRequiredReason: null,
       state:              'STARTING',
       lastRoundTime:      null,
       lastRoundId:        null,
@@ -57,6 +59,10 @@ export class HealthMonitor {
   setPageConnected(v)        { this._metrics.pageConnected = v; }
   setFrameConnected(v)       { this._metrics.frameConnected = v; }
   setLoggedIn(v)             { this._metrics.loggedIn = v; }
+  setAuthRequired(reason = null) {
+    this._metrics.authRequired = Boolean(reason);
+    this._metrics.authRequiredReason = reason ? String(reason) : null;
+  }
   setNetwork(value)          { this._metrics.network = value; }
   recordObserverInstalled()  { this._metrics.lastObserverInstalledAt = new Date().toISOString(); }
   recordRound(round = null) {
@@ -74,27 +80,36 @@ export class HealthMonitor {
 
   snapshot() {
     let health = 'WAITING';
+    // Use local persistence time for freshness. Platform timestamps can reverse
+    // slightly or arrive late and must not mark a newly stored round stale.
+    const activityTime = this._metrics.lastSuccessfulCollection || this._metrics.lastObserverInstalledAt;
+    const staleSince = activityTime ? Date.parse(activityTime) : this._startTime;
+    const collectorStale = this._metrics.collectorRunning
+      && Number.isFinite(staleSince) && Date.now() - staleSince > STALE_AFTER_MS;
     if (!this._metrics.collectorRunning) health = 'STOPPED';
+    else if (this._metrics.authRequired) health = 'AUTH_REQUIRED';
     else if (this._metrics.network.status !== 'ONLINE' && this._metrics.network.status !== 'UNKNOWN') health = 'WAITING_FOR_NETWORK';
     else if (!this._metrics.browserConnected) health = 'CONNECTING';
     else if (!this._metrics.frameConnected) health = 'DISCONNECTED';
-    else if (this._metrics.lastRoundTime && Date.now() - Date.parse(this._metrics.lastRoundTime) > STALE_AFTER_MS) health = 'STALE';
+    else if (collectorStale) health = 'STALE';
     else if (this._metrics.state === 'COLLECTING') health = 'HEALTHY';
     return {
       ...this._metrics,
+      state: collectorStale && this._metrics.state === 'COLLECTING' ? 'COLLECTOR_STALE' : this._metrics.state,
       health,
+      staleAfterMs: STALE_AFTER_MS,
       uptime: Math.floor((Date.now() - this._startTime) / 1000),
     };
   }
 
   /** Seconds since the last round was saved. null if no round yet. */
   secondsSinceLastRound() {
-    if (!this._metrics.lastRoundTime) return null;
-    return (Date.now() - new Date(this._metrics.lastRoundTime).getTime()) / 1000;
+    if (!this._metrics.lastSuccessfulCollection) return null;
+    return (Date.now() - new Date(this._metrics.lastSuccessfulCollection).getTime()) / 1000;
   }
 
   secondsSinceCollectionActivity() {
-    const times = [this._metrics.lastRoundTime, this._metrics.lastObserverInstalledAt]
+    const times = [this._metrics.lastSuccessfulCollection, this._metrics.lastObserverInstalledAt]
       .map(value => value ? Date.parse(value) : NaN).filter(Number.isFinite);
     return times.length ? (Date.now() - Math.max(...times)) / 1000 : null;
   }

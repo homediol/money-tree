@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +97,134 @@ CREATE TABLE IF NOT EXISTS opportunity_observations (
   UNIQUE(model_version, source_round_id)
 );
 CREATE INDEX IF NOT EXISTS opportunity_observations_status ON opportunity_observations(status, source_round_index);
+CREATE TABLE IF NOT EXISTS opportunity_v4_assessments (
+  assessment_id TEXT PRIMARY KEY,
+  model_version TEXT NOT NULL,
+  round_id TEXT NOT NULL,
+  round_index BIGINT NOT NULL,
+  observed_at TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  UNIQUE(model_version, round_id)
+);
+CREATE INDEX IF NOT EXISTS opportunity_v4_assessments_round_idx ON opportunity_v4_assessments(round_index);
+CREATE TABLE IF NOT EXISTS opportunity_v4_outcomes (
+  assessment_id TEXT PRIMARY KEY,
+  target_round_id TEXT NOT NULL,
+  target_round_index BIGINT NOT NULL,
+  actual_multiplier DOUBLE PRECISION NOT NULL,
+  target_hit_2_10x INTEGER NOT NULL,
+  resolved_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS opportunity_research_gates (
+  gate_hash TEXT PRIMARY KEY,
+  model_version TEXT NOT NULL,
+  model_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS opportunity_selection_policies (
+  policy_hash TEXT PRIMARY KEY,
+  policy_id TEXT NOT NULL,
+  model_version TEXT NOT NULL,
+  model_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  development_cutoff_round BIGINT NOT NULL,
+  created_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS opportunity_experiments (
+  experiment_id TEXT PRIMARY KEY,
+  model_version TEXT NOT NULL,
+  model_hash TEXT NOT NULL,
+  gate_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  start_round_index BIGINT NOT NULL,
+  last_round_index BIGINT NOT NULL,
+  rounds_observed INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS opportunity_experiments_status_idx
+  ON opportunity_experiments(status, updated_at);
+CREATE TABLE IF NOT EXISTS opportunity_experiment_targets (
+  experiment_id TEXT NOT NULL,
+  target_round_index BIGINT NOT NULL,
+  observed_ordinal INTEGER,
+  source_round_index BIGINT,
+  source_round_id TEXT,
+  target_round_id TEXT,
+  assessment_id TEXT,
+  classification TEXT NOT NULL,
+  selection_state TEXT,
+  selection_reason TEXT,
+  rank_at_selection INTEGER,
+  selected BOOLEAN NOT NULL DEFAULT FALSE,
+  prediction_id TEXT,
+  model_version TEXT,
+  model_hash TEXT,
+  gate_hash TEXT,
+  feature_snapshot_hash TEXT,
+  opportunity_score DOUBLE PRECISION,
+  selection_score DOUBLE PRECISION,
+  assessment_created_at TEXT,
+  selected_at TEXT,
+  target_was_absent_at_selection BOOLEAN,
+  target_observed_at TEXT,
+  target_stored_at TEXT,
+  target_created_at TEXT,
+  actual_multiplier DOUBLE PRECISION,
+  result TEXT,
+  resolved_at TEXT,
+  reason TEXT,
+  payload TEXT NOT NULL,
+  PRIMARY KEY(experiment_id, target_round_index)
+);
+CREATE INDEX IF NOT EXISTS opportunity_experiment_targets_ordinal_idx
+  ON opportunity_experiment_targets(experiment_id, observed_ordinal);
+CREATE TABLE IF NOT EXISTS opportunity_experiment_predictions (
+  prediction_id TEXT PRIMARY KEY,
+  experiment_id TEXT NOT NULL,
+  target_round_index BIGINT NOT NULL,
+  window_number INTEGER NOT NULL,
+  rank_at_selection INTEGER NOT NULL,
+  selected_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  actual_multiplier DOUBLE PRECISION,
+  result TEXT,
+  resolved_at TEXT,
+  payload TEXT NOT NULL,
+  UNIQUE(experiment_id, target_round_index)
+);
+CREATE INDEX IF NOT EXISTS opportunity_experiment_predictions_window_idx
+  ON opportunity_experiment_predictions(experiment_id, window_number, selected_at);
+CREATE TABLE IF NOT EXISTS opportunity_experiment_checkpoints (
+  experiment_id TEXT NOT NULL,
+  checkpoint_rounds INTEGER NOT NULL,
+  completed_at TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  PRIMARY KEY(experiment_id, checkpoint_rounds)
+);
+CREATE TABLE IF NOT EXISTS opportunity_v4_observer_queue_control (
+  singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),
+  last_enqueued_round_index BIGINT NOT NULL,
+  initialized_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS opportunity_v4_observer_queue (
+  round_index BIGINT PRIMARY KEY,
+  round_id TEXT NOT NULL UNIQUE,
+  enqueued_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  assessment_id TEXT,
+  reason TEXT,
+  processed_at TEXT,
+  payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS opportunity_v4_observer_queue_pending_idx
+  ON opportunity_v4_observer_queue(status, round_index);
 CREATE TABLE IF NOT EXISTS prediction_evidence (
   evidence_id TEXT PRIMARY KEY,
   prediction_id TEXT UNIQUE NOT NULL,
@@ -349,6 +479,57 @@ class Repository:
         if self.require_postgres and not self.database_url:
             raise RuntimeError("REQUIRE_POSTGRES is enabled but DATABASE_URL is not configured")
 
+    def ensure_opportunity_experiment_schema(self) -> None:
+        """Apply only the idempotent PostgreSQL DDL needed by the durable experiment ledger.
+
+        This is intentionally narrower than ``init()`` so an operator can repair
+        a missing experiment migration without replaying unrelated history/data
+        backfills while the live collector is writing rounds.
+        """
+        if not self.database_url:
+            raise RuntimeError("authoritative PostgreSQL is required for prospective experiments")
+        tables = {
+            "opportunity_research_gates",
+            "opportunity_selection_policies",
+            "opportunity_experiments",
+            "opportunity_experiment_targets",
+            "opportunity_experiment_predictions",
+            "opportunity_experiment_checkpoints",
+            "opportunity_v4_observer_queue_control",
+            "opportunity_v4_observer_queue",
+        }
+        indexes_on = {
+            "opportunity_experiments",
+            "opportunity_experiment_targets",
+            "opportunity_experiment_predictions",
+            "opportunity_experiment_checkpoints",
+            "opportunity_v4_observer_queue",
+        }
+        statements = []
+        for raw in SCHEMA.split(";"):
+            statement = raw.strip()
+            table_match = re.match(r"CREATE TABLE IF NOT EXISTS\s+([a-zA-Z0-9_]+)", statement, re.I)
+            index_match = re.match(r"CREATE (?:UNIQUE )?INDEX IF NOT EXISTS\s+[a-zA-Z0-9_]+\s+ON\s+([a-zA-Z0-9_]+)", statement, re.I)
+            if table_match and table_match.group(1) in tables:
+                statements.append(statement)
+            elif index_match and index_match.group(1) in indexes_on:
+                statements.append(statement)
+        found_tables = {re.match(r"CREATE TABLE IF NOT EXISTS\s+([a-zA-Z0-9_]+)", item, re.I).group(1)
+                        for item in statements
+                        if re.match(r"CREATE TABLE IF NOT EXISTS\s+([a-zA-Z0-9_]+)", item, re.I)}
+        if found_tables != tables:
+            raise RuntimeError("experiment schema declarations are incomplete: " + ", ".join(sorted(tables - found_tables)))
+        with self.connect() as conn:
+            for statement in statements:
+                conn.execute(statement)
+            present = {row["table_name"] for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() "
+                "AND table_name IN (?,?,?,?,?,?,?,?)",
+                tuple(sorted(tables)),
+            ).fetchall()}
+            if present != tables:
+                raise RuntimeError("PostgreSQL experiment schema migration did not create every required table")
+
     def connect(self):
         if self.database_url:
             try:
@@ -385,6 +566,23 @@ class Repository:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )""")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS platform_timestamp TIMESTAMPTZ")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS platform_round_id TEXT")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS platform_round_index BIGINT")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS observed_at TIMESTAMPTZ")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS stored_at TIMESTAMPTZ")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS local_round_index BIGINT")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS round_identity_type TEXT")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS round_index_source TEXT")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS identity_confidence TEXT")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS continuity_verified BOOLEAN NOT NULL DEFAULT FALSE")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS gap_before BOOLEAN NOT NULL DEFAULT FALSE")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS continuity_proof TEXT")
+                conn.execute("UPDATE aviator_rounds SET stored_at=COALESCE(stored_at,created_at)")
+                conn.execute("UPDATE aviator_rounds SET local_round_index=COALESCE(local_round_index,round_index)")
+                conn.execute("UPDATE aviator_rounds SET observed_at=COALESCE(observed_at,timestamp) WHERE round_id ~ '^aviator-[0-9a-f]{24}$'")
+                conn.execute("UPDATE aviator_rounds SET round_identity_type=COALESCE(round_identity_type,'COLLECTOR_OBSERVATION_HASH'), round_index_source=COALESCE(round_index_source,'LOCAL_SEQUENCE'), identity_confidence=COALESCE(identity_confidence,CASE WHEN continuity_verified THEN 'OVERLAP_VERIFIED_ORDER_ONLY' ELSE 'UNKNOWN' END), continuity_proof=COALESCE(continuity_proof,'LEGACY_UNVERIFIED')")
+                conn.execute("UPDATE aviator_rounds SET platform_timestamp=NULL WHERE round_id ~ '^aviator-[0-9a-f]{24}$'")
                 conn.execute("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS round_id TEXT")
                 conn.execute("UPDATE rounds SET round_id = round_index::text WHERE round_id IS NULL")
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS rounds_round_id_idx ON rounds(round_id)")
@@ -468,16 +666,51 @@ class Repository:
                 rows,
             )
 
-    def load_rounds(self) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT round_id, round_index, multiplier, timestamp FROM " +
-                ("aviator_rounds" if self.database_url else "rounds") + " ORDER BY round_index ASC"
-            ).fetchall()
+    @staticmethod
+    def _round_rows_to_dicts(rows) -> list[dict[str, Any]]:
         return [{**dict(row), "round_id": str(row["round_id"] or row["round_index"]),
                  "round_index": int(row["round_index"]), "multiplier": float(row["multiplier"]),
                 "timestamp": str(row["timestamp"]) if row["timestamp"] is not None else None}
+                | {"platform_timestamp": str(row["platform_timestamp"]) if row["platform_timestamp"] is not None else None,
+                   "platform_round_id": str(row["platform_round_id"]) if row["platform_round_id"] is not None else None,
+                   "platform_round_index": int(row["platform_round_index"]) if row["platform_round_index"] is not None else None,
+                   "local_round_index": int(row["local_round_index"]) if row["local_round_index"] is not None else int(row["round_index"]),
+                   "observed_at": str(row["observed_at"]) if row["observed_at"] is not None else None,
+                   "stored_at": str(row["stored_at"]) if row["stored_at"] is not None else None,
+                   "round_identity_type": row["round_identity_type"],
+                   "round_index_source": row["round_index_source"],
+                   "identity_confidence": row["identity_confidence"],
+                   "continuity_verified": bool(row["continuity_verified"]),
+                   "gap_before": bool(row["gap_before"]),
+                   "continuity_proof": row["continuity_proof"]}
                 for row in rows]
+
+    def load_rounds(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT round_id, round_index, multiplier, timestamp, "
+                + ("platform_round_id, platform_round_index, local_round_index, platform_timestamp, observed_at, COALESCE(stored_at,created_at) AS stored_at, round_identity_type, round_index_source, identity_confidence, continuity_verified, gap_before, continuity_proof " if self.database_url else "NULL AS platform_round_id, NULL AS platform_round_index, round_index AS local_round_index, NULL AS platform_timestamp, NULL AS observed_at, NULL AS stored_at, 'LEGACY_UNKNOWN' AS round_identity_type, 'LEGACY_UNKNOWN' AS round_index_source, 'UNKNOWN' AS identity_confidence, 0 AS continuity_verified, 0 AS gap_before, 'LEGACY_UNVERIFIED' AS continuity_proof ") + " FROM " +
+                ("aviator_rounds" if self.database_url else "rounds") + " ORDER BY round_index ASC"
+            ).fetchall()
+        return self._round_rows_to_dicts(rows)
+
+    def load_verified_round_suffix(self) -> list[dict[str, Any]]:
+        """Load only the latest overlap-verified segment for prospective scoring."""
+        if not self.database_url:
+            return []
+        projection = ("round_id, round_index, multiplier, timestamp, platform_round_id, platform_round_index, "
+                      "local_round_index, platform_timestamp, observed_at, COALESCE(stored_at,created_at) AS stored_at, "
+                      "round_identity_type, round_index_source, identity_confidence, continuity_verified, gap_before, continuity_proof")
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""SELECT {projection} FROM aviator_rounds
+                    WHERE round_index >= (
+                        SELECT COALESCE(MAX(round_index), 0) FROM aviator_rounds
+                        WHERE continuity_verified=FALSE OR gap_before=TRUE
+                    ) AND continuity_verified=TRUE
+                    ORDER BY round_index ASC"""
+            ).fetchall()
+        return self._round_rows_to_dicts(rows)
 
     def save_statistics(self, key: str, payload: dict[str, Any]) -> None:
         """Persist a database-derived statistics snapshot for API consumers."""
@@ -564,9 +797,327 @@ class Repository:
         if not self.database_url:
             return None
         with self.connect() as conn:
-            row = conn.execute("""SELECT round_index,round_id,timestamp,multiplier
+            row = conn.execute("""SELECT round_index,round_id,COALESCE(platform_timestamp,timestamp) AS timestamp,multiplier
                                   FROM aviator_rounds ORDER BY round_index DESC LIMIT 1""").fetchone()
         return (int(row["round_index"]), str(row["round_id"]), str(row["timestamp"]), float(row["multiplier"])) if row else None
+
+    def initialize_frozen_observer_queue(self) -> dict[str, Any]:
+        """Create the durable queue cursor at the current DB tail once.
+
+        On first deployment, prior targets are deliberately excluded: this
+        queue is for future source rounds only and is not a backfill path.
+        Subsequent backend/observer restarts restore the existing cursor.
+        """
+        if not self.database_url:
+            return {"available": False, "reason": "PostgreSQL is required"}
+        with self.connect() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("opportunity_v4_observer_queue",))
+            row = conn.execute("SELECT last_enqueued_round_index,initialized_at FROM opportunity_v4_observer_queue_control WHERE singleton=1").fetchone()
+            if row:
+                return {"available": True, "last_enqueued_round_index": int(row["last_enqueued_round_index"]),
+                        "initialized_at": self._db_time_text(row["initialized_at"]), "restored": True}
+            latest = conn.execute("SELECT round_index FROM aviator_rounds ORDER BY round_index DESC LIMIT 1").fetchone()
+            # Include the current live tail once: its next target may still be
+            # absent, so it is a valid prospective source. Older rows are
+            # skipped and never reconstructed as predictions.
+            index = max(0, int(latest["round_index"]) - 1) if latest else 0
+            now = conn.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+            now_text = self._db_time_text(now)
+            conn.execute("""INSERT INTO opportunity_v4_observer_queue_control
+                (singleton,last_enqueued_round_index,initialized_at,updated_at) VALUES(1,?,?,?)""",
+                (index, now_text, now_text))
+            return {"available": True, "last_enqueued_round_index": index,
+                    "initialized_at": now_text, "restored": False}
+
+    def enqueue_frozen_observer_rounds(self, limit: int = 500) -> dict[str, Any]:
+        """Append every new PostgreSQL round to the queue in local round order."""
+        if not self.database_url:
+            return {"enqueued": 0, "last_enqueued_round_index": None}
+        batch_limit = min(max(int(limit), 1), 2000)
+        with self.connect() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("opportunity_v4_observer_queue",))
+            cursor = conn.execute("SELECT last_enqueued_round_index FROM opportunity_v4_observer_queue_control WHERE singleton=1").fetchone()
+            if not cursor:
+                return {"enqueued": 0, "last_enqueued_round_index": None, "initialized": False}
+            previous = int(cursor["last_enqueued_round_index"])
+            rows = conn.execute("""SELECT round_id,round_index,multiplier,observed_at,
+                COALESCE(stored_at,created_at) AS stored_at,continuity_verified,gap_before,
+                identity_confidence,platform_round_id,platform_round_index
+                FROM aviator_rounds WHERE round_index>? ORDER BY round_index ASC LIMIT ?""",
+                (previous, batch_limit)).fetchall()
+            if not rows:
+                return {"enqueued": 0, "last_enqueued_round_index": previous, "initialized": True}
+            now = conn.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+            now_text = self._db_time_text(now)
+            for row in rows:
+                payload = {key: row[key] for key in row.keys()}
+                payload["round_index"] = int(payload["round_index"])
+                payload["multiplier"] = float(payload["multiplier"])
+                payload["continuity_verified"] = bool(payload["continuity_verified"])
+                payload["gap_before"] = bool(payload["gap_before"])
+                conn.execute("""INSERT INTO opportunity_v4_observer_queue
+                    (round_index,round_id,enqueued_at,status,payload) VALUES(?,?,?,'PENDING',?)
+                    ON CONFLICT(round_index) DO NOTHING""",
+                    (payload["round_index"], str(payload["round_id"]), now_text, json.dumps(payload, default=str)))
+            last_index = int(rows[-1]["round_index"])
+            conn.execute("""UPDATE opportunity_v4_observer_queue_control SET
+                last_enqueued_round_index=?,updated_at=? WHERE singleton=1""", (last_index, now_text))
+            return {"enqueued": len(rows), "last_enqueued_round_index": last_index, "initialized": True}
+
+    def frozen_observer_queue_tick(self, limit: int = 500) -> dict[str, Any]:
+        """Atomically enqueue, expire stale sources, and return the live head.
+
+        This is the observer hot path. Combining its queue/marker reads in one
+        PostgreSQL transaction avoids opening several connections per poll.
+        """
+        if not self.database_url:
+            return {"available": False, "marker": None, "queue_item": None, "stale_items": []}
+        batch_limit = min(max(int(limit), 1), 2000)
+        with self.connect() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("opportunity_v4_observer_queue",))
+            marker = conn.execute("""SELECT round_index,round_id,
+                COALESCE(platform_timestamp,timestamp) AS timestamp,multiplier
+                FROM aviator_rounds ORDER BY round_index DESC LIMIT 1""").fetchone()
+            control = conn.execute("SELECT last_enqueued_round_index FROM opportunity_v4_observer_queue_control WHERE singleton=1").fetchone()
+            if not marker:
+                return {"available": True, "marker": None, "queue_item": None, "stale_items": []}
+            latest_index = int(marker["round_index"])
+            if not control:
+                # First deployment begins at the current tail. Historical rows
+                # are not added to this prospective source queue.
+                start_index = max(0, latest_index - 1)
+                now = conn.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+                now_text = self._db_time_text(now)
+                conn.execute("""INSERT INTO opportunity_v4_observer_queue_control
+                    (singleton,last_enqueued_round_index,initialized_at,updated_at)
+                    VALUES(1,?,?,?) ON CONFLICT(singleton) DO NOTHING""",
+                    (start_index, now_text, now_text))
+                control = conn.execute("SELECT last_enqueued_round_index FROM opportunity_v4_observer_queue_control WHERE singleton=1").fetchone()
+            previous = int(control["last_enqueued_round_index"])
+            rows = conn.execute("""SELECT round_id,round_index,multiplier,observed_at,
+                COALESCE(stored_at,created_at) AS stored_at,continuity_verified,gap_before,
+                identity_confidence,platform_round_id,platform_round_index
+                FROM aviator_rounds WHERE round_index>? ORDER BY round_index ASC LIMIT ?""",
+                (previous, batch_limit)).fetchall()
+            now = conn.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+            now_text = self._db_time_text(now)
+            for row in rows:
+                payload = {key: row[key] for key in row.keys()}
+                payload["round_index"] = int(payload["round_index"])
+                payload["multiplier"] = float(payload["multiplier"])
+                payload["continuity_verified"] = bool(payload["continuity_verified"])
+                payload["gap_before"] = bool(payload["gap_before"])
+                conn.execute("""INSERT INTO opportunity_v4_observer_queue
+                    (round_index,round_id,enqueued_at,status,payload) VALUES(?,?,?,'PENDING',?)
+                    ON CONFLICT(round_index) DO NOTHING""",
+                    (payload["round_index"], str(payload["round_id"]), now_text, json.dumps(payload, default=str)))
+            last_enqueued = int(rows[-1]["round_index"]) if rows else previous
+            if last_enqueued > previous:
+                conn.execute("UPDATE opportunity_v4_observer_queue_control SET last_enqueued_round_index=?,updated_at=? WHERE singleton=1",
+                             (last_enqueued, now_text))
+            stale = conn.execute("""UPDATE opportunity_v4_observer_queue
+                SET status='MISSED',attempts=attempts+1,
+                    reason='TARGET_ARRIVED_BEFORE_ASSESSMENT',processed_at=?
+                WHERE status='PENDING' AND round_index<?
+                RETURNING round_index,round_id""", (now_text, latest_index)).fetchall()
+            head = conn.execute("""SELECT round_index,round_id,status,attempts,payload FROM opportunity_v4_observer_queue
+                WHERE status='PENDING' AND round_index<=? ORDER BY round_index ASC LIMIT 1""",
+                (latest_index,)).fetchone()
+            item = ({**json.loads(head["payload"]), "status": head["status"],
+                     "attempts": int(head["attempts"])} if head else None)
+            return {
+                "available": True,
+                "marker": (latest_index, str(marker["round_id"]), self._db_time_text(marker["timestamp"]),
+                           float(marker["multiplier"])),
+                "queue_item": item,
+                "stale_items": [dict(row) for row in stale],
+                "enqueued": len(rows),
+                "last_enqueued_round_index": last_enqueued,
+                "queue_initialized": True,
+            }
+
+    def next_frozen_observer_queue_item(self) -> dict[str, Any] | None:
+        if not self.database_url:
+            return None
+        with self.connect() as conn:
+            row = conn.execute("""SELECT round_index,round_id,status,attempts,payload
+                FROM opportunity_v4_observer_queue WHERE status='PENDING'
+                ORDER BY round_index ASC LIMIT 1""").fetchone()
+        return ({**json.loads(row["payload"]), "status": row["status"],
+                 "attempts": int(row["attempts"])} if row else None)
+
+    def expire_stale_frozen_observer_queue_items(self, latest_round_index: int) -> list[dict[str, Any]]:
+        """Mark every queued source whose target already exists, in one DB transaction.
+
+        Queue entries are never replayed after their target arrives. Bulk expiry
+        lets the worker reach the current live tail without spending a polling
+        interval on each already-late item.
+        """
+        if not self.database_url:
+            return []
+        with self.connect() as conn:
+            now = conn.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+            now_text = self._db_time_text(now)
+            rows = conn.execute("""UPDATE opportunity_v4_observer_queue
+                SET status='MISSED',attempts=attempts+1,
+                    reason='TARGET_ARRIVED_BEFORE_ASSESSMENT',processed_at=?
+                WHERE status='PENDING' AND round_index<?
+                RETURNING round_index,round_id""",
+                (now_text, int(latest_round_index))).fetchall()
+        return [dict(row) for row in rows]
+
+    def finish_frozen_observer_queue_item(self, round_index: int, *, status: str,
+                                          assessment_id: str | None = None,
+                                          reason: str | None = None) -> dict[str, Any] | None:
+        """Acknowledge one source marker without altering experiment history."""
+        if not self.database_url:
+            return None
+        allowed = {"PROCESSED", "MISSED", "RETRY"}
+        if status not in allowed:
+            raise ValueError("invalid observer queue status")
+        with self.connect() as conn:
+            now = conn.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+            now_text = self._db_time_text(now)
+            if status == "RETRY":
+                conn.execute("""UPDATE opportunity_v4_observer_queue SET attempts=attempts+1,
+                    reason=?,payload=(payload::jsonb || jsonb_build_object('last_attempt_reason',?))::text
+                    WHERE round_index=? AND status='PENDING'""", (reason, reason, int(round_index)))
+            else:
+                conn.execute("""UPDATE opportunity_v4_observer_queue SET status=?,attempts=attempts+1,
+                    assessment_id=?,reason=?,processed_at=? WHERE round_index=? AND status='PENDING'""",
+                    (status, assessment_id, reason, now_text, int(round_index)))
+            row = conn.execute("SELECT round_index,round_id,status,attempts,reason,processed_at FROM opportunity_v4_observer_queue WHERE round_index=?",
+                               (int(round_index),)).fetchone()
+        return dict(row) if row else None
+
+    def frozen_observer_queue_snapshot(self) -> dict[str, Any]:
+        if not self.database_url:
+            return {"available": False, "pending": None, "processed": 0, "missed": 0}
+        with self.connect() as conn:
+            counts = conn.execute("""SELECT COUNT(*) FILTER(WHERE status='PENDING') AS pending,
+                COUNT(*) FILTER(WHERE status='PROCESSED') AS processed,
+                COUNT(*) FILTER(WHERE status='MISSED') AS missed,
+                MAX(round_index) FILTER(WHERE status='PROCESSED') AS last_processed_round_index,
+                MAX(round_index) FILTER(WHERE status='MISSED') AS last_missed_round_index
+                FROM opportunity_v4_observer_queue""").fetchone()
+            quality = conn.execute("""SELECT COUNT(*) FILTER(WHERE q.status='PROCESSED'
+                    AND a.payload::jsonb->>'scorable'='true'
+                    AND (a.payload::jsonb->>'opportunity_score') IS NOT NULL) AS scored,
+                COUNT(*) FILTER(WHERE q.status='PROCESSED' AND a.assessment_id IS NOT NULL
+                    AND a.payload::jsonb->>'scorable' IS DISTINCT FROM 'true') AS invalid
+                FROM opportunity_v4_observer_queue q
+                LEFT JOIN opportunity_v4_assessments a ON a.assessment_id=q.assessment_id""").fetchone()
+            control = conn.execute("SELECT last_enqueued_round_index,initialized_at FROM opportunity_v4_observer_queue_control WHERE singleton=1").fetchone()
+            pending = conn.execute("""SELECT round_index,round_id,enqueued_at,attempts,reason FROM opportunity_v4_observer_queue
+                WHERE status='PENDING' ORDER BY round_index ASC LIMIT 1""").fetchone()
+        return {"available": True, "pending_count": int(counts["pending"] or 0),
+                "processed_count": int(counts["processed"] or 0), "missed_count": int(counts["missed"] or 0),
+                "post_fix_scored": int(quality["scored"] or 0),
+                "post_fix_invalid": int(quality["invalid"] or 0),
+                "post_fix_missed": int(counts["missed"] or 0),
+                "post_fix_coverage": (float(quality["scored"] or 0) /
+                    max(1, int(quality["scored"] or 0) + int(counts["missed"] or 0))),
+                "last_processed_round_index": (int(counts["last_processed_round_index"])
+                                                if counts["last_processed_round_index"] is not None else None),
+                "last_missed_round_index": (int(counts["last_missed_round_index"])
+                                             if counts["last_missed_round_index"] is not None else None),
+                "last_enqueued_round_index": int(control["last_enqueued_round_index"]) if control else None,
+                "initialized_at": self._db_time_text(control["initialized_at"]) if control else None,
+                "next_pending": dict(pending) if pending else None}
+
+    def latest_round_live_details(self) -> dict[str, Any] | None:
+        """Return the latest persisted real round and its collector proof metadata."""
+        if not self.database_url:
+            return None
+        with self.connect() as conn:
+            row = conn.execute("""SELECT round_id,round_index,platform_round_id,platform_round_index,
+                                       platform_timestamp,observed_at,COALESCE(stored_at,created_at) AS stored_at,
+                                       multiplier,continuity_verified,gap_before,identity_confidence
+                                  FROM aviator_rounds ORDER BY round_index DESC LIMIT 1""").fetchone()
+        if not row:
+            return None
+        return {
+            "round_id": str(row["round_id"]), "round_index": int(row["round_index"]),
+            "platform_round_id": str(row["platform_round_id"]) if row["platform_round_id"] is not None else None,
+            "platform_round_index": int(row["platform_round_index"]) if row["platform_round_index"] is not None else None,
+            "platform_timestamp": row["platform_timestamp"], "observed_at": row["observed_at"],
+            "stored_at": row["stored_at"], "multiplier": float(row["multiplier"]),
+            "continuity_verified": bool(row["continuity_verified"]), "gap_before": bool(row["gap_before"]),
+            "identity_confidence": row["identity_confidence"],
+        }
+
+    def live_round_continuity_snapshot(self, recent_limit: int = 205) -> dict[str, Any]:
+        """Read the latest row, recent tail, and verified suffix from one DB snapshot."""
+        if not self.database_url:
+            return {"latest_round": None, "recent_rounds": [], "verified_suffix": []}
+        projection = ("round_id, round_index, multiplier, timestamp, platform_round_id, platform_round_index, "
+                     "local_round_index, platform_timestamp, observed_at, COALESCE(stored_at,created_at) AS stored_at, "
+                     "round_identity_type, round_index_source, identity_confidence, continuity_verified, gap_before, continuity_proof")
+        with self.connect() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            summary = conn.execute("""SELECT COUNT(*) AS row_count,
+                MIN(round_index) AS minimum_round_index, MAX(round_index) AS maximum_round_index
+                FROM aviator_rounds""").fetchone()
+            latest = conn.execute(
+                f"SELECT {projection} FROM aviator_rounds ORDER BY round_index DESC LIMIT 1"
+            ).fetchone()
+            recent_desc = conn.execute(
+                f"SELECT {projection} FROM aviator_rounds ORDER BY round_index DESC LIMIT ?",
+                (max(2, int(recent_limit)),),
+            ).fetchall()
+            suffix = conn.execute(
+                f"""SELECT {projection} FROM aviator_rounds
+                    WHERE round_index >= (
+                        SELECT COALESCE(MAX(round_index), 0) FROM aviator_rounds
+                        WHERE continuity_verified=FALSE OR gap_before=TRUE
+                    ) AND continuity_verified=TRUE
+                    ORDER BY round_index ASC"""
+            ).fetchall()
+        latest_rows = self._round_rows_to_dicts([latest]) if latest else []
+        row_count = int(summary["row_count"] or 0) if summary else 0
+        minimum_index = (int(summary["minimum_round_index"])
+                         if summary and summary["minimum_round_index"] is not None else None)
+        maximum_index = (int(summary["maximum_round_index"])
+                         if summary and summary["maximum_round_index"] is not None else None)
+        return {
+            "latest_round": latest_rows[0] if latest_rows else None,
+            "recent_rounds": self._round_rows_to_dicts(list(reversed(recent_desc))),
+            "verified_suffix": self._round_rows_to_dicts(suffix),
+            "round_storage_summary": {
+                "row_count": row_count,
+                "minimum_round_index": minimum_index,
+                "maximum_round_index": maximum_index,
+                "max_minus_count": (maximum_index - row_count) if maximum_index is not None else None,
+                "index_origin_offset": max(0, minimum_index - 1) if minimum_index is not None else None,
+                "missing_indexes_within_range": (max(0, maximum_index - minimum_index + 1 - row_count)
+                                                 if minimum_index is not None and maximum_index is not None else None),
+            },
+        }
+
+    def count_rounds_after(self, round_index: int) -> int:
+        table = "aviator_rounds" if self.database_url else "rounds"
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT COUNT(*) AS n FROM {table} WHERE round_index>?",
+                               (int(round_index),)).fetchone()
+        return int(row["n"] if row else 0)
+
+    def round_continuity_range(self, first_index: int, last_index: int) -> dict[int, dict[str, Any]]:
+        """Return identity and collector proof fields for a bounded round range."""
+        if int(last_index) < int(first_index):
+            return {}
+        if self.database_url:
+            query = """SELECT round_index,round_id,COALESCE(stored_at,created_at) AS stored_at,
+                             continuity_verified,gap_before,
+                             identity_confidence,continuity_proof
+                      FROM aviator_rounds WHERE round_index BETWEEN ? AND ? ORDER BY round_index"""
+        else:
+            query = """SELECT round_index,round_id,NULL AS stored_at,
+                             FALSE AS continuity_verified,FALSE AS gap_before,
+                             'UNKNOWN' AS identity_confidence,'LEGACY_UNVERIFIED' AS continuity_proof
+                      FROM rounds WHERE round_index BETWEEN ? AND ? ORDER BY round_index"""
+        with self.connect() as conn:
+            rows = conn.execute(query, (int(first_index), int(last_index))).fetchall()
+        return {int(row["round_index"]): dict(row) for row in rows}
 
     def import_legacy_rounds(self, rows: list[dict[str, Any]]) -> int:
         """Import missing legacy rounds once, including when collection began first."""
@@ -618,21 +1169,16 @@ class Repository:
         # Round index defines the observed sequence. Sorting by timestamp
         # hides clock inversions and can report a false restored streak.
         rows.sort(key=lambda row: int(row["round_index"]))
-        contiguous = 0
-        if rows:
-            contiguous = 1
+        contiguous = 1 if rows and rows[-1].get("continuity_verified") else 0
         for index in range(len(rows) - 1, 0, -1):
             current, previous = rows[index], rows[index - 1]
             if int(previous["round_index"]) + 1 != int(current["round_index"]):
                 break
-            if current.get("timestamp") and previous.get("timestamp"):
-                try:
-                    delta = (datetime.fromisoformat(str(current["timestamp"]).replace("Z", "+00:00")) -
-                             datetime.fromisoformat(str(previous["timestamp"]).replace("Z", "+00:00"))).total_seconds()
-                    if delta < 0 or delta > 120:
-                        break
-                except ValueError:
-                    break
+            if (not current.get("continuity_verified") or not previous.get("continuity_verified")
+                    or current.get("gap_before")):
+                break
+            if str(current.get("round_id")) == str(previous.get("round_id")):
+                break
             contiguous += 1
         latest = rows[-1] if rows else {}
         state = {
@@ -700,6 +1246,14 @@ class Repository:
             conn.execute("""INSERT INTO application_state(state_key,payload,updated_at) VALUES(?,?,?)
                            ON CONFLICT(state_key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at""",
                          (key, json.dumps(payload), updated_at))
+
+    def save_application_state_once(self, key: str, payload: dict[str, Any], created_at: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            conn.execute("""INSERT INTO application_state(state_key,payload,updated_at) VALUES(?,?,?)
+                           ON CONFLICT(state_key) DO NOTHING""",
+                         (key, json.dumps(payload), created_at))
+            row = conn.execute("SELECT payload FROM application_state WHERE state_key=?", (key,)).fetchone()
+        return json.loads(row["payload"])
 
     def load_application_state(self, key: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -874,6 +1428,811 @@ class Repository:
             conn.execute("""UPDATE opportunity_observations SET status=?,payload=?
                            WHERE observation_id=? AND status='PENDING'""",
                          (payload["status"], json.dumps(payload), payload["observation_id"]))
+
+    def save_opportunity_research_gate_once(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.connect() as conn:
+            conn.execute("""INSERT INTO opportunity_research_gates
+                (gate_hash,model_version,model_hash,status,created_at,payload)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(gate_hash) DO NOTHING""",
+                (payload["gate_hash"], payload["model_version"], payload["model_hash"],
+                 payload["status"], payload["created_at"], json.dumps(payload)))
+            row = conn.execute("SELECT payload FROM opportunity_research_gates WHERE gate_hash=?",
+                               (payload["gate_hash"],)).fetchone()
+        return json.loads(row["payload"])
+
+    def load_opportunity_research_gate(self, model_version: str, model_hash: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("""SELECT payload FROM opportunity_research_gates
+                WHERE model_version=? AND model_hash=? ORDER BY created_at DESC LIMIT 1""",
+                (model_version, model_hash)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def load_rare_opportunity_selection_policy(self, model_version: str, model_hash: str) -> dict[str, Any] | None:
+        if not self.database_url:
+            return None
+        with self.connect() as conn:
+            row = conn.execute("""SELECT payload FROM opportunity_selection_policies
+                WHERE model_version=? AND model_hash=? ORDER BY created_at DESC LIMIT 1""",
+                (model_version, model_hash)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def load_rare_opportunity_policy_development_rows(self, *, model_version: str,
+                                                       model_hash: str,
+                                                       target_cutoff_round: int) -> list[dict[str, Any]]:
+        """Strict pre-outcome frozen assessments resolved before the dev cutoff."""
+        if not self.database_url:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT a.payload AS assessment_payload,
+                    o.target_round_index,o.target_round_id,o.actual_multiplier,o.resolved_at,o.payload AS outcome_payload
+                FROM opportunity_v4_assessments AS a
+                JOIN opportunity_v4_outcomes AS o ON o.assessment_id=a.assessment_id
+                JOIN aviator_rounds AS target ON target.round_index=o.target_round_index
+                    AND target.round_id=o.target_round_id AND target.multiplier=o.actual_multiplier::numeric
+                WHERE a.model_version=? AND a.round_index<? AND o.target_round_index<=?
+                ORDER BY o.target_round_index ASC""",
+                (model_version, int(target_cutoff_round), int(target_cutoff_round))).fetchall()
+        output = []
+        for row in rows:
+            assessment = json.loads(row["assessment_payload"])
+            proof = assessment.get("round_order_proof") or {}
+            try:
+                source_index = int(assessment["round_index"])
+                target_index = int(row["target_round_index"])
+                score = float(assessment["opportunity_score"])
+                multiplier = float(row["actual_multiplier"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (assessment.get("scorable") is True and assessment.get("assessment_immutable") is True
+                    and assessment.get("model_configuration_hash") == model_hash
+                    and assessment.get("target_round_index") == target_index
+                    and target_index == source_index + 1 and target_index <= int(target_cutoff_round)
+                    and proof.get("assessment_source_round_index") == source_index
+                    and proof.get("assessment_source_round_id") == str(assessment.get("round_id"))
+                    and proof.get("target_outcome_round_index") == target_index
+                    and proof.get("source_was_latest_at_assessment_commit") is True
+                    and proof.get("target_absent_at_assessment_commit") is True
+                    and proof.get("proof_method") == "postgres_advisory_transaction_lock"):
+                continue
+            output.append({"source_round_index": source_index, "target_round_index": target_index,
+                           "score": score, "actual_multiplier": multiplier,
+                           "is_true": multiplier >= 2.0,
+                           "assessment_id": assessment.get("assessment_id"),
+                           "created_at": assessment.get("created_at") or assessment.get("observed_at"),
+                           "resolved_at": row["resolved_at"]})
+        return output
+
+    def save_rare_opportunity_selection_policy_once(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.database_url:
+            raise RuntimeError("PostgreSQL is required to freeze a prospective selection policy")
+        with self.connect() as conn:
+            conn.execute("""INSERT INTO opportunity_selection_policies
+                (policy_hash,policy_id,model_version,model_hash,status,development_cutoff_round,created_at,payload)
+                VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(policy_hash) DO NOTHING""",
+                (payload["policy_hash"], payload["policy_id"], payload["model_version"],
+                 payload["model_hash"], payload["status"], payload["development_cutoff_round"],
+                 payload["created_at"], json.dumps(payload)))
+            row = conn.execute("SELECT payload FROM opportunity_selection_policies WHERE policy_hash=?",
+                               (payload["policy_hash"],)).fetchone()
+        return json.loads(row["payload"])
+
+    def activate_rare_opportunity_selection_policy(self, experiment_id: str,
+                                                    policy: dict[str, Any]) -> dict[str, Any] | None:
+        """Atomically set the policy boundary after the last already-frozen score."""
+        if not self.database_url or policy.get("status") != "FROZEN":
+            return None
+        with self.connect() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("aviator_rounds",))
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("opportunity_prospective_experiment",))
+            row = conn.execute("SELECT payload FROM opportunity_experiments WHERE experiment_id=? AND status='ACTIVE'",
+                               (experiment_id,)).fetchone()
+            if not row:
+                return None
+            experiment = json.loads(row["payload"])
+            if experiment.get("model_version") != policy.get("model_version") or experiment.get("model_hash") != policy.get("model_hash"):
+                return None
+            if experiment.get("selection_policy_hash"):
+                return experiment
+            latest = conn.execute("SELECT round_id,round_index FROM aviator_rounds ORDER BY round_index DESC LIMIT 1").fetchone()
+            if not latest:
+                return None
+            latest_index = int(latest["round_index"])
+            existing_source = conn.execute("""SELECT 1 FROM opportunity_v4_assessments
+                WHERE model_version=? AND round_id=? LIMIT 1""",
+                (experiment["model_version"], str(latest["round_id"]))).fetchone()
+            activation_source = latest_index + (1 if existing_source else 0)
+            activation_target = activation_source + 1
+            now = conn.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+            now_text = self._db_time_text(now)
+            experiment.update({"gate_hash": policy["policy_hash"],
+                "selection_policy_id": policy["policy_id"], "selection_policy_hash": policy["policy_hash"],
+                "selection_policy_status": "FROZEN", "selection_policy_reason": None,
+                "selection_policy_activation_at": now_text,
+                "policy_activation_source_round_index": activation_source,
+                "policy_activation_target_index": activation_target,
+                "policy_development_cutoff_round": int(policy["development_cutoff_round"]),
+                "max_selections": 4, "four_selection_policy": "DEFINED",
+                "target_threshold": 2.0, "updated_at": now_text})
+            conn.execute("""UPDATE opportunity_experiments SET gate_hash=?,updated_at=?,payload=?
+                WHERE experiment_id=?""",
+                (policy["policy_hash"], now_text, json.dumps(experiment), experiment_id))
+            return experiment
+
+    def active_opportunity_experiment(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("""SELECT payload FROM opportunity_experiments
+                WHERE status IN ('ACTIVE','COLLECTING','SCORING','DEGRADED','PAUSED')
+                ORDER BY updated_at DESC LIMIT 1""").fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def latest_opportunity_experiment(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM opportunity_experiments ORDER BY updated_at DESC LIMIT 1").fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def create_opportunity_experiment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(payload)
+        with self.connect() as conn:
+            if self.database_url:
+                # Serialize the start boundary against the live collector. The
+                # first experiment target is the next round after this locked
+                # PostgreSQL tail, never an already observed outcome.
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("aviator_rounds",))
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("opportunity_prospective_experiment",))
+                if payload.pop("start_from_next_round", False):
+                    marker = conn.execute("SELECT round_id,round_index FROM aviator_rounds ORDER BY round_index DESC LIMIT 1").fetchone()
+                    if not marker:
+                        return {"status": "PAUSED", "reason": "no persisted real PostgreSQL round is available"}
+                    source_index = int(marker["round_index"])
+                    payload.update({
+                        "start_source_round_index": source_index,
+                        "start_source_round_id": str(marker["round_id"]),
+                        "start_round_index": source_index + 1,
+                        "first_target_round_index": source_index + 1,
+                        "last_round_index": source_index,
+                    })
+            existing = conn.execute("""SELECT payload FROM opportunity_experiments
+                WHERE status IN ('ACTIVE','COLLECTING','SCORING','DEGRADED','PAUSED')
+                ORDER BY updated_at DESC LIMIT 1""").fetchone()
+            if existing:
+                return json.loads(existing["payload"])
+            conn.execute("""INSERT INTO opportunity_experiments
+                (experiment_id,model_version,model_hash,gate_hash,status,start_round_index,last_round_index,
+                 rounds_observed,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (payload["experiment_id"], payload["model_version"], payload["model_hash"],
+                 payload["gate_hash"], payload["status"], payload["start_round_index"],
+                 payload["last_round_index"], payload.get("rounds_observed", 0),
+                 payload["updated_at"], json.dumps(payload)))
+        return payload
+
+    def update_opportunity_experiment(self, payload: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute("""UPDATE opportunity_experiments SET status=?,last_round_index=?,
+                rounds_observed=?,updated_at=?,payload=? WHERE experiment_id=?""",
+                (payload["status"], payload["last_round_index"], payload["rounds_observed"],
+                 payload["updated_at"], json.dumps(payload), payload["experiment_id"]))
+
+    def opportunity_experiment_targets(self, experiment_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT payload FROM opportunity_experiment_targets
+                WHERE experiment_id=? ORDER BY COALESCE(observed_ordinal,2147483647),target_round_index""",
+                (experiment_id,)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def opportunity_experiment_predictions(self, experiment_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT payload FROM opportunity_experiment_predictions
+                WHERE experiment_id=? ORDER BY selected_at,target_round_index""", (experiment_id,)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def opportunity_experiment_checkpoints(self, experiment_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT payload FROM opportunity_experiment_checkpoints
+                WHERE experiment_id=? ORDER BY checkpoint_rounds""", (experiment_id,)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def persist_opportunity_experiment_checkpoint(self, experiment_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        with self.connect() as conn:
+            conn.execute("""INSERT INTO opportunity_experiment_checkpoints
+                (experiment_id,checkpoint_rounds,completed_at,payload) VALUES(?,?,?,?)
+                ON CONFLICT(experiment_id,checkpoint_rounds) DO NOTHING""",
+                (experiment_id, report["checkpoint_rounds"], report["completed_at"], json.dumps(report)))
+            row = conn.execute("""SELECT payload FROM opportunity_experiment_checkpoints
+                WHERE experiment_id=? AND checkpoint_rounds=?""",
+                (experiment_id, report["checkpoint_rounds"])).fetchone()
+        return json.loads(row["payload"])
+
+    def _insert_experiment_target(self, conn, payload: dict[str, Any]) -> None:
+        conn.execute("""INSERT INTO opportunity_experiment_targets
+            (experiment_id,target_round_index,observed_ordinal,source_round_index,source_round_id,
+             target_round_id,assessment_id,classification,selection_state,selection_reason,rank_at_selection,
+             selected,prediction_id,model_version,model_hash,gate_hash,feature_snapshot_hash,
+             opportunity_score,selection_score,assessment_created_at,selected_at,target_was_absent_at_selection,
+             target_observed_at,target_stored_at,target_created_at,actual_multiplier,result,resolved_at,reason,payload)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(experiment_id,target_round_index) DO NOTHING""",
+            (payload["experiment_id"], payload["target_round_index"], payload.get("observed_ordinal"),
+             payload.get("source_round_index"), payload.get("source_round_id"), payload.get("target_round_id"),
+             payload.get("assessment_id"), payload["classification"], payload.get("selection_state"),
+             payload.get("selection_reason"), payload.get("rank_at_selection"), bool(payload.get("selected")),
+             payload.get("prediction_id"), payload.get("model_version"), payload.get("model_hash"),
+             payload.get("gate_hash"), payload.get("feature_snapshot_hash"), payload.get("opportunity_score"),
+             payload.get("selection_score"), payload.get("assessment_created_at"), payload.get("selected_at"),
+             payload.get("target_was_absent_at_selection"), payload.get("target_observed_at"),
+             payload.get("target_stored_at"), payload.get("target_created_at"), payload.get("actual_multiplier"),
+             payload.get("result"), payload.get("resolved_at"), payload.get("reason"), json.dumps(payload)))
+
+    def _update_experiment_target(self, conn, payload: dict[str, Any]) -> None:
+        conn.execute("""UPDATE opportunity_experiment_targets SET observed_ordinal=?,source_round_index=?,
+            source_round_id=?,target_round_id=?,assessment_id=?,classification=?,selection_state=?,
+            selection_reason=?,rank_at_selection=?,selected=?,prediction_id=?,model_version=?,model_hash=?,
+            gate_hash=?,feature_snapshot_hash=?,opportunity_score=?,selection_score=?,assessment_created_at=?,
+            selected_at=?,target_was_absent_at_selection=?,target_observed_at=?,target_stored_at=?,
+            target_created_at=?,actual_multiplier=?,result=?,resolved_at=?,reason=?,payload=?
+            WHERE experiment_id=? AND target_round_index=?""",
+            (payload.get("observed_ordinal"), payload.get("source_round_index"), payload.get("source_round_id"),
+             payload.get("target_round_id"), payload.get("assessment_id"), payload["classification"],
+             payload.get("selection_state"), payload.get("selection_reason"), payload.get("rank_at_selection"),
+             bool(payload.get("selected")), payload.get("prediction_id"), payload.get("model_version"),
+             payload.get("model_hash"), payload.get("gate_hash"), payload.get("feature_snapshot_hash"),
+             payload.get("opportunity_score"), payload.get("selection_score"), payload.get("assessment_created_at"),
+             payload.get("selected_at"), payload.get("target_was_absent_at_selection"), payload.get("target_observed_at"),
+             payload.get("target_stored_at"), payload.get("target_created_at"), payload.get("actual_multiplier"),
+             payload.get("result"), payload.get("resolved_at"), payload.get("reason"), json.dumps(payload),
+             payload["experiment_id"], payload["target_round_index"]))
+
+    def select_latest_preoutcome_assessment_for_experiment(self, experiment_id: str) -> dict[str, Any] | None:
+        """Apply a just-frozen research gate to the current next-round assessment under the collector lock."""
+        if not self.database_url:
+            return None
+        with self.connect() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("aviator_rounds",))
+            experiment_row = conn.execute("SELECT payload FROM opportunity_experiments WHERE experiment_id=? AND status='ACTIVE'",
+                                          (experiment_id,)).fetchone()
+            if not experiment_row:
+                return None
+            experiment = json.loads(experiment_row["payload"])
+            latest = conn.execute("SELECT round_id,round_index FROM aviator_rounds ORDER BY round_index DESC LIMIT 1").fetchone()
+            if not latest or int(latest["round_index"]) < int(experiment["start_round_index"]):
+                return None
+            source_index = int(latest["round_index"])
+            target_index = source_index + 1
+            if conn.execute("SELECT 1 FROM aviator_rounds WHERE round_index=? LIMIT 1", (target_index,)).fetchone():
+                return None
+            assessment_row = conn.execute("""SELECT payload FROM opportunity_v4_assessments
+                WHERE model_version=? AND round_id=?""",
+                (experiment["model_version"], str(latest["round_id"]))).fetchone()
+            gate_row = conn.execute("SELECT payload FROM opportunity_research_gates WHERE gate_hash=?",
+                                    (experiment["gate_hash"],)).fetchone()
+            if not assessment_row or not gate_row:
+                return None
+            assessment, gate = json.loads(assessment_row["payload"]), json.loads(gate_row["payload"])
+            source_proof = assessment.get("round_order_proof") or {}
+            if not (assessment.get("scorable") is True and assessment.get("assessment_immutable") is True
+                    and int(assessment.get("round_index", -1)) == source_index
+                    and int(assessment.get("target_round_index", -1)) == target_index
+                    and str(assessment.get("round_id")) == str(latest["round_id"])
+                    and assessment.get("model_configuration_hash") == experiment.get("model_hash")
+                    and source_proof.get("target_absent_at_assessment_commit") is True
+                    and source_proof.get("source_was_latest_at_assessment_commit") is True
+                    and source_proof.get("proof_method") == "postgres_advisory_transaction_lock"):
+                return None
+            if conn.execute("""SELECT 1 FROM opportunity_experiment_targets
+                WHERE experiment_id=? AND target_round_index=?""", (experiment_id, target_index)).fetchone():
+                return None
+            ordinal = int(experiment.get("rounds_observed", 0)) + 1
+            window_number = (ordinal - 1) // 100
+            selected_count = int(conn.execute("""SELECT COUNT(*) AS n FROM opportunity_experiment_predictions
+                WHERE experiment_id=? AND window_number=?""", (experiment_id, window_number)).fetchone()["n"])
+            score = float(assessment["opportunity_score"])
+            policy = gate.get("policy") or {}
+            threshold = float(policy.get("score_threshold", float("inf")))
+            can_select = score >= threshold and selected_count < int(policy.get("max_selections_per_100", 4))
+            selected_at = conn.execute("SELECT clock_timestamp() AS selected_at").fetchone()["selected_at"]
+            selected_at = selected_at.isoformat() if hasattr(selected_at, "isoformat") else str(selected_at)
+            reason = ("FROZEN_DEVELOPMENT_TOP_5_PERCENT_CUTOFF_SLOT_AVAILABLE" if can_select else
+                      "FROZEN_RESEARCH_CUTOFF_SLOTS_FULL" if score >= threshold else
+                      "BELOW_FROZEN_DEVELOPMENT_CUTOFF")
+            feature_hash = hashlib.sha256(json.dumps(
+                assessment.get("feature_snapshot") or {}, sort_keys=True,
+                separators=(",", ":"), default=str).encode()).hexdigest()
+            prediction_id = __import__("uuid").uuid4().hex if can_select else None
+            decision = {
+                "experiment_id": experiment_id, "target_round_index": target_index,
+                "observed_ordinal": ordinal, "source_round_index": source_index,
+                "source_round_id": str(latest["round_id"]), "target_round_id": None,
+                "target_identity_if_known": None, "assessment_id": assessment["assessment_id"],
+                "classification": "ELIGIBLE_SCORED", "selection_state": "SELECTED" if can_select else "NO_SIGNAL",
+                "selection_reason": reason, "rank_at_selection": selected_count + 1 if can_select else None,
+                "selected": bool(can_select), "prediction_id": prediction_id,
+                "model_version": experiment["model_version"], "model_hash": experiment["model_hash"],
+                "feature_version": assessment.get("feature_version"), "score_version": assessment.get("score_version"),
+                "gate_hash": gate["gate_hash"], "feature_snapshot_hash": feature_hash,
+                "opportunity_score": score, "selection_score": score,
+                "assessment_created_at": assessment.get("created_at") or assessment.get("observed_at"),
+                "selected_at": selected_at if can_select else None,
+                "target_was_absent_at_selection": True,
+                "selection_order_proof": {"latest_source_round_index": source_index,
+                                           "latest_source_round_id": str(latest["round_id"]),
+                                           "target_round_index": target_index,
+                                           "target_absent_at_selection": True,
+                                           "proof_method": "postgres_advisory_transaction_lock"},
+                "target_observed_at": None, "target_stored_at": None, "target_created_at": None,
+                "actual_multiplier": None, "result": "PENDING" if can_select else None,
+                "resolved_at": None, "reason": reason,
+            }
+            if can_select:
+                prediction = {**decision, "window_number": window_number, "status": "PENDING"}
+                conn.execute("""INSERT INTO opportunity_experiment_predictions
+                    (prediction_id,experiment_id,target_round_index,window_number,rank_at_selection,
+                     selected_at,status,payload) VALUES(?,?,?,?,?,?,?,?)""",
+                    (prediction_id, experiment_id, target_index, window_number, selected_count + 1,
+                     selected_at, "PENDING", json.dumps(prediction)))
+            self._insert_experiment_target(conn, decision)
+            return decision
+
+    @staticmethod
+    def _parse_aware_time(value):
+        from datetime import datetime, timezone
+        if not value:
+            return None
+        try:
+            parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _db_time_text(value):
+        return value.isoformat() if hasattr(value, "isoformat") else (str(value) if value is not None else None)
+
+    def sync_active_opportunity_experiment(self) -> dict[str, Any] | None:
+        """Append newly arrived authoritative PostgreSQL rounds to one durable experiment."""
+        if not self.database_url:
+            return None
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("opportunity_prospective_experiment",))
+            experiment_row = conn.execute("""SELECT experiment_id,payload FROM opportunity_experiments
+                WHERE status IN ('ACTIVE','COLLECTING','SCORING','DEGRADED','PAUSED')
+                ORDER BY updated_at DESC LIMIT 1""").fetchone()
+            if not experiment_row:
+                return None
+            experiment = json.loads(experiment_row["payload"])
+            last_index = int(experiment.get("last_round_index", experiment["start_round_index"]))
+            rows = conn.execute("""SELECT round_id,round_index,multiplier,platform_round_id,
+                platform_round_index,platform_timestamp,observed_at,COALESCE(stored_at,created_at) AS stored_at,
+                created_at,continuity_verified,gap_before,identity_confidence,continuity_proof
+                FROM aviator_rounds WHERE round_index>? ORDER BY round_index ASC""", (last_index,)).fetchall()
+            if not rows:
+                return experiment
+            min_source_index = max(last_index, int(experiment.get("start_source_round_index",
+                                                                  experiment.get("start_round_index", last_index))))
+            max_source_index = int(rows[-1]["round_index"]) - 1
+            if max_source_index >= min_source_index:
+                # Only the source assessments for newly observed experiment
+                # targets are relevant. Decoding the complete frozen history
+                # on every round made experiment sync contend with live scoring.
+                assessment_rows = conn.execute("""SELECT payload
+                    FROM opportunity_v4_assessments WHERE model_version=? AND round_index>=? AND round_index<=?
+                    ORDER BY round_index ASC""",
+                    (experiment.get("model_version"), min_source_index, max_source_index)).fetchall()
+                assessments = [json.loads(item["payload"]) for item in assessment_rows]
+            else:
+                assessments = []
+            assessment_by_target = {}
+            for assessment in assessments:
+                try:
+                    if (assessment.get("model_version") != experiment.get("model_version")
+                            or assessment.get("model_configuration_hash") != experiment.get("model_hash")):
+                        continue
+                    target_index = int(assessment.get("target_round_index", int(assessment["round_index"]) + 1))
+                    if target_index not in assessment_by_target:
+                        assessment_by_target[target_index] = assessment
+                except (KeyError, TypeError, ValueError):
+                    continue
+            ordinal = int(experiment.get("rounds_observed", 0))
+            previous_index = last_index
+            for row in rows:
+                index = int(row["round_index"])
+                for missing_index in range(previous_index + 1, index):
+                    gap = {"experiment_id": experiment["experiment_id"], "target_round_index": missing_index,
+                           "observed_ordinal": ordinal + 1, "classification": "GAP", "selection_state": None,
+                           "selected": False, "reason": "MISSING_ROUND_INDEX_BETWEEN_PERSISTED_ROUNDS",
+                           "target_was_absent_at_selection": None}
+                    existing_gap = conn.execute("""SELECT payload FROM opportunity_experiment_targets
+                        WHERE experiment_id=? AND target_round_index=?""",
+                        (experiment["experiment_id"], missing_index)).fetchone()
+                    if existing_gap:
+                        old = json.loads(existing_gap["payload"])
+                        gap.update({key: value for key, value in old.items() if key not in {"classification", "reason"}})
+                        gap["classification"] = "GAP"
+                        gap["reason"] = "MISSING_ROUND_INDEX_BETWEEN_PERSISTED_ROUNDS"
+                        if gap.get("selected"):
+                            gap["result"] = "INVALID"
+                            gap["resolved_at"] = now
+                        self._update_experiment_target(conn, gap)
+                    else:
+                        self._insert_experiment_target(conn, gap)
+                    prediction_row = conn.execute("""SELECT prediction_id,payload FROM opportunity_experiment_predictions
+                        WHERE experiment_id=? AND target_round_index=?""",
+                        (experiment["experiment_id"], missing_index)).fetchone()
+                    if prediction_row:
+                        prediction = json.loads(prediction_row["payload"])
+                        prediction.update({"status": "INVALID", "result": "INVALID",
+                                          "invalid_reason": "MISSING_TARGET_ROUND_INDEX"})
+                        conn.execute("UPDATE opportunity_experiment_predictions SET status='INVALID',result='INVALID',payload=? WHERE prediction_id=?",
+                                     (json.dumps(prediction), prediction_row["prediction_id"]))
+                ordinal += 1
+                assessment = assessment_by_target.get(index)
+                source_index = int(assessment.get("round_index", -1)) if assessment else None
+                proof = (assessment or {}).get("round_order_proof") or {}
+                proof_valid = bool(assessment and assessment.get("assessment_immutable") is True
+                                   and assessment.get("scorable") is True
+                                   and source_index == index - 1
+                                   and str(proof.get("assessment_source_round_id")) == str(assessment.get("round_id"))
+                                   and proof.get("assessment_source_round_index") == source_index
+                                   and proof.get("target_outcome_round_index") == index
+                                   and proof.get("source_was_latest_at_assessment_commit") is True
+                                   and proof.get("target_absent_at_assessment_commit") is True
+                                   and proof.get("proof_method") == "postgres_advisory_transaction_lock"
+                                   and assessment.get("model_configuration_hash") == experiment.get("model_hash")
+                    and source_index >= int(experiment.get("start_source_round_index",
+                                                          experiment["start_round_index"]))
+                                   and bool(row["continuity_verified"]) and not bool(row["gap_before"])
+                                   and str(row["identity_confidence"] or "UNKNOWN").upper() not in {"UNKNOWN", "UNVERIFIED"})
+                if bool(row["gap_before"]):
+                    classification, reason = "GAP", "COLLECTOR_REPORTED_GAP_BEFORE_ROUND"
+                elif not bool(row["continuity_verified"]) or str(row["identity_confidence"] or "UNKNOWN").upper() in {"UNKNOWN", "UNVERIFIED"}:
+                    classification, reason = "UNVERIFIED", "ROUND_IDENTITY_OR_CONTINUITY_NOT_VERIFIED"
+                elif not assessment:
+                    classification, reason = "MISSED", "NO_PRE_OUTCOME_ASSESSMENT"
+                elif not assessment.get("scorable"):
+                    classification, reason = "INVALID", str(assessment.get("failed_gate") or "ASSESSMENT_NOT_SCORABLE")
+                elif not proof_valid:
+                    classification, reason = "INVALID", "PRE_OUTCOME_ORDER_OR_EXPERIMENT_BOUNDARY_NOT_PROVEN"
+                else:
+                    classification, reason = "ELIGIBLE_SCORED", None
+                existing_row = conn.execute("""SELECT payload FROM opportunity_experiment_targets
+                    WHERE experiment_id=? AND target_round_index=?""",
+                    (experiment["experiment_id"], index)).fetchone()
+                target_payload = json.loads(existing_row["payload"]) if existing_row else {
+                    "experiment_id": experiment["experiment_id"], "target_round_index": index,
+                    "observed_ordinal": ordinal, "selected": False,
+                }
+                target_payload.update({
+                    "experiment_id": experiment["experiment_id"], "target_round_index": index,
+                    "observed_ordinal": target_payload.get("observed_ordinal") or ordinal,
+                    "target_round_id": str(row["round_id"]), "target_observed_at": self._db_time_text(row["observed_at"]),
+                    "target_stored_at": self._db_time_text(row["stored_at"]),
+                    "target_created_at": self._db_time_text(row["created_at"]),
+                    "target_identity_if_known": row["platform_round_id"],
+                    "target_platform_round_index": row["platform_round_index"],
+                    "target_identity_confidence": row["identity_confidence"],
+                    "actual_multiplier": float(row["multiplier"]), "classification": classification,
+                    "reason": reason, "resolved_at": now if classification == "ELIGIBLE_SCORED" else None,
+                })
+                if assessment:
+                    target_payload.setdefault("source_round_index", source_index)
+                    target_payload.setdefault("source_round_id", assessment.get("round_id"))
+                    target_payload.setdefault("assessment_id", assessment.get("assessment_id"))
+                    target_payload.setdefault("model_version", assessment.get("model_version"))
+                    target_payload.setdefault("model_hash", assessment.get("model_configuration_hash"))
+                    target_payload.setdefault("opportunity_score", assessment.get("opportunity_score"))
+                    target_payload.setdefault("selection_score", assessment.get("opportunity_score"))
+                    target_payload.setdefault("assessment_created_at", assessment.get("created_at") or assessment.get("observed_at"))
+                selected = bool(target_payload.get("selected"))
+                if selected:
+                    selected_at = self._parse_aware_time(target_payload.get("selected_at"))
+                    outcome_at = self._parse_aware_time(row["observed_at"])
+                    timely = bool(proof_valid and target_payload.get("target_was_absent_at_selection") is True
+                                  and selected_at is not None
+                                  and (not outcome_at or selected_at < outcome_at))
+                    if timely:
+                        result = "TRUE" if float(row["multiplier"]) >= float(experiment.get("target_threshold", 2.10)) else "FALSE"
+                        target_payload.update({"result": result, "resolved_at": now})
+                        prediction_row = conn.execute("""SELECT prediction_id,payload FROM opportunity_experiment_predictions
+                            WHERE experiment_id=? AND target_round_index=?""",
+                            (experiment["experiment_id"], index)).fetchone()
+                        if prediction_row:
+                            prediction = json.loads(prediction_row["payload"])
+                            prediction.update({"actual_multiplier": float(row["multiplier"]),
+                                               "result": result, "status": result, "resolved_at": now,
+                                               "target_round_id": str(row["round_id"]),
+                                               "target_identity_if_known": row["platform_round_id"],
+                                               "target_platform_round_index": row["platform_round_index"],
+                                               "target_observed_at": self._db_time_text(row["observed_at"]),
+                                               "target_stored_at": self._db_time_text(row["stored_at"])})
+                            conn.execute("""UPDATE opportunity_experiment_predictions SET status=?,actual_multiplier=?,
+                                result=?,resolved_at=?,payload=? WHERE prediction_id=?""",
+                                (result, float(row["multiplier"]), result, now, json.dumps(prediction), prediction_row["prediction_id"]))
+                    else:
+                        target_payload.update({"result": "INVALID", "resolved_at": now,
+                                               "reason": "INVALID_LATE_PREDICTION_OR_UNTRUSTED_TIME_ORDER"})
+                        prediction_row = conn.execute("""SELECT prediction_id,payload FROM opportunity_experiment_predictions
+                            WHERE experiment_id=? AND target_round_index=?""",
+                            (experiment["experiment_id"], index)).fetchone()
+                        if prediction_row:
+                            prediction = json.loads(prediction_row["payload"])
+                            prediction.update({"status": "INVALID", "result": "INVALID",
+                                               "invalid_reason": target_payload["reason"], "resolved_at": now,
+                                               "target_round_id": str(row["round_id"]),
+                                               "target_identity_if_known": row["platform_round_id"],
+                                               "target_platform_round_index": row["platform_round_index"],
+                                               "target_observed_at": self._db_time_text(row["observed_at"]),
+                                               "target_stored_at": self._db_time_text(row["stored_at"])})
+                            conn.execute("""UPDATE opportunity_experiment_predictions SET status='INVALID',
+                                result='INVALID',resolved_at=?,payload=? WHERE prediction_id=?""",
+                                (now, json.dumps(prediction), prediction_row["prediction_id"]))
+                if existing_row:
+                    self._update_experiment_target(conn, target_payload)
+                else:
+                    self._insert_experiment_target(conn, target_payload)
+                previous_index = index
+            experiment["last_round_index"] = int(rows[-1]["round_index"])
+            experiment["rounds_observed"] = ordinal
+            target_rows = conn.execute("SELECT payload FROM opportunity_experiment_targets WHERE experiment_id=?",
+                                       (experiment["experiment_id"],)).fetchall()
+            target_payloads = [json.loads(item["payload"]) for item in target_rows]
+            observed_targets = [item for item in target_payloads if item.get("observed_ordinal") is not None
+                                and item.get("classification") != "GAP"]
+            predictions = conn.execute("SELECT status,payload FROM opportunity_experiment_predictions WHERE experiment_id=?",
+                                       (experiment["experiment_id"],)).fetchall()
+            prediction_payloads = [json.loads(item["payload"]) for item in predictions]
+            experiment.update({
+                "rounds_scored": sum(item.get("classification") == "ELIGIBLE_SCORED" for item in observed_targets),
+                "rounds_missed": sum(item.get("classification") == "MISSED" for item in observed_targets),
+                "rounds_invalid": sum(item.get("classification") == "INVALID" for item in observed_targets),
+                "rounds_gaps": sum(item.get("classification") == "GAP" for item in target_payloads),
+                "rounds_unverified": sum(item.get("classification") == "UNVERIFIED" for item in observed_targets),
+                "predictions_selected": len(prediction_payloads),
+                "predictions_resolved": sum(item.get("status") in {"TRUE", "FALSE"} for item in prediction_payloads),
+                "predictions_invalid": sum(item.get("status") == "INVALID" for item in prediction_payloads),
+                "true_predictions": sum(item.get("status") == "TRUE" for item in prediction_payloads),
+                "false_predictions": sum(item.get("status") == "FALSE" for item in prediction_payloads),
+                "pending_predictions": sum(item.get("status") == "PENDING" for item in prediction_payloads),
+                "no_signal_count": sum(item.get("selection_state") == "NO_SIGNAL" for item in target_payloads),
+                "watch_count": sum(item.get("selection_state") == "WATCH" for item in target_payloads),
+                "updated_at": now,
+            })
+            if ordinal >= 500 and experiment.get("pending_predictions", 0) == 0:
+                experiment["status"] = "COMPLETE"
+            conn.execute("""UPDATE opportunity_experiments SET status=?,last_round_index=?,
+                rounds_observed=?,updated_at=?,payload=? WHERE experiment_id=?""",
+                (experiment["status"], experiment["last_round_index"], experiment["rounds_observed"],
+                 now, json.dumps(experiment), experiment["experiment_id"]))
+            return experiment
+
+    def save_v4_assessment(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """Atomically insert only while the source remains the latest DB round."""
+        stored_payload = dict(payload)
+        model_scores = stored_payload.get("model_scores") or {}
+        stored_payload.setdefault("model_score", model_scores.get("logistic_regression_probability"))
+        stored_payload.setdefault("configuration_hash", stored_payload.get("model_configuration_hash"))
+        stored_payload.setdefault("stability_state", (stored_payload.get("stability") or {}).get("state"))
+        stored_payload.setdefault("status", "PENDING_RESULT" if stored_payload.get("scorable") else "INVALID")
+        with self.connect() as conn:
+            if self.database_url:
+                # Serialize against the collector's insert lock. This closes
+                # the race between a current-history read and assessment
+                # persistence: if the target arrived first, we do not write a
+                # retrospective assessment that could look prospective.
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("aviator_rounds",))
+                latest = conn.execute("SELECT round_id,round_index FROM aviator_rounds ORDER BY round_index DESC LIMIT 1").fetchone()
+                if (not latest or str(latest["round_id"]) != str(payload["round_id"])
+                        or int(latest["round_index"]) != int(payload["round_index"])):
+                    return None
+                target = conn.execute("SELECT 1 FROM aviator_rounds WHERE round_index=? LIMIT 1",
+                                      (int(payload["target_round_index"]),)).fetchone()
+                if target:
+                    return None
+                proof_time = conn.execute("SELECT clock_timestamp() AS proof_time").fetchone()["proof_time"]
+                stored_payload["round_order_proof"] = {
+                    "assessment_source_round_index": int(payload["round_index"]),
+                    "assessment_source_round_id": str(payload["round_id"]),
+                    "latest_round_at_assessment_commit_index": int(latest["round_index"]),
+                    "latest_round_at_assessment_commit_id": str(latest["round_id"]),
+                    "target_outcome_round_index": int(payload["target_round_index"]),
+                    "source_was_latest_at_assessment_commit": True,
+                    "target_absent_at_assessment_commit": True,
+                    "proof_method": "postgres_advisory_transaction_lock",
+                    "proof_time": proof_time.isoformat() if hasattr(proof_time, "isoformat") else str(proof_time),
+                }
+            if stored_payload.get("scorable") and stored_payload.get("opportunity_score") is not None:
+                # Freeze the score's rank among up to 100 previous scored records
+                # visible at commit time. This is descriptive metadata only and
+                # never changes the frozen V3 scoring or the later window rank.
+                previous = conn.execute(
+                    """SELECT round_id,round_index,
+                              payload::jsonb->>'scorable' AS scorable,
+                              payload::jsonb->>'opportunity_score' AS opportunity_score,
+                              payload::jsonb->>'target_round_index' AS target_round_index,
+                              payload::jsonb->>'model_configuration_hash' AS model_hash,
+                              payload::jsonb->'round_order_proof'->>'target_absent_at_assessment_commit' AS target_absent,
+                              payload::jsonb->'round_order_proof'->>'source_was_latest_at_assessment_commit' AS source_latest,
+                              payload::jsonb->'round_order_proof'->>'proof_method' AS proof_method
+                       FROM opportunity_v4_assessments
+                       WHERE model_version=? AND round_index<?
+                       ORDER BY round_index DESC LIMIT 500""",
+                    (stored_payload["model_version"], int(stored_payload["round_index"])),
+                ).fetchall()
+                prior_scores = []
+                for row in previous:
+                    try:
+                        score = row["opportunity_score"]
+                        if (row["scorable"] == "true" and score is not None
+                                and row["target_absent"] == "true"
+                                and row["source_latest"] == "true"
+                                and row["proof_method"] == "postgres_advisory_transaction_lock"
+                                and row["model_hash"] == stored_payload.get("model_configuration_hash")):
+                            source_index = int(row["round_index"])
+                            target_index = int(row["target_round_index"] or source_index + 1)
+                            prior_scores.append((target_index, float(score)))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                prior_scores = sorted(prior_scores, key=lambda value: value[0])[-99:]
+                score = float(stored_payload["opportunity_score"])
+                target_index = int(stored_payload.get("target_round_index", int(stored_payload["round_index"]) + 1))
+                stored_payload["rank_at_observation"] = 1 + sum(
+                    prior_score > score or (prior_score == score and prior_index < target_index)
+                    for prior_index, prior_score in prior_scores
+                )
+                stored_payload["rank_at_observation_basis"] = "up to 99 prior proof-verified frozen scores; score only"
+            insert_cursor = conn.execute(
+                """INSERT INTO opportunity_v4_assessments(assessment_id,model_version,round_id,round_index,observed_at,payload)
+                   VALUES(?,?,?,?,?,?) ON CONFLICT(model_version,round_id) DO NOTHING""",
+                (stored_payload["assessment_id"], stored_payload["model_version"], stored_payload["round_id"],
+                 stored_payload["round_index"], stored_payload["observed_at"], json.dumps(stored_payload)),
+            )
+            row = conn.execute("SELECT payload FROM opportunity_v4_assessments WHERE model_version=? AND round_id=?",
+                               (stored_payload["model_version"], stored_payload["round_id"])).fetchone()
+            if (insert_cursor.rowcount == 1 and stored_payload.get("scorable")
+                    and stored_payload.get("opportunity_score") is not None):
+                # Rare-opportunity policy decisions are kept in the experiment
+                # ledger, separate from immutable V3 assessment scores.
+                experiment_row = conn.execute("""SELECT experiment_id,payload FROM opportunity_experiments
+                    WHERE status IN ('ACTIVE','COLLECTING','SCORING','DEGRADED','PAUSED')
+                    ORDER BY updated_at DESC LIMIT 1""").fetchone()
+                if experiment_row:
+                    experiment = json.loads(experiment_row["payload"])
+                    policy_row = conn.execute("SELECT payload FROM opportunity_selection_policies WHERE policy_hash=?",
+                                              (experiment.get("selection_policy_hash"),)).fetchone()
+                    if (policy_row and experiment.get("selection_policy_status") == "FROZEN"
+                            and experiment.get("model_hash") == stored_payload.get("model_configuration_hash")):
+                        from app.ml.rare_opportunity_policy import RareOpportunitySelectionPolicyV1
+
+                        policy = json.loads(policy_row["payload"])
+                        rules = policy.get("selection_rules") or {}
+                        target_index = int(stored_payload.get("target_round_index", -1))
+                        source_index = int(stored_payload.get("round_index", -1))
+                        activation_index = int(experiment.get("policy_activation_target_index", 2**63 - 1))
+                        proof = stored_payload.get("round_order_proof") or {}
+                        can_decide = bool(stored_payload.get("scorable") is True
+                            and target_index == source_index + 1 and target_index >= activation_index
+                            and proof.get("assessment_source_round_index") == source_index
+                            and proof.get("assessment_source_round_id") == str(stored_payload.get("round_id"))
+                            and proof.get("target_outcome_round_index") == target_index
+                            and proof.get("target_absent_at_assessment_commit") is True
+                            and proof.get("source_was_latest_at_assessment_commit") is True
+                            and proof.get("proof_method") == "postgres_advisory_transaction_lock")
+                        state, reason = (RareOpportunitySelectionPolicyV1.decide(
+                            float(stored_payload["opportunity_score"]), policy) if can_decide
+                            else ("NO_SIGNAL", "ASSESSMENT_NOT_ELIGIBLE_FOR_PROSPECTIVE_SELECTION"))
+                        selected_count = int(conn.execute("""SELECT COUNT(*) AS n FROM opportunity_experiment_predictions
+                            WHERE experiment_id=?""", (experiment["experiment_id"],)).fetchone()["n"])
+                        selected = bool(can_decide and state == "SELECTED" and selected_count < 4)
+                        if state == "SELECTED" and not selected:
+                            state, reason = "NO_SIGNAL", "MAXIMUM_FOUR_SELECTIONS_ALREADY_USED"
+                        ordinal = int(experiment.get("rounds_observed", 0)) + 1
+                        score = float(stored_payload["opportunity_score"])
+                        selected_at = None
+                        if selected:
+                            stamp = (conn.execute("SELECT clock_timestamp() AS selected_at").fetchone()["selected_at"]
+                                     if self.database_url else datetime.now(timezone.utc))
+                            selected_at = self._db_time_text(stamp)
+                        feature_hash = hashlib.sha256(json.dumps(
+                            stored_payload.get("feature_snapshot") or {}, sort_keys=True,
+                            separators=(",", ":"), default=str).encode()).hexdigest()
+                        existing = conn.execute("""SELECT 1 FROM opportunity_experiment_targets
+                            WHERE experiment_id=? AND target_round_index=?""",
+                            (experiment["experiment_id"], target_index)).fetchone()
+                        if not existing:
+                            decision = {
+                                "experiment_id": experiment["experiment_id"], "target_round_index": target_index,
+                                "observed_ordinal": ordinal, "source_round_index": source_index,
+                                "source_round_id": str(stored_payload["round_id"]), "target_round_id": None,
+                                "assessment_id": stored_payload["assessment_id"],
+                                "classification": "ELIGIBLE_SCORED", "selection_state": state,
+                                "selection_reason": reason, "rank_at_selection": selected_count + 1 if selected else None,
+                                "selected": selected, "prediction_id": None,
+                                "model_version": experiment["model_version"], "model_hash": experiment["model_hash"],
+                                "feature_version": stored_payload.get("feature_version"),
+                                "score_version": stored_payload.get("score_version"),
+                                "gate_hash": policy["policy_hash"], "policy_id": policy["policy_id"],
+                                "feature_snapshot_hash": feature_hash, "opportunity_score": score,
+                                "selection_score": score,
+                                "assessment_created_at": stored_payload.get("created_at") or stored_payload.get("observed_at"),
+                                "selected_at": selected_at, "target_was_absent_at_selection": bool(can_decide),
+                                "selection_order_proof": {"source_round_index": source_index,
+                                    "source_round_id": str(stored_payload["round_id"]),
+                                    "target_round_index": target_index, "target_absent_at_selection": True,
+                                    "proof_method": "postgres_advisory_transaction_lock"},
+                                "actual_multiplier": None, "result": "PENDING" if selected else None,
+                                "resolved_at": None, "reason": reason,
+                            }
+                            if selected:
+                                prediction_id = __import__("uuid").uuid4().hex
+                                decision["prediction_id"] = prediction_id
+                                prediction = {**decision, "window_number": 0, "status": "PENDING", "selected": True}
+                                conn.execute("""INSERT INTO opportunity_experiment_predictions
+                                    (prediction_id,experiment_id,target_round_index,window_number,rank_at_selection,
+                                     selected_at,status,payload) VALUES(?,?,?,?,?,?,?,?)
+                                    ON CONFLICT(experiment_id,target_round_index) DO NOTHING""",
+                                    (prediction_id, experiment["experiment_id"], target_index, 0,
+                                     decision["rank_at_selection"], selected_at, "PENDING", json.dumps(prediction)))
+                            self._insert_experiment_target(conn, decision)
+        return json.loads(row["payload"])
+
+    def list_v4_assessments(self, limit: int = 100000) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM opportunity_v4_assessments ORDER BY round_index ASC LIMIT ?",
+                                (min(max(int(limit), 1), 500000),)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def list_unresolved_v4_assessments(self, first_source_round_index: int,
+                                       last_source_round_index: int) -> list[dict[str, Any]]:
+        """Load only pending assessments whose outcomes can exist in a verified suffix."""
+        first_index = int(first_source_round_index)
+        last_index = int(last_source_round_index)
+        if last_index < first_index:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT a.payload FROM opportunity_v4_assessments AS a
+                   LEFT JOIN opportunity_v4_outcomes AS o ON o.assessment_id=a.assessment_id
+                   WHERE a.model_version=? AND a.round_index>=? AND a.round_index<=?
+                     AND o.assessment_id IS NULL
+                   ORDER BY a.round_index ASC""",
+                ("V3_FROZEN_2026-10-03", first_index, last_index),
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def get_v4_assessment(self, round_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM opportunity_v4_assessments WHERE model_version=? AND round_id=?",
+                               ("V3_FROZEN_2026-10-03", str(round_id))).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def latest_v4_assessment(self, model_version: str) -> dict[str, Any] | None:
+        """Read one indexed latest assessment for low-latency live status."""
+        with self.connect() as conn:
+            row = conn.execute("""SELECT payload FROM opportunity_v4_assessments
+                WHERE model_version=? ORDER BY round_index DESC LIMIT 1""",
+                (str(model_version),)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def save_v4_outcome_once(self, payload: dict[str, Any]) -> None:
+        """Append target outcome separately from its frozen assessment."""
+        stored_payload = dict(payload)
+        result = bool(stored_payload.get("is_true_2_10x", stored_payload.get("target_hit_2_10x")))
+        stored_payload["is_true_2_10x"] = result
+        stored_payload["target_hit_2_10x"] = result
+        stored_payload.setdefault("status", "TRUE" if result else "FALSE")
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO opportunity_v4_outcomes(assessment_id,target_round_id,target_round_index,
+                   actual_multiplier,target_hit_2_10x,resolved_at,payload) VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(assessment_id) DO NOTHING""",
+                (stored_payload["assessment_id"], stored_payload["target_round_id"], stored_payload["target_round_index"],
+                 stored_payload["actual_multiplier"], int(result), stored_payload["resolved_at"], json.dumps(stored_payload)),
+            )
+
+    def list_v4_outcomes(self, limit: int = 100000) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM opportunity_v4_outcomes ORDER BY target_round_index ASC LIMIT ?",
+                                (min(max(int(limit), 1), 500000),)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
 
     def save_evidence_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         """Persist once per prediction; an existing snapshot is never replaced."""

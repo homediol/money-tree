@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import math
 import os
 import time
 import uuid
@@ -74,22 +75,54 @@ def _bucket(values: np.ndarray) -> np.ndarray:
     return np.where(values < 1.5, 0, np.where(values < 4.0, 1, 2))
 
 
-def validated_rounds(rounds: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+def validated_rounds(rounds: pd.DataFrame, *, include_time_diagnostics: bool = True) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Fail closed on repeated identities/order, invalid time, and suspect values."""
     counters = {"input": len(rounds), "invalid": 0, "duplicate_id": 0,
                 "duplicate_index": 0, "sequence_replay": 0, "valid": 0}
-    required = {"round_id", "round_index", "timestamp", "multiplier"}
+    required = {"round_id", "round_index", "multiplier"}
     if rounds.empty or not required.issubset(rounds.columns):
         counters["invalid"] = len(rounds)
         return pd.DataFrame(columns=sorted(required)), counters
-    frame = rounds[list(sorted(required))].copy()
+    frame = rounds.copy()
+    if "timestamp" not in frame:
+        frame["timestamp"] = None
+    if "platform_timestamp" not in frame:
+        frame["platform_timestamp"] = None
+    if "observed_at" not in frame:
+        frame["observed_at"] = None
+    if "stored_at" not in frame:
+        frame["stored_at"] = None
+    for name in ("platform_round_id", "platform_round_index", "local_round_index", "identity_confidence"):
+        if name not in frame:
+            frame[name] = None
+    frame = frame[["round_id", "platform_round_id", "platform_round_index", "local_round_index", "round_index",
+                   "timestamp", "platform_timestamp", "observed_at", "stored_at",
+                   "identity_confidence", "multiplier"]]
+    for name, default in (("continuity_verified", False), ("gap_before", False),
+                          ("round_identity_type", "LEGACY_UNKNOWN"),
+                          ("round_index_source", "LEGACY_UNKNOWN"),
+                          ("continuity_proof", "LEGACY_UNVERIFIED")):
+        if name not in rounds:
+            frame[name] = default
+        else:
+            frame[name] = rounds[name].reindex(frame.index).fillna(default)
     frame["round_id"] = frame["round_id"].astype(str)
     frame["round_index"] = pd.to_numeric(frame["round_index"], errors="coerce")
     frame["multiplier"] = pd.to_numeric(frame["multiplier"], errors="coerce")
-    frame["timestamp_dt"] = pd.to_datetime(frame["timestamp"], format="mixed", utc=True, errors="coerce")
+    if include_time_diagnostics:
+        frame["timestamp_dt"] = pd.to_datetime(frame["timestamp"], format="mixed", utc=True, errors="coerce")
+        frame["platform_timestamp_dt"] = pd.to_datetime(frame["platform_timestamp"], format="mixed", utc=True, errors="coerce")
+    else:
+        # The prospective observer needs only observed/stored times for the
+        # outcome-order proof. Timestamp anomaly statistics belong to the
+        # diagnostics path and need not be parsed on every live score.
+        frame["timestamp_dt"] = pd.NaT
+        frame["platform_timestamp_dt"] = pd.NaT
+    frame["observed_at_dt"] = pd.to_datetime(frame["observed_at"], format="mixed", utc=True, errors="coerce")
+    frame["stored_at_dt"] = pd.to_datetime(frame["stored_at"], format="mixed", utc=True, errors="coerce")
     invalid = (frame["round_id"].str.strip().eq("") | frame["round_index"].isna()
                | frame["multiplier"].isna() | ~np.isfinite(frame["multiplier"])
-               | (frame["multiplier"] < 1) | frame["timestamp_dt"].isna())
+               | (frame["multiplier"] < 1))
     counters["invalid"] = int(invalid.sum())
     frame = frame.loc[~invalid].sort_values("round_index", kind="stable")
     duplicate_id = frame["round_id"].duplicated(keep="first")
@@ -102,7 +135,61 @@ def validated_rounds(rounds: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]
     # rounds can share both after a collector catch-up batch. Duplicate IDs or
     # sequence indices above are the verifiable replay signals.
     frame["round_index"] = frame["round_index"].astype("int64")
+    frame["continuity_verified"] = frame["continuity_verified"].astype(bool)
+    frame["gap_before"] = frame["gap_before"].astype(bool)
     counters["valid"] = len(frame)
+    if len(frame) > 1:
+        index_delta = frame["round_index"].diff().fillna(1).to_numpy()[1:]
+        times = frame["observed_at_dt"].diff().dt.total_seconds().iloc[1:]
+        platform_times = frame["platform_timestamp_dt"].diff().dt.total_seconds().iloc[1:]
+        missing_indices = int(np.maximum(index_delta - 1, 0).sum())
+        counters["round_index_gap_events"] = int(np.count_nonzero(index_delta != 1))
+        counters["round_index_missing_values"] = missing_indices
+        counters["genuine_gaps"] = missing_indices if frame["round_index_source"].eq("PLATFORM").all() else None
+        counters["collector_gaps"] = (int(frame["gap_before"].astype(bool).sum())
+                                       if frame["continuity_verified"].astype(bool).any() else None)
+        if include_time_diagnostics:
+            counters["timestamp_anomalies"] = int((times.isna() | times.lt(0) | times.gt(120)).sum())
+            counters["timestamp_order_reversals"] = int(times.lt(0).sum())
+            counters["timestamp_gaps_over_120s"] = int(times.gt(120).sum())
+            counters["timestamps_missing_or_invalid"] = int(times.isna().sum())
+            counters["platform_timestamp_order_reversals"] = int(platform_times.lt(0).sum())
+            counters["platform_timestamp_gaps_over_120s"] = int(platform_times.gt(120).sum())
+            counters["platform_timestamps_missing_or_invalid"] = int(platform_times.isna().sum())
+        else:
+            counters.update(timestamp_anomalies=None, timestamp_order_reversals=None,
+                            timestamp_gaps_over_120s=None, timestamps_missing_or_invalid=None,
+                            platform_timestamp_order_reversals=None,
+                            platform_timestamp_gaps_over_120s=None,
+                            platform_timestamps_missing_or_invalid=None)
+        counters["round_identity_type_counts"] = {str(k): int(v) for k, v in frame["round_identity_type"].value_counts(dropna=False).items()}
+        counters["round_index_source_counts"] = {str(k): int(v) for k, v in frame["round_index_source"].value_counts(dropna=False).items()}
+        verified_values = frame["continuity_verified"].to_numpy(dtype=bool)
+        gap_values = frame["gap_before"].to_numpy(dtype=bool)
+        index_values = frame["round_index"].to_numpy(dtype=np.int64)
+        round_ids = frame["round_id"].to_numpy(dtype=str)
+        if not verified_values[-1]:
+            contiguous = 0
+        else:
+            breaks = np.flatnonzero((~verified_values[1:]) | gap_values[1:]
+                                    | (np.diff(index_values) != 1)
+                                    | (round_ids[1:] == round_ids[:-1]))
+            contiguous = len(frame) - (int(breaks[-1]) + 1) if len(breaks) else len(frame)
+        counters["verified_contiguous_rounds"] = contiguous
+        index_breaks = np.flatnonzero(np.r_[True, np.diff(frame["round_index"].to_numpy(int)) != 1])
+        counters["observed_consecutive_index_suffix"] = int(len(frame) - index_breaks[-1])
+    else:
+        counters.update(genuine_gaps=(0 if len(frame) and frame["round_index_source"].eq("PLATFORM").all() else None),
+                        collector_gaps=(int(frame["gap_before"].astype(bool).sum()) if len(frame) else None),
+                        round_index_gap_events=0, round_index_missing_values=0,
+                        observed_consecutive_index_suffix=len(frame), timestamp_anomalies=0,
+                        timestamp_order_reversals=0, timestamp_gaps_over_120s=0,
+                        timestamps_missing_or_invalid=0,
+                        platform_timestamp_order_reversals=0, platform_timestamp_gaps_over_120s=0,
+                        platform_timestamps_missing_or_invalid=(int(pd.isna(frame.iloc[0].platform_timestamp_dt)) if len(frame) else 0),
+                        round_identity_type_counts=({str(frame.iloc[0].round_identity_type): 1} if len(frame) else {}),
+                        round_index_source_counts=({str(frame.iloc[0].round_index_source): 1} if len(frame) else {}),
+                        verified_contiguous_rounds=(int(bool(frame.iloc[0].continuity_verified)) if len(frame) else 0))
     return frame.reset_index(drop=True), counters
 
 
@@ -113,12 +200,11 @@ def build_opportunity_frame(rounds: pd.DataFrame, target: float = TARGET) -> tup
         return pd.DataFrame(), quality
     values = clean["multiplier"].to_numpy(float)
     indices = clean["round_index"].to_numpy(int)
-    stamps = clean["timestamp_dt"].tolist()
     segments: list[tuple[int, int]] = []
     start = 0
     for i in range(1, len(clean)):
-        seconds = (stamps[i] - stamps[i - 1]).total_seconds()
-        if indices[i] != indices[i - 1] + 1 or not 0 <= seconds <= MAX_GAP_SECONDS:
+        if (indices[i] != indices[i - 1] + 1 or bool(clean.iloc[i].gap_before)
+                or str(clean.iloc[i].round_id) == str(clean.iloc[i - 1].round_id)):
             segments.append((start, i))
             start = i
     segments.append((start, len(clean)))
@@ -145,7 +231,7 @@ def build_opportunity_frame(rounds: pd.DataFrame, target: float = TARGET) -> tup
             output.append(row)
 
             # Reveal this target only after its feature row has been frozen.
-            buckets = _bucket(history)
+            buckets = _bucket(history[-1000:])
             streak_key = str(min(row["streak_below_2_1"], 12))
             for length in (2, 3, 5):
                 key = "|".join(map(str, buckets[-length:]))
@@ -168,7 +254,9 @@ def build_opportunity_frame(rounds: pd.DataFrame, target: float = TARGET) -> tup
 
 def _feature_row(history: np.ndarray, target: float, prior_hits: int, prior_count: int,
                  pattern_counts: dict, transition_counts: dict) -> dict[str, float | int]:
-    buckets = _bucket(history)
+    # Every bucket-derived feature only depends on the latest 100 outcomes
+    # (and a maximum 5-value sequence); never rescan the full growing past.
+    buckets = _bucket(history[-1000:])
     result: dict[str, float | int] = {"past_target_rate": (prior_hits + 10) / (prior_count + 20)}
     for window in WINDOWS:
         sample = history[-window:]
@@ -337,10 +425,15 @@ class OpportunityResearchEngine:
             "status": "NOT_EVALUATED", "target": TARGET, "target_definition": "next_round_ge_2_1x",
             "best_selective_model": None, "shadow_ready": False, "reason": "Research has not been run."}
         self.bundle: dict[str, Any] | None = None
+        self.v2_report: dict[str, Any] = repository.load_application_state("selective_opportunity_v2") or {
+            "version": "selective-opportunity-v2-nested", "status": "NOT_EVALUATED",
+            "target": TARGET, "best_opportunity_policy": None}
+        self.v2_bundle: dict[str, Any] | None = None
         self.last_skip_reason: str | None = None
         self._run_lock = Lock()
         self._running = False
         self._load_artifact()
+        self._load_v2_artifact()
 
     def _load_artifact(self) -> None:
         path = self.report.get("artifact_path")
@@ -353,12 +446,55 @@ class OpportunityResearchEngine:
         except (OSError, ValueError, EOFError):
             self.bundle = None
 
+    def _load_v2_artifact(self) -> None:
+        path = self.v2_report.get("artifact_path")
+        if not self.v2_report.get("research_shadow_ready") or not path:
+            return
+        try:
+            artifact = joblib.load(path)
+            if artifact.get("engine_version") == "selective-opportunity-v2" and artifact.get("target") == TARGET:
+                self.v2_bundle = artifact
+        except (OSError, ValueError, EOFError):
+            self.v2_bundle = None
+
     def run(self, dataset_service) -> dict[str, Any]:
         if not self._run_lock.acquire(blocking=False):
             return self.current(dataset_service.clean_rounds.copy()) | {"status": "RESEARCH_RUNNING"}
         self._running = True
         try:
             return self._run(dataset_service)
+        finally:
+            self._running = False
+            self._run_lock.release()
+
+    def run_v2(self, dataset_service) -> dict[str, Any]:
+        """Run V2 while keeping the inspected V1 test permanently diagnostic."""
+        if not self._run_lock.acquire(blocking=False):
+            return self.current(dataset_service.clean_rounds.copy()) | {"v2_status": "RESEARCH_RUNNING"}
+        self._running = True
+        try:
+            from app.ml.opportunity_v2 import run_v2
+            result = run_v2(dataset_service, self.report)
+            runtime_bundle = result.pop("_runtime_bundle", None)
+            if runtime_bundle is not None:
+                self.artifact_dir.mkdir(parents=True, exist_ok=True)
+                path = self.artifact_dir / f"{runtime_bundle['model_version']}.joblib"
+                temporary = path.with_suffix(".joblib.tmp")
+                joblib.dump(runtime_bundle, temporary)
+                os.replace(temporary, path)
+                result["artifact_path"] = str(path)
+                result["research_shadow_ready"] = True
+                self.v2_bundle = runtime_bundle
+            else:
+                result["artifact_path"] = None
+                result["research_shadow_ready"] = False
+                self.v2_bundle = None
+            result["generated_at"] = datetime.now(timezone.utc).isoformat()
+            self.v2_report = result
+            if not result.get("research_shadow_ready"):
+                self.v2_bundle = None
+            self.repository.save_application_state("selective_opportunity_v2", result, result["generated_at"])
+            return self.current(dataset_service.clean_rounds.copy())
         finally:
             self._running = False
             self._run_lock.release()
@@ -619,13 +755,78 @@ class OpportunityResearchEngine:
 
     def current(self, rounds: pd.DataFrame | None = None) -> dict[str, Any]:
         payload = dict(self.report)
+        payload["v2"] = dict(self.v2_report)
+        payload["v1_feature_diagnostic"] = self.repository.load_application_state(
+            "selective_opportunity_v1_feature_diagnostic")
+        payload["v2_current_opportunity"] = self._score_v2_current(rounds) if rounds is not None else {
+            "status": "NO_SIGNAL", "reason_codes": ["current_history_unavailable"]}
         payload["current_opportunity"] = self._score_current(rounds) if rounds is not None else {
             "status": "NO_SIGNAL", "reason_codes": ["current_history_unavailable"]}
         payload["mode"] = "SHADOW" if self.bundle else "HISTORICAL_BACKTEST"
         latest_index = int(rounds.iloc[-1]["round_index"]) if rounds is not None and len(rounds) else None
         shadow = self._shadow_metrics(latest_index)
         payload["shadow"] = shadow
+        payload["research_shadow"] = self._research_shadow_metrics(latest_index)
         return payload
+
+    def _score_v2_current(self, rounds: pd.DataFrame | None) -> dict[str, Any]:
+        bundle = self.v2_bundle
+        if not bundle or not self.v2_report.get("research_shadow_ready"):
+            return {"status": "NO_SIGNAL", "abstain": True, "opportunity_score": 0,
+                    "reason_codes": ["no_nested_validated_research_policy"]}
+        try:
+            features = self._latest_features(rounds)
+            latest_time = pd.to_datetime(rounds.iloc[-1]["timestamp"], format="mixed", utc=True, errors="coerce")
+            age = ((datetime.now(timezone.utc) - latest_time.to_pydatetime()).total_seconds()
+                   if not pd.isna(latest_time) else float("inf"))
+            if not 0 <= age <= self.max_feature_age_s:
+                raise ValueError("stale_source_round")
+            import numpy as np
+            from app.ml.opportunity_v2 import _evidence_matrix
+            names = bundle["feature_names"]
+            evidence_names = bundle["evidence_feature_names"]
+            x = np.asarray([[features[name] for name in names]], dtype=float)
+            evidence_x = np.asarray([[features[name] for name in evidence_names]], dtype=float)
+            p_models = {name: model.predict_proba(x)[:, 1] for name, model in bundle["base_models"].items()}
+            components, evidence = _evidence_matrix(bundle["analog_X"], bundle["analog_y"], evidence_x,
+                p_models, evidence_names, bundle["feature_stability_fraction"],
+                X_query_stable=x, analog_feature_names=names)
+            score_probability = float(bundle["score_model"].predict_proba(components)[0, 1])
+            baseline = float(evidence["baseline"]["relevant"][0])
+            model_ps = evidence["model_probabilities"][0]
+            agreeing = int(np.sum(model_ps >= baseline))
+            analog = evidence["analogs"]
+            pattern_lift = float(components[0, 2])
+            uncertainty = float(-components[0, 6])
+            distribution_warning = float(components[0, 3]) > float(bundle["distribution_warning_limit"])
+            checks = {
+                "positive_probability_lift": float(np.mean(model_ps)) > baseline,
+                "model_agreement": agreeing >= math.ceil(len(model_ps) * .6),
+                "positive_pattern_evidence": pattern_lift > 0,
+                "sufficient_analogs": analog["count"][0] >= 100,
+                "positive_stable_analog_lift": analog["lift"][0] > 0 and analog["ci_lower"][0] > baseline
+                    and analog["stable_blocks"][0] >= .75,
+                "uncertainty_within_past_95th_percentile": uncertainty <= bundle["uncertainty_limit"],
+                "no_distribution_warning": not distribution_warning,
+            }
+            passes = all(checks.values()) and score_probability >= bundle["score_threshold"]
+            return {"status": "CANDIDATE" if passes else "NO_SIGNAL", "probability_2_1x": float(np.mean(model_ps)),
+                    "probability_lift": float(np.mean(model_ps)) - baseline,
+                    "current_baselines": {key: float(value[0]) for key, value in evidence["baseline"].items()},
+                    "opportunity_score": score_probability, "score_threshold": bundle["score_threshold"],
+                    "model_agreement": {"agreeing": agreeing, "tested": len(model_ps)},
+                    "analog": {key: float(value[0]) for key, value in analog.items()},
+                    "evidence_checks": checks, "uncertainty": uncertainty,
+                    "regime_evidence": {"shift_score": float(components[0, 3]),
+                                         "warning": distribution_warning},
+                    "confidence": "HIGH" if passes else "LOW", "evidence_strength": "MULTI_EVIDENCE" if passes else "INSUFFICIENT",
+                    "status_mode": "RESEARCH_SHADOW", "abstain": not passes,
+                    "reason_codes": [] if passes else [key for key, value in checks.items() if not value]
+                        or ["opportunity_score_below_nested_threshold"],
+                    "model_version": bundle["model_version"]}
+        except (ValueError, KeyError, TypeError, IndexError):
+            return {"status": "NO_SIGNAL", "abstain": True, "opportunity_score": 0,
+                    "reason_codes": ["insufficient_or_stale_contiguous_history"]}
 
     def _score_current(self, rounds: pd.DataFrame | None) -> dict[str, Any]:
         if self.bundle is None or not self.report.get("shadow_ready"):
@@ -684,11 +885,10 @@ class OpportunityResearchEngine:
             raise ValueError("no eligible source features")
         # Use only the latest contiguous episode; never bridge a history gap.
         start = len(clean) - 1
-        stamps = clean["timestamp_dt"].tolist()
         indices = clean["round_index"].to_numpy(int)
         while start > 0:
-            seconds = (stamps[start] - stamps[start - 1]).total_seconds()
-            if indices[start] != indices[start - 1] + 1 or not 0 <= seconds <= MAX_GAP_SECONDS:
+            if (indices[start] != indices[start - 1] + 1 or bool(clean.iloc[start].gap_before)
+                    or str(clean.iloc[start].round_id) == str(clean.iloc[start - 1].round_id)):
                 break
             start -= 1
         values = clean["multiplier"].to_numpy(float)
@@ -700,7 +900,7 @@ class OpportunityResearchEngine:
         prior_count = 0
         for target_pos in range(start + MIN_PRIOR, len(clean)):
             history = values[start:target_pos]
-            buckets = _bucket(history)
+            buckets = _bucket(history[-1000:])
             streak = 0
             for value in history[-1000:][::-1]:
                 if value < TARGET:
@@ -725,7 +925,8 @@ class OpportunityResearchEngine:
         return {key: float(value) for key, value in result.items()}
 
     def _shadow_metrics(self, latest_round_index: int | None = None) -> dict[str, Any]:
-        observations = self.repository.list_opportunity_observations(limit=100000)
+        observations = [row for row in self.repository.list_opportunity_observations(limit=100000)
+                        if row.get("mode") == "SHADOW"]
         scored = [row for row in observations if row.get("status") == "SCORED"]
         signals = [row for row in scored if row.get("signal")]
         true = sum(int(row.get("outcome_2_1x", 0)) for row in signals)
@@ -751,6 +952,30 @@ class OpportunityResearchEngine:
                 "pending": sum(row.get("status") == "PENDING" for row in observations),
                 "unknown": sum(row.get("status") == "UNKNOWN" for row in observations)}
 
+    def _research_shadow_metrics(self, latest_round_index: int | None = None) -> dict[str, Any]:
+        observations = [row for row in self.repository.list_opportunity_observations(limit=100000)
+                        if row.get("mode") == "RESEARCH_SHADOW"]
+        scored = [row for row in observations if row.get("status") == "SCORED"]
+        signals = [row for row in scored if row.get("signal")]
+        true = sum(int(row.get("outcome_2_1x", 0)) for row in signals)
+        false = len(signals) - true
+        successes = sum(int(row.get("outcome_2_1x", 0)) for row in scored)
+        baseline = successes / len(scored) if scored else None
+        precision = true / len(signals) if signals else None
+        latest_signal = next((row for row in observations if row.get("signal")), None)
+        gap = (latest_round_index - int(latest_signal["source_round_index"])
+               if latest_round_index is not None and latest_signal else None)
+        return {"mode": "RESEARCH_SHADOW", "status": "OBSERVING" if self.v2_bundle else "NOT_STARTED",
+                "rounds_evaluated": len(scored), "signals": len(signals), "true_signals": true,
+                "false_signals": false, "precision": precision,
+                "precision_ci95": wilson(true, len(signals)), "baseline": baseline,
+                "lift": precision - baseline if precision is not None and baseline is not None else None,
+                "coverage": len(signals) / len(scored) if scored else None,
+                "abstention_rate": 1 - len(signals) / len(scored) if scored else None,
+                "rounds_since_last_signal": gap,
+                "pending": sum(row.get("status") == "PENDING" for row in observations),
+                "unknown": sum(row.get("status") == "UNKNOWN" for row in observations)}
+
     def reconcile(self, rounds: pd.DataFrame) -> int:
         by_index = {int(row.round_index): row for row in rounds.itertuples(index=False)}
         latest = max(by_index, default=0)
@@ -765,13 +990,15 @@ class OpportunityResearchEngine:
                     count += 1
                 continue
             source = by_index.get(int(item["source_round_index"]))
-            try:
-                target_time = pd.to_datetime(target.timestamp, format="mixed", utc=True, errors="raise")
-                created = pd.to_datetime(item["created_at"], format="mixed", utc=True, errors="raise")
-                source_time = pd.to_datetime(source.timestamp, format="mixed", utc=True, errors="raise") if source is not None else pd.NaT
-                timely = source is not None and str(source.round_id) == item["source_round_id"] and target_time > created and 0 <= (target_time - source_time).total_seconds() <= MAX_GAP_SECONDS
-            except (ValueError, TypeError):
-                timely = False
+            created = pd.to_datetime(item["created_at"], format="mixed", utc=True, errors="coerce")
+            stored = pd.to_datetime(getattr(target, "stored_at", None), format="mixed", utc=True, errors="coerce")
+            timely = (source is not None and str(source.round_id) == item["source_round_id"]
+                      and int(target.round_index) == int(source.round_index) + 1
+                      and str(target.round_id) != str(source.round_id)
+                      and bool(getattr(source, "continuity_verified", False))
+                      and bool(getattr(target, "continuity_verified", False))
+                      and not bool(getattr(target, "gap_before", False))
+                      and not pd.isna(created) and not pd.isna(stored) and stored > created)
             if timely:
                 outcome = int(float(target.multiplier) >= TARGET)
                 item.update(status="SCORED", target_round_id=str(target.round_id),
@@ -786,6 +1013,8 @@ class OpportunityResearchEngine:
         return count
 
     def observe(self, dataset_service, *, collector_latest_round_id: str | None = None) -> dict[str, Any] | None:
+        if self.v2_bundle is not None and self.v2_report.get("research_shadow_ready"):
+            return self._observe_v2(dataset_service, collector_latest_round_id)
         if self.bundle is None or not self.report.get("shadow_ready"):
             self.last_skip_reason = "no_validated_selective_model"
             return None
@@ -817,5 +1046,38 @@ class OpportunityResearchEngine:
                 "evidence": {"features": features, "validation": self.bundle["validation_evidence"]},
                 "target_round_id": None, "outcome_2_1x": None, "actual_multiplier": None,
                 "usable": False, "mode": "SHADOW"}
+        self.last_skip_reason = None
+        return self.repository.save_opportunity_observation(item)
+
+    def _observe_v2(self, dataset_service, collector_latest_round_id):
+        rounds = dataset_service.clean_rounds
+        if rounds.empty:
+            self.last_skip_reason = "history_unavailable"
+            return None
+        source = rounds.iloc[-1]
+        if collector_latest_round_id is not None and str(collector_latest_round_id) != str(source.round_id):
+            self.last_skip_reason = "collector_and_dataset_latest_round_differ"
+            return None
+        assessment = self._score_v2_current(rounds)
+        if assessment.get("reason_codes") == ["insufficient_or_stale_contiguous_history"]:
+            self.last_skip_reason = assessment["reason_codes"][0]
+            return None
+        signal = assessment.get("status") in {"CANDIDATE", "HIGH_CONFIDENCE_CANDIDATE"}
+        item = {"observation_id": hashlib.sha256(
+                    f"{self.v2_bundle['model_version']}|{source.round_id}".encode()).hexdigest(),
+                "model_version": self.v2_bundle["model_version"],
+                "source_round_id": str(source.round_id), "source_round_index": int(source.round_index),
+                "source_round_timestamp": str(source.timestamp), "target_threshold": TARGET,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "probability_2_1x": assessment.get("probability_2_1x"),
+                "confidence": assessment.get("confidence"), "uncertainty": assessment.get("uncertainty"),
+                "evidence_strength": assessment.get("evidence_strength"),
+                "opportunity_score": assessment.get("opportunity_score"),
+                "signal_threshold": assessment.get("score_threshold"),
+                "status": "PENDING", "signal": signal, "abstain": not signal,
+                "state": assessment.get("status"), "reason_codes": assessment.get("reason_codes"),
+                "evidence": {"assessment": assessment}, "target_round_id": None,
+                "outcome_2_1x": None, "actual_multiplier": None, "usable": False,
+                "mode": "RESEARCH_SHADOW"}
         self.last_skip_reason = None
         return self.repository.save_opportunity_observation(item)

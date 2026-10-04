@@ -32,7 +32,7 @@ import { waitForNetwork } from './NetworkMonitor.js';
 import {
   readRoundHistory,
   inferNewMultipliers, appendRounds,
-  snapshotSignature, fmt,
+  snapshotSignature,
 } from './HistoryManager.js';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
@@ -112,6 +112,7 @@ class AviatorCollector {
     this._prevSig     = null;
     this._lastSavedSig= null;
     this._totalAdded  = 0;
+    this._unverifiedGapPending = false;
 
     // Current page reference (shared with watchdog)
     this._page = null;
@@ -156,6 +157,23 @@ class AviatorCollector {
     this._watchdogReason = reason;
   }
 
+  async _ensureOperatorPages() {
+    if (typeof this.browser.getBettingPage !== 'function'
+        || !this._page || this._page.isClosed?.()) return false;
+    const health = this.health.snapshot?.() || {};
+    if (health.loggedIn === false || health.authRequired) return false;
+    const bettingPage = await this.browser.getBettingPage();
+    if (!bettingPage || bettingPage.isClosed?.() || bettingPage === this._page) {
+      throw new Error('required History and Betting pages are not both healthy in the collector context');
+    }
+    const pages = this.browser._context?.pages?.();
+    if (Array.isArray(pages) && (!pages.includes(this._page) || !pages.includes(bettingPage))) {
+      throw new Error('History or Betting page is detached from the BrowserManager context');
+    }
+    await this.browser.focusGamePage?.(this._page);
+    return true;
+  }
+
   async _waitForNetwork() {
     this._watchdogReason = null;
     return waitForNetwork(this.signal, status => this.health.setNetwork(status));
@@ -183,7 +201,25 @@ class AviatorCollector {
 
     // ── Step 2: Login ─────────────────────────────────────────────────────
     this.sm.transition(State.LOGIN, 'initial-start');
-    await this.loginMgr.ensureLoggedIn(this._page, this.signal);
+    try {
+      await this.loginMgr.ensureLoggedIn(this._page, this.signal);
+    } catch (err) {
+      if (err?.code !== 'AUTH_REQUIRED' && err?.name !== 'AuthRequiredError') throw err;
+      this.health.setLoggedIn(false);
+      this.health.setAuthRequired(err.message || 'Human login or verification is required');
+      log.error('AUTH_REQUIRED: keeping the single browser open for human login; collector will not report healthy or collect until verified');
+      // Preserve the live browser for operator login instead of closing and
+      // relaunching it in a restart loop. Resume only after real page evidence
+      // makes LoginManager confirm the authenticated session.
+      while (!this.signal?.aborted) {
+        await sleep(1500, this.signal);
+        if (!await this.loginMgr.isLoggedIn(this._page)) continue;
+        this.health.setAuthRequired(null);
+        await this.loginMgr.ensureLoggedIn(this._page, this.signal);
+        break;
+      }
+      if (this.signal?.aborted) return;
+    }
     this.health.setLoggedIn(true);
     this.health.recordLogin();
     await this.browser.persistSession(this._page);
@@ -201,6 +237,15 @@ class AviatorCollector {
     }
     await this.browser.focusGamePage(this._page);
     this.browser._persistMetadata?.();
+    // Keep the read-only sportsbook page provisioned in the same persistent
+    // context for the ONE BrowserManager / ONE context operator invariant.
+    // Opening it does not submit or authorize any bet.
+    try {
+      await this.browser.getBettingPage();
+    } catch (err) {
+      log.warn(`Betting page could not be provisioned in the existing context: ${formatError(err)}`);
+    }
+    await this._page?.bringToFront?.().catch(() => {});
 
     // ── Step 4: Start watchdog ────────────────────────────────────────────
     this.watchdog.setPage(this._page);
@@ -236,12 +281,16 @@ class AviatorCollector {
         if (!await this._waitForNetwork()) break;
         try {
           this._page = await this.recovery.recover(reason, this._page, this.signal);
+          await this._ensureOperatorPages().catch(err => {
+            log.warn(`Betting page recovery is pending; History collection remains read-only: ${formatError(err)}`);
+          });
         } catch (err) {
           log.error(`Recovery failed: ${formatError(err)}`);
-          if (err?.code === 'AUTH_REQUIRED' || err?.message?.includes('CIRCUIT_BREAKER_OPEN')) {
-            if (err?.code === 'AUTH_REQUIRED') {
-              this.health.setLoggedIn(false);
-              if (this.sm.current !== State.RELOGIN) this.sm.transition(State.RELOGIN, 'AUTH_REQUIRED');
+            if (err?.code === 'AUTH_REQUIRED' || err?.message?.includes('CIRCUIT_BREAKER_OPEN')) {
+              if (err?.code === 'AUTH_REQUIRED') {
+                this.health.setLoggedIn(false);
+                this.health.setAuthRequired(err.message || 'Human login or platform verification is required');
+                if (this.sm.current !== State.RELOGIN) this.sm.transition(State.RELOGIN, 'AUTH_REQUIRED');
               if (this.sm.current === State.RELOGIN) this.sm.transition(State.STOPPED, 'AUTH_REQUIRED');
             }
             break;
@@ -285,10 +334,27 @@ class AviatorCollector {
         const delay = backoffMs(attempt++);
         log.warn(`Recovering in ${delay}ms (attempt ${attempt})`);
 
-        this._page = await this.recovery.recover(err, this._page, this.signal).catch(recErr => {
+        try {
+          this._page = await this.recovery.recover(err, this._page, this.signal);
+          await this._ensureOperatorPages().catch(pageErr => {
+            log.warn(`Betting page recovery is pending; History collection remains read-only: ${formatError(pageErr)}`);
+          });
+        } catch (recErr) {
           log.error(`Recovery threw: ${formatError(recErr)}`);
-          return this._page;
-        });
+          if (recErr?.code === 'AUTH_REQUIRED') {
+            this.health.setAuthRequired(recErr.message || 'Human login or platform verification is required');
+            this.health.setLoggedIn(false);
+            if (this.sm.current !== State.RELOGIN) this.sm.transition(State.RELOGIN, 'AUTH_REQUIRED');
+            if (this.sm.current === State.RELOGIN) this.sm.transition(State.STOPPED, 'AUTH_REQUIRED');
+            break;
+          }
+          if (recErr?.message?.includes('CIRCUIT_BREAKER_OPEN')) {
+            if (this.sm.current === State.COLLECTING) this.sm.transition(State.STOPPED, 'CIRCUIT_BREAKER_OPEN');
+            break;
+          }
+          await sleep(backoffMs(attempt++), this.signal);
+          continue;
+        }
         this.watchdog.setPage(this._page);
 
         await sleep(delay, this.signal);
@@ -314,6 +380,9 @@ class AviatorCollector {
     if (!this.sm.is(State.WAITING_IFRAME)) {
       this.sm.transition(State.WAITING_IFRAME, 'seeking-frame');
     }
+    await this._ensureOperatorPages().catch(err => {
+      log.warn(`Betting page is not yet provisioned in the collector context: ${formatError(err)}`);
+    });
 
     // Always get a fresh frame — never reuse a cached reference
     const frame = await this.frameMgr.waitForFrame(this._page, {
@@ -329,20 +398,44 @@ class AviatorCollector {
 
     // Establish or update baseline snapshot
     if (!this._prevSnapshot) {
+      if (this._history.length && initMults.length) {
+        const persistedSnapshot = this._history.slice().reverse().slice(0, initMults.length)
+          .map(round => Number(round.multiplier));
+        const inferred = inferNewMultipliers(persistedSnapshot, initMults);
+        if (inferred === null) {
+          this._unverifiedGapPending = true;
+          log.error('Startup history has no 10-round overlap with PostgreSQL; no catch-up rounds inferred and continuity is UNKNOWN');
+        } else if (inferred.length) {
+          const { history, added } = appendRounds(this._history, inferred, new Date().toISOString());
+          if (added.length) {
+            const result = await this.roundStore.saveRounds(added, 'collector_catchup');
+            this._history = result.rounds || history;
+            this._totalAdded += result.saved;
+            for (const round of added.slice(-result.saved)) this.health.recordRound(round);
+            if (result.saved > 0) await this.recovery.verifyRound(added.at(-1));
+            log.info(`Startup catch-up: saved ${result.saved} overlap-verified round(s)`);
+          }
+        }
+      }
       this._prevSnapshot = initMults;
       this._prevSig      = initSig;
       log.info(`Baseline: ${initMults.length} rounds`);
     } else if (initSig !== this._prevSig) {
       // Reconnected after reload — catch up missed rounds
       const inferred = inferNewMultipliers(this._prevSnapshot, initMults);
-      if (inferred.length > 0) {
-        const { history, added } = appendRounds(this._history, inferred, new Date().toISOString());
+      if (inferred === null) {
+        this._unverifiedGapPending = true;
+        log.error('History reconnect snapshot has no provable overlap; holding uncertain rounds and opening a continuity gap');
+      } else if (inferred.length > 0) {
+        const { history, added } = appendRounds(this._history, inferred, new Date().toISOString(),
+          { gapBefore: this._unverifiedGapPending });
         if (added.length > 0) {
           const result = await this.roundStore.saveRounds(added, 'collector_catchup');
           this._history = result.rounds || history;
           this._totalAdded += result.saved;
           for (const round of added.slice(-result.saved)) this.health.recordRound(round);
           if (result.saved > 0) await this.recovery.verifyRound(added.at(-1));
+          if (result.saved > 0) this._unverifiedGapPending = false;
           log.info(`Catch-up: saved ${result.saved} missed round(s)${result.duplicates ? `, skipped ${result.duplicates} duplicate observation(s)` : ''}`);
         }
       }
@@ -389,6 +482,13 @@ class AviatorCollector {
       if (currSig === this._prevSig) continue;
 
       const inferred = inferNewMultipliers(this._prevSnapshot, event.multipliers);
+      if (inferred === null) {
+        this._unverifiedGapPending = true;
+        this._prevSnapshot = event.multipliers;
+        this._prevSig = currSig;
+        log.error('History snapshot changed without overlap proof; rounds are not fabricated and continuity is marked unknown');
+        continue;
+      }
       if (inferred.length === 0) {
         this._prevSnapshot = event.multipliers;
         this._prevSig      = currSig;
@@ -397,18 +497,30 @@ class AviatorCollector {
 
       // Save new rounds
       if (currSig !== this._lastSavedSig) {
-        const newest = inferred[0];
-        log.info(`New round: ${fmt(newest)}`);
-
-        const { history, added } = appendRounds(this._history, inferred, event.timestamp || new Date().toISOString());
+        const { history, added } = appendRounds(this._history, inferred, event.timestamp || new Date().toISOString(),
+          { gapBefore: this._unverifiedGapPending });
         if (added.length > 0) {
           const result = await this.roundStore.saveRounds(added, 'collector');
           this._history = result.rounds || history;
           this._lastSavedSig = currSig;
           this._totalAdded += result.saved;
           for (const round of added.slice(-result.saved)) this.health.recordRound(round);
+          if (result.saved > 0) this._unverifiedGapPending = false;
+          const totalPersistedRows = result.totalPersistedRows ?? this._history.length;
+          for (const round of result.insertedRounds || []) {
+            log.info('REAL ROUND CAPTURED', {
+              db_id: round.db_id,
+              platform_round_id: round.platform_round_id,
+              round_index: round.round_index,
+              multiplier: round.multiplier,
+              platform_timestamp: round.platform_timestamp,
+              observed_at: round.observed_at,
+              stored_at: round.stored_at,
+              total_persisted_rows: totalPersistedRows,
+            });
+          }
+          log.info(`History updated: ${totalPersistedRows} rows persisted${result.duplicates ? `, skipped ${result.duplicates} duplicate observation(s)` : ''}`);
           if (result.saved > 0) await this.recovery.verifyRound(added.at(-1));
-          log.info(`History updated: ${this._history.length} rounds persisted${result.duplicates ? `, skipped ${result.duplicates} duplicate observation(s)` : ''}`);
         }
       }
 

@@ -17,6 +17,7 @@ chromium.use(StealthPlugin());
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const ROOT       = path.resolve(__dirname, '..', '..');
 const PROFILE_DIR = path.join(ROOT, 'data', 'bot', 'chrome-profile-new-email');
+const DEFAULT_BETTING_PAGE_URL = 'https://winner.rw/en/sportsbook/upcoming';
 const GOOGLE_SNAPSHOT_DIR = path.join(ROOT, 'data', 'bot', 'chrome-google-fallback');
 const SUPERVISOR_LOCK = path.join(ROOT, 'data', 'bot', 'browser-supervisor.lock');
 const RELIABILITY_PATH = path.join(ROOT, 'data', 'bot', 'browser-reliability.json');
@@ -514,8 +515,8 @@ export class BrowserSupervisor {
     const tick = async () => {
       if (this._healthBusy) return;
       this._healthBusy = true;
+      const page = this._historyPage || this._page;
       try {
-        const page = this._historyPage || this._page;
         if (page && !page.isClosed?.()) {
           await Promise.race([
             page.evaluate(() => document.readyState),
@@ -802,6 +803,19 @@ export class BrowserSupervisor {
     this._bettingPage = await this._context.newPage();
     await this._restoreSessionStorage(this._bettingPage);
     this._trackPage(this._bettingPage, 'betting');
+    try {
+      const target = new URL(process.env.WINNER_BETTING_PAGE_URL || DEFAULT_BETTING_PAGE_URL);
+      if (target.hostname !== 'winner.rw' || !target.pathname.startsWith('/en/')) {
+        throw new Error('configured betting page must be an /en/ route on winner.rw');
+      }
+      const current = new URL(this._bettingPage.url());
+      if (current.origin !== target.origin || current.pathname !== target.pathname) {
+        await this._bettingPage.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await this._bettingPage.locator('body').waitFor({ state: 'attached', timeout: 5000 }).catch(() => {});
+      }
+    } catch (err) {
+      log.warn(`BrowserManager: betting page navigation is not ready: ${err.message}`);
+    }
     this._persistMetadata();
     return this._bettingPage;
   }
@@ -826,6 +840,7 @@ export class BrowserSupervisor {
     if (!this._ownsBrowser || !this._context) return;
     for (const page of this._context.pages()) {
       if (page === keepPage || page.isClosed()) continue;
+      if (page === this._bettingPage) continue;
       const url = page.url().toLowerCase();
       const staleWinnerShell = url.includes('winner.rw') && !isAviatorPage(page);
       const disposableBlank = url === 'about:blank' || url.startsWith('chrome://newtab');

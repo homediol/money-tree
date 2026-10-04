@@ -52,12 +52,14 @@ class CandidateObserver:
                 continue
             source = by_index.get(source_index)
             created = _time(observation["created_at"])
-            target_time = _time(target.timestamp)
-            source_time = _time(source.timestamp) if source is not None else None
+            target_stored_at = _time(getattr(target, "stored_at", None))
             contiguous = (source is not None and str(source.round_id) == observation["source_round_id"]
-                          and source_time is not None and target_time is not None
-                          and 0 <= (target_time - source_time).total_seconds() <= 120)
-            before_outcome = created is not None and target_time is not None and created < target_time
+                          and int(target.round_index) == source_index + 1
+                          and str(target.round_id) != str(source.round_id)
+                          and bool(getattr(source, "continuity_verified", False))
+                          and bool(getattr(target, "continuity_verified", False))
+                          and not bool(getattr(target, "gap_before", False)))
+            before_outcome = created is not None and target_stored_at is not None and created < target_stored_at
             if contiguous and before_outcome:
                 outcome = int(float(target.multiplier) >= 2)
                 probability = float(observation["probability_2x"])
@@ -88,7 +90,7 @@ class CandidateObserver:
         source_id = str(source["round_id"])
         if collector_latest_round_id is not None and str(collector_latest_round_id) != source_id:
             return self._skip("collector_and_dataset_latest_round_differ")
-        age = _time(source["timestamp"])
+        age = _time(source.get("observed_at") or source.get("timestamp"))
         if age is None or not 0 <= (datetime.now(timezone.utc) - age).total_seconds() <= self.max_feature_age_s:
             return self._skip("source_round_stale_or_future")
         if int(dataset_service.quality.get("latest_contiguous_rounds", 0)) < 100:

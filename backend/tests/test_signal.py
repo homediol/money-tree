@@ -14,5 +14,4 @@ def test_signal_is_labeled_statistical_analysis(tmp_path):
     analysis = state.current_analysis()
     assert analysis["label"] == "STATISTICAL PATTERN ANALYSIS"
     assert "guarantee" in " ".join(analysis["why"]).lower()
-    assert analysis["data_source"] == "roundhistory.json"
-
+    assert analysis["data_source"] in {"roundhistory.json", "PostgreSQL:aviator_rounds"}

@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { ErrorBoundary } from 'react-error-boundary';
 import { Toaster } from 'sonner';
-import { Activity, BarChart3, Bot, Brain, FlaskConical, GitBranch, History, LayoutDashboard, ReceiptText, Settings, ShieldCheck, Signal, Target } from 'lucide-react';
+import { Activity, BarChart3, Bot, Brain, FlaskConical, GitBranch, History, LayoutDashboard, ReceiptText, Settings, ShieldCheck, Signal } from 'lucide-react';
 import './styles/index.css';
 import Dashboard from './pages/Dashboard.jsx';
 import SystemDashboard from './pages/SystemDashboard.jsx';
@@ -24,7 +24,6 @@ import ShadowMode from './pages/ShadowMode.jsx';
 import LiveActivation from './pages/LiveActivation.jsx';
 import Recovery from './pages/Recovery.jsx';
 import AnalyticsReports from './pages/AnalyticsReports.jsx';
-import SelectiveOpportunities from './pages/SelectiveOpportunities.jsx';
 import { useBackendConnection } from './services/backendConnection.js';
 import { getApiToken } from './auth.js';
 import ApiAccessGate from './components/ApiAccessGate.jsx';
@@ -35,7 +34,6 @@ const nav = [
   { to: '/analytics-reports', label: 'Patterns & Analytics', icon: BarChart3 },
   { to: '/signals', label: 'Signals', icon: Signal },
   { to: '/models', label: 'Models', icon: Brain },
-  { to: '/opportunities', label: 'Rare Opportunities', icon: Target },
   { to: '/evidence', label: 'Evidence', icon: ShieldCheck },
   { to: '/decisions', label: 'Decisions', icon: GitBranch },
   { to: '/betting', label: 'Betting', icon: Bot },
@@ -97,7 +95,7 @@ function Shell() {
             <Route path="/analytics-reports" element={<AnalyticsReports />} />
             <Route path="/signals" element={<SignalHistory />} />
             <Route path="/models" element={<ModelPerformance />} />
-            <Route path="/opportunities" element={<SelectiveOpportunities />} />
+            <Route path="/opportunities" element={<Navigate to="/models" replace />} />
             <Route path="/evidence" element={<EvidenceExplorer />} />
             <Route path="/decisions" element={<DecisionEngine />} />
             <Route path="/betting" element={<Betting />} />

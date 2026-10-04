@@ -234,25 +234,49 @@ def test_history_reaches_ready_without_promoting_rejected_model():
     assert "model_not_deployable:NOT_VALIDATED" in snapshot["overall"]["reasons"]
 
 
-def test_latest_gap_resets_continuity_instead_of_faking_warmup(tmp_path):
+def test_platform_timestamp_gap_does_not_reset_verified_continuity(tmp_path):
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     rows = [{
         "round_id": str(i), "round_index": i,
         "timestamp": (start + timedelta(seconds=i * 10)).isoformat(),
         "multiplier": 1.5,
+        "round_identity_type": "TEST_FIXTURE_SEQUENCE",
+        "round_index_source": "TEST_FIXTURE_SEQUENCE",
+        "continuity_verified": True, "gap_before": False,
+        "continuity_proof": "TEST_FIXTURE_ADJACENT_INDEX",
     } for i in range(1, 106)]
     rows[-1]["timestamp"] = (start + timedelta(seconds=105 * 10 + 180)).isoformat()
     raw = tmp_path / "roundhistory.json"
     raw.write_text(json.dumps(rows), encoding="utf-8")
     dataset = DatasetService(raw, tmp_path / "processed", tmp_path / "features")
     dataset.build_training_dataset(persist=False)
-    assert dataset.quality["latest_contiguous_rounds"] == 1
+    assert dataset.quality["latest_contiguous_rounds"] == 105
+    assert dataset.quality["timestamp_anomalies"] == 1
 
-    app, _ = make_app(continuous=1)
+    app, _ = make_app(continuous=105)
     app.state.wp.dataset_service = dataset
     snapshot = SystemReadiness(app, automatic_training=False).status()
-    assert snapshot["history"]["continuous_rounds"] == 1
-    assert snapshot["history"]["history_ready"] is False
+    assert snapshot["history"]["continuous_rounds"] == 105
+    assert snapshot["history"]["history_ready"] is True
+
+
+def test_unverified_latest_overlap_keeps_a_real_continuity_gap(tmp_path):
+    start = datetime.now(timezone.utc) - timedelta(seconds=1200)
+    rows = [{
+        "round_id": str(i), "round_index": i,
+        "timestamp": (start + timedelta(seconds=i * 10)).isoformat(),
+        "multiplier": 1.5,
+        "round_identity_type": "TEST_FIXTURE_SEQUENCE",
+        "round_index_source": "TEST_FIXTURE_SEQUENCE",
+        "continuity_verified": True, "gap_before": False,
+        "continuity_proof": "TEST_FIXTURE_ADJACENT_INDEX",
+    } for i in range(1, 106)]
+    rows[-1]["gap_before"] = True
+    raw = tmp_path / "roundhistory.json"
+    raw.write_text(json.dumps(rows), encoding="utf-8")
+    dataset = DatasetService(raw, tmp_path / "processed", tmp_path / "features")
+    dataset.build_training_dataset(persist=False)
+    assert dataset.quality["latest_contiguous_rounds"] == 1
 
 
 def test_expired_decision_and_off_mode_block_real_execution():

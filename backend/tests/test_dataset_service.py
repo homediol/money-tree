@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.api.data import data_quality, data_status, dataset_status, features, latest_features
 from app.services.dataset_service import DatasetService, multiplier_bucket
@@ -42,15 +43,17 @@ def test_raw_loading_validation_quarantine_dedup_order_and_quality(tmp_path):
     ]
     svc = service_for(tmp_path, rows)
     frame, quality, quarantine = svc.load_validate()
-    assert frame["round_id"].tolist() == ["a", "b"]
-    assert frame["multiplier"].tolist() == [1.2, 2.5]
+    # A bad platform clock is retained as a timestamp anomaly when its round
+    # identity, order, and outcome remain valid.
+    assert frame["round_id"].tolist() == ["a", "b", "c"]
+    assert frame["multiplier"].tolist() == [1.2, 2.5, 2.0]
     assert quality["total_rounds"] == 7
-    assert quality["valid_rounds"] == 2
+    assert quality["valid_rounds"] == 3
     assert quality["duplicates"] == 1
-    assert quality["invalid_rounds"] == 4
-    assert quality["count_2x_plus"] == 1
-    assert quality["rate_2x_plus"] == 0.5
-    assert len(quarantine) == 5
+    assert quality["invalid_rounds"] == 3
+    assert quality["count_2x_plus"] == 2
+    assert quality["rate_2x_plus"] == pytest.approx(2 / 3)
+    assert len(quarantine) == 4
 
 
 def test_missing_history_is_reported_without_fake_rows(tmp_path):

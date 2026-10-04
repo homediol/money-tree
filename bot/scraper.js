@@ -277,7 +277,7 @@ function inferNewMultipliers(previousSnapshot, currentSnapshot) {
 
   for (let shift = 1; shift <= maxShift; shift += 1) {
     const compareLength = Math.min(10, previousSnapshot.length, currentSnapshot.length - shift);
-    if (compareLength <= 0) continue;
+    if (compareLength < 10) continue;
 
     let aligned = true;
     for (let i = 0; i < compareLength; i += 1) {
@@ -290,7 +290,9 @@ function inferNewMultipliers(previousSnapshot, currentSnapshot) {
     if (aligned) return currentSnapshot.slice(0, shift);
   }
 
-  return [currentSnapshot[0]];
+  // No overlap means the apparent change could hide one or many outcomes.
+  // Return UNKNOWN and refuse to synthesize a replacement round.
+  return null;
 }
 
 function appendRounds(history, newestFirstMultipliers) {
@@ -926,6 +928,12 @@ async function saveNewRoundsFromSnapshot({
   page,
   frame,
 }) {
+  if (newMultipliers === null) {
+    writeStatus({ status: 'degraded', step_details: 'History changed without overlap proof; no round was fabricated',
+      continuity_state: 'UNKNOWN_GAP', last_multipliers: currentSnapshot.slice(0, 10),
+      current_url: safePageUrl(page), frame_url: safeFrameUrl(frame) });
+    return { history, addedRecords: [], lastSavedSignature };
+  }
   if (!newMultipliers.length) {
     return { history, addedRecords: [], lastSavedSignature };
   }

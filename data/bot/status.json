@@ -4,22 +4,25 @@
   "pageConnected": true,
   "frameConnected": true,
   "loggedIn": true,
+  "authRequired": false,
+  "authRequiredReason": null,
   "state": "COLLECTING",
-  "lastRoundTime": "2026-10-03T15:32:56.563Z",
-  "lastObserverInstalledAt": "2026-10-03T15:28:24.669Z",
+  "lastRoundTime": "2026-10-04T16:49:50.434Z",
+  "lastRoundId": "aviator-c0d95139721cead3f4a7114b",
+  "lastSuccessfulCollection": "2026-10-04T16:49:52.344Z",
+  "heartbeatAt": "2026-10-04T16:49:59.484Z",
+  "lastObserverInstalledAt": "2026-10-04T16:46:06.778Z",
   "network": {
     "status": "ONLINE",
     "reason": null,
-    "checked_at": "2026-10-03T15:28:04.082Z"
+    "checked_at": "2026-10-04T16:45:12.782Z"
   },
-  "lastRecovery": {
-    "action": "FRAME_RECOVER",
-    "ts": "2026-10-03T15:28:04.377Z"
-  },
-  "recoveryCount": 33,
-  "browserRestartCount": 10,
-  "loginCount": 19,
-  "totalRoundsSaved": 516,
-  "uptime": 13389,
-  "health": "HEALTHY"
+  "lastRecovery": null,
+  "recoveryCount": 0,
+  "browserRestartCount": 0,
+  "loginCount": 1,
+  "totalRoundsSaved": 11,
+  "uptime": 301,
+  "health": "HEALTHY",
+  "staleAfterMs": 180000
 }

@@ -89,9 +89,10 @@ def eligible_round_ids(rounds: pd.DataFrame, required_prior_rounds: int = 100) -
     if rounds.empty:
         return set()
     ordered = rounds.sort_values("round_index", kind="stable").reset_index(drop=True)
-    times = pd.to_datetime(ordered["timestamp"], format="mixed", utc=True, errors="coerce")
-    seconds = times.diff().dt.total_seconds()
-    adjacent = (ordered["round_index"].diff().eq(1) & seconds.between(0, MAX_HISTORY_GAP_S)).fillna(False)
+    # Consecutive unique platform identities define sequence adjacency. Clock
+    # quality remains diagnostic and is not a reason to discard valid targets.
+    adjacent = (ordered["round_index"].diff().eq(1)
+                & ordered["round_id"].ne(ordered["round_id"].shift(1))).fillna(False)
     episode = (~adjacent).cumsum()
     prior_observed = ordered.groupby(episode, sort=False).cumcount()
     return set(ordered.loc[prior_observed >= required_prior_rounds, "round_id"].astype(str))

@@ -8,11 +8,80 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import main as backend_main
 from app.api.ml import estimate, latest_prediction
 from app.core.config import Settings
 from app.ml.model_registry import ModelRegistry
 from app.ml.trainer import feature_schema
-from main import manager, process_history_update
+from main import manager, process_frozen_opportunity_marker, process_history_update
+
+
+def _ready_collector_status(round_id="r10"):
+    return {"collectorRunning": True, "browserConnected": True, "pageConnected": True,
+            "frameConnected": True, "loggedIn": True, "authRequired": False,
+            "state": "COLLECTING", "health": "HEALTHY", "lastRoundId": round_id,
+            "lastSuccessfulCollection": datetime.now(timezone.utc).isoformat()}
+
+
+def test_json_timestamp_normalizes_database_datetime_values():
+    naive = datetime(2026, 10, 4, 11, 0, 0)
+    aware = datetime(2026, 10, 4, 14, 0, 0, tzinfo=timezone(timedelta(hours=3)))
+
+    assert backend_main._json_timestamp(naive) == "2026-10-04T11:00:00+00:00"
+    assert backend_main._json_timestamp(aware) == "2026-10-04T11:00:00+00:00"
+    assert backend_main._json_timestamp("2026-10-04T11:00:00Z") == "2026-10-04T11:00:00Z"
+
+
+def test_alignment_audit_persists_json_safe_warmup_identity_proof(monkeypatch):
+    now = datetime.now(timezone.utc)
+    config = {"configuration_hash": "frozen-hash"}
+
+    class Repository:
+        @staticmethod
+        def latest_round_live_details():
+            return {"round_id": "round-19434", "round_index": 19434,
+                    "multiplier": 1.25, "stored_at": now - timedelta(seconds=2),
+                    "continuity_verified": True, "gap_before": False}
+
+        @staticmethod
+        def load_application_state(_key):
+            return config
+
+    class Engine:
+        @staticmethod
+        def _assessment_order_proof_verified(_assessment, _configuration_hash):
+            return True
+
+    app = SimpleNamespace(state=SimpleNamespace(
+        wp=SimpleNamespace(repository=Repository()),
+        frozen_observer_runtime={"alignment_audit_started_at": (now - timedelta(seconds=10)).isoformat(),
+                                 "alignment_audit_rounds": []},
+        opportunity_v4_engine=Engine(),
+    ))
+    monkeypatch.setattr(backend_main, "_collector_alignment_status", lambda: {
+        "lastRoundId": "round-19434", "collectorRunning": True, "state": "COLLECTING",
+        "health": "HEALTHY", "browserConnected": True, "pageConnected": True,
+        "frameConnected": True, "loggedIn": True, "authRequired": False,
+        "lastSuccessfulCollection": now.isoformat(),
+    })
+    async def direct_observer_call(_app, function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(backend_main, "_frozen_observer_call", direct_observer_call)
+    assessment = {"assessment_id": "assessment-19434", "round_id": "round-19434",
+                  "round_index": 19434, "created_at": (now - timedelta(seconds=1)).isoformat(),
+                  "model_configuration_hash": "frozen-hash", "assessment_immutable": True,
+                  "scorable": False, "failed_gate": "CONTINUITY_WARMUP",
+                  "feature_snapshot": {"verified_segment_rounds": 26}}
+
+    result = asyncio.run(backend_main._record_alignment_audit_round(
+        app, (19434, "round-19434", now.isoformat(), 1.25), assessment))
+
+    assert result["real_data_alignment"]["consecutive_rounds"] == 1
+    assert result["alignment_audit_rounds"][0]["scorable"] is False
+    assert result["alignment_audit_rounds"][0]["warmup_rounds"] == 26
+    import json
+    json.dumps(result)
 
 
 def _service(*, count=350, age_seconds=20, contiguous=None):
@@ -141,3 +210,108 @@ def test_live_downstream_receives_reason_but_no_evidence_or_decision(monkeypatch
     assert len(statuses) == 1 and statuses[0]["reason"] == "STALE_HISTORY"
     assert not any(event["type"] in {"prediction:new", "prediction:evidence_updated", "decision:updated"}
                    for event in events)
+
+
+def test_frozen_opportunity_marker_assesses_authoritative_latest_round(monkeypatch):
+    events = []
+    calls = []
+
+    async def capture(payload):
+        events.append(payload)
+
+    async def direct(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    class Repository:
+        database_url = "postgresql://configured"
+
+        def load_rounds(self):
+            return [{"round_id": "r10", "round_index": 10, "multiplier": 1.4,
+                     "continuity_verified": True, "gap_before": False}]
+
+    class Observer:
+        def reconcile(self, rounds, target_round_index=None):
+            calls.append(("reconcile", rounds.iloc[-1].round_id, target_round_index))
+
+        def observe(self, rounds, collector_latest_round_id):
+            calls.append(("observe", rounds.iloc[-1].round_id, collector_latest_round_id))
+            return {"round_id": collector_latest_round_id, "scorable": True}
+
+    monkeypatch.setattr(manager, "broadcast", capture)
+    monkeypatch.setattr(asyncio, "to_thread", direct)
+    monkeypatch.setattr(backend_main, "_collector_alignment_status", _ready_collector_status)
+    app = SimpleNamespace(state=SimpleNamespace(
+        wp=SimpleNamespace(repository=Repository()), opportunity_v4_engine=Observer()))
+
+    processed = asyncio.run(process_frozen_opportunity_marker(app, (10, "r10", "stamp", 1.4)))
+
+    assert processed is True
+    assert calls == [("reconcile", "r10", 10), ("observe", "r10", "r10")]
+    assert events == [{"type": "opportunity:v4_assessment", "assessment": {"round_id": "r10", "scorable": True}}]
+
+
+def test_frozen_opportunity_marker_rejects_stale_snapshot(monkeypatch):
+    calls = []
+
+    async def direct(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    class Repository:
+        database_url = "postgresql://configured"
+
+        def load_rounds(self):
+            return [{"round_id": "r11", "round_index": 11, "multiplier": 1.4}]
+
+    class Observer:
+        def reconcile(self, rounds):
+            calls.append("reconcile")
+
+        def observe(self, rounds, collector_latest_round_id):
+            calls.append("observe")
+
+    monkeypatch.setattr(asyncio, "to_thread", direct)
+    monkeypatch.setattr(backend_main, "_collector_alignment_status", _ready_collector_status)
+    app = SimpleNamespace(state=SimpleNamespace(
+        wp=SimpleNamespace(repository=Repository()), opportunity_v4_engine=Observer()))
+
+    processed = asyncio.run(process_frozen_opportunity_marker(app, (10, "r10", "stamp", 1.4)))
+
+    assert processed is False
+    assert calls == []
+
+
+def test_frozen_opportunity_marker_is_not_advanced_without_persisted_assessment(monkeypatch):
+    async def direct(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    class Repository:
+        database_url = "postgresql://configured"
+
+        def load_rounds(self):
+            return [{"round_id": "r10", "round_index": 10, "multiplier": 1.4,
+                     "continuity_verified": True, "gap_before": False}]
+
+        def get_v4_assessment(self, _round_id):
+            return None
+
+    class Observer:
+        def reconcile(self, _rounds, _target_round_index):
+            return 0
+
+        def observe(self, _rounds, _collector_latest_round_id):
+            return None
+
+    monkeypatch.setattr(asyncio, "to_thread", direct)
+    monkeypatch.setattr(backend_main, "_collector_alignment_status", _ready_collector_status)
+    app = SimpleNamespace(state=SimpleNamespace(
+        wp=SimpleNamespace(repository=Repository()), opportunity_v4_engine=Observer()))
+
+    assert asyncio.run(process_frozen_opportunity_marker(app, (10, "r10", "stamp", 1.4))) is False
+
+
+def test_frozen_observer_refuses_to_score_when_collector_is_not_live():
+    status = _ready_collector_status()
+    status["authRequired"] = True
+    ready, reason = backend_main._collector_marker_readiness(status, (10, "r10"))
+    assert ready is False
+    assert reason == "collector authentication is not verified"

@@ -66,7 +66,10 @@ def test_collector_ml_and_execution_state_survive_three_restarts(tmp_path):
     }
     assert repository.create_execution(execution) is True
     assert repository.create_execution({**execution, "execution_id": "exec-duplicate"}) is False
-    assert first_state["contiguous_rounds"] == 150
+    # SQLite fixtures do not carry PostgreSQL overlap proofs. Durable rows
+    # alone cannot establish prospective continuity after a restart.
+    assert first_state["contiguous_rounds"] == 0
+    assert first_state["warmup_status"] == "WARMING_UP"
 
     for restart in range(3):
         restarted = _repo(db_path)
@@ -77,7 +80,8 @@ def test_collector_ml_and_execution_state_survive_three_restarts(tmp_path):
         reconciled = restarted.reconcile_incomplete_executions()
         after_reconcile = restarted.execution_for("decision-1", "151")
 
-        assert state["contiguous_rounds"] >= 100
+        assert state["contiguous_rounds"] == 0
+        assert state["warmup_status"] == "WARMING_UP"
         assert state["total_history"] == 150
         assert len(restarted.load_rounds()) == 150
         assert restarted.load_readiness_snapshot()["restored_from_persistence"] is True

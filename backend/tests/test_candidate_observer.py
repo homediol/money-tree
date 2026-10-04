@@ -46,7 +46,12 @@ def test_experimental_observation_survives_restart_and_scores_only_next_round(tm
     start = datetime.now(timezone.utc) - timedelta(seconds=130)
     rows = [{"round_id": str(i), "round_index": i,
              "timestamp": (start + timedelta(seconds=i)).isoformat(),
-             "multiplier": 2.1 if i % 2 else 1.2} for i in range(1, 131)]
+             "multiplier": 2.1 if i % 2 else 1.2,
+             "round_identity_type": "TEST_FIXTURE_SEQUENCE",
+             "round_index_source": "TEST_FIXTURE_SEQUENCE",
+             "continuity_verified": True, "gap_before": False,
+             "continuity_proof": "TEST_FIXTURE_ADJACENT_INDEX"}
+            for i in range(1, 131)]
     raw = tmp_path / "rounds.json"
     raw.write_text(json.dumps(rows))
     dataset = DatasetService(raw, tmp_path / "processed", tmp_path / "features")
@@ -74,7 +79,11 @@ def test_experimental_observation_survives_restart_and_scores_only_next_round(tm
     assert restored.status()["latest"]["status"] == "PENDING"
     rows.append({"round_id": "131", "round_index": 131,
                  "timestamp": (datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat(),
-                 "multiplier": 2.7})
+                 "stored_at": (datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat(),
+                 "multiplier": 2.7, "round_identity_type": "TEST_FIXTURE_SEQUENCE",
+                 "round_index_source": "TEST_FIXTURE_SEQUENCE",
+                 "continuity_verified": True, "gap_before": False,
+                 "continuity_proof": "TEST_FIXTURE_ADJACENT_INDEX"})
     raw.write_text(json.dumps(rows))
     dataset.process_incremental()
     assert restored.reconcile(dataset.clean_rounds) == 1

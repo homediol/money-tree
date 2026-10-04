@@ -298,14 +298,27 @@ class ModelRegistry:
     def _history_context(self, dataset_service) -> dict[str, Any]:
         if dataset_service.clean_rounds.empty:
             return {"latest_round_timestamp": None, "history_age": None,
+                    "latest_platform_timestamp": None, "freshness_source": "UNKNOWN",
                     "staleness_threshold": self.max_feature_age_s, "fresh": False}
         latest = dataset_service.clean_rounds.iloc[-1]
-        timestamp = str(latest["timestamp"])
+        platform_stamp = latest.get("timestamp_dt")
+        observed_stamp = latest.get("observed_at_dt")
+        freshness_stamp = platform_stamp
+        freshness_source = "PLATFORM_TIMESTAMP"
+        if freshness_stamp is None or pd.isna(freshness_stamp):
+            freshness_stamp = observed_stamp
+            freshness_source = "OBSERVED_AT" if freshness_stamp is not None and not pd.isna(freshness_stamp) else "UNKNOWN"
         try:
-            age = (datetime.now(timezone.utc) - latest["timestamp_dt"].to_pydatetime()).total_seconds()
-        except (KeyError, AttributeError, TypeError, ValueError):
+            age = ((datetime.now(timezone.utc) - freshness_stamp.to_pydatetime()).total_seconds()
+                   if freshness_source != "UNKNOWN" else None)
+        except (AttributeError, TypeError, ValueError, OverflowError):
             age = None
-        return {"latest_round_timestamp": timestamp, "history_age": age,
+        latest_platform_timestamp = (str(latest.get("platform_timestamp"))
+                                     if latest.get("platform_timestamp") is not None else None)
+        latest_round_timestamp = (str(freshness_stamp) if freshness_source != "UNKNOWN" else None)
+        return {"latest_round_timestamp": latest_round_timestamp,
+                "latest_platform_timestamp": latest_platform_timestamp,
+                "freshness_source": freshness_source, "history_age": age,
                 "staleness_threshold": self.max_feature_age_s,
                 "fresh": age is not None and 0 <= age <= self.max_feature_age_s}
 

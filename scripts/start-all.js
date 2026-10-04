@@ -171,9 +171,15 @@ const SERVICES = [
       "/api/analytics/progress",
       "/api/analytics/reports?report_type=ROUND_100_REPORT&limit=1",
       "/api/backend/capabilities",
+      "/api/opportunities/selective/v4/status",
+      "/api/opportunities/selective/v4/observer",
+      "/api/opportunities/selective/v4/live",
+      "/api/opportunities/selective/v4/experiment/status",
     ],
-    restart: false,
-    // Winner Predict API — owns port 8000 (frontend defaults point here)
+    restart: true,
+    // Restart only after the managed API child exits. launch() rechecks the
+    // port owner and required API routes before spawning, so a surviving or
+    // unrelated backend is never duplicated or replaced without proof.
   },
   {
     name:    "frontend",

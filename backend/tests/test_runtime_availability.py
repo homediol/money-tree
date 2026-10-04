@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import socket
 import time
 from types import SimpleNamespace
 
@@ -122,10 +125,20 @@ def test_health_exposes_database_failure_without_crashing_backend():
 
 
 def test_instance_lock_prevents_duplicate_backend(tmp_path):
-    first = InstanceLock(tmp_path / "backend.lock")
-    second = InstanceLock(tmp_path / "backend.lock")
+    path = tmp_path / "backend.lock"
+    first = InstanceLock(path, port=8000, instance_id="owner-instance")
+    second = InstanceLock(path, port=8000, instance_id="competitor-instance")
     first.acquire()
     try:
+        metadata = json.loads(path.read_text())
+        assert metadata["pid"] > 0
+        assert metadata["created_at"]
+        assert metadata["instance_id"] == "owner-instance"
+        assert metadata["port"] == 8000
+        assert "process_start_time" in metadata
+        assert metadata["backend_port"] == 8000
+        assert metadata["hostname"] == socket.gethostname()
+        assert metadata["owner_type"] == InstanceLock.OWNER_TYPE
         with pytest.raises(SingleInstanceError):
             second.acquire()
     finally:
@@ -133,3 +146,50 @@ def test_instance_lock_prevents_duplicate_backend(tmp_path):
 
     second.acquire()
     second.release()
+
+
+def test_instance_lock_replaces_stale_metadata_only_after_kernel_lock_is_free(tmp_path):
+    path = tmp_path / "backend.lock"
+    path.write_text(json.dumps({"pid": 2_147_483_647, "started_at": "old-owner"}))
+    lock = InstanceLock(path, port=8000, instance_id="recovered-owner")
+    lock.acquire()
+    try:
+        metadata = json.loads(path.read_text())
+        assert metadata["pid"] != 2_147_483_647
+        assert metadata["instance_id"] == "recovered-owner"
+        assert metadata["created_at"] != "old-owner"
+    finally:
+        lock.release()
+
+
+def test_instance_lock_detects_pid_reuse_from_process_start_time(tmp_path, monkeypatch):
+    path = tmp_path / "backend.lock"
+    path.write_text(json.dumps({
+        "pid": os.getpid(), "process_start_time": "different-boot:1",
+        "hostname": socket.gethostname(), "owner_type": InstanceLock.OWNER_TYPE,
+    }))
+    monkeypatch.setattr(InstanceLock, "_looks_like_backend_process", staticmethod(lambda _snapshot: True))
+    lock = InstanceLock(path, port=8000, instance_id="pid-reuse-recovered")
+    lock.acquire()
+    try:
+        metadata = json.loads(path.read_text())
+        assert metadata["instance_id"] == "pid-reuse-recovered"
+        assert metadata["process_start_time"] == InstanceLock._process_start_time(os.getpid())
+    finally:
+        lock.release()
+
+
+def test_instance_lock_refuses_live_backend_metadata_without_kernel_lock(tmp_path, monkeypatch):
+    path = tmp_path / "backend.lock"
+    prior = {
+        "pid": os.getpid(),
+        "process_start_time": InstanceLock._process_start_time(os.getpid()),
+        "hostname": socket.gethostname(), "owner_type": InstanceLock.OWNER_TYPE,
+        "instance_id": "still-live-owner", "backend_port": 8000,
+    }
+    path.write_text(json.dumps(prior))
+    monkeypatch.setattr(InstanceLock, "_looks_like_backend_process", staticmethod(lambda _snapshot: True))
+    lock = InstanceLock(path, port=8000, instance_id="must-not-take-over")
+    with pytest.raises(SingleInstanceError, match="live_backend_without_kernel_lock"):
+        lock.acquire()
+    assert json.loads(path.read_text()) == prior

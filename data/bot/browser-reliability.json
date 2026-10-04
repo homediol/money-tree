@@ -1,0 +1,71 @@
+{
+  "updated_at": "2026-10-04T16:49:59.078Z",
+  "state": "HEALTHY",
+  "browser": {
+    "connected": true,
+    "pid": 429703,
+    "uptime_seconds": 285,
+    "memory_rss_mb": 351,
+    "restart_count": 65,
+    "cpu_percent": null
+  },
+  "context": {
+    "alive": true,
+    "page_count": 2
+  },
+  "history_page": {
+    "alive": true,
+    "url": "https://winner.rw/en/virtual/crash-games/aviator"
+  },
+  "betting_page": {
+    "state": "PAGE_OPEN",
+    "url": "https://winner.rw/en/sportsbook/upcoming"
+  },
+  "session": "AUTHENTICATED",
+  "collector": {
+    "running": true,
+    "state": "COLLECTING",
+    "last_round_id": "aviator-c0d95139721cead3f4a7114b",
+    "last_round_timestamp": "2026-10-04T16:49:50.434Z",
+    "last_successful_collection": "2026-10-04T16:49:52.344Z",
+    "heartbeat_at": "2026-10-04T16:49:54.479Z",
+    "iframe_attached": true
+  },
+  "backend": {
+    "pid": 431242,
+    "ppid": 430959,
+    "started_at": "2026-10-04T16:47:40.066650+00:00",
+    "restart_count": 70,
+    "unexpected_restart_count": 33,
+    "uptime_seconds": 139,
+    "memory_rss_mb": 552,
+    "cpu_percent": null,
+    "running": true,
+    "last_exit": null
+  },
+  "last_disconnect": {
+    "at": "2026-10-04T16:44:57.222Z",
+    "reason": "managed browser disconnected"
+  },
+  "last_browser_event": {
+    "event": "heartbeat_probe_failed",
+    "at": "2026-10-04T16:45:55.404Z",
+    "error": "page responsiveness probe timed out"
+  },
+  "last_recovery": {
+    "state": "AUTH_REQUIRED",
+    "at": "2026-10-04T16:44:48.041Z",
+    "reason": "AUTH_REQUIRED: session could not be verified after recovery"
+  },
+  "recovery_count": 96,
+  "circuit_breaker": {
+    "state": "CLOSED",
+    "failures_10m": 0,
+    "failure_timestamps": []
+  },
+  "diagnostics": {
+    "page_responsive": true,
+    "page_count": 2,
+    "node_memory_rss_mb": 364
+  }
+}

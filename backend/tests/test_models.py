@@ -25,7 +25,11 @@ def raw_rows(count=520, *, stale=False):
         high = (index * 17) % 11 < (7 if previous < 1.5 else 4)
         values.append(2.5 + (index % 3) if high else 1.05 + (index % 4) / 10)
     return [{"round_id": str(i + 1), "round_index": i + 1,
-             "timestamp": (start + timedelta(seconds=i)).isoformat(), "multiplier": value}
+             "timestamp": (start + timedelta(seconds=i)).isoformat(), "multiplier": value,
+             "round_identity_type": "TEST_FIXTURE_SEQUENCE",
+             "round_index_source": "TEST_FIXTURE_SEQUENCE",
+             "continuity_verified": True, "gap_before": False,
+             "continuity_proof": "TEST_FIXTURE_ADJACENT_INDEX"}
             for i, value in enumerate(values)]
 
 
@@ -386,8 +390,10 @@ def test_training_target_requires_complete_observed_prior_window():
     assert "100" not in admitted
     assert "101" in admitted
     assert "105" in admitted
-    assert "106" not in admitted
-    assert "205" not in admitted
+    # Round order and identity prove adjacency; the timestamp jump remains a
+    # diagnostic anomaly and cannot break the observation sequence.
+    assert "106" in admitted
+    assert "205" in admitted
     assert "206" in admitted
 
 

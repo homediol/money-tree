@@ -100,8 +100,23 @@ export async function getSelectiveOpportunity() {
   return data;
 }
 
+export async function getFrozenOpportunityLiveBoard() {
+  const { data } = await api.get('/api/opportunities/selective/v4/live', { timeout: 20000 });
+  return data;
+}
+
+export async function startFrozenProspectiveExperiment() {
+  const { data } = await api.post('/api/opportunities/selective/v4/experiment/start', {}, { timeout: 20000 });
+  return data;
+}
+
 export async function runSelectiveOpportunityResearch() {
   const { data } = await api.post('/api/opportunities/selective/research', {}, { timeout: 900000 });
+  return data;
+}
+
+export async function runSelectiveOpportunityResearchV3() {
+  const { data } = await api.post('/api/opportunities/selective/research-v3', {}, { timeout: 900000 });
   return data;
 }
 

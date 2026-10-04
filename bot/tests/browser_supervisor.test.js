@@ -9,6 +9,34 @@ test('legacy and current callers resolve one process-wide supervisor', () => {
   assert.equal(getBrowserSupervisor(false), getBrowserSupervisor(false));
 });
 
+test('betting page is a separate read-only tab in the existing context', async () => {
+  const browser = new BrowserSupervisor(true);
+  let navigated = null;
+  let closed = false;
+  const page = {
+    isClosed: () => closed,
+    url: () => navigated || 'about:blank',
+    goto: async (url, options) => { navigated = url; assert.equal(options.waitUntil, 'domcontentloaded'); },
+    locator: () => ({ waitFor: async () => {} }),
+    close: async () => { closed = true; },
+    on() {},
+  };
+  const historyPage = { isClosed: () => false, url: () => 'https://winner.rw/en/virtual/crash-games/aviator' };
+  browser._browser = { isConnected: () => true };
+  browser._context = { newPage: async () => page, pages: () => [historyPage, page] };
+  browser._contextClosed = false;
+  browser._ownsBrowser = true;
+  browser._historyPage = historyPage;
+  browser._restoreSessionStorage = async () => {};
+  browser._trackPage = (_page, role) => assert.equal(role, 'betting');
+  browser._persistMetadata = () => {};
+
+  assert.equal(await browser.getBettingPage(), page);
+  assert.equal(navigated, 'https://winner.rw/en/sportsbook/upcoming');
+  await browser._cleanupManagedStarterPages(historyPage);
+  assert.equal(closed, false);
+});
+
 test('recovery lock runs one operation for concurrent callers', async () => {
   const browser = new BrowserSupervisor(true);
   let starts = 0;

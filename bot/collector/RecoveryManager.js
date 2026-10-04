@@ -78,6 +78,7 @@ export class RecoveryManager {
       const loggedIn = await this.login.isLoggedIn(page).catch(() => false);
       this.health.setLoggedIn(loggedIn);
       if (!loggedIn) throw Object.assign(new Error('AUTH_REQUIRED: session could not be verified after recovery'), { code: 'AUTH_REQUIRED' });
+      this.health.setAuthRequired?.(null);
       this.health.setBrowserConnected(true);
       this.health.setPageConnected(true);
       this.health.setFrameConnected(false);

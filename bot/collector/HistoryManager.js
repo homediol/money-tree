@@ -141,7 +141,7 @@ export function inferNewMultipliers(prev, curr) {
   const maxShift = Math.min(curr.length, 25);
   for (let shift = 1; shift <= maxShift; shift++) {
     const len = Math.min(10, prev.length, curr.length - shift);
-    if (len <= 0) continue;
+    if (len < 10) continue;
     let aligned = true;
     for (let i = 0; i < len; i++) {
       if (Number(prev[i]).toFixed(2) !== Number(curr[shift + i]).toFixed(2)) {
@@ -151,14 +151,16 @@ export function inferNewMultipliers(prev, curr) {
     }
     if (aligned) return curr.slice(0, shift);
   }
-  return [curr[0]];
+  // A changed snapshot without provable overlap is ambiguous; do not invent
+  // a round from it. Callers should open a continuity gap and rebaseline.
+  return null;
 }
 
 /**
  * Append new multipliers (newest-first array) to history (oldest-first).
  * Returns { history, added }.
  */
-export function appendRounds(history, newestFirst, observedAt = null) {
+export function appendRounds(history, newestFirst, observedAt = null, { gapBefore = false } = {}) {
   if (!newestFirst.length) return { history, added: [] };
 
   const added = [];
@@ -170,7 +172,14 @@ export function appendRounds(history, newestFirst, observedAt = null) {
     const timestamp = observedAt || new Date().toISOString();
     const roundId = stableRoundId(timestamp, normalized, idx);
     if (history.some(row => String(row.round_id) === roundId)) continue;
-    const record = { round_id: roundId, multiplier: normalized, timestamp, round_index: idx };
+    const record = { round_id: roundId, multiplier: normalized, timestamp,
+      platform_round_id: null, platform_round_index: null, platform_timestamp: null,
+      observed_at: observedAt || timestamp,
+      stored_at: null, local_round_index: idx, round_index: idx,
+      round_identity_type: 'COLLECTOR_OBSERVATION_HASH', round_index_source: 'LOCAL_SEQUENCE',
+      identity_confidence: 'OVERLAP_VERIFIED_ORDER_ONLY',
+      continuity_verified: true, gap_before: Boolean(gapBefore && added.length === 0),
+      continuity_proof: 'HISTORY_SNAPSHOT_OVERLAP' };
     history.push(record);
     added.push(record);
     idx++;

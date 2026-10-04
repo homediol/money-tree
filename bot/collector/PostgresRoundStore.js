@@ -24,15 +24,31 @@ function normalizeRound(record, index = 0) {
   const multiplier = Number(record?.multiplier ?? record?.crashPoint ?? record?.value);
   if (!Number.isFinite(multiplier) || multiplier < 1) return null;
 
-  const roundIndexRaw = record?.round_index ?? record?.id ?? index + 1;
+  const roundIndexRaw = record?.round_index ?? record?.id;
   const roundIndex = Number(roundIndexRaw);
   if (!Number.isFinite(roundIndex) || roundIndex <= 0) return null;
 
+  const platformRoundId = record?.platform_round_id == null ? null : String(record.platform_round_id);
+  const platformRoundIndex = Number(record?.platform_round_index);
   return {
     round_id: record?.round_id != null ? String(record.round_id) : `aviator-${Math.trunc(roundIndex)}`,
+    platform_round_id: platformRoundId,
+    platform_round_index: Number.isSafeInteger(platformRoundIndex) && platformRoundIndex > 0
+      ? Math.trunc(platformRoundIndex) : null,
+    local_round_index: Math.trunc(roundIndex),
     round_index: Math.trunc(roundIndex),
     multiplier: Math.round(multiplier * 100) / 100,
     timestamp: normalizeTimestamp(record?.timestamp ?? record?.time ?? record?.ts),
+    platform_timestamp: normalizeTimestamp(record?.platform_timestamp),
+    observed_at: normalizeTimestamp(record?.observed_at ?? record?.timestamp ?? record?.observedAt),
+    round_identity_type: platformRoundId ? 'PLATFORM' : 'COLLECTOR_OBSERVATION_HASH',
+    round_index_source: Number.isSafeInteger(platformRoundIndex) && platformRoundIndex > 0 ? 'PLATFORM' : 'LOCAL_SEQUENCE',
+    identity_confidence: platformRoundId ? 'PLATFORM_ID' :
+      Number.isSafeInteger(platformRoundIndex) && platformRoundIndex > 0 ? 'PLATFORM_ORDER_ONLY' :
+        record?.continuity_verified ? 'OVERLAP_VERIFIED_ORDER_ONLY' : 'UNKNOWN',
+    continuity_verified: Boolean(record?.continuity_verified),
+    gap_before: Boolean(record?.gap_before),
+    continuity_proof: record?.continuity_proof || 'UNVERIFIED',
   };
 }
 
@@ -84,6 +100,23 @@ export class PostgresRoundStore {
         )
       `);
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS round_id TEXT`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS platform_timestamp TIMESTAMPTZ`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS platform_round_id TEXT`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS platform_round_index BIGINT`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS observed_at TIMESTAMPTZ`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS stored_at TIMESTAMPTZ`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS local_round_index BIGINT`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS round_identity_type TEXT`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS round_index_source TEXT`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS identity_confidence TEXT`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS continuity_verified BOOLEAN NOT NULL DEFAULT FALSE`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS gap_before BOOLEAN NOT NULL DEFAULT FALSE`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS continuity_proof TEXT`);
+      await this.pool.query(`UPDATE ${this.tableIdent} SET stored_at = COALESCE(stored_at, created_at)`);
+      await this.pool.query(`UPDATE ${this.tableIdent} SET local_round_index = COALESCE(local_round_index, round_index)`);
+      await this.pool.query(`UPDATE ${this.tableIdent} SET observed_at = COALESCE(observed_at, timestamp) WHERE round_id ~ '^aviator-[0-9a-f]{24}$'`);
+      await this.pool.query(`UPDATE ${this.tableIdent} SET round_identity_type = COALESCE(round_identity_type, 'COLLECTOR_OBSERVATION_HASH'), round_index_source = COALESCE(round_index_source, 'LOCAL_SEQUENCE'), identity_confidence = COALESCE(identity_confidence, CASE WHEN continuity_verified THEN 'OVERLAP_VERIFIED_ORDER_ONLY' ELSE 'UNKNOWN' END), continuity_proof = COALESCE(continuity_proof, 'LEGACY_UNVERIFIED')`);
+      await this.pool.query(`UPDATE ${this.tableIdent} SET platform_timestamp = NULL WHERE round_id ~ '^aviator-[0-9a-f]{24}$'`);
       await this.pool.query(`UPDATE ${this.tableIdent} SET round_id = COALESCE(round_id, 'aviator-' || round_index::text) WHERE round_id IS NULL`);
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ALTER COLUMN round_id SET NOT NULL`);
       await this.pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${this.table}_round_id_idx ON ${this.tableIdent} (round_id)`);
@@ -162,16 +195,31 @@ export class PostgresRoundStore {
     }
 
     const result = await this.pool.query(`
-      SELECT round_id, round_index, multiplier::float8 AS multiplier, timestamp
+      SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index, multiplier::float8 AS multiplier,
+             COALESCE(platform_timestamp, timestamp) AS timestamp,
+             platform_timestamp, observed_at, COALESCE(stored_at, created_at) AS stored_at,
+             round_identity_type, round_index_source, identity_confidence, continuity_verified, gap_before, continuity_proof
       FROM ${this.tableIdent}
       ORDER BY round_index ASC
     `);
 
     return result.rows.map((row) => ({
       round_id: String(row.round_id),
+      platform_round_id: row.platform_round_id == null ? null : String(row.platform_round_id),
+      platform_round_index: row.platform_round_index == null ? null : Number(row.platform_round_index),
+      local_round_index: Number(row.local_round_index ?? row.round_index),
       round_index: Number(row.round_index),
       multiplier: Number(row.multiplier),
       timestamp: row.timestamp ? new Date(row.timestamp).toISOString() : null,
+      platform_timestamp: row.platform_timestamp ? new Date(row.platform_timestamp).toISOString() : null,
+      observed_at: row.observed_at ? new Date(row.observed_at).toISOString() : null,
+      stored_at: row.stored_at ? new Date(row.stored_at).toISOString() : null,
+      round_identity_type: row.round_identity_type,
+      round_index_source: row.round_index_source,
+      identity_confidence: row.identity_confidence || 'UNKNOWN',
+      continuity_verified: Boolean(row.continuity_verified),
+      gap_before: Boolean(row.gap_before),
+      continuity_proof: row.continuity_proof,
     }));
   }
 
@@ -183,6 +231,9 @@ export class PostgresRoundStore {
     const normalized = records
       .map((record, index) => normalizeRound(record, index))
       .filter(Boolean);
+    for (const record of normalized) {
+      if (!record.observed_at && source.startsWith('collector')) record.observed_at = new Date().toISOString();
+    }
 
     if (normalized.length === 0) return { saved: 0 };
 
@@ -213,6 +264,7 @@ export class PostgresRoundStore {
       let maxRoundIndex = Number(maxResult.rows[0]?.max_round_index || 0);
       let saved = 0;
       let duplicates = 0;
+      const insertedRounds = [];
 
       for (const record of normalized) {
         const candidate = { ...record };
@@ -233,21 +285,46 @@ export class PostgresRoundStore {
             [candidate.round_index],
           );
           if (byIndex.rowCount) {
-            // A different observation already owns this index. Keep both rows
-            // by assigning the incoming observation the next available index.
-            candidate.round_index = ++maxRoundIndex;
-            continue;
+            const error = new Error(`ROUND_IDENTITY_CONFLICT: round_index=${candidate.round_index} is already owned by ${byIndex.rows[0].round_id}; incoming round_id=${candidate.round_id}`);
+            error.code = 'ROUND_IDENTITY_CONFLICT';
+            throw error;
           }
 
           const result = await client.query(
-            `INSERT INTO ${this.tableIdent} (round_id, round_index, multiplier, timestamp, source, raw)
-             VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-             ON CONFLICT DO NOTHING`,
-            [candidate.round_id, candidate.round_index, candidate.multiplier,
-              candidate.timestamp, source, JSON.stringify(candidate)],
+            `INSERT INTO ${this.tableIdent} (round_id, platform_round_id, platform_round_index, round_index, local_round_index, multiplier, timestamp, platform_timestamp, observed_at, stored_at, round_identity_type, round_index_source, identity_confidence, continuity_verified, gap_before, continuity_proof, source, raw)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17::jsonb)
+             ON CONFLICT DO NOTHING
+             RETURNING id, round_id, round_index, platform_round_id, platform_round_index,
+                       multiplier, platform_timestamp, observed_at, stored_at, source,
+                       continuity_verified, gap_before, identity_confidence`,
+            [candidate.round_id, candidate.platform_round_id, candidate.platform_round_index,
+              candidate.round_index, candidate.local_round_index, candidate.multiplier,
+              candidate.timestamp, candidate.platform_timestamp, candidate.observed_at,
+              candidate.round_identity_type, candidate.round_index_source, candidate.identity_confidence,
+              candidate.continuity_verified, candidate.gap_before, candidate.continuity_proof,
+              source, JSON.stringify(candidate)],
           );
           if (result.rowCount) {
             saved += result.rowCount;
+            const persisted = result.rows[0];
+            if (persisted) {
+              insertedRounds.push({
+                db_id: Number(persisted.id),
+                round_id: String(persisted.round_id),
+                round_index: Number(persisted.round_index),
+                local_round_index: Number(persisted.round_index),
+                platform_round_id: persisted.platform_round_id == null ? null : String(persisted.platform_round_id),
+                platform_round_index: persisted.platform_round_index == null ? null : Number(persisted.platform_round_index),
+                multiplier: Number(persisted.multiplier),
+                platform_timestamp: persisted.platform_timestamp ? new Date(persisted.platform_timestamp).toISOString() : null,
+                observed_at: persisted.observed_at ? new Date(persisted.observed_at).toISOString() : null,
+                stored_at: persisted.stored_at ? new Date(persisted.stored_at).toISOString() : null,
+                source: persisted.source,
+                continuity_verified: Boolean(persisted.continuity_verified),
+                gap_before: Boolean(persisted.gap_before),
+                identity_confidence: persisted.identity_confidence || 'UNKNOWN',
+              });
+            }
             maxRoundIndex = Math.max(maxRoundIndex, candidate.round_index);
             resolved = true;
             break;
@@ -266,7 +343,13 @@ export class PostgresRoundStore {
       await this.saveState(state);
       // PostgreSQL is authoritative when configured. The JSON file is only a
       // legacy import/export fallback for environments without a DSN.
-      return { saved, duplicates, rounds: allRounds };
+      return {
+        saved,
+        duplicates,
+        rounds: allRounds,
+        insertedRounds,
+        totalPersistedRows: allRounds.length,
+      };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
       throw err;
@@ -277,15 +360,13 @@ export class PostgresRoundStore {
 
   computeState(rows) {
     const ordered = [...rows].sort((a, b) => Number(a.round_index) - Number(b.round_index));
-    let contiguous = ordered.length ? 1 : 0;
+    let contiguous = ordered.length && ordered.at(-1).continuity_verified ? 1 : 0;
     for (let i = ordered.length - 1; i > 0; i -= 1) {
       const previous = ordered[i - 1];
       const current = ordered[i];
       if (Number(previous.round_index) + 1 !== Number(current.round_index)) break;
-      if (previous.timestamp && current.timestamp) {
-        const delta = Date.parse(current.timestamp) - Date.parse(previous.timestamp);
-        if (!Number.isFinite(delta) || delta < 0 || delta > 120000) break;
-      }
+      if (!current.continuity_verified || !previous.continuity_verified || current.gap_before) break;
+      if (String(previous.round_id) === String(current.round_id)) break;
       contiguous += 1;
     }
     const latest = ordered.at(-1) || {};

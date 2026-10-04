@@ -1,26 +1,36 @@
 {
-  "total_rounds": 17365,
-  "valid_rounds": 17365,
+  "total_rounds": 19702,
+  "valid_rounds": 19702,
   "invalid_rounds": 0,
   "duplicates": 0,
   "date_range": {
     "start": "2026-07-28T13:37:37.587000Z",
-    "end": "2026-10-03T15:32:55.862000Z"
+    "end": "2026-10-04T16:47:45.205000Z"
   },
   "min": 1.0,
   "max": 7070.88,
-  "mean": 9.144113446587964,
+  "mean": 9.226387168815346,
   "median": 1.94,
-  "count_2x_plus": 8402,
-  "rate_2x_plus": 0.48384681831269793,
+  "count_2x_plus": 9531,
+  "rate_2x_plus": 0.4837579941122729,
   "missing_values": {
     "round_id": 0,
-    "timestamp": 0,
+    "timestamp": 6562,
     "multiplier": 0
   },
   "chronological": true,
-  "timestamp_inversions": 1,
-  "collection_gaps_over_120s": 119,
-  "round_index_gaps": 1,
-  "latest_contiguous_rounds": 155
+  "timestamp_inversions": 63,
+  "collection_gaps_over_120s": 148,
+  "round_index_gaps": 12,
+  "round_index_gap_events": 12,
+  "round_index_missing_values": 28,
+  "genuine_gaps": null,
+  "verified_contiguous_rounds": 696,
+  "observed_consecutive_index_suffix": 1661,
+  "collector_gaps": 8,
+  "timestamp_anomalies": 211,
+  "timestamp_order_reversals": 63,
+  "timestamp_gaps_over_120s": 148,
+  "timestamps_missing_or_invalid": 0,
+  "latest_contiguous_rounds": 696
 }
