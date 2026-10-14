@@ -1,0 +1,311 @@
+{
+  "NO_BET": {
+    "actual_bets": 0,
+    "candidate_id": "NO_BET",
+    "ideal_settlement_assumption": false,
+    "longest_losing_sequence": 0,
+    "losses": 0,
+    "maximum_drawdown_units": 0.0,
+    "net_profit_units": 0.0,
+    "periods": {
+      "discovery": {
+        "actual_bets": 0,
+        "eligible_targets": 2578,
+        "losses": 0,
+        "net_profit_units": 0.0,
+        "return_per_unit_staked": null,
+        "trigger_opportunities": 0,
+        "wins": 0
+      },
+      "retrospective_final": {
+        "actual_bets": 0,
+        "eligible_targets": 860,
+        "losses": 0,
+        "net_profit_units": 0.0,
+        "return_per_unit_staked": null,
+        "trigger_opportunities": 0,
+        "wins": 0
+      },
+      "validation": {
+        "actual_bets": 0,
+        "eligible_targets": 859,
+        "losses": 0,
+        "net_profit_units": 0.0,
+        "return_per_unit_staked": null,
+        "trigger_opportunities": 0,
+        "wins": 0
+      }
+    },
+    "return_per_unit_staked": null,
+    "session_stop_frequency": 0.0,
+    "stake_per_bet_units": 0.0,
+    "wins": 0
+  },
+  "binary_3_010": {
+    "actual_bets": 327,
+    "candidate_id": "binary_3_010",
+    "eligible_targets": 4218,
+    "execution_sensitivity_retrospective_final": {
+      "eligible_bets": 76,
+      "scenarios": [
+        {
+          "mean_actual_bets": 72.215,
+          "mean_net_profit_units": -17.077,
+          "net_profit_95_simulation_interval": [
+            -21.0,
+            -13.0
+          ],
+          "scenario": "5% entry failures; missed entries not staked"
+        },
+        {
+          "mean_actual_bets": 68.401,
+          "mean_net_profit_units": -16.151,
+          "net_profit_95_simulation_interval": [
+            -21.0,
+            -10.0
+          ],
+          "scenario": "10% entry failures; missed entries not staked"
+        },
+        {
+          "mean_actual_bets": 76,
+          "mean_net_profit_units": -18.622,
+          "net_profit_95_simulation_interval": [
+            -22.0,
+            -18.0
+          ],
+          "scenario": "1% of winning settlements fail and are treated as losses"
+        },
+        {
+          "mean_actual_bets": 76,
+          "mean_net_profit_units": -18.58,
+          "net_profit_95_simulation_interval": [
+            -18.58,
+            -18.58
+          ],
+          "scenario": "Winning payout reduced to 1.98x; losses remain -1 unit"
+        }
+      ],
+      "simulation_replicates": 1000
+    },
+    "ideal_settlement_assumption": true,
+    "longest_losing_sequence": 3,
+    "losses": 172,
+    "maximum_drawdown_units": 25.0,
+    "net_profit_units": -17.0,
+    "periods": {
+      "discovery": {
+        "actual_bets": 203,
+        "eligible_targets": 2533,
+        "losses": 103,
+        "net_profit_units": -3.0,
+        "return_per_unit_staked": -0.014778325123152709,
+        "trigger_opportunities": 310,
+        "wins": 100
+      },
+      "retrospective_final": {
+        "actual_bets": 76,
+        "eligible_targets": 839,
+        "losses": 47,
+        "net_profit_units": -18.0,
+        "return_per_unit_staked": -0.23684210526315788,
+        "trigger_opportunities": 116,
+        "wins": 29
+      },
+      "validation": {
+        "actual_bets": 48,
+        "eligible_targets": 846,
+        "losses": 22,
+        "net_profit_units": 4.0,
+        "return_per_unit_staked": 0.08333333333333333,
+        "trigger_opportunities": 105,
+        "wins": 26
+      }
+    },
+    "return_per_unit_staked": -0.05198776758409786,
+    "session_count": 61,
+    "session_stop_frequency": 0.5901639344262295,
+    "sessions_stopped": 36,
+    "stake_per_bet_units": 1.0,
+    "target_multiplier": 2.0,
+    "trigger_opportunities": 531,
+    "wins": 155
+  },
+  "logvol_50_le_1_0": {
+    "actual_bets": 294,
+    "candidate_id": "logvol_50_le_1_0",
+    "eligible_targets": 3370,
+    "execution_sensitivity_retrospective_final": {
+      "eligible_bets": 44,
+      "scenarios": [
+        {
+          "mean_actual_bets": 41.848,
+          "mean_net_profit_units": -0.024,
+          "net_profit_95_simulation_interval": [
+            -3.0,
+            3.0
+          ],
+          "scenario": "5% entry failures; missed entries not staked"
+        },
+        {
+          "mean_actual_bets": 39.45,
+          "mean_net_profit_units": -0.036,
+          "net_profit_95_simulation_interval": [
+            -4.0,
+            4.0
+          ],
+          "scenario": "10% entry failures; missed entries not staked"
+        },
+        {
+          "mean_actual_bets": 44,
+          "mean_net_profit_units": -0.416,
+          "net_profit_95_simulation_interval": [
+            -2.0,
+            0.0
+          ],
+          "scenario": "1% of winning settlements fail and are treated as losses"
+        },
+        {
+          "mean_actual_bets": 44,
+          "mean_net_profit_units": -0.4400000000000004,
+          "net_profit_95_simulation_interval": [
+            -0.4400000000000004,
+            -0.4400000000000004
+          ],
+          "scenario": "Winning payout reduced to 1.98x; losses remain -1 unit"
+        }
+      ],
+      "simulation_replicates": 1000
+    },
+    "ideal_settlement_assumption": true,
+    "longest_losing_sequence": 3,
+    "losses": 148,
+    "maximum_drawdown_units": 22.0,
+    "net_profit_units": -2.0,
+    "periods": {
+      "discovery": {
+        "actual_bets": 208,
+        "eligible_targets": 2096,
+        "losses": 107,
+        "net_profit_units": -6.0,
+        "return_per_unit_staked": -0.028846153846153848,
+        "trigger_opportunities": 1442,
+        "wins": 101
+      },
+      "retrospective_final": {
+        "actual_bets": 44,
+        "eligible_targets": 592,
+        "losses": 22,
+        "net_profit_units": 0.0,
+        "return_per_unit_staked": 0.0,
+        "trigger_opportunities": 319,
+        "wins": 22
+      },
+      "validation": {
+        "actual_bets": 42,
+        "eligible_targets": 682,
+        "losses": 19,
+        "net_profit_units": 4.0,
+        "return_per_unit_staked": 0.09523809523809523,
+        "trigger_opportunities": 342,
+        "wins": 23
+      }
+    },
+    "return_per_unit_staked": -0.006802721088435374,
+    "session_count": 61,
+    "session_stop_frequency": 0.6885245901639344,
+    "sessions_stopped": 42,
+    "stake_per_bet_units": 1.0,
+    "target_multiplier": 2.0,
+    "trigger_opportunities": 2103,
+    "wins": 146
+  },
+  "rate_5_le_2": {
+    "actual_bets": 369,
+    "candidate_id": "rate_5_le_2",
+    "eligible_targets": 4168,
+    "execution_sensitivity_retrospective_final": {
+      "eligible_bets": 61,
+      "scenarios": [
+        {
+          "mean_actual_bets": 58.007,
+          "mean_net_profit_units": -8.531,
+          "net_profit_95_simulation_interval": [
+            -12.0,
+            -5.0
+          ],
+          "scenario": "5% entry failures; missed entries not staked"
+        },
+        {
+          "mean_actual_bets": 54.828,
+          "mean_net_profit_units": -8.108,
+          "net_profit_95_simulation_interval": [
+            -13.0,
+            -3.0
+          ],
+          "scenario": "10% entry failures; missed entries not staked"
+        },
+        {
+          "mean_actual_bets": 61,
+          "mean_net_profit_units": -9.536,
+          "net_profit_95_simulation_interval": [
+            -13.0,
+            -9.0
+          ],
+          "scenario": "1% of winning settlements fail and are treated as losses"
+        },
+        {
+          "mean_actual_bets": 61,
+          "mean_net_profit_units": -9.52,
+          "net_profit_95_simulation_interval": [
+            -9.52,
+            -9.52
+          ],
+          "scenario": "Winning payout reduced to 1.98x; losses remain -1 unit"
+        }
+      ],
+      "simulation_replicates": 1000
+    },
+    "ideal_settlement_assumption": true,
+    "longest_losing_sequence": 3,
+    "losses": 201,
+    "maximum_drawdown_units": 39.0,
+    "net_profit_units": -33.0,
+    "periods": {
+      "discovery": {
+        "actual_bets": 233,
+        "eligible_targets": 2505,
+        "losses": 129,
+        "net_profit_units": -25.0,
+        "return_per_unit_staked": -0.1072961373390558,
+        "trigger_opportunities": 1370,
+        "wins": 104
+      },
+      "retrospective_final": {
+        "actual_bets": 61,
+        "eligible_targets": 825,
+        "losses": 35,
+        "net_profit_units": -9.0,
+        "return_per_unit_staked": -0.14754098360655737,
+        "trigger_opportunities": 493,
+        "wins": 26
+      },
+      "validation": {
+        "actual_bets": 75,
+        "eligible_targets": 838,
+        "losses": 37,
+        "net_profit_units": 1.0,
+        "return_per_unit_staked": 0.013333333333333334,
+        "trigger_opportunities": 406,
+        "wins": 38
+      }
+    },
+    "return_per_unit_staked": -0.08943089430894309,
+    "session_count": 61,
+    "session_stop_frequency": 0.819672131147541,
+    "sessions_stopped": 50,
+    "stake_per_bet_units": 1.0,
+    "target_multiplier": 2.0,
+    "trigger_opportunities": 2269,
+    "wins": 168
+  }
+}

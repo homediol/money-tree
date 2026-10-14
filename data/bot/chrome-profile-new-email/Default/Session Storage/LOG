@@ -1,2 +1,12 @@
-2026/10/04-18:45:16.916 68eff Creating DB /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Session Storage since it was missing.
-2026/10/04-18:45:17.148 68eff Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Session Storage/MANIFEST-000001
+2026/10/14-19:43:21.657 5739 Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Session Storage/MANIFEST-000001
+2026/10/14-19:43:21.659 5739 Recovering log #4
+2026/10/14-19:43:21.719 5739 Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Session Storage/000004.log 
+2026/10/14-20:54:17.052 573e Level-0 table #8: started
+2026/10/14-20:54:17.348 573e Level-0 table #8: 9847 bytes OK
+2026/10/14-20:54:17.617 573e Delete type=0 #4
+2026/10/14-21:34:59.015 573e Level-0 table #10: started
+2026/10/14-21:34:59.624 573e Level-0 table #10: 9582 bytes OK
+2026/10/14-21:35:00.070 573e Delete type=0 #7
+2026/10/14-22:14:48.920 5739 Level-0 table #12: started
+2026/10/14-22:14:49.332 5739 Level-0 table #12: 9615 bytes OK
+2026/10/14-22:14:49.943 5739 Delete type=0 #9

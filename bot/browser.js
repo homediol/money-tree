@@ -82,7 +82,8 @@ export async function saveStorageState(filePath) {
 }
 
 /**
- * Get the current active page. Creates one if none exists.
+ * Get the existing shared Aviator page. This compatibility API never creates
+ * a separate page; the collector and betting adapter share the same object.
  */
 export async function getPage() {
   const supervisor = getBrowserSupervisor(_lastLaunchOptions.headless === true);

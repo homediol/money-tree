@@ -33,6 +33,10 @@ class SessionStartRequest(BaseModel):
     label: Optional[str] = Field(default=None, max_length=80)
     starting_balance: Optional[float] = Field(default=None, ge=0)
     goal_balance: Optional[float] = Field(default=None, gt=0)
+    session_loss_limit_enabled: Optional[bool] = None
+    session_loss_limit: Optional[float] = Field(default=None, gt=0)
+    win_limit_enabled: Optional[bool] = None
+    win_limit: Optional[float] = Field(default=None, gt=0)
 
     @field_validator("profile", mode="before")
     @classmethod
@@ -44,6 +48,17 @@ class SessionStartRequest(BaseModel):
         if (self.starting_balance is not None and self.goal_balance is not None
                 and self.goal_balance <= self.starting_balance):
             raise ValueError("goal_balance must be greater than starting_balance")
+        if self.session_loss_limit_enabled is True and self.session_loss_limit is None:
+            raise ValueError("session_loss_limit is required when the loss limit is enabled")
+        if self.win_limit_enabled is True:
+            if self.win_limit is not None:
+                if self.starting_balance is None:
+                    raise ValueError("starting_balance is required when setting a win limit")
+                self.goal_balance = self.starting_balance + self.win_limit
+            elif self.goal_balance is None:
+                raise ValueError("win_limit or goal_balance is required when the win limit is enabled")
+        elif self.win_limit_enabled is False:
+            self.goal_balance = None
         return self
 
 
@@ -92,7 +107,7 @@ class DecisionIntent(BaseModel):
     bet_amount: Optional[int] = Field(default=None, ge=1)
     #: 0 = first bet slot, 1 = second bet slot (double-bet UI).
     bet_slot: Literal[0, 1] = 0
-    #: Free-form provenance label, e.g. "signals/rule-17".
+    #: Free-form source label supplied by the future decision interface.
     source: Optional[str] = Field(default=None, max_length=120)
 
     @field_validator("profile", mode="before")

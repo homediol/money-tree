@@ -4,11 +4,10 @@
  * ============
  * Starts and supervises the project services in the correct order:
  *
- *  1. backend/run.py                 — legacy Flask prediction API (port 5000)
- *  2. backend/bot_api.py             — legacy FastAPI bot control API (port 5001)
+ *  1. backend/bot_api.py             — existing bot control API (port 5001)
+ *  2. round history collector       — single owned collector/browser
  *  3. backend/main.py                — Winner Predict FastAPI API (port 8000)
  *  4. frontend (vite dev)            — React dashboard (port 5173)
- *  5. aviator_enterprise/main.py     — legacy Enterprise ML API (port 8002)
  *
  * Usage: npm start, or npm run backend for only the port-8000 API.
  */
@@ -24,7 +23,6 @@ const ROOT    = path.resolve(__dirname, "..");
 const BACKEND = path.join(ROOT, "backend");
 const BOT_DIR = path.join(ROOT, "bot");
 const FRONTEND = path.join(ROOT, "frontend");
-const ENTERPRISE = path.join(ROOT, "aviator_enterprise");
 
 // The Python backend reads backend/.env itself. Share the same database
 // configuration with the Node collector so both use one PostgreSQL history.
@@ -33,7 +31,7 @@ if (fs.existsSync(backendEnv) && typeof process.loadEnvFile === "function") {
   process.loadEnvFile(backendEnv);
 }
 
-// ── Resolve Python binary (prefers root .venv with TensorFlow) ────────────
+// ── Resolve Python binary ──────────────────────────────────────────────────
 function findPython() {
   const candidates = [
     path.join(ROOT, ".venv", "bin", "python"),
@@ -72,20 +70,6 @@ const NPM_BIN        = (() => {
   const candidate = path.join(path.dirname(NODE_BIN), "npm");
   return fs.existsSync(candidate) ? candidate : "npm";
 })();
-const ENTERPRISE_PY  = (() => {
-  const candidates = [
-    path.join(ENTERPRISE, ".venv-enterprise", "bin", "python3"),
-    path.join(ENTERPRISE, ".venv-enterprise", "bin", "python"),
-    path.join(ROOT, ".venv-enterprise", "bin", "python3"),
-    path.join(ROOT, ".venv-enterprise", "bin", "python"),
-    PYTHON_BIN,
-  ];
-  for (const c of candidates) {
-    if (c.includes(path.sep) && fs.existsSync(c)) return c;
-  }
-  return PYTHON_BIN;
-})();
-
 // Winner Predict backend Python (backend/.venv has the tested deps; falls
 // back to the root .venv that ensureBackendEnvironment() keeps up to date)
 const BACKEND_PY = (() => {
@@ -130,16 +114,6 @@ function ensureBackendEnvironment() {
 // ── Service definitions ────────────────────────────────────────────────────
 const SERVICES = [
   {
-    name:    "flask",
-    cmd:     PYTHON_BIN,
-    args:    ["run.py"],
-    cwd:     BACKEND,
-    color:   "\x1b[33m",   // yellow
-    port:    5000,
-    // Give Flask 3 s to start before launching bot_api
-    delayMs: 3000,
-  },
-  {
     name:    "bot-api",
     cmd:     PYTHON_BIN,
     args:    ["bot_api.py"],
@@ -150,7 +124,7 @@ const SERVICES = [
   {
     name:    "collector",
     cmd:     NODE_BIN,
-    args:    [path.join(BOT_DIR, "roundhistory-collector.js")],
+    args:    [path.join(BOT_DIR, "collector", "lock-runner.js")],
     cwd:     BOT_DIR,
     color:   "\x1b[36m",
     restart: true,
@@ -164,17 +138,20 @@ const SERVICES = [
     port:    8000,
     healthPath: "/health",
     expectedService: "winner-predict-backend",
-    // Probe every capability the combined analytics page requires. Checking
-    // reports alone misses older workers that have reports/current but lack
-    // the progress route used by its live countdown cards.
     requiredApiPaths: [
-      "/api/analytics/progress",
-      "/api/analytics/reports?report_type=ROUND_100_REPORT&limit=1",
+      // GET against this POST-only path returns 405 when the hashed,
+      // revocable external project-token route is loaded, and 404 when the
+      // active worker predates the round-distribution API.
+      "/api/v1/projects/aviator-shadow-experiment/tokens",
       "/api/backend/capabilities",
-      "/api/opportunities/selective/v4/status",
-      "/api/opportunities/selective/v4/observer",
-      "/api/opportunities/selective/v4/live",
-      "/api/opportunities/selective/v4/experiment/status",
+      "/api/history/status",
+      "/api/rules-engine/status",
+      "/api/rules-engine/ui-setup",
+      "/api/risk/status",
+    ],
+    requiredCapabilities: [
+      "receipt_reconciliation_to_rule_session",
+      "rule_financial_stop_recovery",
     ],
     restart: true,
     // Restart only after the managed API child exits. launch() rechecks the
@@ -190,16 +167,6 @@ const SERVICES = [
     port:    5173,
     restart: true,
   },
-  {
-    name:    "enterprise",
-    cmd:     ENTERPRISE_PY,
-    // Legacy app — moved off 8000 so the Winner Predict backend owns it
-    args:    ["-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"],
-    cwd:     ENTERPRISE,
-    color:   "\x1b[34m",   // blue
-    port:    8002,
-    optional: true,
-  },
 ];
 
 // ── Process registry / supervision ─────────────────────────────────────────
@@ -210,6 +177,23 @@ const lifecyclePath = path.join(ROOT, "data", "backend_lifecycle.jsonl");
 const collectorPidPath = path.join(ROOT, "data", "bot", "collector-supervisor.json");
 
 function existingCollectorPid() {
+  // Direct `npm run collector` starts publish this heartbeat too. Verify the
+  // process identity before treating it as the existing collector owner.
+  try {
+    const health = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "bot", "status.json"), "utf8"));
+    const pid = Number(health.pid);
+    const heartbeat = Date.parse(health.heartbeatAt || "");
+    if (health.collectorRunning && Number.isInteger(pid) && pid > 1
+        && Number.isFinite(heartbeat) && Date.now() - heartbeat < 20000) {
+      process.kill(pid, 0);
+      if (process.platform !== "linux"
+          || fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("roundhistory-collector.js")) return pid;
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT" && error?.code !== "ESRCH") {
+      console.warn(`[runner] ${timestamp()} could not verify collector heartbeat: ${error.message}`);
+    }
+  }
   try {
     const status = JSON.parse(fs.readFileSync(collectorPidPath, "utf8"));
     const pid = Number(status.pid);
@@ -220,7 +204,10 @@ function existingCollectorPid() {
       if (!command.includes("roundhistory-collector.js")) return null;
     }
     return pid;
-  } catch (_) {
+  } catch (error) {
+    if (error?.code !== "ENOENT" && error?.code !== "ESRCH") {
+      console.warn(`[runner] ${timestamp()} could not verify collector sidecar: ${error.message}`);
+    }
     return null;
   }
 }
@@ -324,14 +311,20 @@ async function stopVerifiedStaleBackend(pid, svc) {
       const command = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
       return processDir === fs.realpathSync(BACKEND)
         && command.includes("uvicorn") && command.includes("main:app");
-    } catch (_) {
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ESRCH") {
+        console.warn(`[runner] ${timestamp()} could not verify backend PID ${pid}: ${error.message}`);
+      }
       return false;
     }
   };
   if (!isVerifiedBackend()) return false;
   try {
     process.kill(pid, "SIGTERM");
-  } catch (_) {
+  } catch (error) {
+    if (error?.code !== "ESRCH") {
+      console.warn(`[runner] ${timestamp()} could not stop verified backend PID ${pid}: ${error.message}`);
+    }
     return false;
   }
   // Uvicorn closes its listening socket before lifespan teardown releases the
@@ -398,7 +391,11 @@ function signalChild(child, signal) {
   try {
     if (process.platform !== "win32") process.kill(-child.pid, signal);
     else child.kill(signal);
-  } catch (_) {}
+  } catch (error) {
+    if (error?.code !== "ESRCH") {
+      console.warn(`[runner] ${timestamp()} could not signal ${child.pid}: ${error.message}`);
+    }
+  }
 }
 
 function stopAll(code = 0) {
@@ -478,18 +475,28 @@ function launch(svc, restarting = false) {
               apiPath, response: await probeJson(svc.port, apiPath, process.env.API_KEY
                 ? { Authorization: `Bearer ${process.env.API_KEY}` } : {}),
             })));
+            const capabilitiesProbe = capabilities.find(({ apiPath }) => apiPath === "/api/backend/capabilities");
+            const missingCapability = (svc.requiredCapabilities || []).find((name) =>
+              capabilitiesProbe?.response?.status === 200
+              && capabilitiesProbe.response?.data?.capabilities?.[name] !== true);
             // Probe with the configured API key so middleware cannot mask a
             // missing route as a successful 401. A 404 means the route is
             // absent; 422 means a known capability rejects its query. Timeout
             // is inconclusive and must never terminate a healthy backend.
-            const incompatible = capabilities.find(({ apiPath, response }) =>
+            const missingRoute = capabilities.find(({ apiPath, response }) =>
               response?.status === 404
               || (apiPath.includes("ROUND_100_REPORT") && response?.status === 422));
+            const incompatible = missingRoute || (missingCapability
+              ? { ...capabilitiesProbe, missingCapability }
+              : null);
             compatible = !incompatible;
             if (incompatible) {
               const { apiPath, response: capability } = incompatible;
               const stalePid = Number(health?.data?.backend?.pid);
-              console.warn(`${label(svc)} ${timestamp()} healthy backend PID ${stalePid || "unknown"} failed compatibility probe (${capability.status}) ${apiPath}; checking whether it is safe to replace`);
+              const incompatibility = capability.missingCapability
+                ? `missing capability ${capability.missingCapability}`
+                : `compatibility probe returned ${capability.status} ${apiPath}`;
+              console.warn(`${label(svc)} ${timestamp()} healthy backend PID ${stalePid || "unknown"} failed compatibility probe (${incompatibility}); checking whether it is safe to replace`);
               const stopped = await stopVerifiedStaleBackend(stalePid, svc);
               if (!stopped) {
                 console.error(`${label(svc)} ${timestamp()} OUTDATED BACKEND: HTTP health passed but compatibility probe returned ${capability.status} for ${apiPath}. It was not replaced because its PID could not be verified as this checkout's uvicorn process.`);
@@ -502,6 +509,7 @@ function launch(svc, restarting = false) {
               recordBackend("supervisor_replaced_stale_backend", {
                 pid: stalePid, port: svc.port, incompatible_probe: apiPath,
                 probe_status: capability.status,
+                missing_capability: capability.missingCapability,
                 missing_route: capability.status === 404 ? apiPath : undefined,
                 reason: capability.status === 404 ? "required_api_route_missing" : "required_api_feature_rejected",
               });
@@ -596,19 +604,18 @@ function launch(svc, restarting = false) {
   let selectedServices = apiOnly
     ? SERVICES.filter((svc) => svc.name === "backend")
     : backendOnly
-    ? SERVICES.filter((svc) => svc.name === "collector" || svc.name === "backend")
+    ? SERVICES.filter((svc) => svc.name === "backend")
     : SERVICES;
   console.log("\x1b[1m\x1b[37m╔══════════════════════════════════════╗\x1b[0m");
   console.log(apiOnly
     ? "\x1b[1m\x1b[37m║   Winner Predict — API Only            ║\x1b[0m"
     : backendOnly
     ? "\x1b[1m\x1b[37m║   Winner Predict — Backend Supervisor ║\x1b[0m"
-    : "\x1b[1m\x1b[37m║   Aviator ML — Starting All Services  ║\x1b[0m");
+    : "\x1b[1m\x1b[37m║   Winner Predict — Starting Services ║\x1b[0m");
   console.log("\x1b[1m\x1b[37m╚══════════════════════════════════════╝\x1b[0m");
   console.log(`  Python  : ${PYTHON_BIN}`);
   console.log(`  Node    : ${NODE_BIN}`);
   console.log(`  npm     : ${NPM_BIN}`);
-  console.log(`  Ent. Py : ${ENTERPRISE_PY}`);
   console.log("");
 
   const backendPython = ensureBackendEnvironment();
@@ -631,7 +638,7 @@ function launch(svc, restarting = false) {
     console.warn(`[runner] ${timestamp()} leaving verified existing collector ownership intact (pid ${collectorPid})`);
   }
   for (const svc of selectedServices) {
-    if (svc.name === "flask" || svc.name === "bot-api") {
+    if (svc.name === "bot-api") {
       svc.cmd = backendPython;
     }
   }

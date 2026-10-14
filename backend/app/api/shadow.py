@@ -40,8 +40,6 @@ async def current(request: Request): return {"ok": True, "trade": next(iter(shad
 async def metrics(request: Request): return {"ok": True, "metrics": shadow(request).status()}
 @router.get("/trades")
 async def trades(request: Request, limit: int = 100): return {"ok": True, "trades": request.app.state.wp.repository.list_shadow_trades(limit=min(max(limit, 1), 500))}
-@router.get("/predictions")
-async def predictions(request: Request, limit: int = 50): return {"ok": True, "predictions": request.app.state.wp.repository.list_ml_predictions(limit)}
 @router.get("/sessions")
 async def sessions(request: Request, limit: int = 50): return {"ok": True, "sessions": request.app.state.wp.repository.list_shadow_sessions(limit)}
 @router.get("/sessions/{session_id}")

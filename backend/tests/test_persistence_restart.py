@@ -25,27 +25,13 @@ def _rounds(count: int = 150) -> list[dict]:
     ]
 
 
-def test_collector_ml_and_execution_state_survive_three_restarts(tmp_path):
+def test_history_risk_and_execution_state_survive_three_restarts(tmp_path):
     db_path = tmp_path / "restart.sqlite3"
     repository = _repo(db_path)
-    repository.upsert_rounds(_rounds(150))
-    first_state = repository.rebuild_collector_state(required_rounds=100, collector_session_id="session-a")
-    repository.save_readiness_snapshot({
-        "history": {"total_rounds": 150, "continuous_rounds": 150, "required_rounds": 100},
-        "ml": {"status": "NOT_DEPLOYABLE", "model_id": "candidate-1"},
-        "overall": {"status": "WARMING_UP", "reasons": []},
-        "updated_at": "2026-09-26T12:30:00+00:00",
-    }, restored=True)
-    repository.save_model_candidate({
-        "model_version": "candidate-1",
-        "algorithm": "extra_trees",
-        "validation_folds": [{"fold": 1, "passed": False}],
-        "metrics": {"brier_score": 0.24},
-        "rejection_reason": "failed_baseline_gate",
-        "deployment_status": "NOT_DEPLOYABLE",
-        "next_evaluation_checkpoint": 150,
-        "updated_at": "2026-09-26T12:30:00+00:00",
-    })
+    rounds = _rounds(150)
+    repository.upsert_rounds(rounds)
+    first_state = repository.rebuild_collector_state(
+        required_rounds=100, collector_session_id="session-a")
     repository.save_application_state("risk_runtime", {
         "selected_profile": "PROFILE_B",
         "emergency_latched": True,
@@ -73,21 +59,16 @@ def test_collector_ml_and_execution_state_survive_three_restarts(tmp_path):
 
     for restart in range(3):
         restarted = _repo(db_path)
-        restarted.upsert_rounds(_rounds(150))
-        state = restarted.rebuild_collector_state(required_rounds=100, collector_session_id=f"session-{restart}")
-        candidates = restarted.list_model_candidates()
+        state = restarted.rebuild_collector_state(
+            required_rounds=100, collector_session_id=f"session-{restart}")
         recovered_execution = restarted.execution_for("decision-1", "151")
         reconciled = restarted.reconcile_incomplete_executions()
         after_reconcile = restarted.execution_for("decision-1", "151")
 
-        assert state["contiguous_rounds"] == 0
-        assert state["warmup_status"] == "WARMING_UP"
         assert state["total_history"] == 150
         assert len(restarted.load_rounds()) == 150
-        assert restarted.load_readiness_snapshot()["restored_from_persistence"] is True
-        assert candidates[0]["model_version"] == "candidate-1"
-        assert candidates[0]["metrics"]["brier_score"] == 0.24
         assert restarted.load_application_state("risk_runtime")["selected_profile"] == "PROFILE_B"
+        assert restarted.load_application_state("risk_runtime")["emergency_latched"] is True
         assert recovered_execution["execution_id"] == "exec-1"
         assert restarted.create_execution({**execution, "execution_id": f"exec-restart-{restart}"}) is False
         assert reconciled in {0, 1}

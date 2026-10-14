@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,3 +31,18 @@ def test_cleanup_is_bounded_and_incident_state_is_observable(tmp_path):
     operations = OperationsManager(app)
     assert operations.cleanup()["system_audit_log"] == 0
     assert operations.incidents == []
+
+
+def test_resource_metrics_and_unavailable_dependency_are_explicit(tmp_path, monkeypatch):
+    app, _repo = make_app(tmp_path)
+    operations = OperationsManager(app)
+    available = operations._resource()
+    assert isinstance(available["cpu_percent"], (int, float))
+    assert isinstance(available["memory_percent"], (int, float))
+    assert available["disk_free_bytes"] >= 0
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    unavailable = operations._resource()
+    assert unavailable["cpu_percent"] is None
+    assert unavailable["memory_percent"] is None
+    assert unavailable["disk_free_bytes"] is None
+    assert "resource metrics unavailable" in unavailable["error"]

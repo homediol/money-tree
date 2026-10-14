@@ -1,0 +1,41 @@
+{
+  "extracted_at_utc": "2026-10-06T21:50:44.081995+00:00",
+  "database": "winner_predict (local socket /var/run/postgresql)",
+  "table": "public.aviator_rounds",
+  "extraction_query": "SELECT id, round_id, round_index, multiplier, timestamp, platform_timestamp, observed_at, stored_at, source, round_identity_type, round_index_source, continuity_verified, gap_before, continuity_proof, platform_round_id, platform_round_index, local_round_index, identity_confidence FROM aviator_rounds ORDER BY round_index, id",
+  "extraction_boundary": "entire table, all sources, no WHERE filter",
+  "table_row_count": 22373,
+  "extracted_row_count": 22373,
+  "source_counts": {
+    "collector": 7564,
+    "collector_catchup": 1596,
+    "legacy_import": 13213
+  },
+  "database_size_bytes": 184268467,
+  "raw_rounds_csv_sha256": "4a905837bc07dc2333cbfb9f237a192c10dcfec30dfef84d93cdfa2c36ff9387",
+  "columns": [
+    "id",
+    "round_id",
+    "round_index",
+    "multiplier",
+    "timestamp",
+    "platform_timestamp",
+    "observed_at",
+    "stored_at",
+    "source",
+    "round_identity_type",
+    "round_index_source",
+    "continuity_verified",
+    "gap_before",
+    "continuity_proof",
+    "platform_round_id",
+    "platform_round_index",
+    "local_round_index",
+    "identity_confidence"
+  ],
+  "notes": [
+    "Snapshot is immutable evidence; cleaning happens downstream in 02_audit_clean.py.",
+    "round_index is a local collector sequence (round_index_source=LOCAL_SEQUENCE),",
+    "not a verified platform identifier for legacy_import rows."
+  ]
+}

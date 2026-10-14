@@ -22,8 +22,11 @@ from app.betting.browser_adapters import (
     RealBrowserBackend,
     SimulationBackend,
 )
-from app.betting.browser_client import AviatorBrowserClient, CdpSession, BrowserUnreachable, Target
-from app.betting.selectors import GameSnapshot, SNAPSHOT, parse_amount
+from app.betting.browser_client import AviatorBrowserClient, CdpSession, BrowserUiError, BrowserUnreachable, Target
+from app.betting.selectors import (
+    GAME_DOCUMENT_PROBE, READ_BALANCE, SET_AUTO_CASHOUT, SET_STAKE_INPUT,
+    GameSnapshot, SNAPSHOT, parse_amount,
+)
 from app.betting.config import BettingSettings
 from app.betting.events import betting_event, ledger_event, notice_event, state_event
 from app.betting.profiles import PROFILES, profile_keys
@@ -122,8 +125,223 @@ def test_cdp_evaluate_targets_an_explicit_frame_context():
 def test_snapshot_queries_directly_inside_aviator_next_context():
     assert "const d = document" in SNAPSHOT
     assert "d.querySelectorAll('.payouts-block .payout')" in SNAPSHOT
-    assert "d.querySelectorAll('.bet-block')" in SNAPSHOT
+    assert "d.querySelectorAll('app-bet-control')" in SNAPSHOT
+    assert "panel.querySelector('.bet-block')" in SNAPSHOT
+    assert r"/^Bet\b/i.test(buttonText)" in SNAPSHOT
+    assert "pending_bet_state: pendingBetState" in SNAPSHOT
     assert "d.querySelectorAll('.btn-success.bet')" in SNAPSHOT
+    assert "[role=\"alert\"]" in SNAPSHOT
+    assert ".btn-success.bet" not in SET_AUTO_CASHOUT
+    assert ".btn-success.bet" not in SET_STAKE_INPUT
+
+
+def test_provider_session_auth_is_hashed_and_login_prompt_takes_precedence():
+    frame = Target("frame", "iframe",
+        "https://aviaport.spribegaming.com/aviator?token=private-token&user=private-user", "ws://unused")
+    state, identity = AviatorBrowserClient._provider_authentication(
+        frame, {"authenticationState": "UNKNOWN"}, {"loginPromptVisible": False},
+    )
+    assert state == "AUTHENTICATED"
+    assert identity and "private-token" not in identity and "private-user" not in identity
+    assert AviatorBrowserClient._provider_authentication(
+        frame, {"authenticationState": "UNKNOWN"}, {"loginPromptVisible": True},
+    ) == ("AUTH_REQUIRED", None)
+
+
+def test_mock_ui_practice_configures_cashout_and_stake_without_bet_submission():
+    async def go():
+        state = {
+            "cashout_value": "1.10", "cashout_enabled": False,
+            "auto_selected": False, "stake": "200", "alerts": [],
+        }
+
+        class MockPageSession:
+            calls = []
+
+            async def evaluate(self, expression, **kwargs):
+                self.calls.append(expression)
+                assert kwargs.get("context_id") == 77
+                assert ".btn-success.bet" not in expression
+                if ".cash-out-switcher .input-switch" in expression:
+                    state.update(cashout_value="2.00", cashout_enabled=True,
+                                 auto_selected=True)
+                    return {"ok": True, "autoTabClicked": True, "toggleClicked": True,
+                            "displayedValue": "2.00", "platformAcknowledged": None}
+                if ".bet-block input[type=\"text\"]" in expression:
+                    state["stake"] = "100"
+                    return {"ok": True, "displayedValue": "100"}
+                raise AssertionError("unexpected UI interaction")
+
+        client = AviatorBrowserClient(fast_settings())
+        page = Target("bet-page", "page",
+                      "https://winner.rw/en/virtual/crash-games/aviator", "ws://bet-page")
+        frame = Target("game-frame", "iframe",
+                       "https://aviaport.spribegaming.com/aviator", "ws://game-frame", "bet-page")
+        targets = [page, frame]
+        client._discover = lambda: (setattr(client, "_target_cache", targets) or targets)
+        client._browser_page_roles = lambda: {
+            "browser_count": 1, "context_count": 1, "page_count": 1,
+            "aviator_page_count": 1, "aviator_target_id": "bet-page",
+            "aviator_page_state": "OPEN", "game_frame_state": "READY",
+        }
+        client.readiness = lambda: _ready_betting()
+        session = MockPageSession()
+        client._connect_session = lambda: _session(session)
+        client._game_context = lambda _session: _context(77)
+
+        async def snapshot():
+            value = GameSnapshot.from_value({
+                "ok": True, "betPanel": True, "betTabActive": True,
+                "stakeInputs": [{"slot": 0, "placeholder": "100", "value": state["stake"],
+                                 "visible": True, "minAttribute": None},
+                                {"slot": 1, "placeholder": "100", "value": "200",
+                                 "visible": True, "minAttribute": None}],
+                "placeBetButtons": [{"slot": 0, "associatedPanel": 0,
+                                     "selector": ".btn-success.bet", "text": "Bet 200 BIF",
+                                     "visible": True, "disabled": False},
+                                    {"slot": 1, "associatedPanel": 1,
+                                     "selector": ".btn-success.bet", "text": "Bet 200 BIF",
+                                     "visible": True, "disabled": False}],
+                "cashoutControls": [{"slot": 0, "displayedValue": state["cashout_value"],
+                                     "autoCashoutEnabled": state["cashout_enabled"],
+                                     "autoBetEnabled": False,
+                                     "autoTabSelected": state["auto_selected"],
+                                     "inputVisible": state["auto_selected"],
+                                     "autoTabVisible": True, "platformAcknowledged": None},
+                                    {"slot": 1, "displayedValue": "1.10",
+                                     "autoCashoutEnabled": False, "autoBetEnabled": False,
+                                     "autoTabSelected": False, "inputVisible": False,
+                                     "autoTabVisible": True, "platformAcknowledged": None}],
+                "bettingWindow": {"evidence": {
+                    "source": "AVIATOR_BETTING_PANEL_READ_ONLY",
+                    "selector": ".btn-success.bet", "panel_index": 0,
+                    "button_visible": True,
+                    "button_enabled": True, "stake_input_visible": True, "bet_tab_active": True,
+                }},
+                "betPanelStates": [{"slot": 0,
+                    "source": "AVIATOR_BETTING_PANEL_READ_ONLY",
+                    "selector": ".btn-success.bet", "panel_index": 0,
+                    "button_visible": True, "button_enabled": True,
+                    "stake_input_visible": True, "bet_tab_active": True,
+                    "pending_bet_state": "CLEAR"},
+                    {"slot": 1, "source": "AVIATOR_BETTING_PANEL_READ_ONLY",
+                     "selector": ".btn-success.bet", "panel_index": 1,
+                     "button_visible": True, "button_enabled": True,
+                     "stake_input_visible": True, "bet_tab_active": True,
+                     "pending_bet_state": "CLEAR"}],
+                "statusMessages": state["alerts"],
+                "balanceText": "28 BIF",
+            })
+            value.authentication_state = "AUTHENTICATED"
+            value.page_role = "SHARED_AVIATOR"
+            value.browser_topology_verified = True
+            value.provider_identity = "winner.rw"
+            value.session_identity = "mock-session"
+            value.balance_observed_at = "2026-10-14T00:00:00+00:00"
+            return value
+
+        client.snapshot = snapshot
+        async def _ready_betting():
+            return {"connected": True, "stage": "ready",
+                    "authentication_state": "AUTHENTICATED",
+                    "page_role": "SHARED_AVIATOR", "browser_topology_verified": True}
+        async def _session(value): return value
+        async def _context(value): return value
+
+        cashout = await client.set_auto_cashout(2.00, panel=0)
+        stake = await client.set_stake_input(100, panel=0)
+        button = await client.detect_bet_button(panel=0)
+        window = await client.detect_betting_window(panel=0)
+        state["alerts"] = [{"text": "Insufficient balance. Please enter a lower stake."}]
+        insufficient = await client.detect_insufficient_balance()
+        balance = await client.read_verified_balance()
+        stake_details = await client.read_stake_input(panel=0)
+
+        assert cashout["ok"] is True
+        assert cashout["verified"] is False
+        assert cashout["platform_acknowledged"] is None
+        assert stake["ok"] is True and stake["readback_accepted"] is True
+        assert stake["input"]["value"] == "100"
+        assert stake_details["minimum_stake_evidence"]["platform_enforcement_verified"] is False
+        assert button["detected"] is True and button["interaction_performed"] is False
+        assert window["state"] == "BETTING_OPEN"
+        assert insufficient["detected"] is True
+        assert insufficient["source"] == "OBSERVED_ALERT_TEXT"
+        assert balance["verified"] is True
+        assert len(session.calls) == 2
+        return session.calls
+
+    calls = _run(go())
+    assert len(calls) == 2
+
+
+def test_ui_practice_mutations_block_on_unverified_history_page():
+    async def go():
+        client = AviatorBrowserClient(fast_settings())
+        client.snapshot = lambda: _snapshot_with_controls()
+        client.readiness = lambda: _unknown_history_readiness()
+        client._connect_session = lambda: pytest.fail("unverified page must not be mutated")
+
+        with pytest.raises(BrowserUiError, match="AUTHENTICATED_SHARED_AVIATOR_PAGE"):
+            await client.set_auto_cashout(2.00)
+        with pytest.raises(BrowserUiError, match="AUTHENTICATED_SHARED_AVIATOR_PAGE"):
+            await client.set_stake_input(100)
+        with pytest.raises(BrowserUiError, match="CASHOUT_TARGET_MUST_EQUAL_2_00"):
+            await client.set_auto_cashout(1.50)
+
+    async def _snapshot_with_controls():
+        return GameSnapshot.from_value({"ok": True, "cashoutControls": [
+            {"slot": 0, "autoTabVisible": True, "displayedValue": "1.10"}],
+            "stakeInputs": [{"slot": 0, "visible": True, "value": "200"}]})
+    async def _unknown_history_readiness():
+        return {"connected": True, "stage": "ready", "authentication_state": "UNKNOWN",
+                "page_role": "SHARED_AVIATOR", "browser_topology_verified": False}
+
+    _run(go())
+
+
+def test_browser_reconnect_uses_new_collector_owned_frame(monkeypatch):
+    class FakeCdpSession:
+        def __init__(self, ws_url, settings):
+            self.ws_url = ws_url
+            self.settings = settings
+            self.connected = False
+            self.closed = False
+
+        async def connect(self):
+            self.connected = True
+
+        async def close(self):
+            self.closed = True
+            self.connected = False
+
+    monkeypatch.setattr("app.betting.browser_client.CdpSession", FakeCdpSession)
+
+    async def go():
+        client = AviatorBrowserClient(fast_settings())
+        aviator = Target("aviator", "page", "https://winner.rw/en/virtual/crash-games/aviator", "ws://aviator")
+        new_frame = Target("new-frame", "iframe", "https://aviaport.spribegaming.com/aviator",
+                           "ws://new-frame", "aviator")
+        targets = [aviator, new_frame]
+        client._discover = lambda: (setattr(client, "_target_cache", targets) or targets)
+        client._browser_page_roles = lambda: {
+            "browser_count": 1, "context_count": 1, "page_count": 1,
+            "aviator_page_count": 1, "aviator_target_id": "aviator",
+            "aviator_page_state": "OPEN", "game_frame_state": "READY",
+        }
+        old = FakeCdpSession("ws://old-frame", fast_settings())
+        old.connected = True
+        client._session = old
+        client._frame_target_id = "old-frame"
+
+        session = await client._connect_session()
+
+        assert old.closed is True
+        assert session.ws_url == "ws://new-frame"
+        assert session.connected is True
+        assert client._frame_target_id == "new-frame"
+
+    _run(go())
 
 
 def test_nested_aviator_frame_is_found_in_cdp_frame_tree():
@@ -133,9 +351,40 @@ def test_nested_aviator_frame_is_found_in_cdp_frame_tree():
     assert AviatorBrowserClient._find_frame(tree, "aviator-next")["id"] == "game"
 
 
-def test_browser_target_resolution_pairs_game_frame_with_selected_page():
+def test_nested_aviator_frame_attach_retries_transient_empty_frame_tree():
+    class DelayedFrameSession:
+        def __init__(self):
+            self.frame_tree_reads = 0
+
+        async def call(self, method, params=None):
+            if method == "Page.enable":
+                return {}
+            if method == "Page.getFrameTree":
+                self.frame_tree_reads += 1
+                child_frames = []
+                if self.frame_tree_reads >= 3:
+                    child_frames = [{"frame": {
+                        "id": "nested-game", "url": "https://aviator-next.spribegaming.com/",
+                    }}]
+                return {"frameTree": {"frame": {"id": "outer", "url": "https://aviaport.spribegaming.com"},
+                                       "childFrames": child_frames}}
+            if method == "Page.createIsolatedWorld":
+                return {"executionContextId": 77}
+            raise AssertionError(f"unexpected CDP method: {method}")
+
+    async def go():
+        client = AviatorBrowserClient(fast_settings())
+        session = DelayedFrameSession()
+        context_id = await client._game_context(session)
+        assert context_id == 77
+        assert session.frame_tree_reads == 3
+
+    _run(go())
+
+
+def test_browser_target_resolution_uses_only_authoritative_shared_aviator_page():
     client = AviatorBrowserClient(BettingSettings())
-    client._discover = lambda: [
+    targets = [
         Target("page-a", "page", "https://winner.rw/aviator", "ws://page-a"),
         Target("frame-b", "iframe", "https://aviaport.spribegaming.com/aviator",
                "ws://frame-b", "page-b"),
@@ -143,21 +392,104 @@ def test_browser_target_resolution_pairs_game_frame_with_selected_page():
         Target("frame-a", "iframe", "https://aviaport.spribegaming.com/aviator",
                "ws://frame-a", "page-a"),
     ]
+    client._discover = lambda: (setattr(client, "_target_cache", targets) or targets)
+    client._browser_page_roles = lambda: {}
+    assert client.resolve_targets() == (None, None)
+    client._browser_page_roles = lambda: {
+        "browser_count": 1, "context_count": 1, "page_count": 1,
+        "aviator_page_count": 1, "aviator_target_id": "page-a",
+        "aviator_page_state": "OPEN", "game_frame_state": "READY",
+    }
     page, frame = client.resolve_targets()
     assert page.id == "page-a"
     assert frame.id == "frame-a"
+    assert client._selected_page_role == "SHARED_AVIATOR"
+    assert client._topology_verified() is False, "two game targets must block shared topology"
 
 
-def test_real_placement_enables_cashout_but_keeps_repeat_betting_off():
-    import inspect
+def test_browser_target_resolution_requires_shared_page_identity_and_does_not_guess():
+    client = AviatorBrowserClient(BettingSettings())
+    page = Target("history-page", "page",
+                  "https://winner.rw/en/virtual/crash-games/aviator", "ws://history-page")
+    frame = Target("game-frame", "iframe",
+                   "https://aviaport.spribegaming.com/aviator", "ws://game-frame",
+                   "history-page")
+    targets = [page, frame]
+    client._discover = lambda: (setattr(client, "_target_cache", targets) or targets)
+    client._browser_page_roles = lambda: {
+        "browser_count": 1, "context_count": 1, "page_count": 1,
+        "aviator_page_count": 1, "aviator_target_id": "history-page",
+        "aviator_page_state": "OPEN", "game_frame_state": "READY",
+    }
 
-    source = inspect.getsource(AviatorBrowserClient.place_bet)
-    assert ".cash-out-switcher .input-switch" in source
-    assert ".cashout-spinner input" in source
-    assert ".auto-bet .input-switch" in source
-    assert "autoBet:false" in source
-    assert "execCommand('insertText'" in source
-    assert "stake model verification failed" in source
+    selected, selected_frame = client.resolve_targets()
+
+    assert selected is page
+    assert selected_frame is frame
+    assert client._selected_page_role == "SHARED_AVIATOR"
+    assert client._topology_verified() is True
+
+
+def test_browser_target_resolution_does_not_guess_when_no_recorded_page_is_open():
+    client = AviatorBrowserClient(BettingSettings())
+    targets = [Target("unassigned", "page", "https://winner.rw/aviator", "ws://unassigned")]
+    client._discover = lambda: (setattr(client, "_target_cache", targets) or targets)
+    client._browser_page_roles = lambda: {
+        "browser_count": 1, "context_count": 1, "page_count": 1,
+        "aviator_page_count": 0, "aviator_target_id": "closed-aviator",
+        "aviator_page_state": "CLOSED", "game_frame_state": "NOT_READY",
+    }
+
+    assert client.resolve_targets() == (None, None)
+
+
+def test_browser_readiness_reports_shared_aviator_page_topology():
+    page = Target("history-page", "page",
+                  "https://winner.rw/en/virtual/crash-games/aviator", "ws://history-page")
+    frame = Target("game-frame", "iframe",
+                   "https://aviaport.spribegaming.com/aviator", "ws://game-frame",
+                   "history-page")
+    targets = [page, frame]
+
+    class ReadOnlySession:
+        async def evaluate(self, expression, **kwargs):
+            if expression == READ_BALANCE:
+                return {"ok": True, "text": "1,234 USD", "authenticationState": "AUTHENTICATED"}
+            if expression == GAME_DOCUMENT_PROBE:
+                return {"ok": True, "url": "https://aviator-next.spribegaming.com/"}
+            raise AssertionError("unexpected browser expression")
+
+    client = AviatorBrowserClient(BettingSettings())
+    client._discover = lambda: (setattr(client, "_target_cache", targets) or targets)
+    client._browser_page_roles = lambda: {
+        "browser_count": 1, "context_count": 1, "page_count": 1,
+        "aviator_page_count": 1, "aviator_target_id": "history-page",
+        "aviator_page_state": "OPEN", "game_frame_state": "READY",
+    }
+
+    async def connect_read_only():
+        return ReadOnlySession()
+
+    async def game_context(_session):
+        return 17
+
+    client._connect_session = connect_read_only
+    client._game_context = game_context
+    result = _run(client.readiness())
+
+    assert result["connected"] is True
+    assert result["stage"] == "ready"
+    assert result["page_found"] is True
+    assert result["game_found"] is True
+    assert result["page_role"] == "SHARED_AVIATOR"
+    assert result["browser_topology_verified"] is True
+
+
+def test_low_level_browser_bet_action_is_disabled_until_separate_authorization():
+    client = AviatorBrowserClient(BettingSettings())
+    client._connect_session = lambda: pytest.fail("disabled method must not open the browser")
+    with pytest.raises(BrowserUiError, match="REAL_MONEY_EXECUTION_DISABLED"):
+        asyncio.run(client.place_bet(amount_bif=100, cashout=2.0, slot=0))
 
 
 @pytest.mark.parametrize(("text", "expected"), [
@@ -528,6 +860,32 @@ def test_real_backend_never_clicks_without_platform_receipt_verification():
     _run(go())
 
 
+def test_real_backend_passes_server_execution_id_to_final_gate():
+    class ReadyBrowser:
+        settings = SimpleNamespace(cdp_http="http://127.0.0.1:9222")
+
+        async def readiness(self):
+            return {"connected": True, "stage": "ready"}
+
+    seen = {}
+
+    async def gate(_intent, *, execution_id=None):
+        seen["execution_id"] = execution_id
+        return {"allowed": False, "reasons": ["test_block"]}
+
+    async def go():
+        backend = RealBrowserBackend(ReadyBrowser(), allow_real_placement=True,
+                                     execution_gate=gate)
+        with pytest.raises(PlacementUnavailable) as exc:
+            await backend.place(amount_bif=500, target_multiplier=2.0,
+                                bet_slot=0, decision_id="d-current",
+                                intent=SimpleNamespace(), execution_id="server-execution")
+        assert exc.value.reason == "final_safety_gate_blocked"
+        assert seen["execution_id"] == "server-execution"
+
+    _run(go())
+
+
 def test_snapshot_missing_balance_is_unknown_not_zero():
     snap = GameSnapshot.from_value({"ok": True, "balanceText": ""})
     assert snap.balance is None
@@ -689,7 +1047,9 @@ def test_api_decision_while_idle_conflict_409():
     r = _run(_api_call(go))
     assert r.status_code == 409
     body = r.json()
-    assert body["error"] == "session_not_running"
+    assert body["error"] == "rules_engine_not_configured"
+    assert body["decision"] == "NO_ACTION"
+    assert body["automatic_execution"] == "OFF"
 
 
 def test_api_ledger_empty_when_no_session():
@@ -708,59 +1068,44 @@ def test_api_stop_without_session_conflict_409():
     assert r.json()["error"] == "session_not_running"
 
 
-def test_api_sim_e2e_start_decide_resolve_stop():
+def test_api_simulation_decision_fails_closed_until_rules_are_configured():
     async def go(client):
         r = await client.post("/api/betting/session", json={
             "action": "start", "mode": "SIMULATION", "profile": "PROFILE_A",
-            "max_rounds": 1})
+        })
         assert r.status_code == 200
         started = r.json()["status"]
         assert started["mode"] == "SIMULATION"
         assert started["simulated"] is True
 
-        client.authorize("d-api-1", "round-api-1")
-
         r = await client.post("/api/betting/decisions", json={
             "decision_id": "d-api-1", "round_id": "round-api-1", "profile": "PROFILE_A",
             "target_multiplier": 2.0})
-        assert r.status_code == 200
-        entry = r.json()["entry"]
-        assert entry["status"] == "placed"
-        assert entry["simulated"] is True
+        assert r.status_code == 409
+        assert r.json()["error"] == "rules_engine_not_configured"
+        assert r.json()["decision"] == "NO_ACTION"
+        assert r.json()["automatic_execution"] == "OFF"
+        assert (await client.get("/api/betting/ledger")).json()["entries"] == []
 
-        # Poll until the scripted round resolves and the session auto-stops.
-        for _ in range(400):
-            entries = (await client.get("/api/betting/ledger")).json()["entries"]
-            if entries and entries[0]["status"] == "resolved":
-                break
-            await asyncio.sleep(0.02)
-        assert entries[0]["crash_point"] == MIN_CRASH_1
-        assert entries[0]["pnl_bif"] == -500
-        assert entries[0]["note"] == "lost"
-
-        for _ in range(100):
-            st = (await client.get("/api/betting/status")).json()["status"]
-            if st["state"] in ("STOPPED", "ERROR"):
-                break
-            await asyncio.sleep(0.02)
-        assert st["state"] == "STOPPED"
-        assert st["stop_reason"] == "max_rounds"
-        assert st["running_pnl_bif"] == -500
+        stopped = await client.post("/api/betting/session", json={"action": "stop"})
+        assert stopped.status_code == 200
+        await _wait_task(client.manager.session._task)
     _run(_api_call(go))
 
 
-def test_api_duplicate_decision_conflict_409():
+def test_api_repeated_decision_attempts_remain_blocked_without_rules():
     async def go(client):
         await client.post("/api/betting/session", json={
             "action": "start", "mode": "SIMULATION", "profile": "PROFILE_A"})
 
         payload = {"decision_id": "d-api-dup", "round_id": "round-api-dup", "profile": "PROFILE_A",
                    "target_multiplier": 2.0}
-        client.authorize("d-api-dup", "round-api-dup")
-        assert (await client.post("/api/betting/decisions", json=payload)).status_code == 200
-        r = await client.post("/api/betting/decisions", json=payload)
-        assert r.status_code == 409
-        assert r.json()["error"] == "duplicate_decision"
+        first = await client.post("/api/betting/decisions", json=payload)
+        second = await client.post("/api/betting/decisions", json=payload)
+        assert first.status_code == 409
+        assert second.status_code == 409
+        assert first.json()["error"] == second.json()["error"] == "rules_engine_not_configured"
+        assert (await client.get("/api/betting/ledger")).json()["entries"] == []
 
         r = await client.post("/api/betting/session", json={"action": "stop"})
         assert r.status_code == 200

@@ -26,7 +26,6 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 STATUS_DIR = ROOT_DIR / "data" / "bot"
 STATUS_PATH = STATUS_DIR / "status.json"
 CONFIG_PATH = ROOT_DIR / "data" / "bot" / "config.json"
-DECISIONS_PATH = ROOT_DIR / "decisions.json"
 HOME_URL = "https://winner.rw"
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -71,6 +70,19 @@ def log(msg: str) -> None:
 def _is_aviator_url(url: str) -> bool:
     value = (url or "").lower()
     return "aviator" in value or "crash-games" in value or "/crash" in value
+
+
+def _pid_is_alive(pid: Any) -> bool:
+    try:
+        value = int(pid)
+        if value <= 1:
+            return False
+        os.kill(value, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (PermissionError, ValueError, TypeError):
+        return False
 
 
 def _is_access_denied_page(page) -> bool:
@@ -232,28 +244,32 @@ def run_bot(phone: str, password: str, headless: bool = False) -> None:
     """
     log(f"Starting bot for phone {phone} (headless={headless})")
 
-    write_status({
-        "status": "starting",
-        "phone": phone,
-        "headless": headless,
-        "updated_at": now_iso(),
-        "rounds_seen": 0,
-        "last_round": None,
-    })
-
     try:
+        existing_status = read_json(STATUS_PATH, {}) or {}
+        owner_pid = existing_status.get("pid")
+        if existing_status.get("collectorRunning") is True and _pid_is_alive(owner_pid):
+            raise RuntimeError("SHARED_AVIATOR_COLLECTOR_ALREADY_RUNNING")
+        write_status({
+            "status": "starting",
+            "phone": phone,
+            "headless": headless,
+            "updated_at": now_iso(),
+            "rounds_seen": 0,
+            "last_round": None,
+        })
         pw, browser = _start_playwright(headless=headless)
 
-        context = next(
-            (ctx for ctx in browser.contexts if any(_is_aviator_url(page.url) for page in ctx.pages)),
-            browser.contexts[0] if browser.contexts else None,
-        )
-        if context is None:
-            raise RuntimeError("Connected browser has no usable context")
-
-        page = next((p for p in context.pages if _is_aviator_url(p.url)), None)
-        if page is None:
-            page = context.new_page()
+        contexts = list(browser.contexts)
+        if len(contexts) != 1:
+            raise RuntimeError(f"SHARED_AVIATOR_CONTEXT_COUNT_INVALID:{len(contexts)}")
+        context = contexts[0]
+        pages = [p for p in context.pages if not p.is_closed()]
+        aviator_pages = [p for p in pages if _is_aviator_url(p.url)]
+        if aviator_pages:
+            raise RuntimeError("LEGACY_BOT_REFUSES_TO_NAVIGATE_EXISTING_AVIATOR_TAB; use the shared collector")
+        if len(pages) != 1:
+            raise RuntimeError(f"SHARED_AVIATOR_INITIAL_PAGE_AMBIGUOUS:{len(pages)}")
+        page = pages[0]
 
         # ── Step 1: Navigate to login ──
         log("Navigating to login page...")

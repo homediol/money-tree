@@ -1,9 +1,5 @@
-# Winner Predict full stack (FastAPI backend + React/Vite frontend).
-# The repo also contains a legacy Flask app (backend/utils.py era) and the
-# aviator_enterprise sibling app; those are NOT part of this compose file.
-#
-# Note: `npm start` runs the legacy aviator_enterprise app on port 8002, so
-# it no longer collides with this stack (8000 is owned by the backend).
+# Winner Predict dashboard services (FastAPI backend + React/Vite frontend).
+# Run the real round collector separately with `npm run collector`.
 services:
   backend:
     image: python:3.11-slim

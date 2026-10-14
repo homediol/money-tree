@@ -3,7 +3,7 @@
 A profile only constrains *how* a received decision may be executed (amount
 limits, default cash-out target). The betting module never decides *what* to
 bet — target multipliers arrive in the decision contract from an external
-strategy/signals layer.
+decision interface.
 """
 from __future__ import annotations
 

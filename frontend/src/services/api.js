@@ -8,27 +8,13 @@ import {
 import { getApiBaseUrl } from './endpoints.js';
 import { safeReadRetryDelay, shouldRetryReadFailure } from './readRetryPolicy.js';
 
-export { getApiBaseUrl } from './endpoints.js';
-
-export const API_READ_RETRY_EVENT = 'winner:api-read-retry';
-export const API_READ_RETRY_DONE_EVENT = 'winner:api-read-retry-done';
-
-function announceRetry(eventName, detail) {
-  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(eventName, { detail }));
-}
-
-export const api = axios.create({
-  baseURL: getApiBaseUrl(),
-  timeout: 20000,
-});
+export const api = axios.create({ baseURL: getApiBaseUrl(), timeout: 20000 });
 
 api.interceptors.request.use((config) => {
   const retryingSafeRead = config.__allowReadDuringReconnect
     && String(config.method || 'get').toLowerCase() === 'get';
   if (!backendRequestsAllowed() && config.url !== '/health' && !retryingSafeRead) {
-    const error = new axios.AxiosError(
-      'Backend is reconnecting', 'ERR_BACKEND_RECONNECTING', config,
-    );
+    const error = new axios.AxiosError('Backend is reconnecting', 'ERR_BACKEND_RECONNECTING', config);
     error.isBackendUnavailable = true;
     return Promise.reject(error);
   }
@@ -37,374 +23,67 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-api.interceptors.response.use(
-  (response) => {
-    if (response.config?._safeReadRetryCount) {
-      announceRetry(API_READ_RETRY_DONE_EVENT, { url: response.config.url, recovered: true });
+api.interceptors.response.use((response) => response, async (error) => {
+  const config = error?.config;
+  if (shouldRetryReadFailure(config, error)) {
+    config._safeReadRetryCount = (Number(config._safeReadRetryCount) || 0) + 1;
+    config.__allowReadDuringReconnect = true;
+    await new Promise((resolve) => setTimeout(resolve, safeReadRetryDelay(config._safeReadRetryCount)));
+    return api.request(config);
+  }
+  if (error?.response?.status === 401) {
+    logout();
+    const health = getBackendSnapshot().health;
+    if (health?.public_access !== true && health?.public_read_only !== true) {
+      window.dispatchEvent(new Event(API_UNAUTHORIZED_EVENT));
     }
-    return response;
-  },
-  async (error) => {
-    const config = error?.config;
-    if (shouldRetryReadFailure(config, error)) {
-      config._safeReadRetryCount = (Number(config._safeReadRetryCount) || 0) + 1;
-      config.__allowReadDuringReconnect = true;
-      const delayMs = safeReadRetryDelay(config._safeReadRetryCount);
-      announceRetry(API_READ_RETRY_EVENT, {
-        url: config.url, attempt: config._safeReadRetryCount, delayMs,
-      });
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      return api.request(config);
-    }
-    if (error?.response?.status === 401) {
-      logout();
-      if (!getBackendSnapshot().health?.public_read_only) {
-        window.dispatchEvent(new Event(API_UNAUTHORIZED_EVENT));
-      }
-    }
-    if (config?._safeReadRetryCount) {
-      announceRetry(API_READ_RETRY_DONE_EVENT, { url: config.url, recovered: false });
-    }
-    reportBackendRequestFailure(error);
-    return Promise.reject(error);
-  },
-);
-
-export async function getCurrentSignal() {
-  const { data } = await api.get('/api/signal/current');
-  return data;
-}
-
-export async function getStatistics() {
-  const { data } = await api.get('/api/statistics');
-  return data;
-}
-
-export async function getPatterns() {
-  const { data } = await api.get('/api/patterns');
-  return data.patterns || [];
-}
-
-export async function getPatternReport(target = 2) {
-  const { data } = await api.get('/api/patterns/report', { params: { target }, timeout: 60000 });
-  return data;
-}
-
-export async function getAnalyticsCurrent() {
-  const { data } = await api.get('/api/analytics/current', { timeout: 60000 });
-  return data;
-}
-
-export async function getSelectiveOpportunity() {
-  const { data } = await api.get('/api/opportunities/selective', { timeout: 60000 });
-  return data;
-}
-
-export async function getFrozenOpportunityLiveBoard() {
-  const { data } = await api.get('/api/opportunities/selective/v4/live', { timeout: 20000 });
-  return data;
-}
-
-export async function startFrozenProspectiveExperiment() {
-  const { data } = await api.post('/api/opportunities/selective/v4/experiment/start', {}, { timeout: 20000 });
-  return data;
-}
-
-export async function runSelectiveOpportunityResearch() {
-  const { data } = await api.post('/api/opportunities/selective/research', {}, { timeout: 900000 });
-  return data;
-}
-
-export async function runSelectiveOpportunityResearchV3() {
-  const { data } = await api.post('/api/opportunities/selective/research-v3', {}, { timeout: 900000 });
-  return data;
-}
-
-export async function getAnalyticsProgress() {
-  const { data } = await api.get('/api/analytics/progress', { timeout: 10000 });
-  return data;
-}
-
-export async function getAnalyticsReports(reportType, limit = 100, offset = 0) {
-  const { data } = await api.get('/api/analytics/reports', {
-    params: { report_type: reportType, limit, offset }, timeout: 60000,
-  });
-  return data;
-}
-
-export async function getAnalyticsReport(reportId) {
-  const { data } = await api.get(`/api/analytics/reports/${encodeURIComponent(reportId)}`, { timeout: 60000 });
-  return data;
-}
-
-export async function getAnalyticsRounds(limit = 100, beforeRoundIndex) {
-  const { data } = await api.get('/api/analytics/rounds', {
-    params: { limit, before_round_index: beforeRoundIndex },
-    timeout: 60000,
-  });
-  return data;
-}
-
-export async function getAnalyticsPastRound(roundId) {
-  const { data } = await api.get('/api/analytics/past-round', {
-    params: { through_round_id: roundId },
-    timeout: 60000,
-  });
-  return data;
-}
-
-export async function downloadAnalyticsReport(reportId, format = 'json') {
-  const response = await api.get(`/api/analytics/reports/${encodeURIComponent(reportId)}/export`, {
-    params: { format }, responseType: 'blob', timeout: 60000,
-  });
-  const url = URL.createObjectURL(response.data);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `${reportId}.${format}`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-export async function getHistory(limit = 250) {
-  const { data } = await api.get('/api/history', { params: { limit } });
-  return data;
-}
-
-export async function getHistoryStatus() {
-  const { data } = await api.get('/api/history/status');
-  return data;
-}
-
-export async function getHistoryStats() {
-  const { data } = await api.get('/api/history/stats');
-  return data;
-}
-
-export async function getRecentHistory(limit = 25) {
-  const { data } = await api.get('/api/history/recent', { params: { limit } });
-  return data;
-}
-
-export async function startHistoryCollector() {
-  const { data } = await api.post('/api/history/start');
-  return data;
-}
-
-export async function stopHistoryCollector() {
-  const { data } = await api.post('/api/history/stop');
-  return data;
-}
-
-export async function getSignalHistory() {
-  const { data } = await api.get('/api/signal/history');
-  return data.signals || [];
-}
-
-export async function getModelPerformance() {
-  const { data } = await api.get('/api/models/performance');
-  return data;
-}
-
-export async function getExperimentalML(limit = 50) {
-  const { data } = await api.get('/api/ml/experimental', { params: { limit } });
-  return data;
-}
-
-export async function getSystemStatus() {
-  const { data } = await api.get('/api/system/status');
-  return data;
-}
-
-export async function getSystemReadiness() {
-  const { data } = await api.get('/api/readiness');
-  return data.readiness;
-}
-
-export async function getDataStatus() {
-  const { data } = await api.get('/api/data/status');
-  return data;
-}
-
-export async function getFeatureMetadata() {
-  const { data } = await api.get('/api/features');
-  return data;
-}
-
-export async function getLatestFeatures() {
-  const { data } = await api.get('/api/features/latest');
-  return data;
-}
-
-export async function getDatasetStatus() {
-  const { data } = await api.get('/api/dataset/status');
-  return data;
-}
-
-export async function trainModels() {
-  const { data } = await api.post('/api/ml/train');
-  return data;
-}
-
-export async function getMLStatus() {
-  const { data } = await api.get('/api/ml/status');
-  return data;
-}
-
-export async function getMLMetrics() {
-  const { data } = await api.get('/api/ml/metrics');
-  return data;
-}
-
-export async function getLatestMLPrediction() {
-  const { data } = await api.get('/api/ml/prediction/latest');
-  return data.prediction;
-}
-
-export async function getMLEstimate() {
-  const { data } = await api.get('/api/ml/estimate');
-  return data;
-}
-
-export async function getCurrentEvidence() {
-  const { data } = await api.get('/api/evidence/current');
-  return data.evidence;
-}
-
-export async function getRecentEvidence(limit = 25) {
-  const { data } = await api.get('/api/evidence/recent', { params: { limit } });
-  return data.evidence || [];
-}
-
-export async function getCurrentDecision() {
-  const { data } = await api.get('/api/decisions/current');
-  return data.decision;
-}
-
-export async function getRecentDecisions(limit = 25) {
-  const { data } = await api.get('/api/decisions/recent', { params: { limit } });
-  return data.decisions || [];
-}
-
-export async function getDecisionStatus() {
-  const { data } = await api.get('/api/decisions/status');
-  return data;
-}
-
-export async function evaluateDecision() {
-  const { data } = await api.post('/api/decisions/evaluate');
-  return data.decision;
-}
-
-
-// --- Betting automation (Part 1) ---
+  }
+  reportBackendRequestFailure(error);
+  return Promise.reject(error);
+});
 
 export async function getBettingStatus() {
-  const { data } = await api.get('/api/betting/status');
-  return data;
-}
-
-export async function getBettingProfiles() {
-  const { data } = await api.get('/api/betting/profiles');
-  return data; // { keys: [...], profiles: { PROFILE_A: {...}, ... } }
+  return (await api.get('/api/betting/status')).data;
 }
 
 export async function checkBettingBrowser(includeSnapshot = false) {
-  const { data } = await api.get('/api/betting/browser', {
+  return (await api.get('/api/betting/browser', {
     params: includeSnapshot ? { include_snapshot: true } : {},
-  });
-  return data;
-}
-
-export async function startBettingSession(payload) {
-  const { data } = await api.post('/api/betting/start', payload);
-  return data;
+  })).data;
 }
 
 export async function stopBettingSession() {
-  const { data } = await api.post('/api/betting/stop');
-  return data;
+  return (await api.post('/api/betting/stop')).data;
 }
 
 export async function emergencyStopBetting() {
-  const { data } = await api.post('/api/betting/emergency-stop');
-  return data;
-}
-
-export async function submitBettingDecision(payload) {
-  const { data } = await api.post('/api/betting/decisions', payload);
-  return data;
+  return (await api.post('/api/betting/emergency-stop')).data;
 }
 
 export async function getBettingLedger(params = {}) {
-  const { data } = await api.get('/api/betting/ledger', { params });
-  return data;
+  return (await api.get('/api/betting/ledger', { params })).data;
 }
-
-// --- Risk management (Part 2) ---
 
 export async function getRiskStatus() {
-  const { data } = await api.get('/api/risk/status');
-  return data;
-}
-
-export async function getRiskProfiles() {
-  const { data } = await api.get('/api/risk/profiles');
-  return data;
-}
-
-export async function getRiskSession() {
-  const { data } = await api.get('/api/risk/session');
-  return data;
-}
-
-export async function setRiskProfile(profile) {
-  const { data } = await api.post('/api/risk/profile', { profile });
-  return data;
+  return (await api.get('/api/risk/status')).data;
 }
 
 export async function resetRiskEmergency() {
-  const { data } = await api.post('/api/risk/reset-emergency');
-  return data;
+  return (await api.post('/api/risk/reset-emergency')).data;
 }
 
 export async function getResultExecutions(limit = 50) {
-  const { data } = await api.get('/api/results/executions', { params: { limit } });
-  return data.executions || [];
+  return (await api.get('/api/results/executions', { params: { limit } })).data.executions || [];
 }
 
 export async function getExecutionDetail(id) {
-  const { data } = await api.get(`/api/results/executions/${id}`);
-  return data;
+  return (await api.get(`/api/results/executions/${encodeURIComponent(id)}`)).data;
 }
 
 export async function getBalanceLedger(limit = 100) {
-  const { data } = await api.get('/api/results/ledger', { params: { limit } });
-  return data.entries || [];
-}
-
-export async function getReconciliations(limit = 50) {
-  const { data } = await api.get('/api/results/reconciliations', { params: { limit } });
-  return data.reconciliations || [];
+  return (await api.get('/api/results/ledger', { params: { limit } })).data.entries || [];
 }
 
 export async function getSessionMetrics(limit = 10) {
-  const { data } = await api.get('/api/results/session-metrics', { params: { limit } });
-  return data.sessions || [];
-}
-
-export async function runBacktest(config = {}) {
-  const { data } = await api.post('/api/backtests/run', config);
-  return data.result;
-}
-
-export async function listBacktests(limit = 25) {
-  const { data } = await api.get('/api/backtests', { params: { limit } });
-  return data.runs || [];
-}
-
-export async function getBacktest(runId) {
-  const { data } = await api.get(`/api/backtests/${runId}`);
-  return data.result;
+  return (await api.get('/api/results/session-metrics', { params: { limit } })).data.sessions || [];
 }

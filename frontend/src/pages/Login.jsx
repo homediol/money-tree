@@ -45,7 +45,7 @@ export default function Login() {
             <Brain className="h-7 w-7 text-ink" />
           </div>
           <div className="text-center">
-            <h1 className="text-2xl font-black text-white tracking-tight">Aviator ML</h1>
+            <h1 className="text-2xl font-black text-white tracking-tight">Winner Predict</h1>
             <p className="mt-0.5 text-xs font-semibold uppercase tracking-[0.2em] text-cyan">
               Risk Console
             </p>
@@ -125,7 +125,7 @@ export default function Login() {
         </div>
 
         <p className="mt-6 text-center text-xs text-slate-600">
-          Aviator ML Console · Private Access Only
+          Winner Predict · Private Access Only
         </p>
       </div>
     </div>

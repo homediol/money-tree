@@ -32,6 +32,38 @@ async function _installObserver(frame, selector) {
     }
     function sig(arr) { return arr.map(v => v.toFixed(2)).join('|'); }
 
+    function readGamePhase() {
+      const block = document.querySelector('.bet-block');
+      const button = block?.querySelector('.btn-success.bet');
+      const input = block?.querySelector('input[type="text"]:not([placeholder=""])');
+      const style = button ? window.getComputedStyle(button) : null;
+      const visible = Boolean(button && style && style.display !== 'none'
+        && style.visibility !== 'hidden' && (button.offsetWidth || button.offsetHeight));
+      const disabled = Boolean(button && (button.disabled
+        || button.getAttribute('aria-disabled') === 'true'
+        || button.classList.contains('disabled')));
+      const inputVisible = Boolean(input && (input.offsetWidth || input.offsetHeight));
+      const tabs = block ? Array.from(block.querySelectorAll('.tab')).map(el =>
+        (el.textContent || '').trim().toLowerCase()) : [];
+      const betTabActive = tabs.includes('bet');
+      const phase = visible && inputVisible && betTabActive
+        ? (disabled ? 'BETTING_CLOSED' : 'BETTING_OPEN') : 'UNKNOWN';
+      return {
+        phase,
+        observed_at: new Date().toISOString(),
+        evidence: {
+          source: 'AVIATOR_BETTING_PANEL_READ_ONLY',
+          selector: '.bet-block .btn-success.bet',
+          button_visible: visible,
+          button_enabled: visible && !disabled,
+          stake_input_visible: inputVisible,
+          bet_tab_active: betTabActive,
+          button_text: button ? (button.textContent || '').trim().slice(0, 40) : null,
+          button_class: button ? String(button.className || '').slice(0, 160) : null,
+        },
+      };
+    }
+
     const first = document.querySelector(sel);
     const block = first?.closest('.payouts-block') || document.querySelector('.payouts-block');
     const target = block?.parentElement || block || document.body;
@@ -39,10 +71,12 @@ async function _installObserver(frame, selector) {
 
     if (window.__aviatorCollector?.observer) {
       window.__aviatorCollector.observer.disconnect();
+      window.__aviatorCollector.phaseObserver?.disconnect();
       window.__aviatorCollector = null;
     }
 
-    const c = { queue: [], waiter: null, lastSig: sig(readAll()), observer: null };
+    const c = { queue: [], waiter: null, lastSig: sig(readAll()), observer: null,
+      phaseObserver: null, lastPhaseSig: null };
 
     function publish(reason) {
       const mults = readAll();
@@ -50,7 +84,21 @@ async function _installObserver(frame, selector) {
       const nextSig = sig(mults);
       if (nextSig === c.lastSig) return;
       c.lastSig = nextSig;
-      const ev = { reason, ts: new Date().toISOString(), multipliers: mults, sig: nextSig };
+      const ts = new Date().toISOString();
+      const ev = { reason, ts, multipliers: mults, sig: nextSig, gamePhase: readGamePhase() };
+      if (c.waiter) { const w = c.waiter; c.waiter = null; w(ev); return; }
+      c.queue.push(ev);
+      if (c.queue.length > 30) c.queue = c.queue.slice(-30);
+    }
+
+    function publishPhase(reason) {
+      const phase = readGamePhase();
+      const phaseSig = JSON.stringify({
+        phase: phase.phase, evidence: phase.evidence,
+      });
+      if (phaseSig === c.lastPhaseSig) return;
+      c.lastPhaseSig = phaseSig;
+      const ev = { phaseOnly: true, reason, ts: phase.observed_at, gamePhase: phase };
       if (c.waiter) { const w = c.waiter; c.waiter = null; w(ev); return; }
       c.queue.push(ev);
       if (c.queue.length > 30) c.queue = c.queue.slice(-30);
@@ -68,7 +116,15 @@ async function _installObserver(frame, selector) {
       attributes: true, attributeFilter: ['class','style','hidden'],
     });
     c.observer = obs;
+    const phaseObserver = new MutationObserver(() => publishPhase('betting-panel-mutation'));
+    phaseObserver.observe(document.body, {
+      childList: true, subtree: true, characterData: true,
+      attributes: true, attributeFilter: ['class', 'style', 'hidden', 'disabled', 'aria-disabled'],
+    });
+    c.phaseObserver = phaseObserver;
     window.__aviatorCollector = c;
+
+    publishPhase('observer-installed');
 
     const mults = readAll();
     return { ok: true, count: mults.length, multipliers: mults, sig: sig(mults) };
@@ -115,13 +171,20 @@ export class Collector {
     if (raw?.error) return { error: raw.error };
     if (raw?.timeout) return { timeout: true };
     const multipliers = (raw?.multipliers ?? []).map(normalizeMultiplier).filter(v => v !== null);
-    return { multipliers, signature: snapshotSignature(multipliers), timestamp: raw?.ts || null };
+    return {
+      multipliers,
+      signature: snapshotSignature(multipliers),
+      timestamp: raw?.ts || null,
+      phaseOnly: raw?.phaseOnly === true,
+      gamePhase: raw?.gamePhase || null,
+    };
   }
 
   async isInstalled(frame) {
     try {
       return await frame.evaluate(() => !!window.__aviatorCollector?.observer);
-    } catch {
+    } catch (error) {
+      log.debug(`Collector observer status could not be read from the current frame: ${error?.message || error}`);
       return false;
     }
   }

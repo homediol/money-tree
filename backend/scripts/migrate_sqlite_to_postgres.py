@@ -6,6 +6,7 @@ empty, dedicated PostgreSQL database. Existing PostgreSQL rows always win.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
 import sys
@@ -18,7 +19,10 @@ ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
 from app.database.repository import Repository  # noqa: E402
-from app.services.dataset_service import DatasetService  # noqa: E402
+from app.services.data_loader import (  # noqa: E402
+    RoundHistoryLoader, _extract_multiplier, _extract_rows, _extract_round_index,
+    _extract_timestamp,
+)
 
 
 def migrate(sqlite_path: Path, history_path: Path, database_url: str) -> dict[str, int]:
@@ -30,19 +34,36 @@ def migrate(sqlite_path: Path, history_path: Path, database_url: str) -> dict[st
     destination.init()
     counts: dict[str, int] = {}
     try:
-        rounds, quality, quarantine = DatasetService(history_path).load_validate()
-        if quarantine:
-            raise ValueError(f"history contains {len(quarantine)} invalid or duplicate rows")
+        rounds, quality = RoundHistoryLoader(history_path).load()
+        if quality.invalid_records or quality.duplicates_removed:
+            raise ValueError(
+                f"history contains {quality.invalid_records} invalid and "
+                f"{quality.duplicates_removed} duplicate rows"
+            )
         sqlite_rounds = source.execute("SELECT COUNT(*) FROM rounds").fetchone()[0]
         if len(rounds) != sqlite_rounds:
             raise ValueError(f"history count {len(rounds)} differs from SQLite count {sqlite_rounds}")
-        if quality.get("latest_contiguous_rounds", 0) < 1:
-            raise ValueError("history has no valid continuity window")
+
+        payload = json.loads(history_path.read_text(encoding="utf-8"))
+        source_rows, _ = _extract_rows(payload)
+        stable_ids = {}
+        for position, item in enumerate(source_rows):
+            multiplier = _extract_multiplier(item)
+            if multiplier is None:
+                continue
+            round_index = _extract_round_index(item, position)
+            timestamp = _extract_timestamp(item)
+            stable_id = (item.get("round_id") or item.get("id")
+                         if isinstance(item, dict) else None)
+            stable_ids[(round_index, multiplier, timestamp)] = str(stable_id or round_index)
 
         # aviator_rounds is canonical. The old SQLite rounds table had lost
         # stable IDs, so take these rows from the validated collector file.
         records = [
-            {"round_id": str(row.round_id), "round_index": int(row.round_index),
+            {"round_id": stable_ids.get(
+                (int(row.round_index), float(row.multiplier), row.timestamp),
+                str(row.round_index)),
+             "round_index": int(row.round_index),
              "multiplier": float(row.multiplier), "timestamp": row.timestamp}
             for row in rounds.itertuples(index=False)
         ]

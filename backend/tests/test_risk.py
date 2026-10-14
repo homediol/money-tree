@@ -261,7 +261,7 @@ def test_risk_status_distinguishes_waiting_from_emergency_block():
     assert blocked["reason"] == "Emergency stop is active"
 
 
-def test_decision_api_routes_risk_approval_into_executor():
+def test_decision_api_fails_closed_without_configured_rules():
     async def go():
         settings = BettingSettings(
             cdp_http="http://127.0.0.1:1", allow_real_placement=False,
@@ -295,8 +295,10 @@ def test_decision_api_routes_risk_approval_into_executor():
                 "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
             })
             payload = response.json()
-            assert payload["risk"]["approved"] is True
-            assert payload["entry"]["status"] == "placed"
-            assert payload["entry"]["amount_bif"] == 250
+            assert response.status_code == 409
+            assert payload["error"] == "rules_engine_not_configured"
+            assert payload["decision"] == "NO_ACTION"
+            assert payload["automatic_execution"] == "OFF"
+            assert betting.ledger(10) == []
         await betting.shutdown()
     run(go())

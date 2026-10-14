@@ -5,22 +5,21 @@ router = APIRouter(prefix="/api/history", tags=["history"])
 
 @router.get("")
 def history(request: Request, limit: int = 250):
-    wp = request.app.state.wp
     limit = min(max(limit, 1), 5000)
-    rows = wp.rounds.tail(limit)
+    repository = request.app.state.wp.repository
+    if repository.database_url:
+        # The collector can continue writing after AppState's startup
+        # snapshot. Read PostgreSQL directly so this page stays current.
+        rows = repository.load_recent_rounds(limit)
+        count = repository.round_history_status()["count"]
+    else:
+        all_rows = request.app.state.history_collector.rows()
+        count = len(all_rows)
+        rows = all_rows[-limit:]
     return {
-        "count": int(len(wp.rounds)),
-        "returned": int(len(rows)),
-        "rounds": [
-            {
-                "round_id": str(getattr(r, "round_id", r.round_index)),
-                "round_index": int(r.round_index),
-                "multiplier": float(r.multiplier),
-                "timestamp": r.timestamp,
-                "target": int(float(r.multiplier) >= wp.settings.target_multiplier),
-            }
-            for r in rows.itertuples()
-        ],
+        "count": count,
+        "returned": len(rows),
+        "rounds": rows,
     }
 
 

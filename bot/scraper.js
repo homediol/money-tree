@@ -7,7 +7,7 @@
  *   - Waits for ".payouts-block .payout" inside that iframe.
  *   - Installs a MutationObserver inside the iframe.
  *   - Saves a new record only when the payout snapshot advances.
- *   - Keeps data/roundhistory.json as ML-ready chronological records.
+ *   - Keeps data/roundhistory.json as chronological round records.
  *
  * The newest payout in the DOM is assumed to be the first element.
  */
@@ -303,7 +303,7 @@ function appendRounds(history, newestFirstMultipliers) {
   const addedRecords = [];
   let roundIndex = nextRoundIndex(history);
 
-  // The file is chronological for model training, so reverse the new prefix.
+  // The file is chronological, so reverse the newly observed prefix.
   for (const multiplier of [...newestFirstMultipliers].reverse()) {
     const normalized = normalizeMultiplier(multiplier);
     if (normalized === null || normalized < 1) continue;

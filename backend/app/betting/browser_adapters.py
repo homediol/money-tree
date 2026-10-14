@@ -3,7 +3,8 @@
 Two backends implement the same ``PlacementBackend`` protocol:
 
 - ``RealBrowserBackend`` — attaches to the collector-owned CDP browser and
-  performs verified DOM placement when the explicit production switch is on.
+  exposes guarded UI configuration/inspection. Financial placement remains
+  fail-closed until acceptance and settlement receipts are implemented.
 - ``SimulationBackend`` — a deterministic scripted environment used for
   demo/testing. Every entry it produces carries ``simulated: true`` and its
   ledger/events never claim a real placement happened.
@@ -12,11 +13,13 @@ The module intentionally contains no prediction logic.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from app.betting.cashout import inspect_cashout_configuration
 from app.betting.selectors import GameSnapshot
 
 log = logging.getLogger("betting.adapters")
@@ -71,6 +74,10 @@ class PlacementBackend(Protocol):
 
     async def ensure_ready(self) -> None:
         """Raise PlacementUnavailable when the environment cannot bet."""
+        ...
+
+    async def cashout_configuration(self, panel: int = 0) -> dict:
+        """Read cashout state without changing the page."""
         ...
 
     async def place(self, *, amount_bif: int, target_multiplier: float,
@@ -236,6 +243,10 @@ class SimulationBackend:
             raise PlacementUnavailable("insufficient_balance",
                                        "simulated balance below minimum stake")
 
+    async def cashout_configuration(self, panel: int = 0) -> dict:
+        return {**inspect_cashout_configuration(None), "simulated": True,
+                "failures": ["SIMULATION_HAS_NO_PLATFORM_CASHOUT_SETTING"]}
+
     async def place(self, *, amount_bif: int, target_multiplier: float,
                     bet_slot: int, decision_id: str) -> PlacementOutcome:
         self._advance_if_due()
@@ -290,9 +301,79 @@ class RealBrowserBackend:
             "cdp_http": self.browser.settings.cdp_http,
         }
 
+    def verified_capabilities(self) -> dict[str, bool]:
+        """The current CDP selector client has no receipt or target proof.
+
+        A visible button and a click are insufficient to claim an accepted
+        wager. The real rule's activation review consumes this explicit
+        capability contract rather than inferring readiness from a page.
+        """
+        return {"target_identity": False, "betting_deadline": False,
+                "acceptance_receipt": False, "settlement_receipt": False,
+                "currency_rwf": False}
+
     async def readiness(self) -> dict:
         """Read-only readiness against the live browser."""
-        return await self.browser.readiness()
+        readiness = await self.browser.readiness()
+        readiness["cashout_configuration"] = await self.cashout_configuration(0)
+        return readiness
+
+    async def cashout_configuration(self, panel: int = 0) -> dict:
+        if hasattr(self.browser, "cashout_configuration"):
+            return await self.browser.cashout_configuration(panel)
+        return inspect_cashout_configuration(None)
+
+    async def read_auto_cashout(self, panel: int = 0) -> dict:
+        method = getattr(self.browser, "read_auto_cashout", None)
+        if method is not None:
+            return await method(panel=panel)
+        return await self.cashout_configuration(panel)
+
+    async def set_auto_cashout(self, target: float = 2.00, panel: int = 0) -> dict:
+        """Delegate fixed cashout UI practice to the guarded browser client."""
+        method = getattr(self.browser, "set_auto_cashout", None)
+        if method is None:
+            return {**inspect_cashout_configuration(None), "error": "UI_CONFIGURATION_UNAVAILABLE"}
+        return await method(target=target, panel=panel)
+
+    async def set_stake_input(self, amount: int | float | str = 100, panel: int = 0) -> dict:
+        """Edit only a visible stake input; never invoke the platform bet button."""
+        method = getattr(self.browser, "set_stake_input", None)
+        if method is None:
+            return {"ok": False, "error": "STAKE_INPUT_CONFIGURATION_UNAVAILABLE"}
+        return await method(amount=amount, panel=panel)
+
+    async def read_stake_input(self, panel: int = 0) -> dict:
+        method = getattr(self.browser, "read_stake_input", None)
+        if method is None:
+            return {"found": False, "reason": "STAKE_INPUT_READ_UNAVAILABLE"}
+        return await method(panel=panel)
+
+    async def detect_bet_button(self, panel: int = 0) -> dict:
+        method = getattr(self.browser, "detect_bet_button", None)
+        if method is None:
+            return {"detected": False, "reason": "BET_BUTTON_DETECTION_UNAVAILABLE"}
+        return await method(panel=panel)
+
+    async def detect_betting_window(self, panel: int = 0) -> dict:
+        method = getattr(self.browser, "detect_betting_window", None)
+        if method is None:
+            return {"state": "UNKNOWN", "reason": "BETTING_WINDOW_DETECTION_UNAVAILABLE"}
+        return await method(panel=panel)
+
+    async def detect_insufficient_balance(self) -> dict:
+        method = getattr(self.browser, "detect_insufficient_balance", None)
+        if method is None:
+            return {"detected": False, "observed": False,
+                    "matched_messages": [], "source": None}
+        return await method()
+
+    async def read_verified_balance(self) -> dict:
+        method = getattr(self.browser, "read_verified_balance", None)
+        if method is None:
+            return {"verified": False, "amount": None, "currency": None,
+                    "reason": "BALANCE_READ_UNAVAILABLE"}
+        return await method()
 
     async def snapshot(self) -> dict:
         snap = await self.browser.snapshot()
@@ -312,7 +393,8 @@ class RealBrowserBackend:
             )
 
     async def place(self, *, amount_bif: int, target_multiplier: float,
-                    bet_slot: int, decision_id: str, intent=None) -> PlacementOutcome:
+                    bet_slot: int, decision_id: str, intent=None,
+                    execution_id: str | None = None) -> PlacementOutcome:
         # The current selector probe cannot verify a platform acceptance
         # receipt, target-round identity, or a confirmed cashout. A click is
         # therefore unsafe even when the environment switch was enabled by
@@ -323,7 +405,14 @@ class RealBrowserBackend:
                 "final_safety_gate_unavailable",
                 "Backend final safety authorization is unavailable; NO BET",
             )
-        gate = self.execution_gate(intent)
+        try:
+            gate_parameters = inspect.signature(self.execution_gate).parameters
+        except (TypeError, ValueError):
+            gate_parameters = {}
+        if "execution_id" in gate_parameters:
+            gate = self.execution_gate(intent, execution_id=execution_id)
+        else:
+            gate = self.execution_gate(intent)
         if hasattr(gate, "__await__"):
             gate = await gate
         if not gate.get("allowed"):

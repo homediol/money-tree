@@ -9,6 +9,7 @@ import signal
 import shutil
 import statistics
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -18,12 +19,19 @@ from app.core.logging import get_logger
 log = get_logger("HISTORY")
 Broadcaster = Callable[[dict], Awaitable[None]]
 ROOT = Path(__file__).resolve().parents[2]
+CASHOUT_INITIALIZATION_UNKNOWN = {
+    "target": "2.00", "auto_bet": "UNKNOWN", "status": "UNKNOWN",
+    "panel_1_cashout": "UNKNOWN", "panel_2_cashout": "UNKNOWN",
+    "panels": [], "updated_at": None,
+    "error_reason": "COLLECTOR_CASHOUT_INITIALIZATION_NOT_REPORTED",
+}
 
 
 class HistoryCollectorManager:
     """Own one Node collector subprocess; the Node side owns BrowserManager."""
 
-    STATES = {"HEALTHY", "WAITING", "CONNECTING", "DISCONNECTED", "STALE", "ERROR", "STOPPED", "AUTH_REQUIRED"}
+    STATES = {"STARTING", "CONNECTING", "AUTH_REQUIRED", "WAITING_FOR_AVIATOR", "COLLECTING",
+              "OFFLINE", "RECOVERING", "STORAGE_UNAVAILABLE", "STOPPING", "STALE", "UNKNOWN"}
 
     def __init__(self, data_path: Path, broadcaster: Broadcaster | None = None, round_loader=None,
                  repository=None):
@@ -32,7 +40,10 @@ class HistoryCollectorManager:
         self.repository = repository
         self.status_path = ROOT / "data" / "bot" / "status.json"
         self.external_pid_path = ROOT / "data" / "bot" / "collector-supervisor.json"
-        self.external = os.environ.get("WINNER_COLLECTOR_EXTERNAL") == "1"
+        # The Node collector is a separately launched process. API lifecycle
+        # hooks only observe its heartbeat; backend startup/restart must never
+        # start, stop, or own its browser.
+        self.external = True
         self.entrypoint = ROOT / "bot" / "roundhistory-collector.js"
         self.broadcaster = broadcaster
         self.process: asyncio.subprocess.Process | None = None
@@ -139,18 +150,45 @@ class HistoryCollectorManager:
         except (OSError, json.JSONDecodeError):
             return {}
 
-    def _external_process(self) -> tuple[bool, str | None]:
-        try:
-            value = json.loads(self.external_pid_path.read_text(encoding="utf-8"))
-            pid = int(value["pid"])
-            if not value.get("running") or pid <= 0:
-                return False, value.get("timestamp")
-            os.kill(pid, 0)
-            return True, value.get("timestamp")
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-            return False, None
+    def _external_process(self) -> tuple[bool | None, str | None]:
+        """Return True/False only when process ownership is verified.
 
-    def health_status(self) -> dict:
+        None means the status file or OS process evidence was insufficient. In
+        particular, a permission error or an unreadable /proc entry must not be
+        translated into a definite STOPPED diagnosis.
+        """
+        try:
+            value = self._node_status()
+            pid = int(value.get("pid") or 0)
+            heartbeat = value.get("heartbeatAt")
+            if value.get("collectorRunning") is False:
+                return False, heartbeat
+            if value.get("collectorRunning") is not True or pid <= 1:
+                return None, heartbeat
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                # The backend may run in another PID namespace. A missing PID
+                # is not proof of exit while the collector heartbeat is fresh.
+                return None, heartbeat
+            except PermissionError:
+                return None, heartbeat
+            if sys.platform.startswith("linux"):
+                try:
+                    command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+                except FileNotFoundError:
+                    return None, heartbeat
+                except PermissionError:
+                    return None, heartbeat
+                if not command.strip():
+                    return None, heartbeat
+                if "roundhistory-collector.js" not in command:
+                    return False, heartbeat
+            return True, heartbeat
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return None, None
+
+    def health_status(self, *, persist: bool = True) -> dict:
         """Cheap collector health for frequent readiness updates.
 
         The full status endpoint also parses the complete history file. That
@@ -159,37 +197,147 @@ class HistoryCollectorManager:
         """
         node = self._node_status()
         running = bool(self.process and self.process.returncode is None)
+        process_status = "RUNNING" if running else "STOPPED"
         if self.external:
-            running, external_started = self._external_process()
-            if external_started:
-                self.started_at = external_started
+            process_evidence, _external_heartbeat = self._external_process()
+            running = process_evidence
+            process_status = ("RUNNING" if process_evidence is True else
+                              "STOPPED" if process_evidence is False else "UNKNOWN")
         state = self.state
         status_is_current = False
         try:
             status_is_current = not self.started_at or self.status_path.stat().st_mtime >= datetime.fromisoformat(self.started_at).timestamp()
         except OSError:
             pass
-        if running and not self._paused and status_is_current:
-            candidate = str(node.get("health", state)).upper()
-            state = candidate if candidate in self.STATES else state
-        elif running and self.external:
-            state = "CONNECTING"
-        elif not running and state not in {"ERROR", "STOPPED"}:
-            state = "STOPPED"
+        heartbeat = node.get("heartbeatAt")
+        heartbeat_age = None
+        if heartbeat:
+            try:
+                heartbeat_age = max(0.0, time.time() - datetime.fromisoformat(str(heartbeat).replace("Z", "+00:00")).timestamp())
+            except (TypeError, ValueError, OverflowError):
+                heartbeat_age = None
+        heartbeat_stale_after = float(os.environ.get("COLLECTOR_HEARTBEAT_STALE_SECONDS", "20"))
+        heartbeat_state = "UNKNOWN" if heartbeat_age is None else "STALE" if heartbeat_age > heartbeat_stale_after else "FRESH"
+        # Browser topology and betting-control values are point-in-time
+        # observations. A stopped collector or dead heartbeat cannot vouch
+        # for the browser last recorded in its sidecar.
+        observation_current = process_status == "RUNNING" and heartbeat_state == "FRESH"
+        browser_pages = node.get("browser_pages") or {}
+        cashout_initialization = node.get("cashout_initialization") or {
+            **CASHOUT_INITIALIZATION_UNKNOWN,
+        }
+        bet_amount_initialization = node.get("bet_amount_initialization") or {
+            "status": "UNKNOWN", "execution_panel": None, "requested_stake": None,
+            "requested_stake_currency": None, "platform_currency": None,
+            "observed_value": None, "updated_at": None,
+            "error_reason": "COLLECTOR_STAKE_INITIALIZATION_NOT_REPORTED",
+        }
+        betting_ui_configuration = node.get("betting_ui_configuration") or {
+            "status": "UNKNOWN", "updated_at": None,
+            "error_reason": "COLLECTOR_BETTING_UI_CONFIGURATION_NOT_REPORTED",
+        }
+        authentication_state = node.get("authenticationState")
+        if authentication_state not in {"AUTHENTICATED", "AUTH_REQUIRED", "UNKNOWN"}:
+            authentication_state = "UNKNOWN"
+        if not observation_current:
+            browser_pages = {
+                "browser_count": None, "context_count": None, "page_count": None,
+                "aviator_page_count": None, "aviator_target_id": None,
+                "aviator_page_state": "UNKNOWN", "game_frame_count": None,
+                "game_frame_state": "UNKNOWN", "page_role": "SHARED_AVIATOR",
+                "history_target_id": None, "betting_target_id": None,
+                "topology_verified": False,
+                "error_reason": "COLLECTOR_OBSERVATION_NOT_CURRENT",
+            }
+            cashout_initialization = {
+                **CASHOUT_INITIALIZATION_UNKNOWN,
+                "error_reason": "COLLECTOR_OBSERVATION_NOT_CURRENT",
+            }
+            bet_amount_initialization = {
+                "status": "UNKNOWN", "execution_panel": None, "requested_stake": None,
+                "requested_stake_currency": None, "platform_currency": None,
+                "observed_value": None, "updated_at": None,
+                "error_reason": "COLLECTOR_OBSERVATION_NOT_CURRENT",
+            }
+            betting_ui_configuration = {
+                "status": "UNKNOWN", "updated_at": None,
+                "error_reason": "COLLECTOR_OBSERVATION_NOT_CURRENT",
+            }
+            authentication_state = "UNKNOWN"
+        if process_status == "STOPPED":
+            state = ("STOPPED" if node.get("collectorRunning") is False or heartbeat_state != "STALE"
+                     else "STALE")
+        elif process_status == "UNKNOWN":
+            if heartbeat_state == "FRESH" and status_is_current:
+                candidate = str(node.get("state") or node.get("health") or "UNKNOWN").upper()
+                if candidate == "HEALTHY":
+                    candidate = "COLLECTING"
+                state = candidate if candidate in self.STATES else "UNKNOWN"
+            else:
+                state = "STALE" if heartbeat_state == "STALE" else "UNKNOWN"
+        elif running and heartbeat_state == "FRESH" and status_is_current:
+            candidate = str(node.get("state") or node.get("health") or "UNKNOWN").upper()
+            if candidate in {"HEALTHY", "WAITING", "WAITING_FOR_NETWORK", "DISCONNECTED", "ERROR", "STOPPED"}:
+                candidate = {"HEALTHY": "COLLECTING", "WAITING": "WAITING_FOR_AVIATOR",
+                             "WAITING_FOR_NETWORK": "OFFLINE", "DISCONNECTED": "RECOVERING",
+                             "ERROR": "RECOVERING", "STOPPED": "STOPPING"}.get(candidate, candidate)
+            state = candidate if candidate in self.STATES else "UNKNOWN"
+        elif heartbeat_age is not None and heartbeat_age > heartbeat_stale_after:
+            state = "STALE"
+        elif heartbeat_state == "UNKNOWN":
+            state = "UNKNOWN"
         snapshot = {
-            "status": state, "running": running, "paused": self._paused,
+            "status": state, "running": running, "collector_process_status": process_status,
+            "process_verified": process_status != "UNKNOWN", "paused": self._paused,
             "started_at": self.started_at, "last_error": self.last_error,
             "auth_required": bool(node.get("authRequired", False)),
             "auth_required_reason": node.get("authRequiredReason"),
-            "logged_in": bool(node.get("loggedIn", False)),
+            "logged_in": node.get("loggedIn") if observation_current and isinstance(node.get("loggedIn"), bool) else None,
+            "authentication_state": authentication_state,
+            "login_status": ("AUTH_REQUIRED" if node.get("authRequired") else
+                "VERIFIED" if authentication_state == "AUTHENTICATED" else "UNKNOWN"),
             "last_update": node.get("lastRoundTime"),
-            "browser_connected": bool(node.get("browserConnected", False)),
-            "frame_connected": bool(node.get("frameConnected", False)),
+            "browser_connected": observation_current and node.get("browserConnected") is True,
+            "site_status": node.get("siteStatus", "UNKNOWN") if observation_current else "UNKNOWN",
+            "frame_connected": observation_current and node.get("frameConnected") is True,
             "recovery_count": int(node.get("recoveryCount", 0) or 0),
+            "last_observed_round": node.get("lastObservedRoundId"),
+            "last_observed_at": node.get("lastObservedAt"),
+            "last_persisted_round": node.get("lastRoundId"),
+            "last_persisted_at": node.get("lastRoundTime"),
+            "heartbeat_at": heartbeat,
+            "heartbeat_age_seconds": heartbeat_age,
+            "heartbeat_state": heartbeat_state,
+            "network": node.get("network", {"status": "UNKNOWN"}),
+            "backend": node.get("backend", {"status": "UNKNOWN"}),
+            "storage": node.get("storage", {"status": "UNKNOWN"}),
+            "cashout_initialization": cashout_initialization,
+            "bet_amount_initialization": bet_amount_initialization,
+            "betting_ui_configuration": betting_ui_configuration,
+            "authentication_state": authentication_state,
+            "browser_pages": browser_pages,
+            "backlog_size": int((node.get("storage") or {}).get("backlog_size", 0) or 0),
+            "last_recovery": node.get("lastRecovery"),
+            "last_error": node.get("lastError") or self.last_error,
             "observed_at": datetime.now(timezone.utc).isoformat(),
             "data_source": "collector_observation",
         }
-        if self.repository is not None:
+        if process_status == "STOPPED":
+            snapshot["reason"] = node.get("lastError") or "history collector process is stopped"
+        elif heartbeat_state == "STALE":
+            snapshot["reason"] = "collector process exists but its heartbeat is stale"
+        elif heartbeat_state == "UNKNOWN":
+            snapshot["reason"] = "collector heartbeat is unavailable; live collection cannot be verified"
+        elif state not in {"COLLECTING", "HEALTHY"}:
+            snapshot["reason"] = (node.get("lastError") or state.lower().replace("_", " "))
+        else:
+            snapshot["reason"] = None
+        snapshot["process_reason"] = (
+            "PID could not be verified from this backend process namespace; collector heartbeat is fresh"
+            if process_status == "UNKNOWN" and heartbeat_state == "FRESH" else
+            "OS process ownership could not be verified" if process_status == "UNKNOWN" else None
+        )
+        if self.repository is not None and persist:
             try:
                 self.repository.save_application_state("collector_status", snapshot, snapshot["observed_at"])
                 # Return the exact persisted snapshot used by dashboard clients.
@@ -200,12 +348,17 @@ class HistoryCollectorManager:
 
     def status(self) -> dict:
         health = self.health_status()
-        rows = self.rows()
-        latest = rows[-1] if rows else None
-        previous = rows[-2] if len(rows) > 1 else None
+        if self.repository is not None and self.repository.database_url:
+            summary = self.repository.round_history_status()
+            count, latest, previous = summary["count"], summary["latest"], summary["previous"]
+        else:
+            rows = self.rows()
+            count = len(rows)
+            latest = rows[-1] if rows else None
+            previous = rows[-2] if len(rows) > 1 else None
         return {
             **health,
-            "count": len(rows), "latest": latest, "previous": previous,
+            "count": count, "latest": latest, "previous": previous,
             "last_update": latest.get("timestamp") if latest else None,
         }
 

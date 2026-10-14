@@ -11,13 +11,14 @@ import { fileURLToPath } from 'url';
 import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { log } from './Logger.js';
+import { isAcknowledgedAuthRoute, isAviatorRoute, isExpiredAuthRoute } from './LoginManager.js';
+import { SharedPageCoordinator } from './SharedPageCoordinator.js';
 
 chromium.use(StealthPlugin());
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const ROOT       = path.resolve(__dirname, '..', '..');
 const PROFILE_DIR = path.join(ROOT, 'data', 'bot', 'chrome-profile-new-email');
-const DEFAULT_BETTING_PAGE_URL = 'https://winner.rw/en/sportsbook/upcoming';
 const GOOGLE_SNAPSHOT_DIR = path.join(ROOT, 'data', 'bot', 'chrome-google-fallback');
 const SUPERVISOR_LOCK = path.join(ROOT, 'data', 'bot', 'browser-supervisor.lock');
 const RELIABILITY_PATH = path.join(ROOT, 'data', 'bot', 'browser-reliability.json');
@@ -27,9 +28,9 @@ const DEFAULT_CDP_PORT = process.env.BOT_CDP_PORT || '9222';
 
 function isAviatorPage(page) {
   try {
-    const url = page.url().toLowerCase();
-    return url.includes('aviator') || url.includes('crash-games') || url.includes('/crash');
-  } catch {
+    return isAviatorRoute(page.url());
+  } catch (error) {
+    log.debug(`Aviator page URL check failed: ${error.message}`);
     return false;
   }
 }
@@ -41,7 +42,8 @@ function devToolsEndpointFromProfile(profileDir) {
     const [port] = fs.readFileSync(file, 'utf-8').trim().split(/\r?\n/);
     if (!port) return null;
     return `http://127.0.0.1:${port}`;
-  } catch {
+  } catch (error) {
+    if (error?.code !== 'ENOENT') log.debug(`Chrome DevTools profile endpoint could not be read: ${error.message}`);
     return null;
   }
 }
@@ -57,7 +59,8 @@ function devToolsEndpointsFromFile(file) {
       browserPath ? `ws://127.0.0.1:${port}${browserPath}` : null,
       browserPath ? `ws://localhost:${port}${browserPath}` : null,
     ].filter(Boolean);
-  } catch {
+  } catch (error) {
+    log.debug(`Chrome DevTools endpoint file could not be read: ${error.message}`);
     return [];
   }
 }
@@ -71,7 +74,8 @@ function findDevToolsFiles(dir, depth = 3) {
       if (entry.isDirectory()) return findDevToolsFiles(fullPath, depth - 1);
       return [];
     });
-  } catch {
+  } catch (error) {
+    if (error?.code !== 'ENOENT' && error?.code !== 'EACCES') log.debug(`Chrome profile scan failed for ${dir}: ${error.message}`);
     return [];
   }
 }
@@ -119,7 +123,8 @@ function lastUsedGoogleProfile() {
   try {
     const state = JSON.parse(fs.readFileSync(path.join(GOOGLE_USER_DATA_DIR, 'Local State'), 'utf-8'));
     return state?.profile?.last_used || 'Default';
-  } catch {
+  } catch (error) {
+    if (error?.code !== 'ENOENT') log.warn(`Last-used Chrome profile could not be read: ${error.message}`);
     return 'Default';
   }
 }
@@ -137,6 +142,7 @@ function pidIsAlive(pid) {
     process.kill(pid, 0);
     return true;
   } catch (err) {
+    if (err?.code !== 'ESRCH') log.debug(`Process ${pid} liveness could not be proven: ${err.message}`);
     return err.code !== 'ESRCH';
   }
 }
@@ -145,8 +151,10 @@ function pathExistsNoFollow(target) {
   try {
     fs.lstatSync(target);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    log.error(`Chrome profile lock lookup could not be verified: ${error.message}`);
+    throw error;
   }
 }
 
@@ -160,7 +168,8 @@ function singletonLockPid(lockPath) {
       const content = fs.readFileSync(lockPath, 'utf-8').trim();
       const match = content.match(/(?:^|[^\d])(\d+)(?:[^\d]|$)/);
       return match ? Number(match[1]) : null;
-    } catch {
+    } catch (readError) {
+      if (readError?.code !== 'ENOENT') log.warn(`Chrome singleton lock owner could not be read: ${readError.message}`);
       return null;
     }
   }
@@ -236,12 +245,14 @@ function createGoogleProfileSnapshot(profileName) {
   return GOOGLE_SNAPSHOT_DIR;
 }
 
-export class BrowserSupervisor {
+export class AviatorPageManager {
   constructor(headless = false) {
     this.headless  = headless;
     this._context  = null;
     this._browser  = null;
     this._page     = null;
+    this._aviatorPage = null;
+    this._activeGameFrame = null;
     this._historyPage = null;
     this._ownsBrowser = false;
     this._profileDir = PROFILE_DIR;
@@ -254,6 +265,13 @@ export class BrowserSupervisor {
     this._lastRecovery = null;
     this._historyPage = null;
     this._bettingPage = null;
+    this._historyTargetId = null;
+    this._bettingTargetId = null;
+    this._aviatorTargetId = null;
+    this._bettingUiCoordinator = new SharedPageCoordinator();
+    this._pageResolutionPromise = null;
+    this._launchPromise = null;
+    this._executionSafetyCheck = null;
     this._healthTimer = null;
     this._healthBusy = false;
     this._health = null;
@@ -263,11 +281,16 @@ export class BrowserSupervisor {
     this._recoveryCount = 0;
     this._recoveryPromise = null;
     this._contextClosed = false;
+    const savedSessionPath = path.join(ROOT, 'data', 'bot', 'browser-session-state.json');
     try {
-      const saved = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'bot', 'browser-session-state.json'), 'utf8'));
+      fs.chmodSync(savedSessionPath, 0o600);
+      const saved = JSON.parse(fs.readFileSync(savedSessionPath, 'utf8'));
       this._sessionStorage = saved.sessionStorage || null;
       this._lastKnownUrls = saved.last_known_urls || {};
-    } catch { this._lastKnownUrls = {}; }
+    } catch (error) {
+      this._lastKnownUrls = {};
+      if (error?.code !== 'ENOENT') log.warn(`Browser session metadata could not be restored securely: ${error.message}`);
+    }
     try {
       const previous = JSON.parse(fs.readFileSync(RELIABILITY_PATH, 'utf8'));
       this.restartCount = Number(previous.browser?.restart_count || 0);
@@ -282,7 +305,9 @@ export class BrowserSupervisor {
         state: previous.circuit_breaker?.state === 'OPEN' && failures.length >= 5 ? 'OPEN' : 'CLOSED',
         failures,
       };
-    } catch {}
+    } catch (error) {
+      if (error?.code !== 'ENOENT') log.warn(`Browser reliability snapshot could not be restored: ${error.message}`);
+    }
   }
 
   _event(event, fields = {}) {
@@ -302,9 +327,14 @@ export class BrowserSupervisor {
       } catch (err) {
         if (err.code !== 'EEXIST') throw err;
         let ownerPid = null;
-        try { ownerPid = Number(JSON.parse(fs.readFileSync(SUPERVISOR_LOCK, 'utf8')).pid); } catch {}
+        try { ownerPid = Number(JSON.parse(fs.readFileSync(SUPERVISOR_LOCK, 'utf8')).pid); }
+        catch (readError) {
+          if (readError?.code === 'ENOENT') continue;
+          throw new Error(`BROWSER_SUPERVISOR_LOCK_UNVERIFIABLE: ${readError.message}`);
+        }
         if (pidIsAlive(ownerPid)) throw new Error('BROWSER_SUPERVISOR_ALREADY_ACTIVE pid=' + ownerPid);
-        try { fs.unlinkSync(SUPERVISOR_LOCK); } catch {}
+        try { fs.unlinkSync(SUPERVISOR_LOCK); }
+        catch (unlinkError) { if (unlinkError?.code !== 'ENOENT') throw unlinkError; }
       }
     }
     throw new Error('Could not acquire the browser supervisor lock');
@@ -315,11 +345,14 @@ export class BrowserSupervisor {
     try {
       const lock = JSON.parse(fs.readFileSync(SUPERVISOR_LOCK, 'utf8'));
       if (Number(lock.pid) === process.pid) fs.unlinkSync(SUPERVISOR_LOCK);
-    } catch {}
+    } catch (error) {
+      if (error?.code !== 'ENOENT') log.warn(`Browser supervisor lock release could not be verified: ${error.message}`);
+    }
     this._lockOwned = false;
   }
 
   setHealthSource(health) { this._health = health; }
+  setExecutionSafetyCheck(check) { this._executionSafetyCheck = typeof check === 'function' ? check : null; }
   isPageResponsive() { return this._pageProbeFailures < 3; }
 
   async withRecoveryLock(operation) {
@@ -331,12 +364,13 @@ export class BrowserSupervisor {
 
   _safeUrl(raw) {
     try { const url = new URL(raw); return url.origin + url.pathname; }
-    catch { return ''; }
+    catch (error) { log.debug(`Browser URL was unavailable for metadata: ${error.message}`); return ''; }
   }
 
   _trackPage(page, role) {
     if (!page || page.__winnerSupervisorTracked) return;
-    try { page.__winnerSupervisorTracked = true; } catch {}
+    try { page.__winnerSupervisorTracked = true; }
+    catch (error) { log.debug(`Browser page could not be marked for event tracking: ${error.message}`); }
     page.on?.('close', () => {
       this._event('page_closed', { role, url: this._safeUrl(page.url?.()) });
       this._persistMetadata();
@@ -350,6 +384,24 @@ export class BrowserSupervisor {
     });
   }
 
+  async _targetIdForPage(page) {
+    if (!page || page.isClosed?.() || !this._context?.newCDPSession) return null;
+    let session;
+    try {
+      session = await this._context.newCDPSession(page);
+      const info = await session.send('Target.getTargetInfo');
+      return info?.targetInfo?.targetId || null;
+    } catch (error) {
+      log.debug(`Browser page CDP identity is unavailable: ${error.message}`);
+      return null;
+    } finally {
+      if (session?.detach) {
+        try { await session.detach(); }
+        catch (error) { log.debug(`Temporary page CDP session detach failed: ${error.message}`); }
+      }
+    }
+  }
+
   async _persistSession(page = this._historyPage || this._page) {
     if (!this._context) return;
     try {
@@ -361,13 +413,17 @@ export class BrowserSupervisor {
             const key = sessionStorage.key(i);
             return [key, sessionStorage.getItem(key)];
           })),
-        })).catch(() => null)
+        })).catch(error => {
+          this._event('session_storage_read_failed', { error: String(error?.message || error) });
+          log.warn(`Saved session storage could not be read: ${error?.message || error}`);
+          return null;
+        })
         : this._sessionStorage;
       const payload = {
         saved_at: new Date().toISOString(), storageState, sessionStorage,
         last_known_urls: {
-          history: this._safeUrl((this._historyPage || page)?.url?.()),
-          betting: this._safeUrl(this._bettingPage?.url?.()),
+          aviator: this._safeUrl((this._aviatorPage || page)?.url?.()),
+          history: this._safeUrl((this._aviatorPage || page)?.url?.()),
         },
         collector_checkpoint: this._health?.snapshot?.().lastRoundId || null,
       };
@@ -385,14 +441,18 @@ export class BrowserSupervisor {
   }
 
   async _restoreSessionStorage(page) {
-    if (!page || !this._sessionStorage?.origin || !this._sessionStorage?.entries) return;
+    if (!page?.addInitScript || !this._sessionStorage?.origin || !this._sessionStorage?.entries) return;
     const state = this._sessionStorage;
     await page.addInitScript(({ origin, entries }) => {
       if (location.origin !== origin) return;
       for (const [key, value] of Object.entries(entries)) {
-        try { sessionStorage.setItem(key, value); } catch {}
+        try { sessionStorage.setItem(key, value); }
+        catch (error) { console.warn('[winner-predict] saved session storage could not be restored:', String(error)); }
       }
-    }, state).catch(() => {});
+    }, state).catch(error => {
+      this._event('session_storage_restore_failed', { error: String(error?.message || error) });
+      log.warn(`Browser session storage restore failed: ${error?.message || error}`);
+    });
   }
 
   async persistSession(page) { await this._persistSession(page); }
@@ -403,7 +463,7 @@ export class BrowserSupervisor {
       const status = fs.readFileSync('/proc/' + pid + '/status', 'utf8');
       const rss = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
       return rss ? Math.round(Number(rss[1]) / 1024) : null;
-    } catch { return null; }
+    } catch (error) { log.debug(`Process memory read unavailable for PID ${pid}: ${error.message}`); return null; }
   }
 
   _readProcessUptimeSeconds(pid) {
@@ -413,7 +473,7 @@ export class BrowserSupervisor {
       const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
       const startedTicks = Number(fields[19]);
       return Number.isFinite(startedTicks) ? Math.max(0, Math.floor(os.uptime() - startedTicks / 100)) : null;
-    } catch { return null; }
+    } catch (error) { log.debug(`Process uptime read unavailable for PID ${pid}: ${error.message}`); return null; }
   }
 
   _readProcessCpuPercent(pid) {
@@ -428,14 +488,17 @@ export class BrowserSupervisor {
       this._cpuSample = { pid, ticks, total, at: Date.now() };
       if (!previous || previous.pid !== pid || total <= previous.total) return null;
       return Math.max(0, Math.round((ticks - previous.ticks) / (total - previous.total) * os.cpus().length * 100));
-    } catch { return null; }
+    } catch (error) { log.debug(`Process CPU read unavailable for PID ${pid}: ${error.message}`); return null; }
   }
 
   _backendStatus() {
     try {
       const file = path.join(ROOT, 'data', 'backend_lifecycle.jsonl');
       const lines = fs.readFileSync(file, 'utf8').trim().split(/\r?\n/).slice(-1000);
-      const events = lines.map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
+      const events = lines.map(line => {
+        try { return JSON.parse(line); }
+        catch (error) { log.debug(`Backend lifecycle entry is malformed: ${error.message}`); return null; }
+      }).filter(Boolean);
       const starts = events.filter(event => event.event === 'backend_start');
       const latest = starts.at(-1);
       const latestExit = latest && events.findLast(event => event.pid === latest.pid
@@ -450,22 +513,64 @@ export class BrowserSupervisor {
         running: Boolean(latest && !latestExit),
         last_exit: latestExit ? { signal: latestExit.signal || null, code: latestExit.exit_code ?? null } : null,
       };
-    } catch { return { pid: null, restart_count: null, running: null }; }
+    } catch (error) {
+      log.debug(`Backend lifecycle status could not be read: ${error.message}`);
+      return { pid: null, restart_count: null, running: null };
+    }
   }
 
   _persistMetadata() {
-    const health = this._health?.snapshot?.() || {};
-    const pages = (() => { try { return this._context?.pages?.() || []; } catch { return []; } })();
-    const history = this._historyPage || this._page;
+    const pages = (() => {
+      try { return this._context?.pages?.() || []; }
+      catch (error) { log.warn(`Open browser pages could not be enumerated: ${error.message}`); return []; }
+    })();
+    const aviatorPage = this._aviatorPage || this._historyPage || this._page;
+    const aviatorUrl = aviatorPage?.url?.() || '';
+    const aviatorLoginRoute = Boolean(aviatorPage && !aviatorPage.isClosed?.() && isExpiredAuthRoute(aviatorUrl));
+    const loginRoutePending = aviatorLoginRoute && !isAcknowledgedAuthRoute(aviatorPage);
+    const loginRoutePage = loginRoutePending ? 'Aviator' : null;
+    const loginRouteVisible = Boolean(loginRoutePage);
+    const aviatorOpen = Boolean(aviatorPage && !aviatorPage.isClosed?.());
+    const allGameFrames = aviatorOpen
+      ? (aviatorPage.frames?.() || []).filter(frame => /aviator-next|spribegaming|aviaport/i.test(frame.url?.() || '')) : [];
+    const outerGameFrames = allGameFrames.filter(frame => /aviaport\.spribegaming\.com/i.test(frame.url?.() || ''));
+    const gameFrameCount = outerGameFrames.length || allGameFrames.filter(frame => /aviator-next/i.test(frame.url?.() || '')).length;
+    const browserContexts = this._browser?.contexts?.();
+    const targetId = this._aviatorTargetId || this._historyTargetId || this._bettingTargetId;
+    this._health?.setBrowserPages?.({
+      browser_count: this.isAlive() ? 1 : 0,
+      context_count: this._context && !this._contextClosed
+        ? (Array.isArray(browserContexts) ? browserContexts.length : 1) : 0,
+      page_count: pages.length,
+      aviator_page_count: pages.filter(isAviatorPage).length,
+      aviator_target_id: targetId,
+      aviator_page_state: aviatorOpen ? 'OPEN' : 'CLOSED',
+      game_frame_count: gameFrameCount,
+      game_frame_state: gameFrameCount === 1 ? 'READY' : gameFrameCount > 1 ? 'MULTIPLE' : 'NOT_READY',
+      // Legacy aliases intentionally point to the same target during rollout.
+      history_target_id: targetId,
+      betting_target_id: targetId,
+      history_page_state: aviatorOpen ? 'OPEN' : 'CLOSED',
+      betting_page_state: aviatorOpen ? 'OPEN' : 'SHARED_PAGE_UNAVAILABLE',
+      page_role: 'SHARED_AVIATOR',
+    });
+    let health = this._health?.snapshot?.() || {};
+    if (loginRouteVisible && (health.loggedIn !== false || !health.authRequired)) {
+      this._health?.setLoggedIn?.(false);
+      this._health?.setAuthRequired?.(`Winner ${loginRoutePage} page is on a login or logout route`);
+      this._health?.setError?.(`Winner ${loginRoutePage} page is on a login or logout route`, 'AUTH_REQUIRED', 'run_login_recovery');
+      health = this._health?.snapshot?.() || health;
+    }
     const browserPid = profileOwnerPid(this._profileDir);
     const lastRound = health.lastRoundTime || null;
     const lastSuccessfulCollection = health.lastSuccessfulCollection || null;
-    const state = this._circuitBreaker.state === 'OPEN' ? 'FAILED' : !this.isAlive() ? 'DISCONNECTED'
-      : this._lastRecovery?.state === 'RECOVERING' ? 'RECOVERING'
-      : !history || history.isClosed?.() || !this.isPageResponsive() ? 'DEGRADED'
-        : health.state === 'RECOVERING' ? 'RECOVERING'
-          : !health.frameConnected || (lastRound && Date.now() - Date.parse(lastRound) > 180000)
-            ? 'DEGRADED' : 'HEALTHY';
+    const state = loginRouteVisible ? 'AUTH_REQUIRED' : this._circuitBreaker.state === 'OPEN' ? 'RECOVERY_COOLDOWN' : !this.isAlive() ? 'DISCONNECTED'
+      : !aviatorOpen ? 'DEGRADED'
+        : health.health === 'HEALTHY' && health.state === 'COLLECTING' && health.loggedIn === true
+          ? 'HEALTHY' : health.state || 'UNKNOWN';
+    const networkCheckedAt = health.network?.checked_at ? Date.parse(health.network.checked_at) : NaN;
+    const networkFreshness = Number.isFinite(networkCheckedAt) && Date.now() - networkCheckedAt <= 30000
+      ? 'CURRENT' : 'STALE_OR_UNKNOWN';
     const status = {
       updated_at: new Date().toISOString(), state,
       browser: {
@@ -476,18 +581,28 @@ export class BrowserSupervisor {
         cpu_percent: this._readProcessCpuPercent(browserPid),
       },
       context: { alive: Boolean(this._context && !this._contextClosed && this.isAlive()), page_count: pages.length },
-      history_page: { alive: Boolean(history && !history.isClosed?.()), url: this._safeUrl(history?.url?.()) },
-      // Betting observes the collector-owned Aviator page through CDP. Keep an
-      // explicit shared state instead of opening a second browser or tab.
-      betting_page: this._bettingPage && !this._bettingPage.isClosed?.()
-        ? { state: /^about:blank/i.test(this._bettingPage.url?.() || '') ? 'NOT_READY' : 'PAGE_OPEN', url: this._safeUrl(this._bettingPage.url?.()) }
-        : { state: 'NOT_PROVISIONED', url: null },
-      session: health.loggedIn === true ? 'AUTHENTICATED' : health.loggedIn === false ? 'AUTH_REQUIRED' : 'UNKNOWN',
+      aviator_page: { alive: aviatorOpen, role: 'SHARED_AVIATOR', url: this._safeUrl(aviatorPage?.url?.()),
+        login_route_visible: aviatorLoginRoute, login_route_acknowledged: aviatorLoginRoute && !loginRoutePending },
+      history_page: { alive: aviatorOpen, shared: true, url: this._safeUrl(aviatorPage?.url?.()) },
+      betting_page: { state: aviatorOpen ? (loginRoutePending ? 'AUTH_REQUIRED' : /^about:blank/i.test(aviatorUrl) ? 'NOT_READY' : 'SHARED_PAGE') : 'SHARED_PAGE_UNAVAILABLE',
+        shared: true, url: this._safeUrl(aviatorPage?.url?.()), login_route_visible: aviatorLoginRoute,
+        login_route_acknowledged: aviatorLoginRoute && !loginRoutePending },
+      session: loginRouteVisible ? 'AUTH_REQUIRED' : health.loggedIn === true ? 'AUTHENTICATED'
+        : health.authRequired ? 'AUTH_REQUIRED' : 'UNKNOWN',
+      network: { ...(health.network || { status: 'UNKNOWN' }), freshness: networkFreshness },
+      authentication: { status: loginRouteVisible ? 'AUTH_REQUIRED' : health.loggedIn === true ? 'AUTHENTICATED'
+        : health.authRequired ? 'AUTH_REQUIRED' : 'UNKNOWN',
+        reason: loginRouteVisible ? 'LOGIN_ROUTE_VISIBLE' : health.authRequiredReason || null,
+        evidence: loginRouteVisible ? { page: loginRoutePage.toLowerCase() } : null },
       collector: {
         running: Boolean(health.collectorRunning), state: health.state || 'UNKNOWN',
         last_round_id: health.lastRoundId || null, last_round_timestamp: lastRound,
+        last_observed_round_id: health.lastObservedRoundId || null,
+        last_observed_at: health.lastObservedAt || null,
         last_successful_collection: lastSuccessfulCollection, heartbeat_at: health.heartbeatAt || null,
-        iframe_attached: Boolean(health.frameConnected),
+        iframe_attached: Boolean(health.gameReadiness?.frameAttached ?? health.frameConnected),
+        game_readiness: health.gameReadiness || { frameAttached: false, contentLoaded: false, payoutsReady: false },
+        recovery: health.recovery || null, last_error: health.lastError || null,
       },
       backend: this._backendStatus(), last_disconnect: this._lastDisconnect,
       last_browser_event: this._lastBrowserEvent, last_recovery: this._lastRecovery,
@@ -506,7 +621,9 @@ export class BrowserSupervisor {
       const temp = RELIABILITY_PATH + '.' + process.pid + '.tmp';
       fs.writeFileSync(temp, JSON.stringify(status, null, 2), { encoding: 'utf8', mode: 0o600 });
       fs.renameSync(temp, RELIABILITY_PATH);
-    } catch {}
+    } catch (error) {
+      log.error(`Browser reliability heartbeat could not be written: ${error?.message || error}`);
+    }
   }
 
   startHeartbeat({ intervalMs = 5000, health = this._health } = {}) {
@@ -565,7 +682,9 @@ export class BrowserSupervisor {
     try {
       fs.mkdirSync(path.dirname(DIAGNOSTICS_PATH), { recursive: true });
       fs.appendFileSync(DIAGNOSTICS_PATH, JSON.stringify(payload) + '\n', { mode: 0o600 });
-    } catch {}
+    } catch (error) {
+      log.error(`Browser recovery diagnostics could not be written: ${error?.message || error}`);
+    }
     return payload;
   }
 
@@ -581,13 +700,24 @@ export class BrowserSupervisor {
   failRecovery(reason, error) {
     const cutoff = Date.now() - 10 * 60 * 1000;
     this._circuitBreaker.failures = this._circuitBreaker.failures.filter(ts => ts >= cutoff);
-    this._circuitBreaker.failures.push(Date.now());
+    if (this._circuitBreaker.state !== 'OPEN') this._circuitBreaker.failures.push(Date.now());
     if (this._circuitBreaker.failures.length >= 5) this._circuitBreaker.state = 'OPEN';
     this._lastRecovery = {
       state: this._circuitBreaker.state === 'OPEN' ? 'CIRCUIT_BREAKER_OPEN' : 'FAILED',
       at: new Date().toISOString(), reason, error: String(error?.message || error),
     };
     this._event('recovery_failed', { reason, error: String(error?.message || error) });
+    this._persistMetadata();
+  }
+
+  allowRecoveryCycle() {
+    // Recovery failures are bounded per cycle. After the configured caller
+    // cooldown, start one fresh cycle instead of making the monitor terminal.
+    this._circuitBreaker.failures = [];
+    this._circuitBreaker.state = 'CLOSED';
+    this._lastRecovery = { state: 'RECOVERING', at: new Date().toISOString(),
+      reason: 'recovery cooldown elapsed; starting a new bounded cycle' };
+    this._event('recovery_cycle_restarted', { cooldown_elapsed: true });
     this._persistMetadata();
   }
 
@@ -614,7 +744,8 @@ export class BrowserSupervisor {
     try {
       if (this._browser) return this._browser.isConnected();
       return !!this._context?.browser?.()?.isConnected?.();
-    } catch {
+    } catch (error) {
+      log.warn(`Browser connection status could not be read: ${error.message}`);
       return false;
     }
   }
@@ -622,7 +753,8 @@ export class BrowserSupervisor {
   /** True if the context is still usable. */
   hasContext() {
     if (!this._context || this._contextClosed || !this.isAlive()) return false;
-    try { this._context.pages(); return true; } catch { return false; }
+    try { this._context.pages(); return true; }
+    catch (error) { log.warn(`Browser context is no longer usable: ${error.message}`); return false; }
   }
 
   /** Connect to an existing browser or launch a managed browser. */
@@ -631,6 +763,13 @@ export class BrowserSupervisor {
       log.info('BrowserManager: reusing existing browser');
       return this._context;
     }
+    if (this._launchPromise) return this._launchPromise;
+    this._launchPromise = this._launchOnce(signal, { reconnect });
+    try { return await this._launchPromise; }
+    finally { this._launchPromise = null; }
+  }
+
+  async _launchOnce(signal, { reconnect = false } = {}) {
     if (signal?.aborted) throw new Error('Aborted');
     this._acquireSingletonLock();
     await this._close();
@@ -652,7 +791,7 @@ export class BrowserSupervisor {
     try {
       const response = await fetch(new URL('/json/version', endpoint), { signal: AbortSignal.timeout(1000) });
       return response.ok;
-    } catch { return false; }
+    } catch (error) { log.debug(`CDP endpoint ${endpoint} did not respond: ${error.message}`); return false; }
   }
 
   async _connectExisting() {
@@ -678,7 +817,9 @@ export class BrowserSupervisor {
           this._persistMetadata();
         });
         this._page = context.pages().find(page => !page.isClosed() && isAviatorPage(page)) || null;
+        this._aviatorPage = this._page;
         this._historyPage = this._page;
+        this._bettingPage = this._page;
         this._ownsBrowser = false;
         this._event('browser_attached', { endpoint: this._safeUrl(endpoint) });
 
@@ -720,6 +861,9 @@ export class BrowserSupervisor {
     this._page = this._context.pages().find(page => !page.isClosed() && isAviatorPage(page)) ||
       this._context.pages().find(page => !page.isClosed()) ||
       null;
+    this._aviatorPage = isAviatorPage(this._page) ? this._page : null;
+    this._historyPage = this._aviatorPage;
+    this._bettingPage = this._aviatorPage;
     this._ownsBrowser = true;
     this.restartCount += 1;
     this._browserStartedAt = Date.now();
@@ -742,90 +886,173 @@ export class BrowserSupervisor {
     return this._context;
   }
 
-  /** Get or create a page. Reuses an existing Aviator tab before creating anything. */
-  async getPage() {
-    if (!this.hasContext()) await this.launch();
-    const pages = this._context.pages().filter(page => !page.isClosed());
-    const aviatorPage = pages.find(isAviatorPage);
-    if (aviatorPage) {
-      this._page = aviatorPage;
-      this._trackPage(aviatorPage, 'shared_aviator');
-      await aviatorPage.bringToFront().catch(() => {});
-      return aviatorPage;
+  async _inspectAviatorPage(page) {
+    const result = { page, route: isAviatorPage(page), gameFrameCount: 0,
+      sessionEnded: false, pendingBetState: 'UNKNOWN', healthy: false };
+    if (!result.route || page?.isClosed?.()) return result;
+    const frames = (page.frames?.() || []).filter(frame => /aviator-next|spribegaming|aviaport/i.test(frame.url?.() || ''));
+    const outerFrames = frames.filter(frame => /aviaport\.spribegaming\.com/i.test(frame.url?.() || ''));
+    result.gameFrameCount = outerFrames.length || frames.filter(frame => /aviator-next/i.test(frame.url?.() || '')).length;
+    const observations = [];
+    for (const frame of frames) {
+      const observation = await frame.evaluate(() => {
+        const text = String(document.body?.innerText || document.body?.textContent || '').slice(0, 12000);
+        const visible = element => !!element && (element.offsetWidth || element.offsetHeight)
+          && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none';
+        const panels = Array.from(document.querySelectorAll('app-bet-control'));
+        const states = panels.map(panel => {
+          const buttons = Array.from(panel.querySelectorAll('button, .btn')).filter(visible);
+          const pending = buttons.some(button => /^(?:cash\s*out|take\s*win|collect|cancel\s*bet)\b/i.test((button.innerText || button.textContent || '').trim()));
+          const betButton = panel.querySelector('.btn-success.bet');
+          return pending ? 'PENDING' : /^Bet\b/i.test((betButton?.innerText || betButton?.textContent || '').trim()) ? 'CLEAR' : 'UNKNOWN';
+        });
+        return { text, panelCount: panels.length, panelStates: states };
+      }).catch(() => null);
+      if (observation) observations.push(observation);
     }
-    if (this._page && !this._page.isClosed()) {
-      this._trackPage(this._page, 'shared_aviator');
-      return this._page;
-    }
-    this._page = await this._context.newPage();
-    await this._restoreSessionStorage(this._page);
-    this._trackPage(this._page, 'shared_aviator');
-    return this._page;
+    result.sessionEnded = observations.some(item => /session\s+ended[\s\S]{0,100}opened in another window/i.test(item.text));
+    const clearPanels = observations.some(item => item.panelCount === 2
+      && item.panelStates.length === 2 && item.panelStates.every(state => state === 'CLEAR'));
+    const hasUnknown = observations.some(item => item.panelStates.includes('UNKNOWN'));
+    const hasPending = observations.some(item => item.panelStates.includes('PENDING'));
+    result.pendingBetState = hasPending ? 'PENDING' : clearPanels ? 'CLEAR' : hasUnknown ? 'UNKNOWN' : 'UNKNOWN';
+    result.healthy = result.gameFrameCount === 1 && !result.sessionEnded
+      && observations.some(item => item.panelCount === 2);
+    return result;
   }
 
-  /** Return the managed game tab, or a dedicated tab in an attached context. */
-  async getHistoryPage() {
-    if (!this.hasContext()) await this.launch();
-    if (this._historyPage && !this._historyPage.isClosed()) return this._historyPage;
-    // The managed profile already has a tab. Cloning an Aviator URL into a
-    // second tab can make Winner redirect one of them to the sportsbook shell.
-    // Attached browsers belong to the user, so give the collector its own tab.
-    const managedPage = this._ownsBrowser && (
-      this._context.pages().find(page => !page.isClosed() && isAviatorPage(page)) ||
-      (this._page && !this._page.isClosed() ? this._page : null) ||
-      this._context.pages().find(page => !page.isClosed())
-    );
-    this._historyPage = managedPage || await this._context.newPage();
-    this._trackPage(this._historyPage, 'history');
-    if (this._ownsBrowser && /^about:blank/i.test(this._historyPage.url()) && this._lastKnownUrls?.history) {
-      try {
-        const target = new URL(this._lastKnownUrls.history);
-        if (target.hostname === 'winner.rw' && /aviator|crash-games/i.test(target.pathname)) {
-          await this._restoreSessionStorage(this._historyPage);
-          await this._historyPage.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  _adoptAviatorPage(page) {
+    this._aviatorPage = page;
+    this._page = page;
+    this._historyPage = page;
+    this._bettingPage = page;
+    if (page && !page.__winnerAviatorFrameEvents) {
+      try { page.__winnerAviatorFrameEvents = true; } catch { /* A frozen page wrapper is still usable. */ }
+      const clearFrame = frame => {
+        if (!frame || frame === this._activeGameFrame
+            || /aviator-next|spribegaming|aviaport/i.test(frame.url?.() || '')) {
+          this._activeGameFrame = null;
         }
-      } catch (err) {
-        this._event('last_known_url_restore_failed', { role: 'history', error: String(err?.message || err) });
-      }
+      };
+      page.on?.('framenavigated', clearFrame);
+      page.on?.('frameattached', clearFrame);
+      page.on?.('framedetached', clearFrame);
     }
-    await this._cleanupManagedStarterPages(this._historyPage);
-    if (typeof this._historyPage.bringToFront === 'function') {
-      await this._historyPage.bringToFront().catch(() => {});
-    }
-    log.info('BrowserManager: collector page ready in existing context');
-    return this._historyPage;
+    this._trackPage(page, 'shared_aviator');
   }
 
-  /** Lazily provision the execution page in the same persistent context. */
-  async getBettingPage() {
+  async getAviatorPage() {
     if (!this.hasContext()) await this.launch();
-    if (this._bettingPage && !this._bettingPage.isClosed()) return this._bettingPage;
-    this._bettingPage = await this._context.newPage();
-    await this._restoreSessionStorage(this._bettingPage);
-    this._trackPage(this._bettingPage, 'betting');
-    try {
-      const target = new URL(process.env.WINNER_BETTING_PAGE_URL || DEFAULT_BETTING_PAGE_URL);
-      if (target.hostname !== 'winner.rw' || !target.pathname.startsWith('/en/')) {
-        throw new Error('configured betting page must be an /en/ route on winner.rw');
+    if (!this.hasContext()) throw new Error('SHARED_AVIATOR_BROWSER_CONTEXT_UNAVAILABLE');
+    if (this._pageResolutionPromise) return this._pageResolutionPromise;
+    this._pageResolutionPromise = (async () => {
+      const contexts = this._browser?.contexts?.();
+      if (Array.isArray(contexts) && (contexts.length !== 1 || contexts[0] !== this._context)) {
+        throw new Error(`SHARED_AVIATOR_CONTEXT_COUNT_INVALID:${contexts.length}`);
       }
-      const current = new URL(this._bettingPage.url());
-      if (current.origin !== target.origin || current.pathname !== target.pathname) {
-        await this._bettingPage.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await this._bettingPage.locator('body').waitFor({ state: 'attached', timeout: 5000 }).catch(() => {});
+      const pages = this._context.pages().filter(page => !page.isClosed());
+      const candidates = pages.filter(isAviatorPage);
+      let page = null;
+      if (candidates.length > 1) {
+        const inspected = await Promise.all(candidates.map(candidate => this._inspectAviatorPage(candidate)));
+        const healthy = inspected.filter(item => item.healthy);
+        if (healthy.length !== 1) {
+          throw new Error('DUPLICATE_AVIATOR_PAGES_UNSAFE_TO_CLEANUP');
+        }
+        page = healthy[0].page;
+        for (const duplicate of inspected.filter(item => item.page !== page)) {
+          let safeToRetire = duplicate.pendingBetState === 'CLEAR';
+          if (!safeToRetire && duplicate.sessionEnded && this._executionSafetyCheck) {
+            try { safeToRetire = (await this._executionSafetyCheck())?.safe === true; }
+            catch { safeToRetire = false; }
+          }
+          if (!safeToRetire) throw new Error(duplicate.pendingBetState === 'PENDING'
+            ? 'DUPLICATE_AVIATOR_TRANSACTION_PENDING' : 'DUPLICATE_AVIATOR_TRANSACTION_STATE_UNKNOWN');
+          await duplicate.page.close();
+          this._event('duplicate_aviator_page_retired', { reason: duplicate.sessionEnded ? 'SESSION_ENDED' : 'REDUNDANT_PAGE' });
+        }
+      } else if (candidates.length === 1) {
+        page = candidates[0];
+        const session = await this._inspectAviatorPage(page);
+        if (session.sessionEnded) throw new Error('AVIATOR_SESSION_ENDED_IN_ANOTHER_WINDOW');
+      } else if (this._aviatorPage && !this._aviatorPage.isClosed() && pages.includes(this._aviatorPage)) {
+        page = this._aviatorPage;
+      } else {
+        page = pages.find(item => /^(?:about:blank|chrome:\/\/newtab\/?|chrome:\/\/new-tab-page\/?)/i.test(item.url()))
+          || pages[0] || null;
+        if (!page && this._ownsBrowser) page = await this._context.newPage();
+        if (!page) throw new Error('NO_EXISTING_AVIATOR_PAGE; refusing to create a second browser game session');
       }
-    } catch (err) {
-      log.warn(`BrowserManager: betting page navigation is not ready: ${err.message}`);
-    }
-    this._persistMetadata();
-    return this._bettingPage;
+      this._adoptAviatorPage(page);
+      this._aviatorTargetId = await this._targetIdForPage(page);
+      this._historyTargetId = this._aviatorTargetId;
+      this._bettingTargetId = this._aviatorTargetId;
+      await this._restoreSessionStorage(page);
+      if (this._ownsBrowser && /^about:blank/i.test(page.url()) && this._lastKnownUrls?.aviator) {
+        try {
+          const target = new URL(this._lastKnownUrls.aviator);
+          if (target.hostname === 'winner.rw' && /aviator|crash-games/i.test(target.pathname)) {
+            await page.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 20000 });
+          }
+        } catch (error) {
+          this._event('last_known_url_restore_failed', { role: 'aviator', error: String(error?.message || error) });
+        }
+      }
+      await this._cleanupManagedStarterPages(page);
+      this._persistMetadata();
+      return page;
+    })();
+    try { return await this._pageResolutionPromise; }
+    finally { this._pageResolutionPromise = null; }
   }
+
+  /** Shared page interface. History and betting callers resolve the same object. */
+  async getAviatorFrame() {
+    const page = await this.getAviatorPage();
+    const allFrames = (page.frames?.() || []).filter(frame => /aviator-next|spribegaming|aviaport/i.test(frame.url?.() || ''));
+    const gameFrames = allFrames.filter(frame => /aviator-next/i.test(frame.url?.() || ''));
+    const outerFrames = allFrames.filter(frame => /aviaport\.spribegaming\.com/i.test(frame.url?.() || ''));
+    const frames = gameFrames.length ? gameFrames : outerFrames;
+    if (frames.length !== 1) throw new Error(frames.length ? 'MULTIPLE_ACTIVE_AVIATOR_FRAMES' : 'SHARED_GAME_FRAME_NOT_READY');
+    this._activeGameFrame = frames[0];
+    return this._activeGameFrame;
+  }
+
+  async getBrowserStatus() {
+    const contexts = this._browser?.contexts?.() || [];
+    const pages = this._context?.pages?.().filter(page => !page.isClosed()) || [];
+    const aviatorPages = pages.filter(isAviatorPage);
+    return { browser_count: this.isAlive() ? 1 : 0, context_count: contexts.length,
+      page_count: pages.length, aviator_page_count: aviatorPages.length,
+      aviator_target_id: this._aviatorTargetId, page_role: 'SHARED_AVIATOR' };
+  }
+
+  async getGameSessionStatus() {
+    const page = this._aviatorPage && !this._aviatorPage.isClosed?.()
+      ? this._aviatorPage
+      : this._context?.pages?.().find(item => !item.isClosed?.() && isAviatorPage(item));
+    if (!page) return { status: 'UNKNOWN', reason: 'SHARED_AVIATOR_PAGE_NOT_FOUND',
+      game_frame_count: 0, pending_bet_state: 'UNKNOWN', observed_at: new Date().toISOString() };
+    const observed = await this._inspectAviatorPage(page);
+    return { status: observed.sessionEnded ? 'SESSION_ENDED'
+      : observed.healthy ? 'ACTIVE' : 'UNKNOWN', game_frame_count: observed.gameFrameCount,
+      pending_bet_state: observed.pendingBetState, observed_at: new Date().toISOString() };
+  }
+
+  withBettingUiLock(operation, options) {
+    return this._bettingUiCoordinator.withBettingUiLock(operation, options);
+  }
+
+  async getPage() { return this.getAviatorPage(); }
+  async getHistoryPage() { return this.getAviatorPage(); }
+  async getBettingPage() { return this.getAviatorPage(); }
 
   /** Keep the managed Aviator tab visible after login or recovery. */
   async focusGamePage(page) {
     if (!page || page.isClosed() || !isAviatorPage(page)) return;
     await this._cleanupManagedStarterPages(page);
     if (typeof page.bringToFront === 'function') {
-      await page.bringToFront().catch(() => {});
+      await page.bringToFront().catch(error => log.debug(`Could not focus Aviator tab: ${error.message}`));
     }
   }
 
@@ -857,58 +1084,45 @@ export class BrowserSupervisor {
     }
   }
 
-  /** Recreate only the collector page while preserving this browser/context. */
+  /** Reacquire the existing game tab; never open a second game during recovery. */
   async recoverHistoryPage(signal) {
     if (signal?.aborted) throw new Error('Aborted');
     if (!this.hasContext()) {
       await this.restart(signal);
     }
-    const previous = this._historyPage;
-    const sourceUrl = previous && !previous.isClosed() ? previous.url() : '';
-    if (previous && !previous.isClosed()) await this._persistSession(previous);
-    // Keep one tab alive while replacing the page. Closing Chrome's last tab
-    // first can tear down the entire managed context before newPage() runs.
-    const replacement = await this._context.newPage();
-    await this._restoreSessionStorage(replacement);
-    this._trackPage(replacement, 'history');
-    if (previous && !previous.isClosed()) {
-      await previous.close().catch(() => {});
-    }
-    this._historyPage = replacement;
-    if (this._page === previous) this._page = replacement;
-    if (sourceUrl && sourceUrl !== 'about:blank') {
-      await this._historyPage.goto(sourceUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
-    }
-    await this._cleanupManagedStarterPages(this._historyPage);
-    log.warn('BrowserManager: recreated history page in the existing browser context');
-    return this._historyPage;
+    if (this._aviatorPage && !this._aviatorPage.isClosed?.()) await this._persistSession(this._aviatorPage);
+    const page = await this.getAviatorPage();
+    const status = await this.getGameSessionStatus();
+    if (status.status === 'SESSION_ENDED') throw new Error('AVIATOR_SESSION_ENDED; recovery will not create another game session');
+    log.info('BrowserManager: recovered shared Aviator page without opening another tab');
+    return page;
   }
 
   /** Close everything cleanly. */
   async _close() {
     this.stopHeartbeat();
-    if (this._bettingPage && this._bettingPage !== this._historyPage && !this._bettingPage.isClosed()) {
-      try { await this._bettingPage.close(); } catch {}
-    }
-    if (!this._ownsBrowser && this._historyPage && this._historyPage !== this._page &&
-        !this._historyPage.isClosed()) {
-      try { await this._historyPage.close(); } catch {}
-    }
     if (this._context) {
       if (this._ownsBrowser) {
-        try { await this._context.close(); } catch {}
+        try { await this._context.close(); }
+        catch (error) { log.warn(`Owned browser context close failed: ${error.message}`); }
       }
       this._context = null;
     }
     if (this._browser) {
       if (this._ownsBrowser) {
-        try { await this._browser.close(); } catch {}
+        try { await this._browser.close(); }
+        catch (error) { log.warn(`Owned browser close failed: ${error.message}`); }
       }
       this._browser = null;
     }
     this._page = null;
+    this._aviatorPage = null;
+    this._activeGameFrame = null;
     this._historyPage = null;
     this._bettingPage = null;
+    this._aviatorTargetId = null;
+    this._historyTargetId = null;
+    this._bettingTargetId = null;
     this._ownsBrowser = false;
     this._contextClosed = false;
   }
@@ -918,6 +1132,15 @@ export class BrowserSupervisor {
     await this._persistSession();
     await this._close();
     this._releaseSingletonLock();
+  }
+
+  async preserveOpenContext() {
+    await this._persistSession();
+    this.stopHeartbeat();
+    this._ownsBrowser = false;
+    this._releaseSingletonLock();
+    this._event('browser_preserved_for_execution_reconciliation');
+    this._persistMetadata();
   }
 
   /** Reconnect or relaunch after browser connection loss. */
@@ -950,16 +1173,16 @@ export class BrowserSupervisor {
 
 let supervisorInstance = null;
 export function getBrowserSupervisor(headless = false) {
-  if (!supervisorInstance) supervisorInstance = new BrowserSupervisor(headless);
+  if (!supervisorInstance) supervisorInstance = new AviatorPageManager(headless);
   else if (supervisorInstance.headless !== headless && !supervisorInstance.isAlive()) {
     supervisorInstance.headless = headless;
   }
   return supervisorInstance;
 }
 
-// Kept as a source-compatible name for existing imports. There is still only
-// one production owner: callers receive the process-wide BrowserSupervisor.
-export class BrowserManager extends BrowserSupervisor {
+// Source compatibility aliases for older imports. One process-wide manager owns the Aviator page.
+export class BrowserSupervisor extends AviatorPageManager {}
+export class BrowserManager extends AviatorPageManager {
   constructor(headless = false) {
     super(headless);
     if (supervisorInstance && supervisorInstance.isAlive()) return supervisorInstance;

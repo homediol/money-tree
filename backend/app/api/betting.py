@@ -6,13 +6,16 @@ Lifecycle events are additionally pushed over /ws/live as flat dicts with
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import math
+import asyncio
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.betting.browser_client import AviatorBrowserClient
-from app.betting.profiles import get_profile, profile_keys
+from app.betting.cashout import inspect_cashout_configuration
+from app.betting.profiles import profile_keys
 from app.betting.schemas import (
     AutomaticStartRequest,
     DecisionIntent,
@@ -63,7 +66,7 @@ async def profiles(request: Request):
 
 @router.post("/start")
 async def start_automatic(request: Request, body: AutomaticStartRequest):
-    """Start REAL automatic mode; no prediction is created here."""
+    """Automatic start stays blocked until a configured Rules Engine exists."""
     return JSONResponse(status_code=409, content={
         "ok": False, "error": "live_activation_required",
         "message": "Use POST /api/live/start with explicit ENABLE LIVE BETTING "
@@ -157,19 +160,74 @@ async def browser_readiness(request: Request, include_snapshot: bool = False):
     """
     manager = _betting(request)
     client = AviatorBrowserClient(manager.settings)
+    readiness = None
     try:
         readiness = await client.readiness()
         payload: dict = {"ok": True, "browser": readiness}
         if include_snapshot:
             snap = await client.snapshot()
-            payload["snapshot"] = snap.as_dict() if hasattr(snap, "as_dict") else snap
+            snapshot = snap.as_dict() if hasattr(snap, "as_dict") else snap
+            payload["snapshot"] = snapshot
+            balance = snapshot.get("balance") if isinstance(snapshot, dict) else None
+            authentication_state = str((snapshot or {}).get("authentication_state") or
+                                       readiness.get("authentication_state") or "UNKNOWN")
+            numeric_balance = bool(isinstance(snapshot, dict)
+                            and snapshot.get("ok") and isinstance(balance, (int, float))
+                            and not isinstance(balance, bool) and math.isfinite(balance) and balance >= 0)
+            verified = bool(readiness.get("connected") and numeric_balance
+                            and authentication_state == "AUTHENTICATED")
+            cashout = inspect_cashout_configuration(next((item for item in
+                (snapshot or {}).get("cashout_controls", []) if item.get("slot") == 0), None))
+            live_controller = getattr(request.app.state, "live", None)
+            live_session = ((live_controller.status() or {}).get("session") or {}) if live_controller else {}
+            rules_engine = getattr(request.app.state, "rules_engine", None)
+            rules_session = ((rules_engine.status() or {}).get("active_session") or {}) if rules_engine else {}
+            observation = {
+                "verified": verified, "balance": balance if verified else None,
+                "displayed_amount": balance if numeric_balance else None,
+                "currency": snapshot.get("balance_currency") if isinstance(snapshot, dict) else None,
+                "currency_verified": bool((snapshot or {}).get("balance_currency")),
+                "authentication_state": authentication_state,
+                "provider_identity": (snapshot or {}).get("provider_identity"),
+                "session_identity": (snapshot or {}).get("session_identity"),
+                "application_session_id": live_session.get("session_id") or rules_session.get("session_id"),
+                "cashout_configuration": cashout,
+                "balance_text": snapshot.get("balance_text") if isinstance(snapshot, dict) else None,
+                "ui_ready": bool(snapshot.get("ui_ready")) if isinstance(snapshot, dict) else False,
+                "browser_status": "CONNECTED" if readiness.get("connected") else "UNAVAILABLE",
+                "observed_at": (snapshot or {}).get("balance_observed_at") or datetime.now(timezone.utc).isoformat(),
+                "source": "existing_cdp_page_read_only",
+                "error": None if verified else ("authenticated_account_not_verified"
+                    if authentication_state != "AUTHENTICATED" else "UI balance unavailable or invalid"),
+            }
+            repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
+            if repository is not None and hasattr(repository, "record_platform_balance_observation"):
+                saved = await asyncio.to_thread(repository.record_platform_balance_observation, observation)
+                if saved:
+                    observation["observation_id"] = saved["observation_id"]
+            health = getattr(request.app.state, "system_health", None)
+            if health is not None:
+                health.record_browser_observation(observation)
+                observation = health.browser_observation()
+            payload["platform_balance"] = observation
+        else:
+            # Expose the latest monitor observation without opening another
+            # browser connection. The monitor reads the existing authenticated
+            # CDP context every few seconds and SystemHealth adds freshness.
+            health = getattr(request.app.state, "system_health", None)
+            if health is not None:
+                payload["platform_balance"] = health.browser_observation()
         return payload
     except Exception as exc:  # structured failure, not a 500 crash
         log.exception("browser readiness check failed")
+        browser = dict(readiness) if isinstance(readiness, dict) else {
+            "connected": False, "stage": "error", "page_found": None,
+            "game_found": None, "aviator_next_reachable": None,
+        }
+        browser["error"] = str(exc)
         return JSONResponse(status_code=200, content={
             "ok": False,
-            "browser": {"connected": False, "stage": "error",
-                        "error": str(exc)},
+            "browser": browser,
         })
     finally:
         await client.close()
@@ -225,83 +283,39 @@ async def emergency_stop(request: Request):
 
 @router.post("/decisions")
 async def submit_decision(request: Request, body: DecisionIntent):
-    manager = _betting(request)
-    decision_engine = getattr(request.app.state, "decision_engine", None)
-    try:
-        authorized = decision_engine.current() if decision_engine else None
-        if (not authorized or authorized.get("status") != "READY_FOR_EXECUTION"
-                or authorized.get("decision_id") != body.decision_id
-                or authorized.get("target_round_id") != body.round_id
-                or authorized.get("profile") != body.profile):
-            modes = getattr(request.app.state, "betting_mode", None)
-            if modes and modes.mode == "LIVE_REAL":
-                await modes.force_safe("pre_bet_failure:decision_not_authorized_or_stale")
-            return JSONResponse(status_code=409, content={
-                "ok": False, "error": "decision_not_authorized",
-                "message": "Only the matching, unexpired Part 8 risk-approved decision may reach the executor",
-            })
-        approved = authorized.get("risk_evaluation") or {}
-        if not approved.get("approved") or not approved.get("approved_bet"):
-            return JSONResponse(status_code=409, content={
-                "ok": False, "error": "risk_approval_missing",
-                "message": "Decision has no valid risk approval",
-            })
-        betting_status = manager.status()
-        live_controller = getattr(request.app.state, "live", None)
-        if betting_status.get("mode") == "REAL" and live_controller is None:
-            return JSONResponse(status_code=409, content={
-                "ok": False, "error": "live_activation_unavailable",
-                "message": "NO BET",
-            })
-        if betting_status.get("mode") == "REAL" and live_controller:
-            live_gate = live_controller.can_execute_live_bet(authorized, betting_status)
-            if not live_gate.get("allowed"):
-                modes = getattr(request.app.state, "betting_mode", None)
-                if modes:
-                    await modes.force_safe("pre_bet_gate_blocked:" + ";".join(
-                        live_gate.get("reasons", []) or ["live_safety_gate_blocked"]))
-                return JSONResponse(status_code=409, content={"ok": False, "error": "live_safety_gate_blocked", "message": "NO BET", "reasons": live_gate.get("reasons", [])})
-        gate = _health_gate(request, betting_status.get("mode", "REAL"))
-        if (betting_status.get("automatic_enabled") and
-                betting_status.get("mode") != "SIMULATION" and
-                not gate.get("allowed")):
-            return JSONResponse(status_code=409, content={
-                "ok": False, "error": "safety_gate_blocked", "message": "NO BET",
-                "reasons": gate.get("reasons", []),
-            })
-        risk_manager = _risk(request)
-        # A stopped/idle manager returns its domain-specific conflict below.
-        # The identity check isolates test/embedded apps from stale app.state.
-        final_blocks = (risk_manager.validate_execution(authorized, betting_status)
-                        if risk_manager and risk_manager.betting_manager is manager
-                        and betting_status.get("automatic_enabled") else [])
-        wp = getattr(request.app.state, "wp", None)
-        if (wp is not None and manager.repository is not None
-                and not wp.dataset_service.clean_rounds.empty):
-            latest = str(wp.dataset_service.clean_rounds.iloc[-1]["round_id"])
-            if latest != str(authorized.get("source_round_id")):
-                final_blocks.append("target_round_missed")
-        if final_blocks:
-            modes = getattr(request.app.state, "betting_mode", None)
-            if modes and modes.mode == "LIVE_REAL":
-                await modes.force_safe("pre_bet_risk_blocked:" + ";".join(final_blocks))
-            return JSONResponse(status_code=409, content={
-                "ok": False, "error": "final_validation_failed",
-                "message": "NO BET", "reasons": sorted(set(final_blocks)),
-            })
-        profile = get_profile(authorized["profile"])
-        body = body.model_copy(update={
-            "execute": True, "amount_bif": approved["approved_bet"],
-            "bet_amount": approved["approved_bet"], "cashout": profile.base_target,
-            "target_multiplier": profile.base_target,
-            "expires_at": datetime.fromisoformat(authorized["expires_at"]),
-        })
-        entry = await manager.submit_decision(body)
-    except BettingError as exc:
-        return _conflict(exc)
-    return {"ok": True,
-            "risk": authorized.get("risk_evaluation"),
-            "entry": entry}
+    engine = getattr(request.app.state, "rules_engine", None)
+    evaluation = (engine.last_evaluation or engine.evaluate()
+                  if engine is not None else None)
+    rule_status = engine.status() if engine is not None else {}
+    rule_execution_path_ready = bool(
+        engine is not None
+        and callable(getattr(engine, "execution_authorized", None))
+        and engine.execution_authorized() is True
+    )
+    configured = int(rule_status.get("rules_enabled") or 0) > 0
+    blocker = ("decision_interface_not_connected" if configured
+               else "rules_engine_not_configured")
+    reasons = []
+    if not configured:
+        reasons.append("No configured, enabled Rules Engine rule can authorize execution")
+    if not rule_execution_path_ready:
+        reasons.append("Rule selections are not connected to a target-bound decision intent")
+    reasons.extend([
+        "No final Risk Engine approval is attached to this intent",
+        "The next stream/index target is not bound to a verified provider round ID",
+        "Platform acceptance and settlement receipts are not verified",
+    ])
+    return JSONResponse(status_code=409, content={
+        "ok": False,
+        "error": blocker,
+        "blocker": blocker,
+        "message": "Execution remains blocked until the complete rule, target, risk, and platform contract is ready.",
+        "decision": "NO_ACTION",
+        "automatic_execution": "OFF",
+        "rule_evaluation": evaluation,
+        "rule_execution_path_ready": rule_execution_path_ready,
+        "reasons": list(dict.fromkeys(reasons)),
+    })
 
 
 @router.get("/ledger")

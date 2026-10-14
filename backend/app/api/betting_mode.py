@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -11,8 +12,9 @@ from app.services.betting_mode import LIVE_REAL, SHADOW_REALISTIC
 router = APIRouter(prefix="/api/betting-mode", tags=["betting mode"])
 
 
-async def _require_live_credentials(request: Request) -> None:
-    expected_key = get_settings().api_key
+async def _require_live_credentials(request: Request) -> str:
+    settings = get_settings()
+    expected_key = settings.api_key
     if not expected_key:
         modes = getattr(request.app.state, "betting_mode", None)
         if modes is not None and modes.mode == LIVE_REAL:
@@ -27,6 +29,9 @@ async def _require_live_credentials(request: Request) -> None:
         if modes is not None and modes.mode == LIVE_REAL:
             await modes.force_safe("security_incident_invalid_live_authorization")
         raise HTTPException(status_code=401, detail="Valid backend credentials are required")
+    # Persist only a non-reversible credential fingerprint as the activation
+    # identity; never retain or log the bearer token itself.
+    return f"api-key:{hashlib.sha256(expected_key.encode('utf-8')).hexdigest()[:16]}"
 
 
 @router.get("/status")
@@ -44,14 +49,23 @@ async def shadow_review(request: Request):
 
 
 @router.get("/live-review")
-async def live_review(request: Request, profile: str = "PROFILE_A", goal_balance: float | None = None):
+async def live_review(request: Request, profile: str = "PROFILE_A",
+                      win_limit_enabled: bool | None = None, win_limit: float | None = None,
+                      session_loss_limit_enabled: bool | None = None,
+                      session_loss_limit: float | None = None,
+                      execution_panel: int | None = None,
+                      stake_amount: int | None = None,
+                      currency: str | None = None):
     # This endpoint is read-only. It deliberately exposes the complete
     # activation review and blockers so the dashboard can explain why LIVE is
     # unavailable. The mutating mode switch below still requires the backend
     # credential and repeats every value and safety check.
     try:
         return await request.app.state.betting_mode.live_review(
-            profile=profile, goal_balance=goal_balance)
+            profile=profile, win_limit_enabled=win_limit_enabled, win_limit=win_limit,
+            session_loss_limit_enabled=session_loss_limit_enabled,
+            session_loss_limit=session_loss_limit, execution_panel=execution_panel,
+            stake_amount=stake_amount, currency=currency)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -68,8 +82,8 @@ async def switch_mode(request: Request, body: dict):
             configuration=body.get("configuration"),
         )
     elif requested == LIVE_REAL:
-        await _require_live_credentials(request)
-        result = await modes.switch_live(body)
+        operator_identity = await _require_live_credentials(request)
+        result = await modes.switch_live(body, operator_identity=operator_identity)
     else:
         raise HTTPException(status_code=422, detail={
             "reason": "invalid_mode", "allowed": [SHADOW_REALISTIC, LIVE_REAL],

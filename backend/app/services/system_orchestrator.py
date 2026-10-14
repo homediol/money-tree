@@ -33,12 +33,9 @@ class SystemOrchestrator:
             self._task(self.app.state.system_health_monitor(self.app), "system-health"),
             self._task(self.app.state.history_monitor(self.app), "history-monitor"),
         ]
-        prospective_monitor = getattr(self.app.state, "opportunity_v4_monitor", None)
-        if prospective_monitor is not None:
-            self.tasks.append(self._task(prospective_monitor(self.app), "frozen-opportunity-observer"))
-        analytics_monitor = getattr(self.app.state, "analytics_report_monitor", None)
-        if analytics_monitor is not None:
-            self.tasks.append(self._task(analytics_monitor(self.app), "analytics-reports"))
+        observation_monitor = getattr(self.app.state, "collector_observation_monitor", None)
+        if observation_monitor is not None:
+            self.tasks.append(self._task(observation_monitor(self.app), "collector-direct-observations"))
         operations_monitor = getattr(self.app.state, "operations_monitor", None)
         if operations_monitor is not None:
             self.tasks.append(self._task(operations_monitor(self.app), "operations-monitor"))

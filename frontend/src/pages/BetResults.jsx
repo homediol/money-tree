@@ -9,27 +9,28 @@ const tone = (value) => value === 'WIN' || value === 'RECONCILED' || value === '
 export default function BetResults() {
   const [executions, setExecutions] = useState([]);
   const [ledger, setLedger] = useState([]);
-  const [metrics, setMetrics] = useState({});
+  const [metrics, setMetrics] = useState(null);
   const [detail, setDetail] = useState(null);
 
   async function refresh() {
     const [xs, ls, ms] = await Promise.all([getResultExecutions(), getBalanceLedger(), getSessionMetrics()]);
-    setExecutions(xs); setLedger(ls); setMetrics(ms[0] || {});
+    setExecutions(xs); setLedger(ls); setMetrics(ms[0] || null);
   }
   useEffect(() => { refresh(); const id = setInterval(refresh, 5000); return () => clearInterval(id); }, []);
 
   async function inspect(id) { setDetail(await getExecutionDetail(id)); }
   const cards = [
-    ['Starting Balance', metrics.starting_balance], ['Current Balance', metrics.current_balance],
-    ['Goal', metrics.goal_balance], ['P/L', metrics.profit], ['Bets', metrics.total_bets ?? 0],
-    ['Wins', metrics.wins ?? 0], ['Losses', metrics.losses ?? 0], ['Unknown', metrics.unknown ?? 0],
-    ['Win Rate', metrics.win_rate == null ? '—' : `${(metrics.win_rate * 100).toFixed(1)}%`],
-    ['Drawdown', metrics.drawdown ?? 0], ['Consecutive Losses', metrics.consecutive_losses ?? 0],
-    ['Session', metrics.state || 'IDLE'],
+    ['Starting Balance', metrics?.starting_balance ?? '—'], ['Current Balance', metrics?.current_balance ?? '—'],
+    ['Goal', metrics?.goal_balance ?? '—'], ['P/L', metrics?.profit ?? '—'], ['Bets', metrics?.total_bets ?? '—'],
+    ['Wins', metrics?.wins ?? '—'], ['Losses', metrics?.losses ?? '—'], ['Unknown', metrics?.unknown ?? '—'],
+    ['Win Rate', metrics?.win_rate == null ? '—' : `${(metrics.win_rate * 100).toFixed(1)}%`],
+    ['Drawdown', metrics?.drawdown ?? '—'], ['Consecutive Losses', metrics?.consecutive_losses ?? '—'],
+    ['Session', metrics?.state || 'NO VERIFIED DATA'],
   ];
   return <div className="space-y-5">
     <div><h1 className="text-3xl font-semibold">Bet Results / Session Analytics</h1>
       <p className="mt-1 text-sm text-zinc-400">Verified results only. Missing platform evidence remains UNKNOWN.</p></div>
+    {!metrics && <p role="status" className="rounded border border-zinc-800 bg-zinc-900/60 p-3 text-sm text-zinc-400">No verified real session totals are available. Balances and P/L stay blank until a real execution is reconciled against a verified platform balance.</p>}
     <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{cards.map(([k,v]) =>
       <Card key={k}><div className="text-xs uppercase text-zinc-500">{k}</div><div className="mt-1 text-xl font-semibold">{v ?? '—'}</div></Card>)}</section>
     <Card title="Recent executions"><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left text-zinc-500"><th>Decision / Round</th><th>Status</th><th>Requested</th><th>Actual</th><th>Balance</th></tr></thead><tbody>

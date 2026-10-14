@@ -1,0 +1,441 @@
+{
+  "consecutive_loss_limit": 3,
+  "cooldown_rounds": 0,
+  "dataset_hash": "4a905837bc07dc2333cbfb9f237a192c10dcfec30dfef84d93cdfa2c36ff9387",
+  "enabled": false,
+  "entry_condition": {
+    "definition": {
+      "candidate_id": "logvol_50_le_1_0",
+      "description": "Standard deviation of log multipliers over the previous 50 rounds <= 1.00.",
+      "family": "ROLLING_LOG_VOLATILITY",
+      "feature": "rolling_log_std_50",
+      "op": "<=",
+      "requirements": {
+        "rolling_log_std_50": 50
+      },
+      "threshold": 1.0
+    },
+    "description": "Standard deviation of log multipliers over the previous 50 rounds <= 1.00.",
+    "family": "ROLLING_LOG_VOLATILITY",
+    "operator_semantics": "Evaluate only from source-round history before the target. The target is the next eligible verified-order row."
+  },
+  "evidence": {
+    "backtest": {
+      "actual_bets": 294,
+      "candidate_id": "logvol_50_le_1_0",
+      "eligible_targets": 3370,
+      "ideal_settlement_assumption": true,
+      "longest_losing_sequence": 3,
+      "losses": 148,
+      "maximum_drawdown_units": 22.0,
+      "net_profit_units": -2.0,
+      "periods": {
+        "discovery": {
+          "actual_bets": 208,
+          "eligible_targets": 2096,
+          "losses": 107,
+          "net_profit_units": -6.0,
+          "return_per_unit_staked": -0.028846153846153848,
+          "trigger_opportunities": 1442,
+          "wins": 101
+        },
+        "retrospective_final": {
+          "actual_bets": 44,
+          "eligible_targets": 592,
+          "losses": 22,
+          "net_profit_units": 0.0,
+          "return_per_unit_staked": 0.0,
+          "trigger_opportunities": 319,
+          "wins": 22
+        },
+        "validation": {
+          "actual_bets": 42,
+          "eligible_targets": 682,
+          "losses": 19,
+          "net_profit_units": 4.0,
+          "return_per_unit_staked": 0.09523809523809523,
+          "trigger_opportunities": 342,
+          "wins": 23
+        }
+      },
+      "return_per_unit_staked": -0.006802721088435374,
+      "session_count": 61,
+      "session_stop_frequency": 0.6885245901639344,
+      "sessions_stopped": 42,
+      "stake_per_bet_units": 1.0,
+      "target_multiplier": 2.0,
+      "trigger_opportunities": 2103,
+      "wins": 146
+    },
+    "block_bootstrap": {
+      "discovery": {
+        "block_length_rounds": 20,
+        "lift_95": [
+          -0.015408858866120936,
+          0.013473627587765415
+        ],
+        "probability_positive_roi": 0.076,
+        "replicates": 2000,
+        "roi_95": [
+          -0.09558889605446778,
+          0.014325382276187694
+        ]
+      },
+      "retrospective_final": {
+        "block_length_rounds": 20,
+        "lift_95": [
+          -0.030472281108943594,
+          0.040187483210088325
+        ],
+        "probability_positive_roi": 0.1135,
+        "replicates": 2000,
+        "roi_95": [
+          -0.17216117216117222,
+          0.053580690574985164
+        ]
+      },
+      "validation": {
+        "block_length_rounds": 20,
+        "lift_95": [
+          -0.013077886209124492,
+          0.05974091388511386
+        ],
+        "probability_positive_roi": 0.982,
+        "replicates": 2000,
+        "roi_95": [
+          0.008506944444444416,
+          0.1782958080284403
+        ]
+      }
+    },
+    "candidate_search_count": 582,
+    "discovery": {
+      "blocks": [
+        {
+          "block": 1,
+          "eligible": 420,
+          "losses": 143,
+          "rate": 0.48928571428571427,
+          "selected": 280,
+          "wins": 137
+        },
+        {
+          "block": 2,
+          "eligible": 419,
+          "losses": 169,
+          "rate": 0.4955223880597015,
+          "selected": 335,
+          "wins": 166
+        },
+        {
+          "block": 3,
+          "eligible": 419,
+          "losses": 152,
+          "rate": 0.45714285714285713,
+          "selected": 280,
+          "wins": 128
+        },
+        {
+          "block": 4,
+          "eligible": 419,
+          "losses": 187,
+          "rate": 0.45481049562682213,
+          "selected": 343,
+          "wins": 156
+        },
+        {
+          "block": 5,
+          "eligible": 419,
+          "losses": 101,
+          "rate": 0.5049019607843137,
+          "selected": 204,
+          "wins": 103
+        }
+      ],
+      "holm_p": 1.0,
+      "metrics": {
+        "above_break_even": -0.0214979195562,
+        "baseline_rate": 0.479961832061,
+        "coverage": 0.687977099237,
+        "eligible": 2096,
+        "ideal_net_per_unit_staked": -0.0429958391123,
+        "lift_vs_baseline": -0.00145975161724,
+        "losses": 752,
+        "rate": 0.478502080444,
+        "selected": 1442,
+        "wilson_95": [
+          0.4528103962899372,
+          0.504308000321424
+        ],
+        "wins": 690
+      },
+      "wilson_95": [
+        0.4528103962899372,
+        0.504308000321424
+      ]
+    },
+    "known_limitations": [
+      "No platform round IDs or platform order indices exist in this snapshot.",
+      "The historical final period overlaps prior model candidate evaluation and is not an untouched test.",
+      "Historical multiplier replay does not verify live placement or cashout execution.",
+      "Candidate search is exploratory and uses a predeclared finite family with many overlapping predicates.",
+      "Bankroll and loss/profit limits shown here are illustrative parameters, not individualized recommendations."
+    ],
+    "matched_random_entry": {
+      "matched_entries": 319,
+      "p_random_at_least_observed": 0.7072927072927073,
+      "rate_95": [
+        0.44200626959247646,
+        0.5078369905956113
+      ],
+      "rate_mean": 0.47488087774294674
+    },
+    "profitability_assumptions": {
+      "break_even_hit_rate_before_costs": 0.5,
+      "execution_costs_in_historical_results": "not observed; ideal settlement only",
+      "ideal_cashout": 2.0,
+      "net_profit_on_hit_per_unit": 1.0,
+      "net_profit_on_loss_per_unit": -1.0
+    },
+    "retrospective_final": {
+      "metrics": {
+        "above_break_even": -0.0329153605015674,
+        "baseline_ideal_net_per_unit_staked": -0.07432432432432434,
+        "baseline_rate": 0.46283783783783783,
+        "blocks": [
+          {
+            "block": 1,
+            "eligible": 119,
+            "losses": 17,
+            "rate": 0.5,
+            "selected": 34,
+            "wins": 17
+          },
+          {
+            "block": 2,
+            "eligible": 119,
+            "losses": 23,
+            "rate": 0.46511627906976744,
+            "selected": 43,
+            "wins": 20
+          },
+          {
+            "block": 3,
+            "eligible": 118,
+            "losses": 54,
+            "rate": 0.46,
+            "selected": 100,
+            "wins": 46
+          },
+          {
+            "block": 4,
+            "eligible": 118,
+            "losses": 25,
+            "rate": 0.32432432432432434,
+            "selected": 37,
+            "wins": 12
+          },
+          {
+            "block": 5,
+            "eligible": 118,
+            "losses": 51,
+            "rate": 0.5142857142857142,
+            "selected": 105,
+            "wins": 54
+          }
+        ],
+        "coverage": 0.5388513513513513,
+        "eligible": 592,
+        "ideal_net_per_unit_staked": -0.0658307210031348,
+        "lift_vs_baseline": 0.004246801660594768,
+        "losses": 170,
+        "rate": 0.4670846394984326,
+        "selected": 319,
+        "wilson_95": [
+          0.41305215325070477,
+          0.521900439031864
+        ],
+        "wins": 149
+      },
+      "walk_forward_placeholder": null
+    },
+    "validation": {
+      "blocks": [
+        {
+          "block": 1,
+          "eligible": 137,
+          "losses": 41,
+          "rate": 0.5773195876288659,
+          "selected": 97,
+          "wins": 56
+        },
+        {
+          "block": 2,
+          "eligible": 137,
+          "losses": 13,
+          "rate": 0.6666666666666666,
+          "selected": 39,
+          "wins": 26
+        },
+        {
+          "block": 3,
+          "eligible": 136,
+          "losses": 46,
+          "rate": 0.5053763440860215,
+          "selected": 93,
+          "wins": 47
+        },
+        {
+          "block": 4,
+          "eligible": 136,
+          "losses": 4,
+          "rate": 0.6363636363636364,
+          "selected": 11,
+          "wins": 7
+        },
+        {
+          "block": 5,
+          "eligible": 136,
+          "losses": 51,
+          "rate": 0.5,
+          "selected": 102,
+          "wins": 51
+        }
+      ],
+      "metrics": {
+        "above_break_even": 0.046783625731,
+        "baseline_rate": 0.524926686217,
+        "coverage": 0.50146627566,
+        "eligible": 682,
+        "ideal_net_per_unit_staked": 0.093567251462,
+        "lift_vs_baseline": 0.021856939514,
+        "losses": 155,
+        "rate": 0.546783625731,
+        "selected": 342,
+        "wilson_95": [
+          0.4937963475087829,
+          0.5987315989934056
+        ],
+        "wins": 187
+      },
+      "wilson_95": [
+        0.4937963475087829,
+        0.5987315989934056
+      ]
+    },
+    "walk_forward": [
+      {
+        "evaluation_baseline_rate": 0.47150259067357514,
+        "evaluation_end_position": 1417,
+        "evaluation_start_position": 1031,
+        "fold": 1,
+        "lift_vs_evaluation_baseline": -0.013671265372370345,
+        "lift_vs_training_baseline": -0.026848340436956775,
+        "losses": 135,
+        "rate": 0.4578313253012048,
+        "selected": 249,
+        "train_baseline_rate": 0.48467966573816157,
+        "train_end_position": 1031,
+        "wins": 114
+      },
+      {
+        "evaluation_baseline_rate": 0.48578811369509045,
+        "evaluation_end_position": 1804,
+        "evaluation_start_position": 1417,
+        "fold": 2,
+        "lift_vs_evaluation_baseline": -0.01152340781273753,
+        "lift_vs_training_baseline": -0.005807757885763043,
+        "losses": 143,
+        "rate": 0.4742647058823529,
+        "selected": 272,
+        "train_baseline_rate": 0.48007246376811596,
+        "train_end_position": 1417,
+        "wins": 129
+      },
+      {
+        "evaluation_baseline_rate": 0.45103857566765576,
+        "evaluation_end_position": 2191,
+        "evaluation_start_position": 1804,
+        "fold": 3,
+        "lift_vs_evaluation_baseline": 0.0011353373758224983,
+        "lift_vs_training_baseline": -0.029382089639285014,
+        "losses": 126,
+        "rate": 0.45217391304347826,
+        "selected": 230,
+        "train_baseline_rate": 0.4815560026827633,
+        "train_end_position": 1804,
+        "wins": 104
+      },
+      {
+        "evaluation_baseline_rate": 0.5074626865671642,
+        "evaluation_end_position": 2578,
+        "evaluation_start_position": 2191,
+        "fold": 4,
+        "lift_vs_evaluation_baseline": -0.0009691800736577605,
+        "lift_vs_training_baseline": 0.03056352837534454,
+        "losses": 76,
+        "rate": 0.5064935064935064,
+        "selected": 154,
+        "train_baseline_rate": 0.4759299781181619,
+        "train_end_position": 2191,
+        "wins": 78
+      }
+    ]
+  },
+  "expiry_rule": "EXPIRES_AFTER_NEXT_TARGET_ROUND",
+  "feature_windows": {
+    "rolling_log_std_50": 50
+  },
+  "integration": {
+    "decision_values": [
+      "BET",
+      "WAIT",
+      "STOP"
+    ],
+    "eligibility_is_separate_from_operational_safety": true,
+    "live_activation": "not authorized by this analysis; existing risk engine remains mandatory",
+    "operational_checks": [
+      "authenticated login",
+      "browser and page health",
+      "verified current data continuity",
+      "valid target round identity",
+      "verified balance",
+      "session limits",
+      "duplicate protection",
+      "existing risk engine approval"
+    ],
+    "required_fields": [
+      "policy_id",
+      "policy_version",
+      "source_round_id",
+      "target_round_id",
+      "decision_timestamp",
+      "expiry_timestamp",
+      "trigger_evidence",
+      "reason_codes",
+      "evidence_status"
+    ]
+  },
+  "missing_data_action": "STOP",
+  "policy_id": "logvol_50_le_1_0",
+  "policy_status": "EDGE_UNVERIFIED",
+  "policy_version": "1.0.0",
+  "profit_goal": 3.0,
+  "reason_codes": [
+    "HISTORICAL_FINAL_PERIOD_CONTAMINATED",
+    "PLATFORM_IDENTITY_UNAVAILABLE_ORDER_ONLY",
+    "PROSPECTIVE_CONFIRMATION_REQUIRED",
+    "NO_POLICY_AUTO_ENABLE",
+    "DISCOVERY_MULTIPLE_TEST_GATE_NOT_MET",
+    "DISCOVERY_NOT_ABOVE_BREAK_EVEN",
+    "RETROSPECTIVE_FINAL_NOT_ABOVE_BREAK_EVEN"
+  ],
+  "schema_version": 1,
+  "session_loss_limit": 3.0,
+  "session_reset_rule": "RESET_AFTER_100_VERIFIED_ORDER_ROUNDS_OR_ON_SEGMENT_BREAK",
+  "stake_amount": 1.0,
+  "stake_mode": "FIXED_NORMALIZED_UNIT_USER_CONFIGURED",
+  "stake_unit_note": "Illustrative normalized unit only; user must explicitly choose a real stake amount.",
+  "target_multiplier": 2.0,
+  "target_round_offset": 1
+}

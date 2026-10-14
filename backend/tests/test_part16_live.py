@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.live import LiveActivationManager
+from app.rules_engine import RulesEngine
 from app.services.system_health import SystemHealth
 
 
@@ -37,7 +38,6 @@ def test_production_readiness_blocks_unverified_platform_execution():
         def connect():
             return sqlite3.connect(":memory:")
 
-    decision = SimpleNamespace(current=lambda: {"status": "READY_FOR_EXECUTION"})
     state = SimpleNamespace(
         wp=SimpleNamespace(repository=Database()),
         betting=SimpleNamespace(
@@ -48,7 +48,6 @@ def test_production_readiness_blocks_unverified_platform_execution():
         history_collector=SimpleNamespace(status=lambda: {
             "running": True, "status": "HEALTHY", "latest": {"round_id": "101"},
         }),
-        decision_engine=decision,
         risk=SimpleNamespace(emergency_latched=False),
         orchestrator=object(),
     )
@@ -83,7 +82,7 @@ def test_idle_readiness_uses_fresh_background_ui_balance(tmp_path):
     state = SimpleNamespace(
         wp=SimpleNamespace(repository=repository), betting=betting,
         history_collector=history, system_health=health,
-        reconciliation=object(), decision_engine=SimpleNamespace(current=lambda: None),
+        reconciliation=object(),
         risk=SimpleNamespace(emergency_latched=False), orchestrator=object(),
     )
     result = asyncio.run(LiveActivationManager(SimpleNamespace(state=state)).production_readiness_check())
@@ -93,7 +92,7 @@ def test_idle_readiness_uses_fresh_background_ui_balance(tmp_path):
     assert health.refresh()["components"]["browser"]["metadata"]["balance_verified"] is True
 
 
-def test_live_execution_uses_central_readiness_gate_and_fails_closed():
+def test_live_execution_requires_configured_rules_engine():
     repository = SimpleNamespace(execution_for=lambda *_args: None)
     state = SimpleNamespace(
         wp=SimpleNamespace(repository=repository),
@@ -104,10 +103,7 @@ def test_live_execution_uses_central_readiness_gate_and_fails_closed():
         history_collector=SimpleNamespace(status=lambda: {
             "latest": {"round_id": "100"},
         }),
-        readiness=SimpleNamespace(execution_gate=lambda **_kwargs: {
-            "allowed": False,
-            "reasons": ["history_warming_up:20/100", "model_not_deployable:NOT_VALIDATED"],
-        }),
+        rules_engine=RulesEngine(),
     )
     controller = LiveActivationManager(SimpleNamespace(state=state))
     controller.mode = "LIVE_ACTIVE"
@@ -121,5 +117,4 @@ def test_live_execution_uses_central_readiness_gate_and_fails_closed():
     gate = controller.can_execute_live_bet(decision, state.betting.status())
 
     assert gate["allowed"] is False
-    assert "history_warming_up:20/100" in gate["reasons"]
-    assert "model_not_deployable:NOT_VALIDATED" in gate["reasons"]
+    assert "RULES_ENGINE_NOT_CONFIGURED" in gate["reasons"]

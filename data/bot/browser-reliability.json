@@ -1,63 +1,128 @@
 {
-  "updated_at": "2026-10-04T16:49:59.078Z",
-  "state": "HEALTHY",
+  "updated_at": "2026-10-14T20:18:34.072Z",
+  "state": "NAVIGATING_AVIATOR",
   "browser": {
     "connected": true,
-    "pid": 429703,
-    "uptime_seconds": 285,
-    "memory_rss_mb": 351,
-    "restart_count": 65,
+    "pid": 22220,
+    "uptime_seconds": 9320,
+    "memory_rss_mb": 269,
+    "restart_count": 154,
     "cpu_percent": null
   },
   "context": {
     "alive": true,
-    "page_count": 2
+    "page_count": 1
+  },
+  "aviator_page": {
+    "alive": true,
+    "role": "SHARED_AVIATOR",
+    "url": "https://winner.rw/sportsbook/upcoming",
+    "login_route_visible": false,
+    "login_route_acknowledged": false
   },
   "history_page": {
     "alive": true,
-    "url": "https://winner.rw/en/virtual/crash-games/aviator"
+    "shared": true,
+    "url": "https://winner.rw/sportsbook/upcoming"
   },
   "betting_page": {
-    "state": "PAGE_OPEN",
-    "url": "https://winner.rw/en/sportsbook/upcoming"
+    "state": "SHARED_PAGE",
+    "shared": true,
+    "url": "https://winner.rw/sportsbook/upcoming",
+    "login_route_visible": false,
+    "login_route_acknowledged": false
   },
-  "session": "AUTHENTICATED",
+  "session": "UNKNOWN",
+  "network": {
+    "status": "ONLINE",
+    "reason_code": null,
+    "reason": null,
+    "evidence": [
+      {
+        "host": "winner.rw",
+        "address": "172.64.147.106",
+        "result": "TCP_REACHABLE"
+      },
+      {
+        "host": "aviator-next.spribegaming.com",
+        "address": "3.175.179.113",
+        "result": "TCP_REACHABLE"
+      },
+      {
+        "host": "aviaport.spribegaming.com",
+        "address": "3.175.179.37",
+        "result": "TCP_REACHABLE"
+      }
+    ],
+    "checked_at": "2026-10-14T20:18:22.188Z",
+    "freshness": "CURRENT"
+  },
+  "authentication": {
+    "status": "UNKNOWN",
+    "reason": null,
+    "evidence": null
+  },
   "collector": {
     "running": true,
-    "state": "COLLECTING",
-    "last_round_id": "aviator-c0d95139721cead3f4a7114b",
-    "last_round_timestamp": "2026-10-04T16:49:50.434Z",
-    "last_successful_collection": "2026-10-04T16:49:52.344Z",
-    "heartbeat_at": "2026-10-04T16:49:54.479Z",
-    "iframe_attached": true
+    "state": "NAVIGATING_AVIATOR",
+    "last_round_id": "aviator-1b73b1f18b31bbc68e2405f8",
+    "last_round_timestamp": "2026-10-14T20:17:18.712Z",
+    "last_observed_round_id": "aviator-1b73b1f18b31bbc68e2405f8",
+    "last_observed_at": "2026-10-14T20:17:18.712Z",
+    "last_successful_collection": "2026-10-14T20:17:21.130Z",
+    "heartbeat_at": "2026-10-14T20:18:33.644Z",
+    "iframe_attached": false,
+    "game_readiness": {
+      "frameAttached": false,
+      "contentLoaded": false,
+      "payoutsReady": false,
+      "reason": "GAME_FRAME_NOT_FOUND"
+    },
+    "recovery": {
+      "stage": "AUTH_REQUIRED",
+      "attempt": 0,
+      "nextRetryAt": null,
+      "reasonCode": "LOGIN_ROUTE_VISIBLE",
+      "evidence": {
+        "page": "aviator",
+        "route": "https://winner.rw/en/user/logout/popup",
+        "source": "periodic-route-watchdog"
+      }
+    },
+    "last_error": {
+      "message": "AUTH_REQUIRED: login route visible on Aviator page",
+      "category": "AUTH_REQUIRED",
+      "recovery_action": "recovery_pending",
+      "at": "2026-10-14T20:17:22.921Z"
+    }
   },
   "backend": {
-    "pid": 431242,
-    "ppid": 430959,
-    "started_at": "2026-10-04T16:47:40.066650+00:00",
-    "restart_count": 70,
-    "unexpected_restart_count": 33,
-    "uptime_seconds": 139,
-    "memory_rss_mb": 552,
+    "pid": 83026,
+    "ppid": 83015,
+    "started_at": "2026-10-14T19:45:18.790843+00:00",
+    "restart_count": 155,
+    "unexpected_restart_count": 63,
+    "uptime_seconds": 1995,
+    "memory_rss_mb": 335,
     "cpu_percent": null,
     "running": true,
     "last_exit": null
   },
   "last_disconnect": {
-    "at": "2026-10-04T16:44:57.222Z",
+    "at": "2026-10-14T16:02:25.756Z",
     "reason": "managed browser disconnected"
   },
   "last_browser_event": {
     "event": "heartbeat_probe_failed",
-    "at": "2026-10-04T16:45:55.404Z",
+    "at": "2026-10-14T20:18:25.853Z",
     "error": "page responsiveness probe timed out"
   },
   "last_recovery": {
-    "state": "AUTH_REQUIRED",
-    "at": "2026-10-04T16:44:48.041Z",
-    "reason": "AUTH_REQUIRED: session could not be verified after recovery"
+    "state": "RECOVERING",
+    "at": "2026-10-14T20:17:26.168Z",
+    "reason": "frame.evaluate: Frame was detached\n    at _waitForMutation (/home/diolo/winner predict/bot/collector/Collector.js:138:16)\n    at Collector.waitForMutation (/home/diolo/winner predict/bot/collector/Collector.js:170:23)\n    at AviatorCollector._collectOnce (/home/diolo/winner predict/bot/collector/index.js:996:42)\n    at async AviatorCollector._collectionLoop (/home/diolo/winner predict/bot/collector/index.js:644:9)\n    at async AviatorCollector.run (/home/diolo/winner predict/bot/collector/index.js:565:5)\n    at async startCollector (/home/diolo/winner predict/bot/collector/index.js:1090:7)"
   },
-  "recovery_count": 96,
+  "recovery_count": 772,
   "circuit_breaker": {
     "state": "CLOSED",
     "failures_10m": 0,
@@ -65,7 +130,7 @@
   },
   "diagnostics": {
     "page_responsive": true,
-    "page_count": 2,
-    "node_memory_rss_mb": 364
+    "page_count": 1,
+    "node_memory_rss_mb": 219
   }
 }

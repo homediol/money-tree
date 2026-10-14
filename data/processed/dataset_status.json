@@ -1,13 +1,13 @@
 {
   "status": "READY",
   "source": "PostgreSQL:aviator_rounds",
-  "feature_rows": 19602,
+  "feature_rows": 27508,
   "feature_count": 125,
   "last_processing_mode": "incremental",
   "splits": {
-    "train": 13721,
-    "validation": 2940,
-    "test": 2941
+    "train": 19255,
+    "validation": 4126,
+    "test": 4127
   },
-  "updated_at": "2026-10-04T16:48:36.859289+00:00"
+  "updated_at": "2026-10-13T23:59:03.629419+00:00"
 }

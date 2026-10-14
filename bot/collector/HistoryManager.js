@@ -138,10 +138,15 @@ export function inferNewMultipliers(prev, curr) {
   if (!prev?.length || !curr?.length) return [];
   if (snapshotSignature(prev) === snapshotSignature(curr)) return [];
 
-  const maxShift = Math.min(curr.length, 25);
+  // Search every offset where a full 10-round overlap can still fit in the
+  // current page snapshot. The Aviator UI exposes up to 50 payouts, so a
+  // hard-coded 25-round cap incorrectly rejected valid overlaps at offsets
+  // 26 through 40 after a collector restart.
+  const minimumOverlap = 10;
+  const maxShift = Math.max(0, curr.length - minimumOverlap);
   for (let shift = 1; shift <= maxShift; shift++) {
-    const len = Math.min(10, prev.length, curr.length - shift);
-    if (len < 10) continue;
+    const len = Math.min(minimumOverlap, prev.length, curr.length - shift);
+    if (len < minimumOverlap) continue;
     let aligned = true;
     for (let i = 0; i < len; i++) {
       if (Number(prev[i]).toFixed(2) !== Number(curr[shift + i]).toFixed(2)) {

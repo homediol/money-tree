@@ -1,15 +1,13 @@
 {
-  "name": "aviator-ml",
+  "name": "winner-predict",
   "version": "1.0.0",
-  "description": "Aviator ML — unified launcher",
+  "description": "Winner Predict operations and Aviator history collector",
   "scripts": {
     "start":      "node scripts/start-all.js",
     "backend":    "node scripts/start-all.js --backend-only",
-    "collector":  "node bot/roundhistory-collector.js",
-    "flask":      ".venv/bin/python backend/run.py",
+    "collector":  "node bot/collector/lock-runner.js",
     "bot-api":    ".venv/bin/python backend/bot_api.py",
-    "frontend":   "npm run dev --prefix frontend",
-    "enterprise": "node scripts/start-enterprise.js"
+    "frontend":   "npm run dev --prefix frontend"
   },
   "dependencies": {
     "express": "^4.18.2"

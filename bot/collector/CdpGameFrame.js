@@ -1,3 +1,5 @@
+import { log } from './Logger.js';
+
 /**
  * Minimal Playwright-compatible adapter for Spribe's out-of-process iframe.
  *
@@ -31,8 +33,9 @@ function findFrame(node, hint) {
 }
 
 class CdpSocket {
-  constructor(url) {
+  constructor(url, targetId = null) {
     this.url = url;
+    this.targetId = targetId;
     this.ws = null;
     this.nextId = 0;
     this.pending = new Map();
@@ -55,14 +58,15 @@ class CdpSocket {
       }, { once: true });
     });
     ws.addEventListener('message', event => this._onMessage(event.data));
-    ws.addEventListener('close', () => this._onClose());
+    ws.addEventListener('close', event => this._onClose(event), { once: true });
   }
 
   _onMessage(raw) {
     let message;
     try {
       message = JSON.parse(typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8'));
-    } catch {
+    } catch (error) {
+      log.debug(`Malformed CDP game-frame message ignored: ${error.message}`);
       return;
     }
     const pending = this.pending.get(message.id);
@@ -73,11 +77,15 @@ class CdpSocket {
     else pending.resolve(message.result || {});
   }
 
-  _onClose() {
+  _onClose(event = null) {
     this.closed = true;
+    const target = this.targetId ? ` target=${this.targetId}` : '';
+    const code = Number.isInteger(event?.code) ? ` code=${event.code}` : '';
+    const clean = typeof event?.wasClean === 'boolean' ? ` clean=${event.wasClean}` : '';
+    const message = `CDP websocket closed${target}${code}${clean}`;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(new Error('CDP websocket closed'));
+      pending.reject(new Error(message));
     }
     this.pending.clear();
   }
@@ -96,7 +104,8 @@ class CdpSocket {
   }
 
   close() {
-    try { this.ws?.close(); } catch {}
+    try { this.ws?.close(); }
+    catch (error) { log.debug(`CDP game-frame socket was already closed: ${error.message}`); }
     this._onClose();
   }
 }
@@ -104,7 +113,7 @@ class CdpSocket {
 export class CdpGameFrame {
   constructor(target) {
     this.target = target;
-    this.socket = new CdpSocket(target.webSocketDebuggerUrl);
+    this.socket = new CdpSocket(target.webSocketDebuggerUrl, target.id || null);
     this.contextId = null;
   }
 

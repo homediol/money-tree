@@ -148,6 +148,18 @@ class BettingSession:
         self._latest_crash: Optional[float] = None
         self.starting_balance: Optional[float] = request.starting_balance
         self.goal_balance: Optional[float] = request.goal_balance
+        self.session_loss_limit_enabled = (request.session_loss_limit_enabled
+                                           if request.session_loss_limit_enabled is not None else True)
+        self.session_loss_limit = (request.session_loss_limit
+                                   if self.session_loss_limit_enabled else None)
+        if self.session_loss_limit_enabled and self.session_loss_limit is None:
+            self.session_loss_limit = self.profile.max_loss_bif
+        self.win_limit_enabled = (request.win_limit_enabled
+                                  if request.win_limit_enabled is not None
+                                  else self.goal_balance is not None)
+        self.win_limit = (request.win_limit if self.win_limit_enabled else None)
+        if self.win_limit_enabled and self.win_limit is None and self.goal_balance is not None and self.starting_balance is not None:
+            self.win_limit = self.goal_balance - self.starting_balance
         self.current_bet: Optional[dict] = None
         self.last_result: Optional[dict] = None
         self.wins = 0
@@ -520,6 +532,11 @@ class BettingSession:
         self._event("result", result=target)
         self._event("balance", balance=self.last_balance)
         self._save_metrics()
+        if (self.mode == Mode.REAL and reconciliation is not None
+                and reconciliation.get("status") == "RECONCILED"):
+            # REAL P/L goals consume only receipt-backed final outcomes. The
+            # observation loop intentionally does not stop on pending/unknown.
+            self._auto_stop_check()
 
     async def _refresh_sim_snapshot(self, sim: SimulationBackend) -> None:
         self.last_balance = sim.current_balance()
@@ -532,11 +549,20 @@ class BettingSession:
         self._event("balance_updated", balance=self.last_balance)
 
     def _goal_stop_check(self) -> bool:
-        if (self.goal_balance is not None and self.last_balance is not None
+        if (self.win_limit_enabled and self.goal_balance is not None and self.last_balance is not None
                 and self.last_balance >= self.goal_balance):
-            self.request_stop("goal_reached")
-            self._event("goal_reached", balance=self.last_balance,
+            reason = "WIN_LIMIT_REACHED" if self.request.win_limit_enabled is True else "goal_reached"
+            self.request_stop(reason)
+            self._event("win_limit_reached" if reason == "WIN_LIMIT_REACHED" else "goal_reached",
+                        balance=self.last_balance,
                         goal_balance=self.goal_balance)
+            return True
+        if (self.session_loss_limit_enabled and self.session_loss_limit is not None
+                and self.starting_balance is not None and self.last_balance is not None
+                and self.starting_balance - self.last_balance >= self.session_loss_limit):
+            self.request_stop("LOSS_LIMIT_REACHED")
+            self._event("loss_limit_reached", balance=self.last_balance,
+                        session_loss_limit=self.session_loss_limit)
             return True
         return False
 
@@ -782,7 +808,7 @@ class BettingSession:
             outcome = await backend.place(
                 amount_bif=amount, target_multiplier=float(intent.cashout),
                 bet_slot=intent.bet_slot, decision_id=intent.decision_id,
-                intent=intent,
+                intent=intent, execution_id=entry["execution_id"],
             )
         except PlacementUnavailable as exc:
             if self.execution_failure_handler:
@@ -851,6 +877,17 @@ class BettingSession:
             "last_balance_observed_at": self.last_balance_observed_at,
             "starting_balance": self.starting_balance,
             "goal_balance": self.goal_balance,
+            "win_limit_enabled": self.win_limit_enabled,
+            "session_loss_limit_enabled": self.session_loss_limit_enabled,
+            "session_loss_limit": self.session_loss_limit,
+            "session_configuration": {
+                "win_limit_enabled": self.win_limit_enabled,
+                "win_limit": self.win_limit,
+                "limits": {
+                    "session_loss_enabled": self.session_loss_limit_enabled,
+                    "session_loss": self.session_loss_limit,
+                },
+            },
             "last_balance_text": self.last_balance_text,
             "last_ui_ready": self.last_ui_ready,
             "latest_crash": self._latest_crash,

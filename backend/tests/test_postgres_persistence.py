@@ -1,6 +1,7 @@
 """Run with TEST_DATABASE_URL pointing to a disposable PostgreSQL database."""
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from scripts.migrate_sqlite_to_postgres import migrate
 
 
 @pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
-def test_three_postgres_restarts_preserve_collector_and_model_state(tmp_path):
+def test_postgres_restarts_preserve_history_risk_and_execution_state(tmp_path):
     import psycopg
     from psycopg.conninfo import make_conninfo
 
@@ -30,35 +31,42 @@ def test_three_postgres_restarts_preserve_collector_and_model_state(tmp_path):
             repository = Repository(tmp_path / "unused.sqlite3", dsn, require_postgres=True)
             repository.init()
             if restart == 0:
-                # The collector may write the first new round before the
-                # backend gets a chance to import its older JSON history.
-                with repository.connect() as conn:
-                    conn.execute("""INSERT INTO aviator_rounds(round_id,round_index,multiplier,timestamp)
-                                    VALUES(?,?,?,?)""",
-                                 (rounds[-1]["round_id"], rounds[-1]["round_index"],
-                                  rounds[-1]["multiplier"], rounds[-1]["timestamp"]))
                 assert repository.import_legacy_rounds(rounds) == 150
-                repository.save_model_candidate({"model_version": "candidate-1", "algorithm": "extra_trees",
-                                                 "validation_folds": [{"fold": 1}],
-                                                 "metrics": {"brier_score": .25},
-                                                 "deployment_status": "NOT_DEPLOYABLE"})
-                repository.save_application_state("ml_registry", {"candidate": {"model_version": "candidate-1"}},
-                                                  datetime.now(timezone.utc).isoformat())
+                repository.save_application_state("risk_runtime", {
+                    "selected_profile": "PROFILE_B", "emergency_latched": True,
+                }, datetime.now(timezone.utc).isoformat())
+                repository.save_betting_mode("SHADOW_REALISTIC", {
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+                repository.create_execution({
+                    "execution_id": "exec-1", "decision_id": "decision-1",
+                    "target_round_id": "151", "profile": "PROFILE_B",
+                    "bet_amount": 100, "cashout_target": 2.0,
+                    "status": "PLACED", "simulated": False,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "balance_before": 5000,
+                })
             assert repository.import_legacy_rounds(rounds) == 0
             assert len(repository.load_rounds()) == 150
             state = repository.rebuild_collector_state()
-            assert state["contiguous_rounds"] == 150
+            # Legacy import preserves rows and IDs but does not manufacture
+            # prospective continuity proof for historical data.
+            assert state["contiguous_rounds"] == 0
+            assert state["warmup_status"] == "WARMING_UP"
             assert state["total_history"] == 150
-            assert repository.list_model_candidates(1)[0]["metrics"]["brier_score"] == .25
-            assert repository.load_application_state("ml_registry")["candidate"]["model_version"] == "candidate-1"
+            assert repository.load_application_state("risk_runtime")["emergency_latched"] is True
+            assert repository.load_betting_mode()["mode"] == "SHADOW_REALISTIC"
+            execution = repository.execution_for("decision-1", "151")
+            assert execution["execution_id"] == "exec-1"
+            assert execution["status"] in {"PLACED", "UNKNOWN"}
     finally:
         with psycopg.connect(root_dsn) as conn:
             conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
 @pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
-def test_sqlite_migration_keeps_stable_ids_model_and_mode(tmp_path):
-    import json
+def test_sqlite_migration_keeps_stable_round_ids_risk_and_mode(tmp_path):
     import psycopg
     from psycopg.conninfo import make_conninfo
 
@@ -78,10 +86,8 @@ def test_sqlite_migration_keeps_stable_ids_model_and_mode(tmp_path):
         source = Repository(source_path)
         source.init()
         source.upsert_rounds([{**row, "target": int(row["multiplier"] >= 2)} for row in rounds])
-        source.save_application_state("ml_registry", {"candidate": {"model_version": "candidate-1"}},
+        source.save_application_state("risk_runtime", {"selected_profile": "PROFILE_B"},
                                       datetime.now(timezone.utc).isoformat())
-        source.save_model_candidate({"model_version": "candidate-1", "algorithm": "extra_trees",
-                                     "metrics": {"brier_score": .25}, "deployment_status": "NOT_DEPLOYABLE"})
         source.save_betting_mode("SHADOW_REALISTIC", {"updated_at": datetime.now(timezone.utc).isoformat()})
 
         migrate(source_path, raw, dsn)
@@ -89,9 +95,8 @@ def test_sqlite_migration_keeps_stable_ids_model_and_mode(tmp_path):
         destination = Repository(tmp_path / "unused.sqlite3", dsn, require_postgres=True)
         assert len(destination.load_rounds()) == 150
         assert destination.load_rounds()[-1]["round_id"] == "platform-150"
-        assert destination.rebuild_collector_state()["contiguous_rounds"] == 150
-        assert destination.load_application_state("ml_registry")["candidate"]["model_version"] == "candidate-1"
-        assert destination.list_model_candidates(1)[0]["metrics"]["brier_score"] == .25
+        assert destination.rebuild_collector_state()["contiguous_rounds"] == 0
+        assert destination.load_application_state("risk_runtime")["selected_profile"] == "PROFILE_B"
         assert destination.load_betting_mode()["mode"] == "SHADOW_REALISTIC"
     finally:
         with psycopg.connect(root_dsn) as conn:

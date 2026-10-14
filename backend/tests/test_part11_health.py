@@ -10,13 +10,15 @@ from app.services.system_health import SystemHealth
 
 
 class FakeHistory:
-    def __init__(self, status="HEALTHY", running=True, age=1):
+    def __init__(self, status="HEALTHY", running=True, age=1, process_status=None):
         self._status, self._running, self._age = status, running, age
+        self._process_status = process_status or ("RUNNING" if running else status)
 
     def status(self):
         from datetime import datetime, timezone
         stamp = datetime.fromtimestamp(time.time() - self._age, timezone.utc).isoformat()
         return {"status": self._status, "running": self._running,
+                "collector_process_status": self._process_status,
                 "latest": {"timestamp": stamp}, "count": 10}
 
 
@@ -41,7 +43,7 @@ def health(tmp_path: Path, history=None):
     repo.init()
     monitor = SystemHealth(betting_manager=FakeBetting(),
                            history_collector=history or FakeHistory(), repository=repo)
-    for component in ("features", "patterns", "ml", "evidence", "decision", "risk", "api"):
+    for component in ("database", "history", "reconciliation", "browser", "risk", "api"):
         monitor.heartbeat(component, ok=True, stale_after_s=3600)
     return monitor
 
@@ -66,11 +68,34 @@ def test_stale_history_pauses_without_fabricating_health(tmp_path):
 
 
 def test_stopped_history_reports_process_state_and_stays_blocked(tmp_path):
-    monitor = health(tmp_path, FakeHistory(status="STOPPED", running=False))
+    monitor = health(tmp_path, FakeHistory(status="STOPPED", running=False, process_status="STOPPED"))
     snapshot = monitor.refresh()
     history = snapshot["components"]["history"]
     assert history["state"] == "ERROR"
     assert history["last_error"] == "history collector process is stopped"
+
+
+def test_structured_history_reason_does_not_crash_health_snapshot(tmp_path):
+    monitor = health(tmp_path)
+    monitor._history_ok = lambda _now: (False, {"state": "STALE", "source": "collector"},
+                                        {"waiting": True})
+
+    snapshot = monitor.refresh()
+
+    assert snapshot["components"]["history"]["last_error"] == '{"source": "collector", "state": "STALE"}'
+    assert '{"source": "collector", "state": "STALE"}' in snapshot["reason"]
+    assert monitor.can_bet_now(mode="REAL")["allowed"] is False
+
+
+def test_unverified_collector_is_not_misreported_as_stopped(tmp_path):
+    history = FakeHistory(status="UNKNOWN", running=False, age=1, process_status="UNKNOWN")
+    monitor = health(tmp_path, history)
+    snapshot = monitor.refresh()
+    component = snapshot["components"]["history"]
+    assert component["state"] == "WAITING"
+    assert "could not be verified" in component["last_error"]
+    assert "stopped" not in component["last_error"]
+    assert component["metadata"]["process_status"] == "UNKNOWN"
     assert monitor.can_bet_now(mode="REAL")["allowed"] is False
 
 
@@ -91,12 +116,12 @@ def test_safety_enforcement_requests_stop_and_emits_alert(tmp_path, monkeypatch)
     assert any(event["type"] == "health:alert" for event in events)
 
 
-def test_unknown_component_is_not_reported_healthy(tmp_path):
+def test_unknown_extension_is_not_reported_healthy(tmp_path):
     monitor = health(tmp_path)
-    monitor.heartbeat("ml", ok=False, error="model unavailable")
+    monitor.heartbeat("custom_extension", ok=False, error="extension unavailable")
     snapshot = monitor.refresh()
-    assert snapshot["components"]["ml"]["state"] == "ERROR"
-    assert snapshot["components"]["ml"]["last_error"] == "model unavailable"
+    assert snapshot["components"]["custom_extension"]["state"] == "ERROR"
+    assert snapshot["components"]["custom_extension"]["last_error"] == "extension unavailable"
 
 
 def test_idle_execution_browser_waits_without_counting_failure_or_opening_gate(tmp_path):

@@ -1,0 +1,81 @@
+{
+  "candidate_family_sha256": "334ff5c06eb7d8880380898f616c6a3dd46d2ffb5f9ea72ed8c98e43e64ab8f4",
+  "clean_dataset_sha256": "fc1911b0b25629f73f2a26c3399f8ea3a44eebb9661a48bd303322e4503a6abf",
+  "final_period_status": "CONTAMINATED_RETROSPECTIVE_ONLY",
+  "final_test_opened": false,
+  "frozen_at_utc": "2026-10-07T20:35:06Z",
+  "no_candidate_passes_historical_edge_gate": true,
+  "plan_id": "aviator-2x-historical-20261007-v1",
+  "plan_sha256": "ee857aa2887f30e22f29eee1db16f63b763fa5e6e7963f9d5978ca141d50c71e",
+  "raw_dataset_sha256": "4a905837bc07dc2333cbfb9f237a192c10dcfec30dfef84d93cdfa2c36ff9387",
+  "schema_version": 1,
+  "selected_rule_set_sha256": "b070f6ba1e49d96a0d2584fb9e3f0241166ef0f5945a24e3bb0eafbf79719267",
+  "selection_rule": [
+    "validation idealized net return per unit, descending",
+    "discovery idealized net return per unit, descending",
+    "candidate_id ascending"
+  ],
+  "shortlist": [
+    {
+      "candidate": {
+        "candidate_id": "binary_3_010",
+        "description": "The previous 3 outcomes were L-H-L (H >=2.00x, L <2.00x).",
+        "family": "EXACT_BINARY_SEQUENCE",
+        "feature": "binary_sequence_3",
+        "op": "==",
+        "requirements": {
+          "binary_sequence_3": 3
+        },
+        "threshold": 2
+      },
+      "discovery_ideal_roi": -0.032258064516129004,
+      "discovery_rate": 0.4838709677419355,
+      "discovery_selected": 310,
+      "rank": 1,
+      "validation_ideal_roi": 0.12380952380952381,
+      "validation_rate": 0.5619047619047619,
+      "validation_selected": 105
+    },
+    {
+      "candidate": {
+        "candidate_id": "rate_5_le_2",
+        "description": "At most 2 of the previous 5 rounds were >=2.00x.",
+        "family": "ROLLING_HIT_COUNT",
+        "feature": "rolling_count_5",
+        "op": "<=",
+        "requirements": {
+          "rolling_count_5": 5
+        },
+        "threshold": 2
+      },
+      "discovery_ideal_roi": -0.0744525547445255,
+      "discovery_rate": 0.46277372262773725,
+      "discovery_selected": 1370,
+      "rank": 2,
+      "validation_ideal_roi": 0.09359605911330049,
+      "validation_rate": 0.5467980295566502,
+      "validation_selected": 406
+    },
+    {
+      "candidate": {
+        "candidate_id": "logvol_50_le_1_0",
+        "description": "Standard deviation of log multipliers over the previous 50 rounds <= 1.00.",
+        "family": "ROLLING_LOG_VOLATILITY",
+        "feature": "rolling_log_std_50",
+        "op": "<=",
+        "requirements": {
+          "rolling_log_std_50": 50
+        },
+        "threshold": 1.0
+      },
+      "discovery_ideal_roi": -0.04299583911234395,
+      "discovery_rate": 0.478502080443828,
+      "discovery_selected": 1442,
+      "rank": 3,
+      "validation_ideal_roi": 0.0935672514619883,
+      "validation_rate": 0.5467836257309941,
+      "validation_selected": 342
+    }
+  ],
+  "shortlist_size": 3
+}

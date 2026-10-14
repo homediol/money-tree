@@ -1,0 +1,35 @@
+{
+  "assumption": "Conditional independent outcomes with a fixed discovery-period baseline. Candidate trigger times are held fixed; this complements, but does not replace, segment-wise circular-shift tests and Holm correction.",
+  "candidate_support_gate": 200,
+  "discovery_baseline_probability": 0.47039106145251397,
+  "iid_null_best_lift_quantiles": {
+    "p50": 0.05219432711601257,
+    "p95": 0.08049080520868301,
+    "p99": 0.09449397027492523
+  },
+  "iid_null_probability_max_lift_at_least_observed": 0.6596701649175413,
+  "longest_streaks": {
+    "at_least_2x": {
+      "iid_null_quantiles": {
+        "p50": 10.0,
+        "p95": 13.0,
+        "p99": 15.0
+      },
+      "iid_null_tail_probability": 0.07196401799100449,
+      "observed_longest": 13
+    },
+    "below_2x": {
+      "iid_null_quantiles": {
+        "p50": 11.0,
+        "p95": 15.0,
+        "p99": 18.0
+      },
+      "iid_null_tail_probability": 0.6516741629185407,
+      "observed_longest": 11
+    }
+  },
+  "method": "independent Bernoulli target outcomes conditional on the frozen observed candidate triggers; streak simulations are generated independently within discovery segment lengths",
+  "observed_best_candidate_lift_vs_period_baseline": 0.04686740040779114,
+  "replicates": 2000,
+  "seed": 20261007
+}

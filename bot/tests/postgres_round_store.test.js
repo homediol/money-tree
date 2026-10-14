@@ -55,7 +55,16 @@ test('saveRounds returns committed database identity and total row count for cap
   const client = {
     async query(sql, params = []) {
       if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' || sql.includes('pg_advisory_xact_lock')) return { rowCount: 0, rows: [] };
-      if (sql.includes('COALESCE(MAX(round_index)')) return { rows: [{ max_round_index: 10 }] };
+      if (sql.includes('COALESCE(MAX(round_index)')) return { rows: [{ max_round_index: 10, total_history: 10, last_round_id: 'prior' }] };
+      if (sql.includes('SELECT collector_state')) return { rows: [{ collector_state: 'COLLECTING',
+        last_processed_round_id: 'prior', last_round_timestamp: null, contiguous_rounds: 10,
+        total_history: 10, warmup_status: 'WARMING_UP' }] };
+      if (sql.includes('SELECT round_id,round_index,timestamp')) return { rows: Array.from({ length: 10 }, (_, index) => ({
+        round_id: `prior-${index + 1}`, round_index: index + 1,
+        timestamp: `2026-10-04T09:${String(index).padStart(2, '0')}:00.000Z`,
+        continuity_verified: true, gap_before: false,
+      })) };
+      if (sql.includes('INSERT INTO collector_state')) return { rowCount: 1, rows: [] };
       if (sql.includes('WHERE round_id =') || sql.includes('WHERE round_index =')) return { rowCount: 0, rows: [] };
       if (sql.includes('INSERT INTO')) return {
         rowCount: 1,
@@ -83,7 +92,7 @@ test('saveRounds returns committed database identity and total row count for cap
 
   const result = await store.saveRounds([persisted[0]], 'collector');
   assert.equal(result.saved, 1);
-  assert.equal(result.totalPersistedRows, 1);
+  assert.equal(result.totalPersistedRows, 11);
   assert.deepEqual(result.insertedRounds[0], {
     db_id: 501,
     round_id: 'live-round-1',
@@ -109,7 +118,12 @@ test('round index collision fails closed instead of inventing a new local index'
   const client = {
     async query(sql, params = []) {
       if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' || sql.includes('pg_advisory_xact_lock')) return { rowCount: 0, rows: [] };
-      if (sql.includes('COALESCE(MAX(round_index)')) return { rows: [{ max_round_index: Math.max(...rows.map(row => row.round_index)) }] };
+      if (sql.includes('COALESCE(MAX(round_index)')) return { rows: [{ max_round_index: Math.max(...rows.map(row => row.round_index)),
+        total_history: rows.length, last_round_id: rows.at(-1).round_id }] };
+      if (sql.includes('SELECT collector_state')) return { rows: [{ collector_state: 'COLLECTING',
+        last_processed_round_id: rows.at(-1).round_id, last_round_timestamp: null, contiguous_rounds: 0,
+        total_history: rows.length, warmup_status: 'WARMING_UP' }] };
+      if (sql.includes('INSERT INTO collector_state')) return { rowCount: 1, rows: [] };
       if (sql.includes('WHERE round_id =')) return { rowCount: rows.some(row => row.round_id === params[0]) ? 1 : 0, rows: [] };
       if (sql.includes('WHERE round_index =')) {
         const owner = rows.find(row => row.round_index === Number(params[0]));

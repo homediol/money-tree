@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 
 import { BrowserSupervisor } from '../collector/BrowserManager.js';
 import { Collector } from '../collector/Collector.js';
 import { FrameManager } from '../collector/FrameManager.js';
-import { LoginManager } from '../collector/LoginManager.js';
-import { selectMissingLegacyRounds } from '../collector/index.js';
+import { SharedPageCoordinator } from '../collector/SharedPageCoordinator.js';
+import { isAviatorRoute, LoginManager } from '../collector/LoginManager.js';
+import { canContinueReadOnlyCollection, selectMissingLegacyRounds } from '../collector/index.js';
 import {
   appendRounds, inferNewMultipliers, normalizeMultiplier,
   readRoundHistory, stableRoundId, writeRoundHistory,
@@ -49,6 +51,23 @@ test('parses snapshots, detects only new rounds and appends chronologically', ()
   assert.equal(added[0].continuity_proof, 'HISTORY_SNAPSHOT_OVERLAP');
 });
 
+test('startup overlap search covers every offset visible in a 50-round snapshot', () => {
+  const persistedTail = Array.from({ length: 50 }, (_, index) => Number((index + 1.07).toFixed(2)));
+  const newRounds = Array.from({ length: 35 }, (_, index) => Number((100 + index + 0.23).toFixed(2)));
+  const currentSnapshot = [...newRounds, ...persistedTail.slice(0, 15)];
+
+  assert.deepEqual(inferNewMultipliers(persistedTail, currentSnapshot), newRounds);
+
+  const maxShiftNewRounds = Array.from({ length: 40 }, (_, index) => Number((200 + index + 0.31).toFixed(2)));
+  assert.deepEqual(
+    inferNewMultipliers(persistedTail, [...maxShiftNewRounds, ...persistedTail.slice(0, 10)]),
+    maxShiftNewRounds,
+  );
+
+  const tooOldForSnapshot = Array.from({ length: 41 }, (_, index) => Number((300 + index + 0.47).toFixed(2)));
+  assert.equal(inferNewMultipliers(persistedTail, [...tooOldForSnapshot, ...persistedTail.slice(0, 9)]), null);
+});
+
 test('PostgreSQL startup imports only rounds absent by both ID and index', () => {
   const persisted = [{ round_id: 'platform-1', round_index: 1 }];
   const file = [
@@ -61,7 +80,15 @@ test('PostgreSQL startup imports only rounds absent by both ID and index', () =>
   });
 });
 
-test('history page reuses one browser context and never launches another browser', async () => {
+test('read-only collection permits unknown auth but rejects explicit expiry or manual verification', () => {
+  assert.equal(canContinueReadOnlyCollection('AUTHENTICATED'), true);
+  assert.equal(canContinueReadOnlyCollection('UNKNOWN'), true);
+  assert.equal(canContinueReadOnlyCollection('EXPIRED'), false);
+  assert.equal(canContinueReadOnlyCollection('MANUAL_VERIFICATION'), false);
+  assert.equal(canContinueReadOnlyCollection(undefined), false);
+});
+
+test('shared Aviator page reuses one browser context and never opens another page', async () => {
   let newPages = 0;
   const page = { isClosed: () => false, url: () => 'about:blank' };
   const manager = new BrowserSupervisor(true);
@@ -70,8 +97,8 @@ test('history page reuses one browser context and never launches another browser
   manager._context = { pages: () => [page], newPage: async () => { newPages += 1; return page; } };
   manager._page = page;
   assert.equal(await manager.getHistoryPage(), page);
-  assert.equal(await manager.getHistoryPage(), page);
-  assert.equal(newPages, 1);
+  assert.equal(await manager.getBettingPage(), page);
+  assert.equal(newPages, 0);
 });
 
 test('managed history page removes restored MetaBrandTitle and blank tabs', async () => {
@@ -104,9 +131,9 @@ test('managed history page removes restored MetaBrandTitle and blank tabs', asyn
 
   assert.equal(await manager.getHistoryPage(), historyPage);
   assert.deepEqual(closed.sort(), ['blank', 'winner']);
-  assert.equal(focused, 1);
+  assert.equal(focused, 0);
   assert.equal(newPages, 0);
-  assert.equal(manager._page, null);
+  assert.equal(manager._page, historyPage);
 });
 
 test('managed blank tab is reused, then later sportsbook tabs are removed after Aviator opens', async () => {
@@ -138,7 +165,7 @@ test('managed blank tab is reused, then later sportsbook tabs are removed after 
   url = 'https://winner.rw/en/virtual/crash-games/aviator';
   await manager.focusGamePage(page);
   assert.equal(closed, true);
-  assert.equal(focused, 2);
+  assert.equal(focused, 1);
 });
 
 test('attached user browser tabs are never cleaned up', async () => {
@@ -155,7 +182,7 @@ test('attached user browser tabs are never cleaned up', async () => {
   assert.equal(closed, 0);
 });
 
-test('history page recovery stays in the existing browser context', async () => {
+test('page recovery reuses the healthy game tab and never creates a replacement', async () => {
   let newPages = 0;
   let closed = 0;
   const order = [];
@@ -180,25 +207,22 @@ test('history page recovery stays in the existing browser context', async () => 
   manager._context = context;
   manager._historyPage = oldPage;
   manager._page = oldPage;
-  assert.equal(await manager.recoverHistoryPage(), freshPage);
+  manager._aviatorPage = oldPage;
+  assert.equal(await manager.recoverHistoryPage(), oldPage);
   assert.equal(manager._context, context);
-  assert.equal(closed, 1);
-  assert.equal(newPages, 1);
-  assert.deepEqual(order, ['new', 'close']);
+  assert.equal(closed, 0);
+  assert.equal(newPages, 0);
+  assert.deepEqual(order, []);
 });
 
-test('history page recovery preserves the existing betting page and context', async () => {
+test('shared page recovery does not replace or close the active game tab', async () => {
   const pages = [];
   const oldHistory = {
     isClosed: () => false,
     url: () => 'https://winner.rw/en/virtual/crash-games/aviator',
     close: async () => { pages.splice(pages.indexOf(oldHistory), 1); },
   };
-  const bettingPage = {
-    isClosed: () => false,
-    url: () => 'https://winner.rw/en/sportsbook/upcoming',
-  };
-  pages.push(oldHistory, bettingPage);
+  pages.push(oldHistory);
   const replacement = {
     isClosed: () => false,
     url: () => 'about:blank',
@@ -214,17 +238,17 @@ test('history page recovery preserves the existing betting page and context', as
   manager._contextClosed = false;
   manager._historyPage = oldHistory;
   manager._page = oldHistory;
-  manager._bettingPage = bettingPage;
+  manager._aviatorPage = oldHistory;
   manager._ownsBrowser = true;
   manager._persistSession = async () => {};
   manager._restoreSessionStorage = async () => {};
   manager._trackPage = () => {};
   manager._cleanupManagedStarterPages = async () => {};
 
-  assert.equal(await manager.recoverHistoryPage(), replacement);
+  assert.equal(await manager.recoverHistoryPage(), oldHistory);
   assert.equal(manager._context, context);
-  assert.equal(manager._bettingPage, bettingPage);
-  assert.deepEqual(pages, [bettingPage, replacement]);
+  assert.equal(manager._bettingPage, oldHistory);
+  assert.deepEqual(pages, [oldHistory]);
 });
 
 test('navigation accepts a rendered Winner route after load timeout', async () => {
@@ -252,18 +276,129 @@ test('logout popup route cannot be mistaken for an authenticated session', async
   assert.equal(await manager.isLoggedIn(page), false);
 });
 
-test('frame recovery reloads Aviator without visiting the sportsbook homepage', async () => {
-  const visits = [];
+test('Aviator UI launch follows Crash Games search and Play Game in the same tab', async () => {
+  const actions = [];
+  let attached = false;
+  const mainFrame = {};
+  const gameFrame = {
+    isDetached: () => false,
+    name: () => 'aviator-game',
+    url: () => 'https://aviator.spribegaming.com/game',
+  };
+  const empty = { count: async () => 0, nth: () => empty };
+  const crash = {
+    count: async () => 1,
+    nth: () => crash,
+    isVisible: async () => true,
+    click: async () => actions.push('crash-games'),
+  };
+  const search = {
+    first: () => search,
+    waitFor: async () => {},
+    fill: async value => actions.push(`search:${value}`),
+  };
+  const play = {
+    count: async () => 1,
+    nth: () => play,
+    isVisible: async () => true,
+    click: async () => { actions.push('play-game'); attached = true; },
+  };
+  const page = {
+    url: () => attached ? 'https://winner.rw/en/virtual/crash-games/aviator' : 'https://winner.rw/en',
+    getByRole: (role, options) => /crash games/i.test(options.name)
+      ? role === 'button' ? crash : empty
+      : /play game/i.test(options.name) ? role === 'button' ? play : empty : empty,
+    getByText: () => empty,
+    locator: selector => selector.includes('au-m-cs') ? search : empty,
+    frames: () => attached ? [mainFrame, gameFrame] : [mainFrame],
+    mainFrame: () => mainFrame,
+  };
+  const manager = new LoginManager({ phone: 'test', password: 'test' });
+  assert.equal(await manager._openThroughCrashGamesSearch(page), true);
+  assert.deepEqual(actions, ['crash-games', 'search:Aviator', 'play-game']);
+});
+
+test('login return URL containing Aviator is not treated as a game route', async () => {
+  assert.equal(isAviatorRoute('https://winner.rw/en/authentication/login?returnUrl=%2Fen%2Fvirtual%2Fcrash-games%2Faviator'), false);
+  assert.equal(isAviatorRoute('https://winner.rw/en/virtual/crash-games/aviator?campaign=live'), true);
+  assert.equal(isAviatorRoute('https://aviator.spribegaming.com/game'), false);
+
+  let navigationAttempts = 0;
+  const page = {
+    isClosed: () => false,
+    url: () => 'https://winner.rw/en/authentication/login?returnUrl=%2Faviator',
+    locator: () => ({ innerText: async () => '' }),
+    goto: async () => { navigationAttempts += 1; },
+  };
+  const manager = new LoginManager({ phone: '', password: '' });
+
+  await assert.rejects(manager.goToAviator(page), error => error.code === 'AUTH_REQUIRED');
+  assert.equal(navigationAttempts, 0, 'a login route must not trigger game controls or canonical route retries');
+});
+
+test('unstable Aviator locator is rescanned once before bounded click retry', async () => {
+  let currentUrl = 'https://winner.rw/en';
+  let clickAttempts = 0;
+  let aviatorLocatorBuilds = 0;
+  let attached = false;
+  const mainFrame = {};
+  const gameFrame = {
+    isDetached: () => false,
+    name: () => 'aviator-game',
+    url: () => 'https://aviator.spribegaming.com/game',
+  };
+  const empty = { count: async () => 0, nth: () => empty };
+  const page = {
+    isClosed: () => false,
+    url: () => currentUrl,
+    mainFrame: () => mainFrame,
+    frames: () => attached ? [mainFrame, gameFrame] : [mainFrame],
+    locator: selector => selector === 'body' ? { innerText: async () => '' } : empty,
+    getByRole: (_role, options) => {
+      if (!/aviator/i.test(options.name)) return empty;
+      aviatorLocatorBuilds += 1;
+      return {
+        count: async () => 1,
+        nth: () => ({
+          isVisible: async () => true,
+          click: async () => {
+            clickAttempts += 1;
+            if (clickAttempts === 1) throw new Error('Timeout: element is not stable');
+            currentUrl = 'https://winner.rw/en/virtual/crash-games/aviator';
+            attached = true;
+          },
+        }),
+      };
+    },
+    getByText: () => empty,
+  };
+  const manager = new LoginManager({ phone: '', password: '' });
+  manager._openThroughCrashGamesSearch = async () => false;
+  manager._dismissModals = async () => {};
+  manager._navigate = async () => false;
+
+  assert.equal(await manager.goToAviator(page), true);
+  assert.equal(clickAttempts, 2);
+  assert.ok(aviatorLocatorBuilds >= 2, 'the locator is rebuilt after the stale click');
+});
+
+test('an attached Aviator iframe is reused without a homepage navigation', async () => {
+  const mainFrame = {};
+  const gameFrame = {
+    isDetached: () => false,
+    name: () => 'aviator-game',
+    url: () => 'https://aviator.spribegaming.com/game',
+  };
   const page = {
     url: () => 'https://winner.rw/en/virtual/crash-games/aviator',
     locator: selector => selector === 'body'
       ? { innerText: async () => 'Aviator' }
-      : { first: () => ({ isVisible: async () => false }) },
+      : { count: async () => 0, first: () => ({ isVisible: async () => false }) },
+    frames: () => [mainFrame, gameFrame],
+    mainFrame: () => mainFrame,
   };
   const manager = new LoginManager({ phone: 'test', password: 'test' });
-  manager._navigate = async (_page, url) => { visits.push(url); return true; };
   assert.equal(await manager.goToAviator(page), true);
-  assert.deepEqual(visits, ['https://winner.rw/en/virtual/crash-games/aviator']);
 });
 
 test('frame manager uses direct CDP when Playwright omits the game OOPIF', async () => {
@@ -280,7 +415,44 @@ test('frame manager uses direct CDP when Playwright omits the game OOPIF', async
   };
   const manager = new FrameManager();
   manager._connectDirectFrame = async () => direct;
+  const readyEvents = [];
+  manager.on('ready', event => readyEvents.push(event));
   assert.equal(await manager.waitForFrame(page, { timeoutMs: 100 }), direct);
+  assert.equal(readyEvents.length, 1);
+  assert.equal(readyEvents[0].page, page);
+  assert.equal(readyEvents[0].frame, direct);
+  assert.equal(readyEvents[0].method, 'direct-cdp');
+});
+
+test('collector keeps reading the shared game iframe while betting UI lock is held', async () => {
+  const gameFrame = {
+    url: () => 'https://aviator-next.spribegaming.com/',
+    isDetached: () => false,
+    locator: () => ({ first: () => ({ waitFor: async () => {} }) }),
+  };
+  const mainFrame = { url: () => 'https://winner.rw/en/virtual/crash-games/aviator', isDetached: () => false };
+  const page = { frames: () => [mainFrame, gameFrame], mainFrame: () => mainFrame };
+  const pageManager = {
+    getAviatorPage: async () => page,
+    getAviatorFrame: async () => gameFrame,
+  };
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'winner-history-ui-lock-'));
+  const coordinator = new SharedPageCoordinator({ lockDirectory: path.join(tempDir, randomUUID()) });
+  let releaseUi;
+  let uiStarted;
+  const started = new Promise(resolve => { uiStarted = resolve; });
+  const uiOperation = coordinator.withBettingUiLock(() => new Promise(resolve => {
+    releaseUi = resolve;
+    uiStarted();
+  }));
+  await started;
+  const frameManager = new FrameManager({ pageManager });
+
+  const observedFrame = await frameManager.waitForFrame(page, { timeoutMs: 50 });
+  assert.equal(observedFrame, gameFrame);
+  releaseUi();
+  await uiOperation;
+  fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
 test('frame manager does not return an outer Aviator iframe without payouts', async () => {
@@ -309,6 +481,74 @@ test('frame manager does not return an outer Aviator iframe without payouts', as
   manager._connectDirectFrame = async () => direct;
   assert.equal(await manager.waitForFrame(page, { timeoutMs: 1000 }), direct);
   assert.equal(checks, 2);
+});
+
+test('attached Aviator frame with delayed payout source reports readiness only after payouts appear', async () => {
+  let checks = 0;
+  const main = {};
+  const nestedGameFrame = {
+    isDetached: () => false,
+    name: () => 'nested-game-surface',
+    url: () => 'https://aviaport.spribegaming.com/session',
+    locator: () => ({ first: () => ({ waitFor: async () => {
+      checks += 1;
+      if (checks < 2) throw new Error('history is still initializing');
+    } }) }),
+  };
+  const page = {
+    frames: () => [main, nestedGameFrame],
+    mainFrame: () => main,
+    waitForEvent: async () => {},
+  };
+  const manager = new FrameManager();
+  manager._connectDirectFrame = async () => null;
+
+  assert.equal(await manager.waitForFrame(page, { timeoutMs: 1000 }), nestedGameFrame);
+  assert.deepEqual(manager.readiness(), {
+    frameAttached: true, contentLoaded: true, payoutsReady: true, reason: 'PAYOUT_SELECTOR_PRESENT',
+  });
+  assert.equal(checks, 2);
+});
+
+test('attached frame timeout is distinct from a missing frame', async () => {
+  const main = {};
+  const gameFrame = {
+    isDetached: () => false,
+    name: () => 'aviator-game',
+    url: () => 'https://aviaport.spribegaming.com/session',
+    locator: () => ({ first: () => ({ waitFor: async () => { throw new Error('payouts not mounted'); } }) }),
+  };
+  const page = {
+    frames: () => [main, gameFrame],
+    mainFrame: () => main,
+    waitForEvent: async () => {},
+  };
+  const manager = new FrameManager();
+  manager._connectDirectFrame = async () => null;
+
+  await assert.rejects(manager.waitForFrame(page, { timeoutMs: 10 }), error => error.code === 'PAYOUTS_UNAVAILABLE');
+  assert.deepEqual(manager.readiness(), {
+    frameAttached: true, contentLoaded: false, payoutsReady: false, reason: 'FRAME_ATTACHED_WAITING_FOR_PAYOUTS',
+  });
+});
+
+test('detached frame is not reused as a valid game frame', async () => {
+  const main = {};
+  const detachedGameFrame = {
+    isDetached: () => true,
+    name: () => 'aviator-game',
+    url: () => 'https://aviaport.spribegaming.com/session',
+  };
+  const page = {
+    frames: () => [main, detachedGameFrame],
+    mainFrame: () => main,
+    waitForEvent: async () => {},
+  };
+  const manager = new FrameManager();
+  manager._connectDirectFrame = async () => null;
+
+  await assert.rejects(manager.waitForFrame(page, { timeoutMs: 10 }), error => error.code === 'GAME_FRAME_MISSING');
+  assert.equal(manager.readiness().frameAttached, false);
 });
 
 test('collector uses Node-side mutation polling for a direct CDP frame', async () => {

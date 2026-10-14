@@ -76,6 +76,21 @@ class RiskManager:
     def profiles(self) -> dict:
         return {key: value.public() for key, value in RISK_PROFILES.items()}
 
+    @staticmethod
+    def _session_limits(betting_status: dict, profile) -> tuple[bool, float | None, bool]:
+        configuration = betting_status.get("session_configuration") or {}
+        limits = configuration.get("limits") or {}
+        loss_enabled = limits.get("session_loss_enabled",
+                                  configuration.get("session_loss_limit_enabled", True))
+        loss_limit = limits.get("session_loss",
+                                configuration.get("session_loss_limit", profile.maximum_session_loss))
+        if not loss_enabled or loss_limit is None:
+            loss_limit = None
+        else:
+            loss_limit = float(loss_limit)
+        win_enabled = configuration.get("win_limit_enabled", betting_status.get("goal_balance") is not None)
+        return bool(loss_enabled), loss_limit, bool(win_enabled)
+
     def _record(self, result: RiskDecision) -> dict:
         row = result.public()
         self.audit_log.append(row)
@@ -111,6 +126,7 @@ class RiskManager:
             current = bs.get("last_balance")
         profit = None if start is None or current is None else current - start
         loss = 0 if profit is None or profit >= 0 else abs(profit)
+        loss_enabled, loss_limit, win_enabled = self._session_limits(bs, profile)
         if self.emergency_latched:
             risk_status = "BLOCKED"
             risk_level = "BLOCKED"
@@ -134,7 +150,9 @@ class RiskManager:
             "minimum_bet": profile.minimum_bet,
             "maximum_bet": profile.maximum_bet,
             "maximum_balance_percentage": profile.maximum_balance_percentage,
-            "maximum_session_loss": profile.maximum_session_loss,
+            "maximum_session_loss": loss_limit,
+            "session_loss_limit_enabled": loss_enabled,
+            "win_limit_enabled": win_enabled,
             "maximum_consecutive_losses": profile.maximum_consecutive_losses,
             "starting_balance": start,
             "current_balance": current,
@@ -196,11 +214,12 @@ class RiskManager:
                 return await self._finish(result(False, "Balance cannot be verified"))
             start = betting_status.get("starting_balance")
             goal = betting_status.get("goal_balance")
-            if goal is not None and current >= goal:
+            loss_enabled, loss_limit, win_enabled = self._session_limits(betting_status, profile)
+            if win_enabled and goal is not None and current >= goal:
                 return await self._finish(result(False, "Goal already reached"),
                                           "risk:goal_protection", "goal_reached")
             loss = max(0.0, (start - current)) if start is not None else 0.0
-            if loss >= profile.maximum_session_loss:
+            if loss_enabled and loss_limit is not None and loss >= loss_limit:
                 return await self._finish(result(False, "Maximum session loss reached"),
                                           "risk:loss_limit_reached", "risk_loss_limit")
             if betting_status.get("consecutive_losses", 0) >= profile.maximum_consecutive_losses:
@@ -253,10 +272,11 @@ class RiskManager:
         start = betting_status.get("starting_balance")
         goal = betting_status.get("goal_balance")
         profile = get_risk_profile(decision.get("profile", ""))
+        loss_enabled, loss_limit, win_enabled = self._session_limits(betting_status, profile)
         amount = risk.get("approved_bet_amount", risk.get("approved_bet"))
         if current is None: reasons.append("balance_unverified")
-        elif goal is not None and current >= goal: reasons.append("goal_reached")
-        elif start is not None and start - current >= profile.maximum_session_loss: reasons.append("session_loss_limit")
+        elif win_enabled and goal is not None and current >= goal: reasons.append("goal_reached")
+        elif loss_enabled and loss_limit is not None and start is not None and start - current >= loss_limit: reasons.append("session_loss_limit")
         if betting_status.get("consecutive_losses", 0) >= profile.maximum_consecutive_losses: reasons.append("consecutive_loss_limit")
         configuration = betting_status.get("session_configuration") or {}
         if configuration.get("mode") == "MANUAL":

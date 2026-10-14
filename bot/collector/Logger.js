@@ -22,6 +22,14 @@ const COLORS = {
 
 let _minLevel = LEVELS.INFO;
 let _stdoutAvailable = true;
+const SENSITIVE_KEY = /password|token|secret|authorization|cookie|credential/i;
+
+function redactSensitiveText(value) {
+  return String(value)
+    .replace(/(https?:\/\/[^\s"'<>?]+)\?[^\s"'<>]*/g, '$1?[REDACTED]')
+    .replace(/([?&](?:access_?token|refresh_?token|token|password|secret|authorization|cookie)=)[^&\s"'<>]*/gi, '$1[REDACTED]')
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/gi, '$1[REDACTED]');
+}
 
 // A supervisor or terminal can disappear while the collector keeps running.
 // Without an error listener, writing to that closed pipe raises EPIPE; logging
@@ -35,23 +43,31 @@ function ts() {
 }
 
 function serialize(v) {
-  try { return typeof v === 'object' ? JSON.stringify(v) : String(v); }
-  catch { return String(v); }
+  try {
+    if (typeof v === 'object' && v !== null) {
+      return redactSensitiveText(JSON.stringify(v, (key, value) => SENSITIVE_KEY.test(key) ? '[REDACTED]' : value));
+    }
+    return redactSensitiveText(String(v));
+  }
+  catch (error) {
+    process.stderr.write(`[${ts()}] [LOGGER] could not serialize log data: ${error?.message || error}\n`);
+    return '[unserializable log value]';
+  }
 }
 
 export function formatError(err) {
   if (!err) return 'Unknown error';
   if (err instanceof AggregateError) {
     const inner = err.errors?.map(formatError).filter(Boolean).join('; ');
-    return inner ? `${err.name}: ${inner}` : (err.message || err.name);
+    return redactSensitiveText(inner ? `${err.name}: ${inner}` : (err.message || err.name));
   }
   if (err instanceof Error) {
-    return err.stack || err.message || err.name;
+    return redactSensitiveText(err.stack || err.message || err.name);
   }
   if (typeof err === 'object') {
     return serialize(err);
   }
-  return String(err);
+  return redactSensitiveText(String(err));
 }
 
 function rotatIfNeeded() {
@@ -61,7 +77,9 @@ function rotatIfNeeded() {
     if (size > MAX_LOG_BYTES) {
       fs.renameSync(LOG_FILE, LOG_FILE + '.1');
     }
-  } catch { /* ignore */ }
+  } catch (error) {
+    process.stderr.write(`[${ts()}] [LOGGER] log rotation failed: ${error?.message || error}\n`);
+  }
 }
 
 function writeFile(line) {
@@ -69,7 +87,9 @@ function writeFile(line) {
     rotatIfNeeded();
     fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
     fs.appendFileSync(LOG_FILE, line + '\n', 'utf-8');
-  } catch { /* never crash on log write */ }
+  } catch (error) {
+    process.stderr.write(`[${ts()}] [LOGGER] collector log file write failed: ${error?.message || error}\n`);
+  }
 }
 
 function emit(level, tag, message, extras) {
@@ -101,8 +121,9 @@ export class Logger {
 
   /** Log a structured recovery event. */
   recovery(action, reason, durationMs, success, retryCount = 0) {
-    const payload = { action, reason, durationMs, success, retryCount, ts: new Date().toISOString() };
-    emit('WARN', this.tag, `RECOVERY action=${action} success=${success} retries=${retryCount} duration=${durationMs}ms reason="${reason}"`, []);
+    const safeReason = redactSensitiveText(reason);
+    const payload = { action, reason: safeReason, durationMs, success, retryCount, ts: new Date().toISOString() };
+    emit('WARN', this.tag, `RECOVERY action=${action} success=${success} retries=${retryCount} duration=${durationMs}ms reason="${safeReason}"`, []);
     writeFile('RECOVERY_EVENT ' + JSON.stringify(payload));
   }
 }

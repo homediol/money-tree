@@ -1,14 +1,30 @@
-import { useState } from 'react';
-import Card from '../components/Card.jsx';
-import Metric from '../components/Metric.jsx';
-import { useLiveData } from '../hooks/useLiveData.js';
-import { getApiToken, setApiToken } from '../auth.js';
+import { useCallback, useEffect, useState } from 'react';
 import { KeyRound, Settings2 } from 'lucide-react';
+import Card from '../components/Card.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import { getApiToken, setApiToken } from '../auth.js';
+import { api } from '../services/api.js';
 
 export default function SystemSettings() {
-  const { stats, system, loading, error } = useLiveData();
   const [token, setToken] = useState(getApiToken());
+  const [health, setHealth] = useState(null);
+  const [system, setSystem] = useState(null);
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(async () => {
+    try {
+      const [healthResult, systemResult] = await Promise.all([
+        api.get('/health'), api.get('/api/system/status'),
+      ]);
+      setHealth(healthResult.data);
+      setSystem(systemResult.data);
+      setError('');
+    } catch {
+      setError('Backend settings are unavailable.');
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
 
   function saveToken(event) {
     event.preventDefault();
@@ -16,53 +32,25 @@ export default function SystemSettings() {
     window.location.reload();
   }
 
-  return (
-    <div className="space-y-5">
-      <PageHeader eyebrow="System configuration" title="Settings" icon={Settings2}
-        description="Manage this browser’s API access and review read-only backend configuration and data quality." />
-      <Card title="API Security">
-        <form onSubmit={saveToken} className="flex flex-col gap-3 sm:flex-row sm:items-end">
-          <label className="block flex-1">
-            <span className="flex items-center gap-2 text-sm text-zinc-400"><KeyRound size={15} />API token</span>
-            <input type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Required when backend API_KEY is configured" className="mt-2 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-300" />
-          </label>
-          <button type="submit" className="rounded bg-emerald-500 px-4 py-2 font-medium text-zinc-950 hover:bg-emerald-400">Save for this browser</button>
-        </form>
-        <p className="mt-3 text-sm text-zinc-500">Saved in this browser until you clear its site data or the backend token changes.</p>
-      </Card>
-      {loading && <div className="text-zinc-400">Loading settings...</div>}
-      {error && <div className="rounded border border-rose-900 bg-rose-950/40 p-3 text-rose-300">{error}. If API security is enabled, save the matching token above.</div>}
-      {!loading && !error && <>
-      <section className="grid gap-4 md:grid-cols-3">
-        <Card><Metric label="Target Multiplier" value={`${stats?.statistics?.target_multiplier || 2}x`} /></Card>
-        <Card><Metric label="Data Source" value={system?.dataset?.source || 'Unavailable'} /></Card>
-        <Card><Metric label="Valid Records" value={stats?.data_quality?.valid_records ?? 0} /></Card>
-      </section>
-      <Card title="Configuration">
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="block">
-            <span className="text-sm text-zinc-400">Target multiplier</span>
-            <input readOnly value={system?.configuration?.target_multiplier ?? 'Unavailable'} className="mt-2 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-300" />
-          </label>
-          <label className="block">
-            <span className="text-sm text-zinc-400">Minimum sample size</span>
-            <input readOnly value={system?.configuration?.minimum_sample_size ?? 'Unavailable'} className="mt-2 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-300" />
-          </label>
-          <label className="block">
-            <span className="text-sm text-zinc-400">Signal threshold</span>
-            <input readOnly value={system?.configuration?.signal_threshold != null ? `${Math.round(system.configuration.signal_threshold * 100)}%` : 'Unavailable'} className="mt-2 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-300" />
-          </label>
-          <label className="block">
-            <span className="text-sm text-zinc-400">API security</span>
-            <input readOnly value={system?.configuration?.api_security_enabled ? 'Enabled' : 'Disabled'} className="mt-2 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-300" />
-          </label>
-        </div>
-        <p className="mt-4 text-sm text-zinc-500">Settings are currently read-only in the UI. Backend settings live in `backend/app/core/config.py`.</p>
-      </Card>
-      <Card title="Data Quality Report">
-        <pre className="overflow-x-auto rounded bg-zinc-950 p-3 text-xs text-zinc-400">{JSON.stringify(stats?.data_quality, null, 2)}</pre>
-      </Card>
-      </>}
-    </div>
-  );
+  return <div className="space-y-5">
+    <PageHeader eyebrow="System configuration" title="Settings" icon={Settings2}
+      description="Manage API access and inspect the current service and history status." />
+    <Card title="API Security">
+      <form onSubmit={saveToken} className="flex flex-col gap-3 sm:flex-row sm:items-end">
+        <label className="block flex-1">
+          <span className="flex items-center gap-2 text-sm text-zinc-400"><KeyRound size={15} />API token</span>
+          <input type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)}
+            placeholder="Optional when public access is enabled" className="mt-2 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-300" />
+        </label>
+        <button type="submit" className="rounded bg-emerald-500 px-4 py-2 font-medium text-zinc-950 hover:bg-emerald-400">Save for this browser</button>
+      </form>
+      <p className="mt-3 text-sm text-zinc-500">API tokens are optional when the backend is configured for public access.</p>
+    </Card>
+    {error && <div role="status" className="rounded border border-amber-500/30 bg-amber-500/10 p-3 text-amber-200">{error}</div>}
+    <section className="grid gap-4 sm:grid-cols-2">
+      <Card title="Backend status"><div className="text-lg font-semibold">{health?.status || 'UNKNOWN'}</div><div className="mt-2 text-sm text-zinc-500">Database: {health?.database?.status || 'UNKNOWN'}</div></Card>
+      <Card title="Round history"><div className="text-lg font-semibold">{system?.dataset?.valid_records ?? '—'} rounds</div><div className="mt-2 text-sm text-zinc-500">Source: {system?.dataset?.source || 'UNKNOWN'}</div><div className="mt-1 text-sm text-zinc-500">Latest round index: {system?.dataset?.last_round_index ?? 'UNKNOWN'}</div></Card>
+    </section>
+    <Card title="Execution safety"><div className="text-sm text-zinc-300">Automatic real-money execution is OFF until a rule selection is bound to a verified upcoming target, final risk approval is connected, and platform acceptance and settlement evidence are verified. Risk controls and the emergency stop remain available on the Betting page.</div></Card>
+  </div>;
 }

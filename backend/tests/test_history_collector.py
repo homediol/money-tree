@@ -30,28 +30,24 @@ def test_history_loading_validation_dedup_order_stats_and_creation(tmp_path):
     }
 
 
-def test_history_events_and_lifecycle_are_independent_from_betting(tmp_path):
-    events = []
+def test_backend_history_lifecycle_only_observes_separate_collector(tmp_path, monkeypatch):
+    manager = HistoryCollectorManager(tmp_path / "roundhistory.json")
+    calls = []
+    monkeypatch.setattr(manager, "_node_status", lambda: {})
 
-    async def emit(payload):
-        events.append(payload["type"])
+    async def forbidden_spawn(*_args, **_kwargs):
+        calls.append("spawn")
+        raise AssertionError("backend must not start a collector")
 
-    class Process:
-        returncode = None
-        def send_signal(self, _sig): pass
-
-    async def run():
-        manager = HistoryCollectorManager(tmp_path / "roundhistory.json", emit)
-        manager.process = Process()
-        await manager.pause()
-        assert manager.status()["status"] == "WAITING"
-        await manager.resume()
-        assert manager.status()["running"] is True
-        return manager
-
-    manager = asyncio.run(run())
-    assert events == ["history:waiting", "history:connecting"]
-    assert not hasattr(manager, "betting")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_spawn)
+    status = asyncio.run(manager.start())
+    assert manager.external is True
+    assert manager.process is None
+    assert status["running"] is None
+    assert status["collector_process_status"] == "UNKNOWN"
+    assert status["status"] == "UNKNOWN"
+    asyncio.run(manager.stop())
+    assert calls == []
 
 
 def test_history_api_surface(tmp_path):
@@ -67,3 +63,28 @@ def test_history_api_surface(tmp_path):
     assert latest(request)["latest"]["round_id"] == "r2"
     assert recent(request, limit=1)["rounds"][0]["round_id"] == "r2"
     assert stats(request)["total"] == 2
+
+
+def test_postgres_status_uses_compact_round_summary_without_loading_history(tmp_path):
+    class SummaryRepository:
+        database_url = "postgresql://test"
+
+        def round_history_status(self):
+            return {
+                "count": 42,
+                "latest": {"round_id": "r42", "round_index": 42, "timestamp": "t42", "multiplier": 2.5},
+                "previous": {"round_id": "r41", "round_index": 41, "timestamp": "t41", "multiplier": 1.4},
+            }
+
+    def forbidden_round_load():
+        raise AssertionError("status should not load every PostgreSQL round")
+
+    manager = HistoryCollectorManager(tmp_path / "roundhistory.json", round_loader=forbidden_round_load)
+    manager.repository = SummaryRepository()
+    manager.health_status = lambda: {"status": "COLLECTING"}
+
+    result = manager.status()
+
+    assert result["count"] == 42
+    assert result["latest"]["round_id"] == "r42"
+    assert result["previous"]["round_id"] == "r41"

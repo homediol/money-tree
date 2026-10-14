@@ -115,7 +115,7 @@ class ShadowManager:
             config = self._validate_configuration(configuration or {}, profile, starting_balance, goal_balance)
             self.session = {"session_id": "SH-" + uuid.uuid4().hex[:12], "profile": profile.upper(),
                             "starting_balance": float(starting_balance), "current_balance": float(starting_balance),
-                            "goal_balance": goal_balance, "bets": 0, "wins": 0, "losses": 0, "unknown": 0,
+                            "goal_balance": config["goal_balance"], "bets": 0, "wins": 0, "losses": 0, "unknown": 0,
                             "staked": 0.0, "payout": 0.0, "peak": float(starting_balance), "drawdown": 0.0,
                             "losing_streak": 0, "longest_losing_streak": 0, "risk_blocks": 0,
                             "started_at": _now(), "config": config,
@@ -141,8 +141,34 @@ class ShadowManager:
         risk_profile = get_risk_profile(profile)
         if not isinstance(starting_balance, (int, float)) or not math.isfinite(float(starting_balance)) or starting_balance <= 0:
             raise ValueError("starting balance must be a positive verified number")
-        if goal_balance is None or not isinstance(goal_balance, (int, float)) or not math.isfinite(float(goal_balance)) or goal_balance <= starting_balance:
-            raise ValueError("goal must be a finite amount above the verified starting balance")
+        if not isinstance(configuration, dict):
+            raise ValueError("session configuration must be an object")
+        limits = configuration.get("limits") if isinstance(configuration.get("limits"), dict) else {}
+        win_enabled = configuration.get("win_limit_enabled", goal_balance is not None)
+        loss_enabled = configuration.get("session_loss_limit_enabled",
+                                         limits.get("session_loss_enabled", True))
+        if not isinstance(win_enabled, bool) or not isinstance(loss_enabled, bool):
+            raise ValueError("win and loss limit choices must be true or false")
+        win_limit = configuration.get("win_limit")
+        if win_enabled:
+            if win_limit is None and goal_balance is not None:
+                win_limit = float(goal_balance) - float(starting_balance)
+            if (isinstance(win_limit, bool) or not isinstance(win_limit, (int, float))
+                    or not math.isfinite(float(win_limit)) or float(win_limit) <= 0):
+                raise ValueError("enabled win limit must be a finite positive profit amount")
+            goal_balance = float(starting_balance) + float(win_limit)
+        else:
+            win_limit = None
+            goal_balance = None
+        loss_limit = configuration.get("session_loss_limit",
+                                       limits.get("session_loss", profile_data.max_loss_bif))
+        if loss_enabled:
+            if (isinstance(loss_limit, bool) or not isinstance(loss_limit, (int, float))
+                    or not math.isfinite(float(loss_limit)) or float(loss_limit) <= 0):
+                raise ValueError("enabled loss limit must be a finite positive amount")
+            loss_limit = float(loss_limit)
+        else:
+            loss_limit = None
         mode = str(configuration.get("mode", "AUTOMATIC")).upper()
         if mode not in {"MANUAL", "AUTOMATIC"}:
             raise ValueError("mode must be MANUAL or AUTOMATIC")
@@ -194,9 +220,11 @@ class ShadowManager:
                 raise ValueError("combined manual stakes exceed the Risk profile balance percentage")
         return {"mode": mode, "starting_balance": float(starting_balance),
                 "goal_balance": float(goal_balance) if goal_balance is not None else None,
+                "win_limit_enabled": win_enabled, "win_limit": win_limit,
                 "profile": profile.upper(), "panels": normalized,
                 "maximum_combined_exposure": combined_limit,
-            "limits": {"session_loss": profile_data.max_loss_bif,
+            "limits": {"session_loss_enabled": loss_enabled,
+                           "session_loss": loss_limit,
                            "minimum_stake": profile_data.min_amount_bif,
                            "maximum_stake": profile_data.max_amount_bif}}
 
@@ -241,13 +269,11 @@ class ShadowManager:
             if pending:
                 await self._reconcile(pending, observed)
 
-    async def submit_decision(self, decision: dict, prediction: dict | None = None,
-                              *, emergency_stop: bool = False):
+    async def submit_decision(self, decision: dict, *, emergency_stop: bool = False):
         async with self._lock:
-            return await self._submit_decision(decision, prediction, emergency_stop=emergency_stop)
+            return await self._submit_decision(decision, emergency_stop=emergency_stop)
 
-    async def _submit_decision(self, decision: dict, prediction: dict | None = None,
-                               *, emergency_stop: bool = False):
+    async def _submit_decision(self, decision: dict, *, emergency_stop: bool = False):
         """Send a shared production decision to the isolated shadow ledger."""
         if self.mode != "SHADOW" or not self.session:
             return {"accepted": False, "reason": "shadow_mode_not_active"}
@@ -328,7 +354,6 @@ class ShadowManager:
             trade = {
                 "execution_id": "P-" + uuid.uuid4().hex,
                 "session_id": self.session["session_id"], "decision_id": decision_id,
-                "prediction_id": (prediction or {}).get("prediction_id"),
                 "target_round_id": target_round_id, "panel": panel["panel"],
                 "profile": self.session["profile"], "bet_amount": stakes[panel["panel"]],
                 "cashout_target": intent.cashout, "balance_before": self.session["current_balance"],
@@ -357,25 +382,6 @@ class ShadowManager:
         for index, panel in enumerate(panels):
             result[panel["panel"]] = base + (1 if index < remainder else 0)
         return result
-
-    async def process_round(self, app, observed: dict):
-        """Compatibility wrapper; production routing uses the shared decision pipeline."""
-        await self.reconcile_round(observed)
-        if self.mode != "SHADOW" or not self.session:
-            return
-        prediction = app.state.wp.model_registry.predict_latest(app.state.wp.dataset_service)
-        evidence = app.state.wp.build_evidence(prediction) if prediction else None
-        if not prediction or not evidence:
-            return
-        decision = await app.state.decision_engine.evaluate(
-            prediction, evidence,
-            model_status=app.state.wp.model_registry.status(app.state.wp.dataset_service),
-            betting_status=self.betting_status(), risk_manager=app.state.risk,
-        )
-        await self.emit("prediction", prediction=prediction, session_id=self.session["session_id"])
-        await self.emit("decision", decision=decision, session_id=self.session["session_id"])
-        await self.submit_decision(decision, prediction,
-                                   emergency_stop=bool(getattr(app.state.risk, "emergency_latched", False)))
 
     async def _reconcile(self, trade, observed):
         trades = trade if isinstance(trade, list) else [trade]
@@ -414,9 +420,13 @@ class ShadowManager:
         await self.emit("round_result", round_id=str(observed.get("round_id")), pnl=round(combined_pnl, 2),
                         balance=self.session["current_balance"], panels=trades)
         await self.emit("balance", balance=self.session["current_balance"])
-        if self.session["current_balance"] <= self.session["starting_balance"] - self.session["config"]["limits"]["session_loss"]:
-            await self.stop("session_loss_limit")
-        if self.session.get("goal_balance") is not None and self.session["current_balance"] >= self.session["goal_balance"]:
-            self.repository.append_shadow_ledger(self.session["session_id"], "GOAL_REACHED", 0, self.session["current_balance"])
-            await self.stop("GOAL_REACHED"); await self.emit("alert", alert="GOAL_REACHED")
+        loss_config = self.session["config"]["limits"]
+        if (loss_config.get("session_loss_enabled", True)
+                and loss_config.get("session_loss") is not None
+                and self.session["current_balance"] <= self.session["starting_balance"] - loss_config["session_loss"]):
+            await self.stop("LOSS_LIMIT_REACHED")
+            await self.emit("alert", alert="LOSS_LIMIT_REACHED")
+        elif self.session.get("goal_balance") is not None and self.session["current_balance"] >= self.session["goal_balance"]:
+            self.repository.append_shadow_ledger(self.session["session_id"], "WIN_LIMIT_REACHED", 0, self.session["current_balance"])
+            await self.stop("WIN_LIMIT_REACHED"); await self.emit("alert", alert="WIN_LIMIT_REACHED")
         self.repository.save_shadow_session(self.session); await self.emit("metrics", metrics=self.status())

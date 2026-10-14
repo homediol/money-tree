@@ -337,7 +337,7 @@ async function main() {
   reportStep({
     action: 'Cleaning round history',
     status: 'running',
-    details: 'Normalizing values, removing duplicates, ensuring ML-ready format',
+    details: 'Normalizing values, removing duplicates, ensuring chronological format',
   });
   writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'starting', updated_at: nowISO(), step_details: 'Cleaning history...' });
 
@@ -440,20 +440,24 @@ async function main() {
 
   try {
     writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'checking_session', updated_at: nowISO(), step_details: 'Checking session...' });
-    const onExistingAviatorTab = isAviatorUrl(page);
-    const { loggedIn } = onExistingAviatorTab
-      ? { loggedIn: true }
-      : await checkSession(page);
+    const session = await checkSession(page);
+    if (session.reasonCode === 'GAME_FRAME_SESSION_UNVERIFIED' ||
+        session.reasonCode === 'GAME_FRAME_NOT_FOUND') {
+      throw Object.assign(new Error(`Aviator login state is unverified (${session.reasonCode}); the game iframe must be available and authenticated before collection`), {
+        code: 'GAME_FRAME_AUTH_UNVERIFIED',
+      });
+    }
+    const { loggedIn } = session;
 
     if (loggedIn) {
-      printSuccess(onExistingAviatorTab
-        ? 'Existing Aviator tab detected — preserving current session'
+      printSuccess(session.status === 'AUTHENTICATED' && session.state?.gameFrameStatus === 'AUTHENTICATED'
+        ? 'Authenticated Aviator game-frame session detected'
         : 'Dashboard elements detected — user is authenticated');
       reportStep({
         action: 'Checking login state',
         status: 'success',
-        details: onExistingAviatorTab
-          ? 'Reusing existing Aviator tab without navigating away'
+        details: session.state?.gameFrameStatus === 'AUTHENTICATED'
+          ? 'Aviator iframe session is authenticated'
           : 'User is already authenticated, skipping login page entirely',
       });
       writeStatus({ ...readJSON(STATUS_PATH, {}), status: 'login_success', updated_at: nowISO(), step_details: 'Already authenticated' });

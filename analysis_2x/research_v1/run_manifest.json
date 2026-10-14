@@ -1,0 +1,20 @@
+{
+  "clean_sha256": "fc1911b0b25629f73f2a26c3399f8ea3a44eebb9661a48bd303322e4503a6abf",
+  "final_test_record_sha256": "a56af1fea0c8f15a7c6bdc86b8c0f92b25e208f6a7ffb33555efdb8ece0b1b1d",
+  "matplotlib": "3.10.1+dfsg1",
+  "numpy": "2.2.4",
+  "outputs": {
+    "analysis_report.md": "8c2326ccf91fc2a5f523ddc1f5551e51fd9ed8527239525e784ab972cbb50fd6",
+    "backtest_results.json": "b62ae24215c3e5120a4c7417dca58b0657e64c698d347a996e28c94445670c8c",
+    "candidate_rules.csv": "c4a8dec736e5a64c9d5aa7039f914a3554fa11c18c0d6fe8bae57610c94471c1",
+    "data_quality_report.md": "1cd47ccf4e9e79b0bfca6fb5acfe6e945941b2dbac820cd2203b8102bd13131a",
+    "prospective_validation_plan.md": "bb11cfb66945b208f4f45af639abd225305d85df4797c62f5843208ef10840d0",
+    "selected_rounds.csv": "0f8cce01d27e30c9acab81b1651f7b98dc5443c2fbdca1adaea2bf4d9300b5d8"
+  },
+  "pandas": "2.2.3",
+  "plan_id": "aviator-2x-historical-20261007-v1",
+  "plan_sha256": "ee857aa2887f30e22f29eee1db16f63b763fa5e6e7963f9d5978ca141d50c71e",
+  "python": "3.13.5 (main, Aug 10 2026, 12:06:59) [GCC 14.2.0]",
+  "shortlist_sha256": "bd0e4ba685d0b7c8456e3da7e1c4140b30db7f7f68be9085ae8ab200df73fe92",
+  "snapshot_sha256": "4a905837bc07dc2333cbfb9f237a192c10dcfec30dfef84d93cdfa2c36ff9387"
+}

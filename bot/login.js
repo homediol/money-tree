@@ -24,6 +24,8 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import { safeNavigate } from './browser.js';
 import { createLogger } from './logger.js';
+import { inspectGameFrameSession } from './collector/GameFrameAuth.js';
+import { clickInCurrentTab } from './collector/SameTabNavigation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -37,6 +39,15 @@ const log = createLogger('login');
 const BASE_URL    = 'https://winner.rw';
 const HOME_URL    = `${BASE_URL}`;
 const LOGIN_URL   = `${BASE_URL}/en/authentication/login`;
+
+function isWinnerAviatorRoute(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    return url.hostname === 'winner.rw' && /\/(?:aviator|crash-games|crash)(?:\/|$)/i.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
 
 // Navigation link selectors — we click these from the homepage to bypass
 // Cloudflare's "Access Denied" on direct page navigation.
@@ -140,7 +151,7 @@ async function goViaHomepage(page, linkSelector, label) {
 
   const href = await link.getAttribute('href');
   log.info(`Clicking "${label}" link: ${href}`);
-  await link.click();
+  await clickInCurrentTab(page, link);
   await page.waitForTimeout(3500);
   return true;
 }
@@ -167,12 +178,14 @@ async function goViaHomepage(page, linkSelector, label) {
  */
 export async function detectPageState(page) {
   const currentUrl = page.url().toLowerCase();
+  const gameFrameSession = await inspectGameFrameSession(page);
 
   const state = {
     isLoginPage:   currentUrl.includes('/login') || currentUrl.includes('/auth') || currentUrl.includes('/signin'),
     hasDashboard:  false,
     hasLoginForm:  false,
     hasLoginLink:  false,
+    gameFrameStatus: gameFrameSession.status,
     confidence:    'low',
   };
 
@@ -263,12 +276,36 @@ export async function detectPageState(page) {
 export async function checkSession(page) {
   log.info('Checking existing session...');
 
+  // Check the embedded game before navigating to the Winner homepage. The
+  // parent shell can remain signed in while the Spribe iframe has expired.
+  const gameFrameSession = await inspectGameFrameSession(page);
+  if (gameFrameSession.frameFound) {
+    const state = await detectPageState(page);
+    if (gameFrameSession.status === 'AUTHENTICATED') {
+      log.info('Session is valid — authenticated Spribe game-frame evidence detected');
+      return { loggedIn: true, status: 'AUTHENTICATED', state };
+    }
+    if (gameFrameSession.status === 'EXPIRED') {
+      log.info('Spribe game frame requires sign-in');
+      return { loggedIn: false, status: 'EXPIRED', state };
+    }
+    log.warn('Spribe game frame is attached, but its authentication state is unverified');
+    return { loggedIn: false, status: 'UNKNOWN', reasonCode: gameFrameSession.reasonCode, state };
+  }
+
+  // An Aviator route without its iframe is not authentication evidence. Keep
+  // the existing tab in place and wait for the provider/auth state to resolve.
+  if (isWinnerAviatorRoute(page.url())) {
+    const state = await detectPageState(page);
+    return { loggedIn: false, status: 'UNKNOWN', reasonCode: 'GAME_FRAME_NOT_FOUND', state };
+  }
+
   // ── Strategy: go to homepage first ──────────────────────────────
   log.info(`Navigating to homepage (${HOME_URL}) to check session...`);
   const homeOk = await safeNavigate(page, HOME_URL, 30000);
   if (!homeOk) {
     log.warn('Could not load homepage — will attempt login anyway');
-    return { loggedIn: false, state: { confidence: 'low' } };
+    return { loggedIn: false, status: 'UNKNOWN', state: { confidence: 'low' } };
   }
   // Wait for Angular SPA to bootstrap (wait for navigation elements to appear)
   try {
@@ -283,13 +320,13 @@ export async function checkSession(page) {
   // Already logged in: we see dashboard signals and no login form
   if (state.hasDashboard && !state.hasLoginForm && !state.hasLoginLink) {
     log.info('Session is valid — dashboard elements detected on homepage');
-    return { loggedIn: true, state };
+    return { loggedIn: true, status: 'AUTHENTICATED', state };
   }
 
   // Login form visible on homepage (unlikely but handle it)
   if (state.hasLoginForm || state.hasLoginLink) {
     log.info('Login entry detected on homepage — session is not active');
-    return { loggedIn: false, state };
+    return { loggedIn: false, status: 'EXPIRED', state };
   }
 
   // Ambiguous — click the LOGIN link to reach the login page
@@ -309,13 +346,13 @@ export async function checkSession(page) {
     // If we navigated to /login but the URL changed away → logged in
     if (!state.isLoginPage && state.hasDashboard) {
       log.info('Login page redirected — session is valid');
-      return { loggedIn: true, state };
+      return { loggedIn: true, status: 'AUTHENTICATED', state };
     }
 
     // Login form on the login page → not logged in
     if (state.isLoginPage || state.hasLoginForm) {
       log.info('Confirmed on login page — session is not active');
-      return { loggedIn: false, state };
+      return { loggedIn: false, status: 'EXPIRED', state };
     }
   }
 
@@ -323,12 +360,12 @@ export async function checkSession(page) {
   const url = page.url().toLowerCase();
   if (url.includes('/login')) {
     log.info('URL contains /login — assuming not logged in');
-    return { loggedIn: false, state };
+    return { loggedIn: false, status: 'EXPIRED', state };
   }
 
   // Not on login page, no dashboard, no login form — optimistic guess
   log.warn('Could not definitively determine login state — assuming not logged in');
-  return { loggedIn: false, state };
+  return { loggedIn: false, status: 'UNKNOWN', state };
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -465,7 +502,7 @@ export async function login(page, phone, password) {
 
   // ── Step 6: submit ──────────────────────────────────────────────
   try {
-    await submitEl.click();
+    await clickInCurrentTab(page, submitEl);
     log.info('Login button clicked');
   } catch (err) {
     log.error(`Failed to click login button: ${err.message}`);
@@ -558,7 +595,3 @@ export async function goToAviator(page) {
   log.error(`Unexpected URL after navigation: ${currentUrl}`);
   return false;
 }
-
-
-
-

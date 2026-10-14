@@ -34,14 +34,15 @@ export default function ApiAccessGate({ children }) {
   const [retryAttempt, setRetryAttempt] = useState(0);
   const online = connection.status === 'online' || connection.status === 'degraded';
   const authRequired = connection.health?.auth_required;
-  const publicReadOnly = connection.health?.public_read_only === true;
+  const publicAccess = connection.health?.public_access === true
+    || connection.health?.public_read_only === true;
   const screenState = accessScreenState(access, connection.state);
 
   useEffect(() => {
     let cancelled = false;
     let retryTimer = null;
     if (!online || access === 'granted') return () => { cancelled = true; };
-    if (authRequired === false || publicReadOnly) {
+    if (authRequired === false || publicAccess) {
       setAccess('granted');
       return () => { cancelled = true; };
     }
@@ -64,19 +65,19 @@ export default function ApiAccessGate({ children }) {
       }
     });
     return () => { cancelled = true; if (retryTimer) window.clearTimeout(retryTimer); };
-  }, [online, authRequired, publicReadOnly, access, retryAttempt]);
+  }, [online, authRequired, publicAccess, access, retryAttempt]);
 
   useEffect(() => {
     const unauthorized = () => {
       logout();
-      if (publicReadOnly) return;
+      if (publicAccess) return;
       setToken('');
       setError('The API token is no longer valid. Enter the current token.');
       setAccess('required');
     };
     window.addEventListener(API_UNAUTHORIZED_EVENT, unauthorized);
     return () => window.removeEventListener(API_UNAUTHORIZED_EVENT, unauthorized);
-  }, [publicReadOnly]);
+  }, [publicAccess]);
 
   async function submit(event) {
     event.preventDefault();

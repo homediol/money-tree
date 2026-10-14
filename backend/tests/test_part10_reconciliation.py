@@ -27,11 +27,28 @@ def execution(**changes):
            "created_at": now(), "updated_at": now(), "placed_at": now(),
            "resolved_at": None, "result_multiplier": None, "balance_before": 1000,
            "balance_after": None, "profit_loss": None, "error": None,
+           "balance_currency": "USD", "platform_session_identity": "platform-s1",
            "session_id": "S-1"}
     row.update(changes); return row
 
 
 def store(repo, row): assert repo.create_execution(row)
+
+
+def platform_receipt(outcome="WIN", observed_balance=1100, *, settlement=True):
+    evidence = {
+        "platform_status": "ACCEPTED", "platform_evidence": True,
+        "platform_receipt_id": "accept-1", "target_round_id": "101",
+        "decision_id": "d1", "accepted_stake": 100, "accepted_currency": "USD",
+        "session_identity": "platform-s1", "platform_observed_at": now(),
+        "balance_before_verified": True, "balance_provider_identity": "provider-1",
+        "balance_session_identity": "platform-s1", "balance_observed_at": now(),
+        "balance_currency": "USD", "platform_observed_balance": observed_balance,
+        "bet_result": outcome, "payout": 200 if outcome == "WIN" else 0,
+    }
+    if settlement:
+        evidence.update({"settlement_receipt_id": "settle-1", "settled_at": now()})
+    return evidence
 
 
 @pytest.mark.parametrize(("multiplier","outcome","pnl","observed"), [
@@ -41,11 +58,8 @@ def store(repo, row): assert repo.create_execution(row)
 def test_valid_win_loss_requires_matching_platform_balance(
         setup, multiplier, outcome, pnl, observed):
     repo, service = setup; row = execution(); store(repo, row)
-    result = run(service.reconcile(row, round_id="101", multiplier=multiplier, evidence={
-        "placement_confirmed": True, "cashout_requested": True,
-        "cashout_executed": outcome == "WIN", "cashout_confirmed": outcome == "WIN",
-        "platform_observed_balance": observed,
-    }))
+    result = run(service.reconcile(row, round_id="101", multiplier=multiplier,
+                                   evidence=platform_receipt(outcome, observed)))
     assert result["outcome"] == outcome
     assert result["balance"]["reconciled_balance"] == observed
     saved = repo.execution_by_id("x1")
@@ -55,12 +69,9 @@ def test_valid_win_loss_requires_matching_platform_balance(
 
 def test_platform_balance_mismatch_stays_unknown_and_pauses(setup):
     repo, service = setup; row = execution(); store(repo, row)
-    result = run(service.reconcile(row, round_id="101", multiplier=2.5, evidence={
-        "placement_confirmed": True, "cashout_requested": True,
-        "cashout_executed": True, "cashout_confirmed": True,
-        "platform_observed_balance": 1234,
-    }))
-    assert result["status"] == "UNKNOWN"
+    result = run(service.reconcile(row, round_id="101", multiplier=2.5,
+                                   evidence=platform_receipt("WIN", 1234)))
+    assert result["status"] == "RECONCILIATION_PENDING"
     assert result["outcome"] == "UNKNOWN"
     assert result["balance"]["balance_status"] == "MISMATCH"
     assert result["balance"]["internal_expected_balance"] == 1100
@@ -71,48 +82,32 @@ def test_platform_balance_mismatch_stays_unknown_and_pauses(setup):
 
 def test_unknown_never_becomes_loss_and_cashout_states_are_distinct(setup):
     repo, service = setup; row = execution(); store(repo, row)
-    result = run(service.reconcile(row, round_id="101", multiplier=3.0, evidence={
-        "placement_confirmed": True, "cashout_requested": True,
-        "cashout_executed": False, "cashout_confirmed": False,
-        "platform_observed_balance": 1000,
-    }))
+    result = run(service.reconcile(row, round_id="101", multiplier=3.0,
+        evidence={**platform_receipt("WIN", 1100, settlement=False),
+                  "cashout_requested": True, "cashout_executed": False,
+                  "cashout_confirmed": False}))
     assert result["outcome"] == "UNKNOWN"
-    assert result["verification"] == {"placement_confirmed": True,
-        "cashout_requested": True, "cashout_executed": False, "cashout_confirmed": False}
+    assert result["status"] == "RECONCILIATION_PENDING"
+    assert result["verification"]["platform_bet_state"] == "ACCEPTED"
+    assert result["verification"]["settlement_status"] == "UNKNOWN"
+    assert result["verification"]["cashout_requested"] is True
+    assert result["verification"]["cashout_executed"] is False
     assert repo.execution_by_id("x1")["profit_loss"] is None
 
 
 def test_unverified_balance_is_unknown_not_estimated(setup):
     repo, service = setup; row = execution(); store(repo, row)
-    result = run(service.reconcile(row, round_id="101", multiplier=1.1, evidence={
-        "placement_confirmed": True}))
+    result = run(service.reconcile(row, round_id="101", multiplier=2.5,
+                                   evidence=platform_receipt("WIN", None)))
     assert result["outcome"] == "UNKNOWN"
-    assert result["status"] == "UNKNOWN"
-    assert result["balance"]["internal_expected_balance"] == 900
+    assert result["status"] == "RECONCILIATION_PENDING"
+    assert result["balance"]["internal_expected_balance"] is None
     assert result["balance"]["reconciled_balance"] is None
-
-
-def test_unknown_reconciliation_does_not_evaluate_prediction(setup):
-    repo, service = setup
-    prediction = {"prediction_id": "p-unknown", "source_round_id": "100",
-                  "probability_2x": .8, "created_at": now(), "features": {"x": 7}}
-    repo.save_ml_prediction(prediction)
-    repo.save_decision({"decision_id": "d-unknown", "idempotency_key": "k-unknown",
-                        "created_at": now(), "updated_at": now(),
-                        "status": "READY_FOR_EXECUTION", "prediction_id": "p-unknown"})
-    store(repo, execution(decision_id="d-unknown", execution_id="x-unknown"))
-    result = run(service.reconcile(execution(decision_id="d-unknown", execution_id="x-unknown"),
-                                   round_id="101", multiplier=3.0,
-                                   evidence={"placement_confirmed": True,
-                                             "cashout_confirmed": False,
-                                             "platform_observed_balance": 1000}))
-    assert result["status"] == "UNKNOWN"
-    assert repo.list_prediction_evaluations() == []
 
 
 def test_immutable_ledger_and_duplicate_reconciliation(setup):
     repo, service = setup; row = execution(); store(repo, row)
-    evidence = {"placement_confirmed": True, "platform_observed_balance": 900}
+    evidence = platform_receipt("LOSS", 900)
     first = run(service.reconcile(row, round_id="101", multiplier=1.1, evidence=evidence))
     before = copy.deepcopy(repo.list_ledger())
     second = run(service.reconcile(row, round_id="101", multiplier=1.1, evidence=evidence))
@@ -128,6 +123,35 @@ def test_round_mismatch_and_invalid_transition(setup):
         service.transition(row, "CLOSED")
 
 
+@pytest.mark.parametrize("multiplier", [1.1, 3.0])
+def test_multiplier_without_receipts_never_creates_win_or_loss(setup, multiplier):
+    repo, service = setup; row = execution(); store(repo, row)
+    result = run(service.reconcile(row, round_id="101", multiplier=multiplier,
+                                   evidence={"placement_confirmed": True,
+                                             "cashout_confirmed": multiplier >= 2.0,
+                                             "platform_observed_balance": 900}))
+    assert result["status"] == "RECONCILIATION_PENDING"
+    assert result["outcome"] == "UNKNOWN"
+    assert result["risk_action"] == "PAUSE"
+    assert repo.list_reconciliations() == []
+    assert repo.execution_by_id("x1")["profit_loss"] is None
+
+
+def test_pending_execution_can_reconcile_when_later_receipt_arrives(setup):
+    repo, service = setup; row = execution(); store(repo, row)
+    pending = run(service.reconcile(row, round_id="101", multiplier=2.5, evidence={}))
+    assert pending["status"] == "RECONCILIATION_PENDING"
+    assert repo.list_reconciliations() == []
+
+    saved = repo.execution_by_id("x1")
+    resolved = run(service.reconcile(saved, round_id="101", multiplier=2.5,
+                                     evidence=platform_receipt("WIN", 1100)))
+    assert resolved["status"] == "RECONCILED"
+    assert resolved["outcome"] == "WIN"
+    assert repo.execution_by_id("x1")["profit_loss"] == 100
+    assert len(repo.list_reconciliations()) == 1
+
+
 def test_restart_recovery_marks_unknown_and_never_duplicates(setup):
     repo, _ = setup; row = execution(); store(repo, row)
     assert repo.reconcile_incomplete_executions() == 1
@@ -138,33 +162,6 @@ def test_restart_recovery_marks_unknown_and_never_duplicates(setup):
     assert not repo.create_execution(execution(execution_id="x2"))
 
 
-def test_prediction_snapshot_immutable_and_no_future_leakage(setup):
-    repo, service = setup
-    prediction = {"prediction_id": "p1", "source_round_id": "100",
-                  "probability_2x": .8, "created_at": now(), "features": {"x": 7}}
-    repo.save_ml_prediction(prediction)
-    repo.save_decision({"decision_id": "d1", "idempotency_key": "k1",
-                        "created_at": now(), "updated_at": now(), "status": "READY_FOR_EXECUTION",
-                        "prediction_id": "p1"})
-    row = execution(); store(repo, row)
-    run(service.reconcile(row, round_id="101", multiplier=2.5, evidence={
-        "placement_confirmed": True, "cashout_confirmed": True,
-        "platform_observed_balance": 1100}))
-    evaluation = repo.list_prediction_evaluations()[0]
-    assert evaluation["prediction_snapshot"] == prediction
-    assert repo.latest_ml_prediction() == prediction
-
-    row2 = execution(execution_id="x2", decision_id="d2", target_round_id="99")
-    store(repo, row2)
-    repo.save_decision({"decision_id": "d2", "idempotency_key": "k2",
-                        "created_at": now(), "updated_at": now(), "status": "READY_FOR_EXECUTION",
-                        "prediction_id": "p1"})
-    run(service.reconcile(row2, round_id="99", multiplier=2.5, evidence={
-        "placement_confirmed": True, "cashout_confirmed": True,
-        "platform_observed_balance": 1100}))
-    assert len(repo.list_prediction_evaluations()) == 1
-
-
 def test_exact_round_matching_only(setup):
     repo, service = setup; store(repo, execution())
     assert run(service.reconcile_round({"round_id": "102", "multiplier": 1.1})) == []
@@ -173,14 +170,7 @@ def test_exact_round_matching_only(setup):
 
 def test_exact_round_reconciliation_uses_durable_browser_evidence(setup):
     repo, service = setup
-    row = execution(platform_evidence={
-        "placement_confirmed": True,
-        "cashout_requested": True,
-        "cashout_executed": True,
-        "cashout_confirmed": True,
-        "platform_observed_balance": 1100,
-        "observation_complete": True,
-    })
+    row = execution(platform_evidence=platform_receipt("WIN", 1100))
     store(repo, row)
 
     result = run(service.reconcile_round({"round_id": "101", "multiplier": 2.5}))[0]

@@ -39,8 +39,8 @@ class ComponentHealth:
 
 class SystemHealth:
     COMPONENTS = (
-        "browser", "history", "database", "features", "patterns", "ml",
-        "evidence", "decision", "risk", "executor", "reconciliation", "api",
+        "browser", "history", "database", "rules_engine", "risk",
+        "executor", "reconciliation", "api",
     )
 
     def __init__(self, *, broadcaster: Callable[[dict], Awaitable[None]] | None = None,
@@ -61,6 +61,15 @@ class SystemHealth:
     def record_browser_observation(self, observation: dict[str, Any]) -> None:
         """Retain current read-only UI evidence, independently of a bet session."""
         self._browser_observation = dict(observation)
+
+    @staticmethod
+    def _reason_text(reason: Any) -> str:
+        if isinstance(reason, str):
+            return reason
+        try:
+            return json.dumps(reason, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            return str(reason)
 
     def browser_observation(self) -> dict[str, Any]:
         observation = dict(self._browser_observation or {})
@@ -108,7 +117,7 @@ class SystemHealth:
             c.state = "WAITING" if waiting else "ERROR"
             if not waiting:
                 c.error_count += 1
-            c.last_error = error or "health check failed"
+            c.last_error = self._reason_text(error or "health check failed")
 
     def _history_ok(self, now: float) -> tuple[bool, str | None, dict]:
         if self.history_collector is None:
@@ -124,13 +133,19 @@ class SystemHealth:
                 age = max(0.0, now - datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp())
             running = bool(status.get("running"))
             collector_state = str(status.get("status", "UNKNOWN")).upper()
+            process_state = str(status.get("collector_process_status", "UNKNOWN")).upper()
             healthy = collector_state in {"HEALTHY", "COLLECTING"}
             fresh = age is not None and age <= 120
             ok = running and healthy and fresh
             if ok:
                 reason = None
-            elif not running or collector_state == "STOPPED":
+            elif process_state == "STOPPED" or collector_state == "STOPPED":
                 reason = status.get("last_error") or "history collector process is stopped"
+            elif process_state == "UNKNOWN" or collector_state == "UNKNOWN":
+                reason = (status.get("process_reason") or status.get("reason") or status.get("last_error")
+                          or "history collector process status could not be verified")
+            elif not running:
+                reason = status.get("last_error") or status.get("reason") or "history collector is not running"
             elif collector_state in {"CONNECTING", "WAITING", "WAITING_FOR_NETWORK", "RECOVERING", "STARTING"}:
                 reason = status.get("last_error") or f"history collector is {collector_state.lower().replace('_', ' ')}"
             elif collector_state == "STALE" or (running and healthy and not fresh):
@@ -138,11 +153,13 @@ class SystemHealth:
                           else f"latest saved round is {int(round(age))} seconds old; waiting for a fresh round")
             else:
                 reason = status.get("last_error") or f"history collector status is {collector_state.lower().replace('_', ' ')}"
-            waiting_state = collector_state in {
+            waiting_state = process_state == "UNKNOWN" or collector_state in {
                 "CONNECTING", "WAITING", "WAITING_FOR_NETWORK", "RECOVERING", "STARTING", "STALE",
             } or (running and healthy and not fresh)
             metadata = {"status": status.get("status"), "age_s": age,
-                        "count": status.get("count", 0)}
+                        "count": status.get("count", 0),
+                        "process_status": process_state,
+                        "heartbeat_state": status.get("heartbeat_state", "UNKNOWN")}
             if not ok and waiting_state:
                 metadata["waiting"] = True
             return ok, reason, metadata
@@ -228,14 +245,9 @@ class SystemHealth:
                 self.heartbeat("executor", ok=False, error=str(exc))
                 reasons.append("executor status unavailable")
 
-        for name in ("features", "patterns", "ml", "evidence", "decision", "api"):
-            c = self._components[name]
-            if c.last_success is None and c.state == "UNKNOWN":
-                c.state = "UNKNOWN"
-
         if reasons:
             self.state = "PAUSED" if self.betting_manager and self.betting_manager.session else "DEGRADED"
-            self.reason = "; ".join(dict.fromkeys(reasons))
+            self.reason = "; ".join(dict.fromkeys(self._reason_text(reason) for reason in reasons))
         elif all(c.last_success is not None for c in self._components.values() if c.name in {"database", "history"}):
             self.state, self.reason = "HEALTHY", None
         else:

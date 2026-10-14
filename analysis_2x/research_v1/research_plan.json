@@ -1,0 +1,238 @@
+{
+  "plan_id": "aviator-2x-historical-20261007-v1",
+  "schema_version": 1,
+  "plan_revision": 2,
+  "pre_search_revision_note": "Before candidate scoring, timestamp provenance was checked against source code and rows; daily/hourly summaries are limited to the explicitly populated legacy platform_timestamp field and labeled unverified.",
+  "frozen_at_utc": "2026-10-07T20:35:06Z",
+  "status": "FROZEN_BEFORE_NEW_CANDIDATE_SEARCH",
+  "target": {
+    "event": "multiplier >= 2.00",
+    "cashout_multiplier": 2.0,
+    "ideal_net_profit_per_unit_staked": "1 on hit; -1 on miss; zero expected value at a 50% hit rate before costs"
+  },
+  "source": {
+    "authoritative_table": "public.aviator_rounds",
+    "snapshot_path": "../artifacts/raw_rounds.csv",
+    "snapshot_time_utc": "2026-10-06T21:50:44.081995+00:00",
+    "snapshot_rows": 22373,
+    "raw_sha256": "4a905837bc07dc2333cbfb9f237a192c10dcfec30dfef84d93cdfa2c36ff9387",
+    "existing_clean_path": "../artifacts/rounds_clean.csv",
+    "existing_clean_sha256": "fc1911b0b25629f73f2a26c3399f8ea3a44eebb9661a48bd303322e4503a6abf",
+    "existing_quality_sha256": "37fcffceec2069af267a23822e1a0702ed903ed13fb090615b42d66a84a66b00",
+    "current_postgresql_status": "UNAVAILABLE_AT_RUN_START; use this immutable extracted snapshot until PostgreSQL is reachable"
+  },
+  "analysis_population": {
+    "descriptive_values": "all rows marked kept by the existing audited clean set; report also raw-source counts and the verified-order subset",
+    "pattern_evaluation_rows": 4297,
+    "pattern_inclusion": [
+      "kept == true in rounds_clean.csv",
+      "continuity_verified == true",
+      "continuity_proof == HISTORY_SNAPSHOT_OVERLAP",
+      "round_identity_type == COLLECTOR_OBSERVATION_HASH",
+      "round_index_source == LOCAL_SEQUENCE"
+    ],
+    "identity_limit": "These records have overlap-verified relative order only. There are no platform_round_id or platform_round_index values in the snapshot. Do not claim platform identity or prospective confirmation from this archive.",
+    "sequence_order": "round_index is used only inside rows marked overlap-verified; local index alone is never accepted as continuity proof.",
+    "segment_breaks": [
+      "current row has gap_before == true",
+      "continuity_verified or HISTORY_SNAPSHOT_OVERLAP proof is absent",
+      "a raw round_index value is missing between retained rows and the skipped index was not an audited dropped overlap row"
+    ],
+    "overlap_cleaning": "Use the recorded D1/D2/D3 cleaning decisions from the existing audit. Preserve adjacent equal multipliers; never drop rows by multiplier equality alone. Do not infer timestamps for batch rows."
+  },
+  "timestamp_analysis": {
+    "field": "platform_timestamp",
+    "populated_rows": 13140,
+    "source": "legacy_import only",
+    "equals_compatibility_timestamp_rows": 13140,
+    "continuity_verified_rows": 0,
+    "identity_confidence": "UNKNOWN",
+    "utc_range": ["2026-07-28T13:37:37.587000+00:00", "2026-09-27T06:16:20.433000+00:00"],
+    "use": "Provide daily and UTC-hour descriptive summaries only for retained rows with this explicit field. Mark the summaries as unverified legacy timestamp diagnostics. Do not use timestamps for candidate features, order, continuity, or prospective claims."
+  },
+  "chronological_split": {
+    "order": "retained overlap-verified order, ascending round_index",
+    "method": "floor cut points at 60% and 80% of 4297 ordered rows; no random shuffle",
+    "discovery_rows": [0, 2578],
+    "validation_rows": [2578, 3437],
+    "retrospective_final_rows": [3437, 4297],
+    "expected_boundary_round_indices": {
+      "discovery_end": 21089,
+      "validation_end": 21949
+    },
+    "context_rule": "Features may use earlier rows from the same verified segment, including across split boundaries. No feature may read the target outcome or future rows. Never carry context across a segment break.",
+    "final_period_status": "CONTAMINATED_RETROSPECTIVE_ONLY",
+    "contamination_evidence": [
+      "backend/reports/statistical_engine_v1_historical_report.json inspected the historical archive through round_index 21103 and declares its 60/40 results exploratory, not confirmatory.",
+      "backend/trained_models/ml-20261006T170129Z-e8634a31-random_forest/metadata.json records model candidate evaluation using data through round_index 22604, overlapping the planned latest 20% period."
+    ],
+    "confirmatory_test": "Not available in this archive. Collect genuinely new rounds after this plan and shortlist are frozen; use those only for prospective confirmation."
+  },
+  "feature_families": {
+    "past_only": true,
+    "target_round_offset": 1,
+    "binary_event": "multiplier >= 2.00",
+    "below_streak_at_least": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "above_streak_at_least": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "exact_binary_sequences": {
+      "lengths": [2, 3, 4],
+      "all_patterns": true
+    },
+    "rolling_hit_counts_and_rates": {
+      "windows": [5, 10, 20, 50, 100],
+      "integer_count_cutoffs": "all counts from 0 through window length, using <= and >=; remove duplicate predicates"
+    },
+    "time_since_last_hit_at_least_rounds": [1, 2, 3, 5, 10, 20, 50, 100],
+    "rolling_median_multiplier": {
+      "windows": [10, 25, 50, 100],
+      "cutoffs": [1.2, 1.5, 2.0, 3.0, 5.0],
+      "directions": ["<=", ">="]
+    },
+    "rolling_quartiles": {
+      "quantiles": [0.25, 0.75],
+      "windows": [25, 50, 100],
+      "cutoffs": [1.2, 1.5, 2.0, 3.0, 5.0],
+      "directions": ["<=", ">="]
+    },
+    "rolling_log_multiplier_volatility": {
+      "windows": [10, 25, 50, 100],
+      "cutoffs": [0.1, 0.25, 0.5, 1.0],
+      "directions": ["<=", ">="]
+    },
+    "limited_combinations": {
+      "streak_lengths": [2, 3, 5],
+      "rate_windows": [20, 50],
+      "below_rate_cutoffs": [0.2, 0.4],
+      "above_rate_cutoffs": [0.6, 0.8],
+      "maximum_components": 2
+    },
+    "maximum_unique_candidates": 750
+  },
+  "support_and_scoring": {
+    "minimum_discovery_selected": 200,
+    "minimum_validation_selected": 100,
+    "minimum_retrospective_final_selected": 100,
+    "below_minimum_status": "INSUFFICIENT_DATA",
+    "confidence_intervals": "Wilson 95% for hit rates; moving-block bootstrap 95% for net return/lift",
+    "block_bootstrap": {
+      "replicates": 2000,
+      "block_length_rounds": 20,
+      "respect_segments": true,
+      "seed": 20261007
+    },
+    "break_even_probability": 0.5,
+    "baseline_comparison": [
+      "unconditional >=2.00x rate in the same evaluation period",
+      "break-even probability 0.50 and idealized net return 2p-1",
+      "random-entry policies with identical selection count"
+    ],
+    "random_entry_replicates": 1000,
+    "random_entry_comparison_scope": "shortlisted rules only",
+    "walk_forward": {
+      "folds": 4,
+      "expanding_training_fractions_of_discovery": [0.4, 0.55, 0.7, 0.85],
+      "following_evaluation_fraction_each": 0.15
+    },
+    "model_comparison": "No logistic regression or tree is fit in this rule-only search. Compare against no-bet, unconditional, and matched-coverage random-entry baselines."
+  },
+  "false_discovery_control": {
+    "family_wise_alpha": 0.05,
+    "discovery_correction": "Holm step-down over every unique predeclared candidate",
+    "dependence_test": {
+      "method": "circular shifts of outcomes within each verified segment",
+      "replicates": 999,
+      "preserves_segment_boundaries": true,
+      "assumption": "approximate stationarity within a verified segment under the no-association null"
+    },
+    "independent_null_simulation": {
+      "replicates": 2000,
+      "probability_source": "discovery split only",
+      "preserve_segment_lengths": true,
+      "simulate_streak_maxima_and_max_candidate_lift": true,
+      "seed": 20261007
+    },
+    "stopping_rule": "Run exactly the registered candidate family and replicate counts once. If inputs fail hash, row-count, continuity, or budget checks, stop without candidate scoring. No post-test retuning."
+  },
+  "shortlist_freeze": {
+    "size": 3,
+    "eligible_support": "discovery >= 200 and validation >= 100 selected rounds",
+    "ranking": [
+      "validation idealized net return per unit, descending",
+      "discovery idealized net return per unit, descending",
+      "candidate_id ascending"
+    ],
+    "selection_does_not_require_positive_return": true,
+    "purpose": "Produce a fixed exploratory shortlist even if every candidate is negative; status remains EDGE_UNVERIFIED or INSUFFICIENT_DATA.",
+    "freeze_artifact": "frozen_shortlist.json",
+    "freeze_before_final_evaluation": true
+  },
+  "historical_edge_gate": {
+    "requires_all": [
+      "discovery Holm-adjusted p < 0.05",
+      "positive discovery lift versus both same-period baseline and 50% break-even",
+      "positive lift in all four walk-forward folds",
+      "validation support >= 100 and positive lift versus both validation baseline and break-even",
+      "positive lower 95% moving-block-bootstrap bound in discovery and validation",
+      "retrospective final support >= 100 and positive lift versus both final baseline and break-even",
+      "genuinely untouched final period",
+      "verified platform identity and order"
+    ],
+    "current_archive_can_pass": false,
+    "reason": "The latest archive period was used in prior model candidate evaluation and rows have order-only, not platform identity, evidence."
+  },
+  "session_backtest": {
+    "stake_mode": "fixed normalized unit",
+    "stake_amount_example": 1.0,
+    "cashout_multiplier": 2.0,
+    "one_active_bet": true,
+    "entry": "Trigger calculated after source round; bet only the next eligible round; settle on that round before any subsequent entry.",
+    "cooldown_rounds_example": 0,
+    "session_length_eligible_rounds_example": 100,
+    "session_loss_limit_units_example": 3.0,
+    "consecutive_loss_limit_example": 3,
+    "profit_goal_units_example": 3.0,
+    "stop_rule": "STOP until next session when any configured session loss, consecutive-loss, or profit-goal limit is reached.",
+    "discontinuity": "STOP and reset session; do not place an entry whose source or target crosses a segment boundary.",
+    "execution_sensitivity_scenarios": [
+      "5% and 10% of eligible entries fail to place and are not staked",
+      "1% of wins fail settlement and are treated as losses",
+      "effective winning payout of 1.98x instead of 2.00x"
+    ],
+    "assumption_label": "Ideal historical settlement; no live placement or cashout is verified. Scenario parameters are examples, not user-selected bankroll advice."
+  },
+  "policy_output": {
+    "statuses": [
+      "HISTORICAL_EDGE_SUPPORTED",
+      "EDGE_UNVERIFIED",
+      "INSUFFICIENT_DATA",
+      "REJECTED"
+    ],
+    "auto_enable_edge_unverified": false,
+    "default_enabled": false,
+    "decision_values": ["BET", "WAIT", "STOP"],
+    "operational_gates_required": [
+      "authenticated login",
+      "browser and page health",
+      "verified current data continuity",
+      "valid target round identity",
+      "verified balance",
+      "session limits",
+      "duplicate protection",
+      "existing risk engine approval"
+    ]
+  },
+  "deliverables": [
+    "research_plan.json",
+    "data_quality_report.md",
+    "analysis_report.md",
+    "candidate_rules.csv",
+    "frozen_shortlist.json",
+    "rule_*.json",
+    "selected_rounds.csv",
+    "prospective_validation_plan.md",
+    "plots/*.png",
+    "run_analysis.py",
+    "verify.py",
+    "requirements.txt"
+  ]
+}

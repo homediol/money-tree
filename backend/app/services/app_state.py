@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-from threading import RLock
 import pandas as pd
 
 from app.core.config import Settings
 from app.database.repository import Repository
-from app.ml.model_registry import ModelRegistry
 from app.services.data_loader import RoundHistoryLoader
-from app.services.pattern_engine import PatternEngine
-from app.services.signal_engine import SignalEngine
-from app.services.statistics_service import statistics
-from app.services.dataset_service import DatasetService
-from app.services.evidence_engine import EvidenceEngine
-from app.services.analytics_report_engine import AnalyticsReportEngine
 
 
 class AppState:
+    """History-only application state; prediction features are retired."""
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self.repository = Repository(settings.database_path, settings.database_url,
@@ -24,141 +18,62 @@ class AppState:
         self.loader = RoundHistoryLoader(settings.data_path)
         if (self.repository.database_url
                 and self.repository.load_application_state("legacy_rounds_imported") is None):
-            # Keep platform/hash IDs when importing the old JSON history.
-            # RoundHistoryLoader is for legacy statistics and drops round_id.
-            legacy_rounds, _, _ = DatasetService(settings.data_path).load_validate()
+            legacy_rounds, _ = self.loader.load()
             if not legacy_rounds.empty:
                 self.repository.import_legacy_rounds([
                     {"round_id": str(row.round_id), "round_index": int(row.round_index),
                      "multiplier": float(row.multiplier), "timestamp": row.timestamp}
                     for row in legacy_rounds.itertuples(index=False)
                 ])
-        # PostgreSQL is authoritative for the service process. A caller can
-        # still explicitly opt into SQLite for isolated tests/development.
-        source_loader = self.repository.load_rounds if self.repository.database_url else None
-        self.dataset_service = DatasetService(
-            settings.data_path, settings.processed_data_dir, settings.features_data_dir,
-            source_loader=source_loader,
-        )
-        self._cache_lock = RLock()
-        self._patterns_cache: list[dict] | None = None
-        self._pattern_report_cache: dict | None = None
-        self._pattern_cache_size = 0
-        self._analysis_cache: dict | None = None
-        self._statistics_cache: dict | None = None
-        self.dataset_service.build_training_dataset()
-        if source_loader:
-            self.rounds = self.dataset_service.clean_rounds.copy()
-            self.quality = dict(self.dataset_service.quality)
-        else:
-            self.rounds, self.quality = self.loader.load()
-        self.sync_database()
-        self.analytics_report_engine = AnalyticsReportEngine(self.repository, self.dataset_service)
+        self._load_history()
         previous_collector_state = self.repository.load_collector_state()
         self.collector_state = self.repository.rebuild_collector_state(
-            required_rounds=settings.readiness_required_rounds,
+            required_rounds=settings.history_status_window_rounds,
             collector_session_id=(previous_collector_state or {}).get("collector_session_id"),
         )
-        self.model_registry = ModelRegistry(settings.target_multiplier, settings.model_dir, self.repository,
-                                            max_feature_age_s=settings.ml_max_history_age,
-                                            model_concurrency=settings.ml_model_concurrency)
-        self.evidence_engine = EvidenceEngine(self.repository, self.model_registry,
-                                              target=settings.target_multiplier,
-                                              min_sample_size=settings.min_sample_size,
-                                              analytics_report_engine=self.analytics_report_engine)
 
-    def sync_database(self) -> None:
-        # PostgreSQL's aviator_rounds is the single authoritative history.
-        # Never mirror project history into a local SQLite database.
+    def _load_history(self) -> None:
         if self.repository.database_url:
-            return
-        if self.rounds.empty:
-            return
-        rows = [
-            {
-                "round_index": int(r.round_index),
-                "round_id": str(getattr(r, "round_id", r.round_index)),
-                "multiplier": float(r.multiplier),
-                "timestamp": r.timestamp,
-                "target": int(float(r.multiplier) >= self.settings.target_multiplier),
+            rows = self.repository.load_rounds()
+            self.rounds = pd.DataFrame(rows)
+            if not self.rounds.empty:
+                self.rounds = self.rounds.sort_values("round_index").reset_index(drop=True)
+            valid = len(self.rounds)
+            stamps = self.rounds.get("timestamp") if valid else None
+            self.quality = {
+                "valid_records": valid,
+                "invalid_records": 0,
+                "first_timestamp": stamps.iloc[0] if stamps is not None and valid else None,
+                "last_timestamp": stamps.iloc[-1] if stamps is not None and valid else None,
+                "last_round_index": int(self.rounds.iloc[-1]["round_index"]) if valid else None,
+                "source": "PostgreSQL:aviator_rounds",
             }
-            for r in self.rounds.itertuples()
-        ]
-        self.repository.upsert_rounds(rows)
+        else:
+            self.rounds, self.quality = self.loader.load()
+            if self.rounds is None:
+                self.rounds = pd.DataFrame()
+        self.rounds = self.rounds.copy()
 
     def reload(self) -> None:
-        if self.repository.database_url:
-            rounds = None
-            quality = None
-        else:
-            rounds, quality = self.loader.load()
-        self.dataset_service.process_incremental()
+        self._load_history()
+        if not self.repository.database_url and not self.rounds.empty:
+            self.sync_database()
+        previous_collector_state = getattr(self, "collector_state", {}) or {}
         self.collector_state = self.repository.rebuild_collector_state(
-            required_rounds=self.settings.readiness_required_rounds,
-            collector_session_id=getattr(self, "collector_state", {}).get("collector_session_id"),
-        )
-        with self._cache_lock:
-            if self.repository.database_url:
-                rounds = self.dataset_service.clean_rounds.copy()
-                quality = dict(self.dataset_service.quality)
-            self.rounds, self.quality = rounds, quality
-            # Pattern discovery scans all historical sequences. Refresh it
-            # periodically; its generated_at stays visible to API clients.
-            if (self.dataset_service.last_mode == "full" or self._patterns_cache is None
-                    or len(rounds) - self._pattern_cache_size >= 25):
-                self._patterns_cache = None
-                self._pattern_report_cache = None
-            self._analysis_cache = None
-            self._statistics_cache = None
-        self.sync_database()
-
-    def patterns(self) -> list[dict]:
-        with self._cache_lock:
-            if self._patterns_cache is None:
-                report = PatternEngine(self.settings.target_multiplier, self.settings.min_sample_size).report(self.rounds)
-                items = report["patterns"]
-                self.repository.save_patterns(items)
-                self._patterns_cache = items
-                self._pattern_report_cache = report
-                self._pattern_cache_size = len(self.rounds)
-            return self._patterns_cache
-
-    def pattern_report(self, target: float | None = None) -> dict:
-        selected = float(target or self.settings.target_multiplier)
-        if selected != float(self.settings.target_multiplier):
-            return PatternEngine(selected, self.settings.min_sample_size).report(self.rounds)
-        self.patterns()
-        return self._pattern_report_cache or {}
-
-    def signal_engine(self) -> SignalEngine:
-        return SignalEngine(
-            self.settings.target_multiplier,
-            self.settings.min_sample_size,
-            self.settings.signal_threshold,
-            self.settings.strong_signal_threshold,
-            self.model_registry,
+            required_rounds=self.settings.history_status_window_rounds,
+            collector_session_id=previous_collector_state.get("collector_session_id"),
         )
 
-    def current_analysis(self) -> dict:
-        with self._cache_lock:
-            if self._analysis_cache is None:
-                analysis = self.signal_engine().current_analysis(self.rounds, self.dataset_service)
-                if self.rounds is not None and not self.rounds.empty:
-                    self.repository.save_signal(analysis)
-                self._analysis_cache = analysis
-            return self._analysis_cache
-
-    def statistics(self) -> dict:
-        with self._cache_lock:
-            if self._statistics_cache is None:
-                quality = self.quality.model_dump() if hasattr(self.quality, "model_dump") else dict(self.quality or {})
-                self._statistics_cache = {
-                    "data_quality": quality,
-                    "statistics": statistics(self.rounds, self.settings.target_multiplier),
-                    "data_source": ("PostgreSQL:aviator_rounds" if self.repository.database_url else "SQLite:rounds"),
-                }
-                self.repository.save_statistics("current", self._statistics_cache)
-            return self._statistics_cache
-
-    def build_evidence(self, prediction: dict | None) -> dict | None:
-        return self.evidence_engine.build(prediction, self.dataset_service)
+    def sync_database(self) -> None:
+        if self.repository.database_url or self.rounds.empty:
+            return
+        self.repository.upsert_rounds([
+            {
+                "round_index": int(row.round_index),
+                "round_id": str(getattr(row, "round_id", row.round_index)),
+                "multiplier": float(row.multiplier),
+                "timestamp": row.timestamp,
+                "target": int(float(row.multiplier) >= 2.0),
+            }
+            for row in self.rounds.itertuples(index=False)
+        ])

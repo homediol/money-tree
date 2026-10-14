@@ -1,14 +1,14 @@
 {
-  "name": "aviator-bot",
+  "name": "winner-round-collector",
   "version": "2.0.0",
   "private": true,
-  "description": "Playwright (Node.js) automation bot for Aviator game",
+  "description": "Single-owner Aviator round history collector",
   "type": "module",
-  "main": "runner.js",
+  "main": "collector/index.js",
   "scripts": {
-    "start": "node runner.js",
-    "test": "node runner.js --dry-run",
-    "collector": "node roundhistory-collector.js"
+    "start": "node collector/lock-runner.js",
+    "test": "node --test tests/*.test.js",
+    "collector": "node collector/lock-runner.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
