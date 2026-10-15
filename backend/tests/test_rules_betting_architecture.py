@@ -207,10 +207,10 @@ def test_rules_dashboard_api_never_reports_ready_without_live_evidence(tmp_path)
 
     assert result["real_money_execution"] == "DISABLED"
     assert result["execution_readiness"]["ready"] is False
-    assert "REAL_MONEY_EXECUTION_DISABLED_UNTIL_SEPARATE_AUTHORIZATION_AND_VERIFICATION" \
+    assert "REAL_MONEY_EXECUTION_DISABLED_DURING_REFACTORING" \
         in result["execution_readiness"]["blockers"]
     assert result["shared_selection"] is None
-    assert result["balance"] is None
+    assert "balance" not in result
 
 
 def test_platform_state_needs_receipt_and_a_round_multiplier_does_not_settle_bet():

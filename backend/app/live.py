@@ -9,9 +9,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from app.betting.schemas import SessionStartRequest
-
 MANUAL_SETUP_READBACK_MAX_AGE_SECONDS = 180
+REAL_MONEY_EXECUTION_ENABLED = False
 
 
 def now() -> str:
@@ -45,6 +44,8 @@ def _bet_button_bif_stake(value: Any) -> int | None:
 
 class LiveActivationManager:
     MODES = {"OBSERVING", "SHADOW", "LIVE_READY", "LIVE_ACTIVE", "PAUSED", "STOPPED", "EMERGENCY_STOP", "ERROR"}
+    supports_manual_executor_v2 = True
+    supports_readiness_stop_state_v1 = True
 
     def __init__(self, app=None):
         self.app = app
@@ -79,10 +80,14 @@ class LiveActivationManager:
                                         execution_configuration: dict[str, Any] | None = None) -> dict[str, Any]:
         checks: dict[str, Any] = {}
         reasons: list[str] = []
+        if not REAL_MONEY_EXECUTION_ENABLED:
+            checks["real_money_execution"] = "DISABLED_FOR_REFACTORING"
+            reasons.append("real_money_execution_disabled_during_refactoring")
         app = self.app
         if app is None:
             reasons.append("application unavailable")
-            return {"ready": False, "state": "BLOCKED", "reasons": reasons, "checks": checks}
+            return {"ready": False, "state": "BLOCKED", "reasons": reasons,
+                    "checks": checks, "optional_bankroll_policy": "NOT_APPLIED"}
         wp = getattr(app.state, "wp", None)
         repo = getattr(wp, "repository", None)
         try:
@@ -163,8 +168,9 @@ class LiveActivationManager:
             failures = [failure for panel in cashout_panels
                         for failure in panel.get("failures", [])]
             failures.extend(cashout.get("failures") or [])
-            if "PLATFORM_CASHOUT_ACKNOWLEDGEMENT_UNVERIFIED" in failures:
-                reason = "auto-cashout 2.00x is displayed and enabled but platform acknowledgement is unverified"
+            if (both_cashout_panels_configured
+                    and "PLATFORM_CASHOUT_ACKNOWLEDGEMENT_UNVERIFIED" in failures):
+                reason = "both auto-cashout panels are configured, but platform acknowledgement is unverified"
                 if reason not in reasons:
                     reasons.append(reason)
             else:
@@ -206,29 +212,18 @@ class LiveActivationManager:
             reasons.append("both betting panels, stake fields, Bet buttons, and clear bet states are not freshly verified")
         selected_panel = (execution_configuration or {}).get("execution_panel")
         if type(selected_panel) is int and selected_panel in (0, 1):
-            checks["selected_panel"] = "VERIFIED" if controls_ready else "UNAVAILABLE"
-            if not controls_ready:
-                reasons.append("selected execution panel is not currently verified")
+            # Selection is application configuration; fresh panel/button
+            # evidence is a separate execution-integrity check above. Keep
+            # these facts independent so a missing browser snapshot cannot
+            # erase a valid operator-selected panel.
+            checks["selected_panel"] = "VERIFIED"
         else:
             checks["selected_panel"] = "UNSELECTED"
             reasons.append("LIVE execution panel must be explicitly selected")
-        selected_stake = (execution_configuration or {}).get("stake_amount")
-        if type(selected_stake) is int and selected_stake > 0:
-            checks["stake"] = "VERIFIED_CONFIGURATION" if controls_ready else "UNAVAILABLE"
-        else:
-            checks["stake"] = "UNSELECTED"
-            reasons.append("LIVE stake must be explicitly selected")
-        selected_currency = (execution_configuration or {}).get("currency")
         current_currency = observation.get("currency")
-        if isinstance(selected_currency, str) and selected_currency and selected_currency == current_currency:
-            checks["stake_currency"] = "MATCHES_VERIFIED_ACCOUNT"
-        else:
-            checks["stake_currency"] = "UNVERIFIED_OR_MISMATCHED"
-            reasons.append("LIVE stake currency must match the verified platform account currency")
-
-        # A configured stake is not enough: compare it with the value and Bet
-        # action currently shown by the explicitly selected panel. This is a
-        # read-only check; LIVE review must never rewrite the user's stake.
+        current_balance = observation.get("balance")
+        # Stake is operator-owned. Compare fresh read-only values from the
+        # selected panel, field, and Bet label; never write to platform controls.
         selected_panel_row = None
         selected_input = None
         selected_button = None
@@ -251,6 +246,7 @@ class LiveActivationManager:
         button_stake = _bet_button_bif_stake(button_text)
         readback_evidence_present = any(value is not None for value in
                                         (panel_stake, input_stake, button_stake))
+        selected_stake = panel_stake if panel_stake is not None else input_stake
         selected_panel_available = bool(
             selected_panel_row
             and selected_panel_row.get("state") == "BET_AVAILABLE"
@@ -263,8 +259,8 @@ class LiveActivationManager:
                                          and selected_button.get("visible") is True
                                          and selected_button.get("disabled") is False)
         readback_matches = bool(
-            controls_ready and type(selected_stake) is int and selected_stake > 0
-            and selected_currency == "BIF" and current_currency == "BIF"
+            controls_ready and isinstance(selected_stake, int) and selected_stake > 0
+            and current_currency == "BIF"
             and selected_panel_available and selected_input_available
             and selected_button_available
             and panel_stake == selected_stake
@@ -274,26 +270,33 @@ class LiveActivationManager:
         if readback_matches:
             checks["displayed_stake"] = "MATCHED_SELECTED_PANEL_READBACK"
             checks["stake"] = "MATCHED_SELECTED_PANEL_READBACK"
-        elif (type(selected_stake) is int and selected_stake > 0
-              and readback_evidence_present and (
-                  panel_stake is not None and panel_stake != selected_stake
-                  or input_stake is not None and input_stake != selected_stake
-                  or button_stake is not None and button_stake != selected_stake
-              )):
+            checks["stake_currency"] = "MATCHES_VERIFIED_ACCOUNT"
+            if (isinstance(current_balance, (int, float)) and not isinstance(current_balance, bool)
+                    and selected_stake > current_balance):
+                checks["stake"] = "EXCEEDS_VERIFIED_PLATFORM_BALANCE"
+                reasons.append("operator_stake_exceeds_current_verified_platform_balance")
+        elif (readback_evidence_present and (panel_stake != input_stake
+                                             or input_stake != button_stake)):
             checks["displayed_stake"] = "MISMATCHED_SELECTED_PANEL_READBACK"
             checks["stake"] = "MISMATCHED_SELECTED_PANEL_READBACK"
-            reasons.append("selected panel displayed stake does not match the configured BIF stake")
+            checks["stake_currency"] = "UNVERIFIED_OR_MISMATCHED"
+            reasons.append("operator_stake_field_panel_and_button_values_do_not_match")
         else:
             checks["displayed_stake"] = "UNVERIFIED"
-            if type(selected_stake) is int and selected_stake > 0:
-                checks["stake"] = "UNAVAILABLE"
-                reasons.append("selected panel displayed stake could not be verified")
+            checks["stake"] = "UNAVAILABLE"
+            checks["stake_currency"] = ("MATCHES_VERIFIED_ACCOUNT" if current_currency == "BIF"
+                                         else "UNVERIFIED_OR_MISMATCHED")
+            reasons.append("operator_stake_readback_unverified")
         # Read-only DOM evidence can verify visible configuration, but it does
         # not prove the platform accepted it or accepted a bet. Keep execution
         # and target identity blocked until those independent receipts exist.
         backend = getattr(getattr(app.state, "betting", None), "backend", None)
         capability_reader = getattr(backend, "verified_capabilities", None)
-        capabilities = capability_reader() if callable(capability_reader) else {}
+        if callable(capability_reader):
+            capabilities = capability_reader()
+        else:
+            from app.betting.browser_adapters import UNVERIFIED_LIVE_CAPABILITIES
+            capabilities = dict(UNVERIFIED_LIVE_CAPABILITIES)
         capabilities = capabilities if isinstance(capabilities, dict) else {}
         required_platform_capabilities = (
             "bet_submission", "target_identity", "betting_deadline",
@@ -367,13 +370,7 @@ class LiveActivationManager:
                                  and active_rules.get("selection_status") == "ACTIVE")
         checks["rules_selection_session"] = "READY" if active_rule_selection else "UNAVAILABLE"
         if not active_rule_selection:
-            reasons.append("an active Rules Engine selection session is required for LIVE stop controls")
-        prior_live_stop = active_rules.get("live_execution_stop") or {}
-        if prior_live_stop.get("status") == "UNCONFIGURED":
-            checks["live_stop_configuration"] = "AVAILABLE"
-        else:
-            checks["live_stop_configuration"] = "ALREADY_BOUND_TO_RULES_SESSION"
-            reasons.append("LIVE stop controls are already bound to this Rules Engine session")
+            reasons.append("an active Rules Engine selection session is required")
         interface_status = (rules_engine.decision_interface_status()
                             if rules_engine is not None
                             and callable(getattr(rules_engine, "decision_interface_status", None))
@@ -387,8 +384,15 @@ class LiveActivationManager:
         checks["emergency_stop"] = ("UNAVAILABLE" if risk is None else
                                      "LATCHED" if risk.emergency_latched else "CLEAR")
         if risk and risk.emergency_latched: reasons.append("emergency stop is latched")
-        checks["risk"] = "BLOCKED" if risk and risk.emergency_latched else "HEALTHY"
-        result = {"ready": not reasons, "state": "LIVE_READY" if not reasons else "BLOCKED", "reasons": list(dict.fromkeys(reasons)), "checks": checks, "checked_at": now()}
+        checks["execution_integrity"] = (
+            "READY" if (REAL_MONEY_EXECUTION_ENABLED and risk is not None
+                        and not risk.emergency_latched and not reasons) else "BLOCKED")
+        result = {"ready": not reasons, "state": "LIVE_READY" if not reasons else "BLOCKED",
+                  "reasons": list(dict.fromkeys(reasons)), "checks": checks,
+                  "optional_bankroll_policy": "NOT_APPLIED",
+                  "provider_capabilities": capabilities,
+                  "missing_provider_capabilities": missing_platform_capabilities,
+                  "checked_at": now()}
         self.last_readiness = result
         return result
 
@@ -396,129 +400,23 @@ class LiveActivationManager:
         async with self._lock:
             from app.services.betting_mode import LIVE_MODE_AUTHORIZATION
             if _mode_authorization is not LIVE_MODE_AUTHORIZATION:
-                return {"ok": False, "error": "backend_mode_authorization_required",
-                        "message": "Use the authenticated backend mode review and activation flow"}
+                return {"ok": False, "error": "backend_mode_authorization_required"}
             if payload.get("confirmation") != "ENABLE LIVE BETTING":
-                return {"ok": False, "error": "explicit_confirmation_required", "message": "Type ENABLE LIVE BETTING to activate live betting"}
+                return {"ok": False, "error": "explicit_confirmation_required"}
             operator_identity = payload.get("operator_identity")
             if not isinstance(operator_identity, str) or not operator_identity.startswith("api-key:"):
-                return {"ok": False, "error": "operator_authorization_required",
-                        "message": "LIVE activation requires a server-authenticated operator identity"}
+                return {"ok": False, "error": "operator_authorization_required"}
             if payload.get("real_funds_can_be_lost") is not True:
-                return {"ok": False, "error": "real_funds_at_risk_confirmation_required",
-                        "message": "Explicitly confirm that real funds can be lost."}
+                return {"ok": False, "error": "real_funds_at_risk_confirmation_required"}
             if self.live_active:
                 return {"ok": False, "error": "already_active", "status": self.status()}
-            panel = payload.get("execution_panel")
-            stake = payload.get("stake_amount")
-            currency = payload.get("currency")
-            if type(panel) is not int or panel not in (0, 1):
-                return {"ok": False, "error": "execution_panel_required"}
-            if type(stake) is not int or stake <= 0:
-                return {"ok": False, "error": "positive_live_stake_required"}
-            if currency != "BIF":
-                return {"ok": False, "error": "verified_bif_account_required_without_currency_conversion"}
-            for enabled_key, count_key in (
-                ("reconciled_win_limit_enabled", "reconciled_win_limit_count"),
-                ("reconciled_loss_count_limit_enabled", "reconciled_loss_count_limit"),
-            ):
-                enabled = payload.get(enabled_key)
-                count = payload.get(count_key)
-                if type(enabled) is not bool:
-                    return {"ok": False, "error": f"{enabled_key}_must_be_explicit"}
-                if enabled and (type(count) is not int or count < 1):
-                    return {"ok": False, "error": f"{count_key}_must_be_positive_integer"}
-            platform_observation = payload.get("_platform_observation") or {}
-            if currency != platform_observation.get("currency"):
-                return {"ok": False, "error": "live_stake_currency_mismatch"}
-            if (not isinstance(platform_observation.get("balance"), (int, float))
-                    or isinstance(platform_observation.get("balance"), bool)
-                    or stake > platform_observation.get("balance")):
-                return {"ok": False, "error": "live_stake_exceeds_or_lacks_verified_balance"}
-            try:
-                if float(payload.get("cashout_target", 2.0)) != 2.0:
-                    return {"ok": False, "error": "live_cashout_target_must_be_2_00"}
-            except (TypeError, ValueError):
-                return {"ok": False, "error": "live_cashout_target_must_be_2_00"}
-            for enabled_key, amount_key in (
-                ("win_limit_enabled", "win_limit"),
-                ("session_loss_limit_enabled", "session_loss_limit"),
-            ):
-                enabled = payload.get(enabled_key)
-                amount = payload.get(amount_key)
-                if type(enabled) is not bool:
-                    return {"ok": False, "error": f"{enabled_key}_must_be_explicit"}
-                if enabled and (isinstance(amount, bool) or not isinstance(amount, (int, float))
-                                or not math.isfinite(float(amount)) or amount <= 0):
-                    return {"ok": False, "error": f"{amount_key}_must_be_positive"}
-            readiness = await self.production_readiness_check(platform_observation, {
-                "execution_panel": panel, "stake_amount": stake, "currency": currency,
-            })
-            if not readiness["ready"]:
-                await self._audit("activation_blocked", {"reasons": readiness["reasons"]})
-                return {"ok": False, "error": "LIVE ACTIVATION BLOCKED", "reasons": readiness["reasons"], "readiness": readiness}
-            profile = payload.get("profile", "PROFILE_A")
-            sid = f"LIVE-{uuid.uuid4().hex[:12]}"
-            started_at = now()
-            rules_engine = getattr(self.app.state, "rules_engine", None)
-            install_stops = getattr(rules_engine, "install_live_execution_stops", None)
-            if not callable(install_stops):
-                return {"ok": False, "error": "live_stop_controls_unavailable",
-                        "reasons": ["receipt_backed_live_stop_controls_not_integrated"]}
-            stop_installation = install_stops({
-                "live_session_id": sid, "started_at": started_at, "currency": currency,
-                "profit_target_enabled": bool(payload.get("win_limit_enabled")),
-                "profit_target": payload.get("win_limit"),
-                "loss_limit_enabled": bool(payload.get("session_loss_limit_enabled")),
-                "loss_limit": payload.get("session_loss_limit"),
-                "win_count_limit_enabled": payload.get("reconciled_win_limit_enabled"),
-                "win_count_limit": payload.get("reconciled_win_limit_count"),
-                "loss_count_limit_enabled": payload.get("reconciled_loss_count_limit_enabled"),
-                "loss_count_limit": payload.get("reconciled_loss_count_limit"),
-            })
-            if not stop_installation.get("ok"):
-                return {"ok": False, "error": "live_stop_controls_unavailable",
-                        "reasons": [stop_installation.get("reason") or "live_stop_configuration_failed"]}
-            req = SessionStartRequest(action="start", mode="REAL", profile=profile,
-                                      starting_balance=payload.get("starting_balance"),
-                                      goal_balance=payload.get("goal_balance"),
-                                      session_loss_limit_enabled=payload.get("session_loss_limit_enabled"),
-                                      session_loss_limit=payload.get("session_loss_limit"),
-                                      win_limit_enabled=payload.get("win_limit_enabled"),
-                                      win_limit=payload.get("win_limit"), label="live")
-            betting = self.app.state.betting
-            try:
-                status = await betting.start_session(req)
-            except Exception:
-                rollback = getattr(rules_engine, "remove_unstarted_live_execution_stops", None)
-                if callable(rollback):
-                    rollback(sid)
-                raise
-            snapshot = {"live_session_id": sid, "configuration_version": payload.get("configuration_version", "current"),
-                        "risk_version": "current", "executor_version": "current", "started_at": started_at, "profile": profile,
-                        "rules_session_id": stop_installation.get("rules_session_id"),
-                        "operator_identity": operator_identity, "execution_panel": panel,
-                        "stake_amount": stake, "currency": currency,
-                        "cashout_target": payload.get("cashout_target", 2.0),
-                        "real_funds_can_be_lost": True,
-                        "stop_conditions": {
-                            "profit_target_enabled": bool(payload.get("win_limit_enabled")),
-                            "profit_target": payload.get("win_limit"),
-                            "loss_limit_enabled": bool(payload.get("session_loss_limit_enabled")),
-                            "loss_limit": payload.get("session_loss_limit"),
-                            "win_limit_enabled": bool(payload.get("win_limit_enabled")),
-                            "win_limit": payload.get("win_limit"),
-                            "win_count_limit_enabled": bool(payload.get("reconciled_win_limit_enabled")),
-                            "win_count_limit": payload.get("reconciled_win_limit_count"),
-                            "loss_count_limit_enabled": bool(payload.get("reconciled_loss_count_limit_enabled")),
-                            "loss_count_limit": payload.get("reconciled_loss_count_limit"),
-                        }}
-            self.session = {"session_id": sid, "started_at": snapshot["started_at"], "mode": "LIVE_ACTIVE", "snapshot": snapshot, "status": status}
-            self.repository.save_live_session(self.session)
-            self.mode = "LIVE_ACTIVE"; self.live_active = True; self.automatic_betting = True; self.reason = None
-            self.explicit_live_authorization = True
-            await self._audit("started", {"snapshot": snapshot})
-            return {"ok": True, "status": self.status()}
+            if not REAL_MONEY_EXECUTION_ENABLED:
+                result = {"ok": False, "error": "real_money_execution_disabled_during_refactoring",
+                          "reasons": ["REAL_MONEY_EXECUTION_DISABLED_DURING_REFACTORING"]}
+                await self._audit("activation_blocked", result)
+                return result
+            return {"ok": False, "error": "live_executor_not_qualified",
+                    "reasons": ["LIVE_EXECUTOR_INTEGRITY_REVIEW_REQUIRED"]}
 
     async def pause(self, reason: str = "manual_pause") -> dict[str, Any]:
         async with self._lock:
@@ -615,20 +513,9 @@ class LiveActivationManager:
         return {"allowed": not blocks, "reasons": list(dict.fromkeys(blocks)), "checked_at": now()}
 
     def status(self) -> dict[str, Any]:
-        rules_engine = getattr(getattr(self.app, "state", None), "rules_engine", None)
-        rules_status = rules_engine.status() if rules_engine is not None else {}
-        active_rules = rules_status.get("active_session") or {}
-        live_execution_stop = active_rules.get("live_execution_stop")
-        if not live_execution_stop or live_execution_stop.get("status") == "UNCONFIGURED":
-            sessions = rules_status.get("sessions") or []
-            prior_live_session = next((row for row in sessions
-                                       if (row.get("live_execution_stop") or {}).get("status")
-                                       not in {None, "UNCONFIGURED"}), None)
-            live_execution_stop = (prior_live_session or {}).get("live_execution_stop")
         return {"mode": self.mode, "live_active": self.live_active, "automatic_betting": self.automatic_betting,
                 "reason": self.reason, "session": self.session, "readiness": self.last_readiness,
                 "cashout_refresh": self.last_cashout_refresh,
-                "live_execution_stop": live_execution_stop or {
-                    "status": "UNCONFIGURED", "currency": None,
-                    "realized_profit_loss": 0.0, "win_count": 0, "loss_count": 0,
-                }}
+                "execution_integrity": {"status": "DISABLED" if not REAL_MONEY_EXECUTION_ENABLED
+                                        else "NOT_AUTHORIZED",
+                                        "reason": "REAL_MONEY_EXECUTION_DISABLED_DURING_REFACTORING"}}

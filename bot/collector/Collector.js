@@ -103,23 +103,49 @@ async function _installObserver(frame, selector) {
           source: 'AVIATOR_BETTING_PANEL_MUTATION_OBSERVER', frame_identity: frameIdentity,
         };
       });
-      const phaseHints = Array.from(document.querySelectorAll(
-        '[class*="betting" i], [class*="bet-status" i], [data-phase], [data-testid*="betting" i], [role="alert"], [aria-live="assertive"]'
-      )).filter(visible).slice(0, 20).map(node => textOf(node)).filter(Boolean);
-      const phaseText = phaseHints.join(' ');
+      const phaseSelector = '[class*="betting" i], [class*="bet-status" i], [data-phase], [data-testid*="betting" i], [role="alert"], [aria-live="assertive"]';
+      const stageSelector = '[class*="stage" i]';
+      const phaseNodes = Array.from(document.querySelectorAll(phaseSelector));
+      const stageNodes = Array.from(document.querySelectorAll(stageSelector));
+      const phaseHints = [...new Set([...phaseNodes, ...stageNodes])]
+        .filter(visible).slice(0, 20).map(node => ({
+          cls: String(node.className || '').slice(0, 90),
+          txt: textOf(node).slice(0, 120),
+          visible: true,
+          source: stageNodes.includes(node) ? 'AVIATOR_STAGE_STATUS_DOM' : 'VISIBLE_GAME_PHASE_DOM',
+          selector: stageNodes.includes(node) ? stageSelector : phaseSelector,
+        })).filter(item => item.txt);
+      const phaseText = phaseHints.map(item => item.txt).join(' ');
+      const stageText = phaseHints.filter(item => item.source === 'AVIATOR_STAGE_STATUS_DOM')
+        .map(item => item.txt).join(' ');
       const countdown = phaseText.match(/\b(?:betting|bets?)(?:\s+window)?\s+(?:closes|ends)\s+in\s+(\d+(?:\.\d+)?)\s*(?:s|sec|seconds?)\b/i);
       const countdownSeconds = countdown ? Number(countdown[1]) : null;
-      const phase = (Number.isFinite(countdownSeconds) && countdownSeconds >= 0 && countdownSeconds <= 300)
+      const phase = (Number.isFinite(countdownSeconds) && countdownSeconds > 0 && countdownSeconds <= 300)
         || /\b(?:bets? open|betting open|place your bets|you can bet now)\b/i.test(phaseText)
         ? 'BETTING_OPEN'
-        : /\b(?:bets? closed|betting closed|no more bets|betting is over)\b/i.test(phaseText)
+        : (Number.isFinite(countdownSeconds) && countdownSeconds <= 0)
+          || /\b(?:bets? closed|betting closed|no more bets|betting is over)\b/i.test(phaseText)
           ? 'BETTING_CLOSED' : 'UNKNOWN';
+      const transitionText = /\b(?:ufc\s*(?:\/|vs\.?|versus)\s*aviator|aviator\s*(?:\/|vs\.?|versus)\s*ufc)\b|\b(?:ufc|aviator)\b.{0,32}\b(?:transition|intermission)\b/i;
+      const roundPhase = /\bflew away\b|\b(?:round|game)\s+(?:is\s+)?(?:complete|completed|finished|crashed)\b/i.test(phaseText)
+        ? 'ROUND_ENDED'
+        : (transitionText.test(stageText)
+          || /\b(?:waiting for (?:the )?next round|next round (?:starts|starting)|waiting for bets)\b/i.test(phaseText))
+          ? 'INTERMISSION'
+          : phase !== 'UNKNOWN' ? phase
+            : (/\b(?:round|game)\s+(?:is\s+)?(?:in progress|running|flying)\b/i.test(stageText)
+              || /^\s*\d+(?:[.,]\d+)?\s*x\s*$/i.test(stageText.trim()))
+              ? 'ROUND_RUNNING' : 'UNKNOWN';
       return {
-        phase, observed_at: now, panel_observations: panelObservations,
+        phase, round_phase: roundPhase, observed_at: now, panel_observations: panelObservations,
+        phase_hints: phaseHints,
         evidence: {
-          source: 'AVIATOR_EXPLICIT_BETTING_PHASE_DOM', selector: 'visible game phase text',
+          source: 'AVIATOR_EXPLICIT_BETTING_PHASE_DOM', selector: phaseSelector,
           phase_indicator_visible: phase !== 'UNKNOWN', explicit_window_state: phase,
           text: phaseText.slice(0, 240),
+          round_phase: roundPhase,
+          stage_selector: stageSelector,
+          stage_hints: phaseHints.filter(item => item.source === 'AVIATOR_STAGE_STATUS_DOM'),
           countdown_seconds: Number.isFinite(countdownSeconds) ? countdownSeconds : null,
           deadline_at: Number.isFinite(countdownSeconds) && countdownSeconds >= 0 && countdownSeconds <= 300
             ? new Date(Date.now() + countdownSeconds * 1000).toISOString() : null,
@@ -157,7 +183,7 @@ async function _installObserver(frame, selector) {
 
     function publishPhase(reason, force = false) {
       const phase = readGamePhase();
-      const phaseSig = JSON.stringify({phase: phase.phase, evidence: {
+      const phaseSig = JSON.stringify({phase: phase.phase, round_phase: phase.round_phase, evidence: {
         source: phase.evidence.source,
         explicit_window_state: phase.evidence.explicit_window_state,
         text: phase.evidence.text,

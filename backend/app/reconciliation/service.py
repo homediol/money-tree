@@ -291,12 +291,10 @@ class ReconciliationService:
             currency = (execution.get("balance_currency")
                         or (execution.get("platform_evidence") or {}).get("balance_currency"))
             session.last_balance_text = f"{balance:.2f} {currency}" if currency else f"{balance:.2f}"
-            if session.goal_balance is not None and balance >= session.goal_balance:
-                action = "STOP"
-        if action in {"PAUSE", "STOP", "EMERGENCY_STOP"} and manager:
+        if action in {"PAUSE", "EMERGENCY_STOP"} and manager:
             try:
                 await manager.stop_session(reason=("reconciliation_unknown" if action == "PAUSE"
-                                                   else "goal_reached"))
+                                                   else "emergency_stop"))
             except Exception:
                 pass
         await self.emit("risk:post_result", action=action,

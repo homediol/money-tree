@@ -758,6 +758,10 @@ def _validate_collector_game_phase(raw: dict, *, require_source: bool = False,
     phase = str(raw.get("phase") or "").upper()
     if phase not in {"BETTING_OPEN", "BETTING_CLOSED", "UNKNOWN"}:
         raise ValueError("phase must be BETTING_OPEN, BETTING_CLOSED, or UNKNOWN")
+    round_phase = str(raw.get("round_phase") or "UNKNOWN").upper()
+    if round_phase not in {"ROUND_ENDED", "INTERMISSION", "BETTING_OPEN",
+                           "BETTING_CLOSED", "ROUND_RUNNING", "UNKNOWN"}:
+        raise ValueError("round_phase is not a recognized Aviator phase")
     observed_at = str(raw.get("observed_at") or "")
     try:
         observed_time = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))

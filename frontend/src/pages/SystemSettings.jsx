@@ -33,8 +33,8 @@ export default function SystemSettings() {
   }
 
   return <div className="space-y-5">
-    <PageHeader eyebrow="System configuration" title="Settings" icon={Settings2}
-      description="Manage API access and inspect the current service and history status." />
+    <PageHeader eyebrow="Console access" title="API access & system status" icon={Settings2}
+      description="Manage this browser's API token and inspect backend and collector health." />
     <Card title="API Security">
       <form onSubmit={saveToken} className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <label className="block flex-1">
@@ -51,6 +51,6 @@ export default function SystemSettings() {
       <Card title="Backend status"><div className="text-lg font-semibold">{health?.status || 'UNKNOWN'}</div><div className="mt-2 text-sm text-zinc-500">Database: {health?.database?.status || 'UNKNOWN'}</div></Card>
       <Card title="Round history"><div className="text-lg font-semibold">{system?.dataset?.valid_records ?? '—'} rounds</div><div className="mt-2 text-sm text-zinc-500">Source: {system?.dataset?.source || 'UNKNOWN'}</div><div className="mt-1 text-sm text-zinc-500">Latest round index: {system?.dataset?.last_round_index ?? 'UNKNOWN'}</div></Card>
     </section>
-    <Card title="Execution safety"><div className="text-sm text-zinc-300">Automatic real-money execution is OFF until a rule selection is bound to a verified upcoming target, final risk approval is connected, and platform acceptance and settlement evidence are verified. Risk controls and the emergency stop remain available on the Betting page.</div></Card>
+    <Card title="Execution safety"><div className="text-sm text-zinc-300">Real-money execution is disabled during refactoring. Mandatory target, panel, stake, acceptance and settlement checks remain fail-closed in Betting Executor.</div></Card>
   </div>;
 }

@@ -1007,10 +1007,8 @@ def test_api_profiles_choices():
     async def go(client):
         return await client.get("/api/betting/profiles")
     r = _run(_api_call(go))
-    assert r.status_code == 200
-    body = r.json()
-    assert set(body["keys"]) == {"PROFILE_A", "PROFILE_B"}
-    assert body["profiles"]["PROFILE_A"]["default_amount_bif"] == 500
+    assert r.status_code == 410
+    assert r.json()["error"] == "OPTIONAL_BANKROLL_MANAGEMENT_REMOVED"
 
 
 def test_api_session_control_validation():
@@ -1030,8 +1028,8 @@ def test_api_session_control_rejects_direct_real_start():
         })
     r = _run(_api_call(go))
     assert r.status_code == 409
-    assert r.json()["error"] == "live_activation_required"
-    assert r.json()["message"].startswith("REAL sessions require /api/live/start")
+    assert r.json()["error"] == "FINANCIAL_EXECUTOR_RETIRED"
+    assert "Real-money execution remains disabled" in r.json()["message"]
 
 
 def test_api_decision_out_of_band_rejected_422():
@@ -1040,7 +1038,9 @@ def test_api_decision_out_of_band_rejected_422():
     async def go(client):
         return await client.post("/api/betting/decisions", json=payload)
     r = _run(_api_call(go))
-    assert r.status_code == 422
+    assert r.status_code == 409
+    assert r.json()["decision"] == "NO_ACTION"
+    assert r.json()["automatic_execution"] == "OFF"
 
 
 def test_api_decision_while_idle_conflict_409():
@@ -1073,15 +1073,13 @@ def test_api_stop_without_session_conflict_409():
     assert r.json()["error"] == "session_not_running"
 
 
-def test_api_simulation_decision_fails_closed_until_rules_are_configured():
+def test_api_session_start_is_retired_for_simulation_and_real_modes():
     async def go(client):
         r = await client.post("/api/betting/session", json={
-            "action": "start", "mode": "SIMULATION", "profile": "PROFILE_A",
+            "action": "start", "mode": "SIMULATION",
         })
-        assert r.status_code == 200
-        started = r.json()["status"]
-        assert started["mode"] == "SIMULATION"
-        assert started["simulated"] is True
+        assert r.status_code == 409
+        assert r.json()["error"] == "FINANCIAL_EXECUTOR_RETIRED"
 
         r = await client.post("/api/betting/decisions", json={
             "decision_id": "d-api-1", "round_id": "round-api-1", "profile": "PROFILE_A",
@@ -1093,16 +1091,12 @@ def test_api_simulation_decision_fails_closed_until_rules_are_configured():
         assert (await client.get("/api/betting/ledger")).json()["entries"] == []
 
         stopped = await client.post("/api/betting/session", json={"action": "stop"})
-        assert stopped.status_code == 200
-        await _wait_task(client.manager.session._task)
+        assert stopped.status_code == 409
     _run(_api_call(go))
 
 
 def test_api_repeated_decision_attempts_remain_blocked_without_rules():
     async def go(client):
-        await client.post("/api/betting/session", json={
-            "action": "start", "mode": "SIMULATION", "profile": "PROFILE_A"})
-
         payload = {"decision_id": "d-api-dup", "round_id": "round-api-dup", "profile": "PROFILE_A",
                    "target_multiplier": 2.0}
         first = await client.post("/api/betting/decisions", json=payload)
@@ -1113,9 +1107,8 @@ def test_api_repeated_decision_attempts_remain_blocked_without_rules():
         assert (await client.get("/api/betting/ledger")).json()["entries"] == []
 
         r = await client.post("/api/betting/session", json={"action": "stop"})
-        assert r.status_code == 200
-        assert r.json()["status"]["state"] in ("STOPPING", "STOPPED")
-        await _wait_task(client.manager.session._task)
+        assert r.status_code == 409
+        assert r.json()["error"] == "session_not_running"
     _run(_api_call(go))
 
 
@@ -1205,7 +1198,7 @@ def test_api_automatic_start_requires_explicit_live_activation():
         })
     response = _run(_api_call(go))
     assert response.status_code == 409
-    assert response.json()["error"] == "live_activation_required"
+    assert response.json()["error"] == "FINANCIAL_EXECUTOR_RETIRED"
 
 
 def test_named_realtime_events_cover_frontend_contract():

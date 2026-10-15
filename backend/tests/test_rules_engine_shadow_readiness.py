@@ -90,7 +90,7 @@ def _request(repository, engine):
 
     async def body():
         return {"mode": "ALL_RULES_TOGETHER", "rule_ids": ["RECENT_5_H_GE_4"],
-                "options": {"fixed_stake_rwf": 100}}
+                "options": {}}
 
     state = SimpleNamespace(
         wp=SimpleNamespace(repository=repository),
@@ -184,7 +184,7 @@ def test_stopping_gap_paused_session_preserves_integrity_reason():
     engine.configure("RECENT_5_H_GE_4", enabled=True)
     session = engine.start_session(
         mode="ALL_RULES_TOGETHER", rule_ids=["RECENT_5_H_GE_4"],
-        boundary=_boundary(), prestart_context=[], options={"fixed_stake_rwf": 100},
+        boundary=_boundary(), prestart_context=[], options={},
     )
     session_id = session["session_id"]
     engine.sessions[session_id].update({"status": "PAUSED", "stop_reason": "ROUND_INDEX_GAP"})
@@ -203,12 +203,12 @@ def test_gap_paused_old_session_does_not_pin_new_shadow_stream_cursor():
     boundary = _boundary()
     old = engine.start_session(
         mode="ALL_RULES_TOGETHER", rule_ids=["RECENT_5_H_GE_4"],
-        boundary=boundary, prestart_context=[], options={"fixed_stake_rwf": 100},
+        boundary=boundary, prestart_context=[], options={},
     )
     engine.session_action(old["session_id"], "stop")
     current = engine.start_session(
         mode="ALL_RULES_TOGETHER", rule_ids=["RECENT_5_H_GE_4"],
-        boundary=boundary, prestart_context=[], options={"fixed_stake_rwf": 100},
+        boundary=boundary, prestart_context=[], options={},
     )
     prior = engine.sessions[old["session_id"]]
     prior.update({"status": "PAUSED", "stop_reason": "ROUND_INDEX_GAP",
@@ -227,7 +227,7 @@ def test_persisted_target_identity_blocks_a_late_true_rule_selection():
     engine.configure("USER_PLAYING_POLICY", enabled=True)
     session = engine.start_session(
         mode="ALL_RULES_TOGETHER", rule_ids=["USER_PLAYING_POLICY"],
-        boundary=_boundary(), prestart_context=[], options={"fixed_stake_rwf": 100},
+        boundary=_boundary(), prestart_context=[], options={},
     )
     engine._persistence = SimpleNamespace(
         round_continuity_for_indices=lambda indices: {
@@ -260,7 +260,7 @@ def test_pending_collector_target_blocks_a_late_true_rule_selection():
     engine.configure("USER_PLAYING_POLICY", enabled=True)
     session = engine.start_session(
         mode="ALL_RULES_TOGETHER", rule_ids=["USER_PLAYING_POLICY"],
-        boundary=_boundary(), prestart_context=[], options={"fixed_stake_rwf": 100},
+        boundary=_boundary(), prestart_context=[], options={},
     )
     engine.observation_inbox = SimpleNamespace(has_pending_round_index=lambda index: index == 13)
     engine._persistence = SimpleNamespace(
@@ -292,7 +292,7 @@ def test_committed_event_observed_before_session_start_is_skipped():
     engine.configure("USER_PLAYING_POLICY", enabled=True)
     session = engine.start_session(
         mode="ALL_RULES_TOGETHER", rule_ids=["USER_PLAYING_POLICY"],
-        boundary=_boundary(), prestart_context=[], options={"fixed_stake_rwf": 100},
+        boundary=_boundary(), prestart_context=[], options={},
         now="2026-10-14T19:00:10+00:00",
     )
     result = engine.observe_round({
@@ -318,7 +318,7 @@ def test_shared_no_select_is_persisted_when_rules_evaluate_false():
     engine.configure("USER_PLAYING_POLICY", enabled=True)
     session = engine.start_session(
         mode="ALL_RULES_TOGETHER", rule_ids=["USER_PLAYING_POLICY"],
-        boundary=_boundary(), prestart_context=[], options={"fixed_stake_rwf": 100},
+        boundary=_boundary(), prestart_context=[], options={},
     )
     result = engine.observe_round({
         "event_type": "round.persisted", "durability": "COMMITTED",

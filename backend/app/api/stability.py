@@ -119,9 +119,10 @@ async def capabilities(request: Request) -> dict:
     # normalized (nested) panel evidence required to distinguish mismatch from
     # unavailable stake data.
     from app.api import live as live_api
+    from app.live import LiveActivationManager, REAL_MONEY_EXECUTION_ENABLED
 
     manual_setup_readback_v2 = callable(getattr(live_api, "_manual_setup_observation", None))
-    manual_setup_readback_v3 = manual_setup_readback_v2
+    manual_executor_v2 = getattr(LiveActivationManager, "supports_manual_executor_v2", False) is True
     orchestrator = getattr(request.app.state, "orchestrator", None)
     tasks = getattr(orchestrator, "tasks", ()) if orchestrator else ()
     balance_task = next((task for task in tasks if task.get_name() == "platform-balance"), None)
@@ -130,7 +131,7 @@ async def capabilities(request: Request) -> dict:
     rules_engine = getattr(request.app.state, "rules_engine", None)
     reconciliation = getattr(request.app.state, "reconciliation", None)
     repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
-    financial_stop_recovery = bool(
+    settlement_integrity_recovery = bool(
         rules_engine and callable(getattr(rules_engine, "recover_financial_state", None))
         and repository and callable(getattr(repository, "list_reconciled_rule_executions", None))
         and callable(getattr(repository, "has_open_rule_session_executions", None)))
@@ -143,10 +144,11 @@ async def capabilities(request: Request) -> dict:
         "capabilities": {
             "read_only_platform_balance_monitor": balance_monitor_running,
             "history_collector_status": history is not None,
-            "rule_financial_stop_recovery": financial_stop_recovery,
+            "rule_settlement_integrity_recovery": settlement_integrity_recovery,
             "receipt_reconciliation_to_rule_session": receipt_to_rules,
             "manual_platform_stake_readback_v2": manual_setup_readback_v2,
-            "manual_platform_setup_readback_v3": manual_setup_readback_v3,
+            "manual_executor_v2": manual_executor_v2,
+            "real_money_execution_disabled": REAL_MONEY_EXECUTION_ENABLED is False,
         },
     }
 

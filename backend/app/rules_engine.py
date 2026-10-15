@@ -17,7 +17,7 @@ from threading import RLock
 from typing import Any, Mapping
 from uuid import uuid4
 
-ENGINE_VERSION = "WINNER_RULES_ENGINE_SHADOW_V1"
+ENGINE_VERSION = "WINNER_RULES_ENGINE_MANUAL_EXECUTOR_V2"
 STATE_KEY = "rules_engine_state_v1"
 WINDOW_SIZE = 50
 H_THRESHOLD = 2.0
@@ -25,6 +25,18 @@ MODES = {"START_CHECK", "LEGACY_SEPARATE_TRACKER", "FIVE_RULE_TRACKER", "ALL_RUL
 COMBINED_POLICY_ID = "USER_PLAYING_POLICY"
 START_CHECK_POLICY_ID = "USER_PLAYING_POLICY_START_CHECK"
 LEGACY_POLICY_ID = "USER_PLAYING_POLICY_LEGACY_TRACKER"
+OPTIONAL_BANKROLL_FIELDS = {
+    "profit_target_rwf", "loss_limit_rwf",
+    "reconciled_profit_target_enabled", "reconciled_profit_target_rwf",
+    "reconciled_loss_limit_enabled", "reconciled_loss_limit_rwf",
+    "maximum_balance_percentage", "maximum_exposure_percentage", "risk_profile",
+    "profile", "fixed_stake_rwf", "stake_rwf", "requested_stake", "auto_stake",
+    "automatic_stake_sizing", "stake_amount", "goal_balance", "starting_balance",
+}
+EXECUTOR_CONFIGURATION_FIELDS = {
+    "execution_panel", "ui_fixed_stake_bif", "ui_stake_currency", "stake_currency",
+    "cashout_multiplier", "cashout_target",
+}
 
 
 def _research_definitions() -> list[dict[str, Any]]:
@@ -99,10 +111,9 @@ RESEARCH_RULES = _research_definitions()
 _research_by_id = {row["rule_id"]: row for row in RESEARCH_RULES}
 
 START_CHECK_POLICY = {
-    "rule_id": START_CHECK_POLICY_ID, "version": "AVIATOR_2X_CONSECUTIVE_STOP_V3",
+    "rule_id": START_CHECK_POLICY_ID, "version": "AVIATOR_RULE_TRANSITIONS_V4",
     "name": "Start a Check: source legacy policy", "mode": "START_CHECK",
-    "parameters": {"stake_rwf": 100, "cashout_multiplier": 2.0, "window_size": WINDOW_SIZE,
-                    "profit_target_rwf": 400, "loss_limit_rwf": 400},
+    "parameters": {"window_size": WINDOW_SIZE},
     "target_offset": 1,
     "condition": {"standard_trigger": ["L", "H"], "trigger_h_counts_as_previous_result": True,
                   "standard_stop": ["HH", "LL"], "two_bet_wins_activates_after_two_failed_ll_cycles": True,
@@ -113,16 +124,14 @@ START_CHECK_POLICY = {
                           "H triggers source+1; legacy reducer seeds previous outcome H.",
                           "STANDARD stops on HH or LL; LL terminal L satisfies the low condition.",
                           "Two consecutive LL-ending STANDARD cycles activate TWO_BET_WINS.",
-                          "TWO_BET_WINS stops after two consecutive selected H outcomes; trigger H is not a bet.",
-                          "NET +400/-400 stops new selections while the 50-round window continues observing."],
+                          "TWO_BET_WINS stops after two consecutive selected H outcomes; trigger H is not a bet."],
     "source_semantics_note": "Distinct from All Rules Together; preserves rule-reducer.js behavior.",
 }
 
 LEGACY_SINGLE_TRACKER_POLICY = {
-    "rule_id": LEGACY_POLICY_ID, "version": "AVIATOR_2X_CONSECUTIVE_STOP_V3",
+    "rule_id": LEGACY_POLICY_ID, "version": "AVIATOR_RULE_TRANSITIONS_V4",
     "name": "Legacy separate tracker: single rule", "mode": "LEGACY_SEPARATE_TRACKER",
-    "parameters": {"stake_rwf": 100, "cashout_multiplier": 2.0, "window_size": WINDOW_SIZE,
-                    "profit_target_rwf": 400, "loss_limit_rwf": 400},
+    "parameters": {"window_size": WINDOW_SIZE},
     "target_offset": 1,
     "condition": deepcopy(START_CHECK_POLICY["condition"]),
     "initial_state": deepcopy(START_CHECK_POLICY["initial_state"]),
@@ -131,7 +140,7 @@ LEGACY_SINGLE_TRACKER_POLICY = {
 }
 
 COMBINED_POLICY = {
-    "rule_id": COMBINED_POLICY_ID, "version": "AVIATOR_2X_CONSECUTIVE_STOP_V3",
+    "rule_id": COMBINED_POLICY_ID, "version": "AVIATOR_RULE_TRANSITIONS_V4",
     "name": "Accepted user playing policy", "mode": "ALL_RULES_TOGETHER",
     "parameters": {}, "target_offset": 1,
     "condition": {"standard_trigger": ["L", "H"], "trigger_h_counts_as_selected_result": False,
@@ -229,7 +238,7 @@ def _expected(row: Mapping[str, Any]) -> dict[str, Any]:
             "expectedImmediateSuccessorOf": _reference(row)}
 
 
-def _normalize_intent_panel_observation(raw: Mapping[str, Any] | None, panel: int,
+def _normalize_intent_panel_observation(raw: Mapping[str, Any] | None, panel: int | None,
                                         at: str, *, source: str) -> dict[str, Any]:
     row = raw if isinstance(raw, Mapping) else {}
     observed_at = row.get("observed_at")
@@ -240,7 +249,10 @@ def _normalize_intent_panel_observation(raw: Mapping[str, Any] | None, panel: in
         age = (reference.astimezone(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds()
     state = str(row.get("state") or "UNKNOWN").upper()
     reason = None
-    if row.get("panel_id") != f"PANEL_{panel + 1}":
+    panel_id = f"PANEL_{panel + 1}" if type(panel) is int and panel in {0, 1} else None
+    if panel_id is None:
+        state, reason = "UNKNOWN", "EXECUTION_PANEL_NOT_SELECTED"
+    elif row.get("panel_id") != panel_id:
         state, reason = "UNKNOWN", "PANEL_IDENTITY_MISMATCH"
     elif not row.get("frame_identity"):
         state, reason = "UNKNOWN", "FRAME_IDENTITY_UNAVAILABLE"
@@ -252,7 +264,7 @@ def _normalize_intent_panel_observation(raw: Mapping[str, Any] | None, panel: in
     if reason:
         evidence["reason"] = reason
     return {
-        "panel_id": f"PANEL_{panel + 1}", "state": state,
+        "panel_id": panel_id, "state": state,
         "button_text": str(row.get("button_text") or "")[:240] or None,
         "displayed_stake": row.get("displayed_stake") if state in {"BET_AVAILABLE", "BET_RESET"} else None,
         "currency": row.get("currency"),
@@ -268,15 +280,15 @@ def _normalize_intent_panel_observation(raw: Mapping[str, Any] | None, panel: in
     }
 
 
-def _panel_observation_from_rows(rows: Any, panel: int, at: str, *, source: str) -> dict[str, Any]:
-    if isinstance(rows, list):
+def _panel_observation_from_rows(rows: Any, panel: int | None, at: str, *, source: str) -> dict[str, Any]:
+    if panel is not None and isinstance(rows, list):
         for row in rows:
             if isinstance(row, Mapping) and row.get("panel_id") == f"PANEL_{panel + 1}":
                 return _normalize_intent_panel_observation(row, panel, at, source=source)
     return _normalize_intent_panel_observation(None, panel, at, source=source)
 
 
-def _current_runtime_panel_observation(panel: int, at: str) -> dict[str, Any]:
+def _current_runtime_panel_observation(panel: int | None, at: str) -> dict[str, Any]:
     status_path = Path(__file__).resolve().parents[2] / "data" / "bot" / "status.json"
     try:
         status = json.loads(status_path.read_text(encoding="utf-8"))
@@ -451,10 +463,8 @@ class RulesEngine:
                                                else "UNVERIFIED"),
                     "selected_rule_ids": selection.get("contributing_rule_ids") or [],
                     "selected_panel": selected_panel,
-                    "requested_stake": intent.get("requested_stake", config.get(
-                        "requested_stake", config.get("fixed_stake_rwf", selection.get("stake_rwf")))),
-                    "requested_stake_currency": intent.get("requested_stake_currency")
-                        or config.get("stake_currency"),
+                    "requested_stake": None,
+                    "requested_stake_currency": None,
                     "cashout_target": 2.0,
                     "created_at": intent.get("created_at") or selection.get("selected_at"),
                     "expires_at": completed_at,
@@ -641,25 +651,28 @@ class RulesEngine:
             else:
                 self._persistence.save_application_state(STATE_KEY, snapshot, _now())
 
+    @staticmethod
+    def _settlement_integrity(session: dict[str, Any]) -> dict[str, Any]:
+        marker = session.get("settlement_integrity")
+        if isinstance(marker, dict):
+            return marker
+        # Read legacy status without modifying or deleting its historical P/L.
+        legacy = session.get("financial_stop")
+        legacy = legacy if isinstance(legacy, dict) else {}
+        marker = {key: legacy.get(key) for key in
+                  ("status", "reason", "currency", "currency_status", "reconciled_bets",
+                   "updated_at", "reconciled_execution_ids") if key in legacy}
+        marker.setdefault("status", "CLEAR")
+        marker.setdefault("reconciled_bets", 0)
+        marker.setdefault("reconciled_execution_ids", [])
+        session["settlement_integrity"] = marker
+        return marker
+
     def _apply_reconciled_financials(self, session: dict[str, Any], execution: Mapping[str, Any],
                                     financials: Mapping[str, Any], at: str) -> None:
-        stop = session.setdefault("financial_stop", {
-            "status": "ACTIVE", "reason": None, "realized_betting_pl": None,
-            "currency": None, "win_count": 0, "loss_count": 0, "reconciled_bets": 0,
-            "reconciled_execution_ids": [],
-        })
+        marker = self._settlement_integrity(session)
         execution_id = str(execution.get("execution_id") or "")
-        ids = list(stop.get("reconciled_execution_ids") or [])
-        if execution_id and execution_id not in ids:
-            ids.append(execution_id)
-        stop.update({"reconciled_execution_ids": ids,
-                     "realized_betting_pl": financials.get("realized_betting_pl"),
-                     "currency": financials.get("currency"),
-                     "currency_status": financials.get("currency_status"),
-                     "win_count": int(financials.get("win_count") or 0),
-                     "loss_count": int(financials.get("loss_count") or 0),
-                     "reconciled_bets": int(financials.get("reconciled_bets") or 0),
-                     "updated_at": at})
+        ids = list(marker.get("reconciled_execution_ids") or [])
         selection_id = str(execution.get("decision_id") or "")
         selection = next((item for item in session.get("selections", [])
                           if str(item.get("selection_id")) == selection_id), None)
@@ -667,142 +680,41 @@ class RulesEngine:
             selection["financial_result"] = {
                 "status": "RECONCILED", "result": execution.get("result"),
                 "execution_id": execution_id, "profit_loss": execution.get("profit_loss"),
-                "currency": stop.get("currency"), "reconciled_at": at,
+                "currency": financials.get("currency"), "reconciled_at": at,
             }
-
-        config = session.get("configuration_snapshot") or {}
-        reason = None
-        live_stop = session.get("live_execution_stop")
-        pending_live_ids = list((live_stop or {}).get("pending_execution_ids") or [])
-        live_stop_can_apply = (live_stop and live_stop.get("status") == "ACTIVE") or (
-            live_stop and live_stop.get("status") == "RECONCILIATION_REQUIRED"
-            and live_stop.get("reason") == "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION"
-            and execution_id in pending_live_ids
+        evidence = execution.get("platform_evidence") or {}
+        amount = execution.get("profit_loss")
+        verified = (
+            execution.get("status") in {"RECONCILED", "CLOSED"}
+            and execution.get("simulated") is not True
+            and execution.get("balance_status") == "VERIFIED"
+            and execution.get("result") in {"WIN", "LOSS"}
+            and isinstance(amount, (int, float)) and not isinstance(amount, bool)
+            and math.isfinite(float(amount))
+            and evidence.get("platform_evidence") is True
+            and bool(evidence.get("platform_receipt_id"))
+            and bool(evidence.get("settlement_receipt_id"))
+            and str(evidence.get("target_round_id")) == str(execution.get("target_round_id"))
+            and str(evidence.get("decision_id")) == str(execution.get("decision_id"))
+            and (evidence.get("accepted_currency") or evidence.get("currency")) == financials.get("currency")
+            and financials.get("currency_status") == "VERIFIED"
+            and bool(financials.get("currency"))
         )
-        if (isinstance(live_stop, dict) and live_stop_can_apply
-                and execution_id and execution_id not in (live_stop.get("settled_execution_ids") or [])):
-            evidence = execution.get("platform_evidence") or {}
-            try:
-                created = datetime.fromisoformat(str(execution.get("created_at")).replace("Z", "+00:00"))
-                started = datetime.fromisoformat(str(live_stop.get("started_at")).replace("Z", "+00:00"))
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                if started.tzinfo is None:
-                    started = started.replace(tzinfo=timezone.utc)
-                target_is_live = created >= started
-                execution_time_verified = True
-            except (TypeError, ValueError, OverflowError):
-                target_is_live = True
-                execution_time_verified = False
-            currency = evidence.get("accepted_currency") or evidence.get("currency")
-            amount = execution.get("profit_loss")
-            verified = (
-                execution.get("status") in {"RECONCILED", "CLOSED"}
-                and execution.get("simulated") is not True
-                and execution.get("balance_status") == "VERIFIED"
-                and execution.get("result") in {"WIN", "LOSS"}
-                and isinstance(amount, (int, float)) and not isinstance(amount, bool)
-                and math.isfinite(float(amount))
-                and currency == live_stop.get("currency")
-                and financials.get("currency_status") == "VERIFIED"
-                and financials.get("currency") == live_stop.get("currency")
-                and execution_time_verified
-            )
-            if target_is_live and not verified:
-                live_stop.update({"status": "RECONCILIATION_REQUIRED",
-                                  "reason": "LIVE_SETTLEMENT_CURRENCY_OR_RECEIPT_EVIDENCE_UNVERIFIED",
-                                  "updated_at": at})
-                reason = "LIVE_SETTLEMENT_VERIFICATION_REQUIRED"
-            elif target_is_live:
-                pending_live_ids = [value for value in pending_live_ids if value != execution_id]
-                live_stop["pending_execution_ids"] = pending_live_ids
-                live_stop.update({"status": "ACTIVE", "reason": None})
-                settled_ids = list(live_stop.get("settled_execution_ids") or [])
-                settled_ids.append(execution_id)
-                live_stop["settled_execution_ids"] = settled_ids
-                live_stop["realized_profit_loss"] = round(
-                    float(live_stop.get("realized_profit_loss") or 0) + float(amount), 2)
-                if execution.get("result") == "WIN":
-                    live_stop["win_count"] = int(live_stop.get("win_count") or 0) + 1
-                else:
-                    live_stop["loss_count"] = int(live_stop.get("loss_count") or 0) + 1
-                live_stop["updated_at"] = at
-                if (live_stop.get("win_count_limit_enabled")
-                        and live_stop["win_count"] >= int(live_stop.get("win_count_limit") or 1)):
-                    reason = "WIN_LIMIT_REACHED"
-                elif (live_stop.get("loss_count_limit_enabled")
-                      and live_stop["loss_count"] >= int(live_stop.get("loss_count_limit") or 1)):
-                    reason = "LOSS_LIMIT_REACHED"
-                elif (live_stop.get("profit_target_enabled")
-                      and live_stop["realized_profit_loss"] >= float(live_stop.get("profit_target") or 0)):
-                    reason = "PROFIT_TARGET_REACHED"
-                elif (live_stop.get("loss_limit_enabled")
-                      and live_stop["realized_profit_loss"] <= -float(live_stop.get("loss_limit") or 0)):
-                    reason = "LOSS_LIMIT_REACHED"
-                if reason:
-                    live_stop.update({"status": "STOPPED", "reason": reason, "stopped_at": at})
-        win_limit_enabled = config.get("reconciled_win_limit_enabled",
-                                       config.get("win_limit_enabled", False))
-        win_limit_count = config.get("reconciled_win_limit_count",
-                                     config.get("win_limit_count"))
-        loss_count_enabled = config.get("reconciled_loss_count_limit_enabled",
-                                        config.get("loss_limit_enabled", False))
-        loss_count_limit = config.get("reconciled_loss_count_limit",
-                                      config.get("loss_limit_count"))
-        if reason:
-            pass
-        elif win_limit_enabled and stop["win_count"] >= int(win_limit_count or 1):
-            reason = "WIN_LIMIT_REACHED"
-        elif loss_count_enabled and stop["loss_count"] >= int(loss_count_limit or 1):
-            reason = "LOSS_LIMIT_REACHED"
-        else:
-            profit_enabled = bool(config.get("reconciled_profit_target_enabled",
-                                             config.get("profit_target_enabled", False)))
-            profit_target = config.get("reconciled_profit_target_rwf",
-                                       config.get("profit_target_rwf"))
-            legacy_loss_money_enabled = (session.get("mode") != "ALL_RULES_TOGETHER"
-                                         and config.get("loss_limit_enabled")
-                                         and config.get("loss_limit_rwf") is not None)
-            loss_enabled = bool(config.get("reconciled_loss_limit_enabled",
-                                           legacy_loss_money_enabled))
-            loss_limit = config.get("reconciled_loss_limit_rwf", config.get("loss_limit_rwf"))
-            if profit_enabled or loss_enabled:
-                expected_currency = ("RWF" if profit_enabled or loss_enabled
-                                     else config.get("stake_currency"))
-                if (stop["reconciled_bets"] > 0
-                        and (stop.get("realized_betting_pl") is None
-                             or not expected_currency
-                             or stop.get("currency") != expected_currency)):
-                    reason = "STOP_CONTROL_CURRENCY_UNVERIFIED"
-                elif stop.get("realized_betting_pl") is not None:
-                    if (profit_enabled and stop["realized_betting_pl"] >=
-                            float(profit_target if profit_target is not None else float("inf"))):
-                        reason = "PROFIT_TARGET_REACHED"
-                    elif (loss_enabled and stop["realized_betting_pl"] <=
-                            -float(loss_limit if loss_limit is not None else float("inf"))):
-                        reason = "LOSS_LIMIT_REACHED"
-
-        # A manual, emergency, or already-triggered stop cannot be cleared by
-        # a later receipt. Unknown transactions remain paused until a person
-        # explicitly resumes after reconciliation.
-        if reason:
-            if reason == "LIVE_SETTLEMENT_VERIFICATION_REQUIRED":
-                stop.update({"status": "RECONCILIATION_REQUIRED", "reason": reason,
-                             "updated_at": at})
-                session.update({"status": "PAUSED", "selection_status": "STOPPED",
-                                "selection_stop_reason": reason, "stop_reason": reason})
-            else:
-                stop.update({"status": "STOPPED", "reason": reason, "stopped_at": at})
-            if (reason != "LIVE_SETTLEMENT_VERIFICATION_REQUIRED"
-                    and session.get("selection_stop_reason") not in {"MANUAL_STOP", "EMERGENCY_STOP", "RESET"}):
-                session.update({"selection_status": "STOPPED", "selection_stop_reason": reason,
-                                "selection_stopped_at": at,
-                                "selection_stopped_at_round_id": execution.get("target_round_id"),
-                                "status": "STOPPED", "stop_reason": reason,
-                                "ended_at": at, "auto_next_armed": False})
-        elif stop.get("status") == "RECONCILIATION_REQUIRED":
-            stop.update({"status": "RECONCILIATION_CLEARED", "reason": None,
-                         "reconciled_at": at})
+        if not verified:
+            marker.update({"status": "RECONCILIATION_REQUIRED",
+                           "reason": "SETTLEMENT_RECEIPT_OR_CURRENCY_UNVERIFIED",
+                           "execution_id": execution_id or None, "updated_at": at})
+            session.update({"status": "PAUSED", "selection_status": "STOPPED",
+                            "selection_stop_reason": "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION",
+                            "stop_reason": "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION"})
+            return
+        if execution_id and execution_id not in ids:
+            ids.append(execution_id)
+        marker.update({"status": "CLEAR", "reason": None,
+                       "currency": financials.get("currency"),
+                       "currency_status": "VERIFIED",
+                       "reconciled_bets": int(financials.get("reconciled_bets") or 0),
+                       "reconciled_execution_ids": ids, "updated_at": at})
 
     def record_financial_reconciliation(self, execution: Mapping[str, Any],
                                         reconciliation: Mapping[str, Any], *,
@@ -827,9 +739,9 @@ class RulesEngine:
             )
             if persist:
                 self._persist()
-            stop_snapshot = deepcopy(session.get("financial_stop"))
+            stop_snapshot = deepcopy(self._settlement_integrity(session))
             result = {"ok": True, "duplicate": bool(saved.get("duplicate")),
-                      "session_id": session_id, "financial_stop": stop_snapshot}
+                      "session_id": session_id, "settlement_integrity": stop_snapshot}
         return result
 
     def block_unknown_financial_execution(self, execution: Mapping[str, Any],
@@ -848,32 +760,18 @@ class RulesEngine:
             session = self.sessions.get(session_id)
             if session is None:
                 return {"ok": False, "reason": "rule_session_not_restored", "session_id": session_id}
-            stop = session.setdefault("financial_stop", {
-                "status": "ACTIVE", "reason": None, "realized_betting_pl": None,
-                "currency": None, "win_count": 0, "loss_count": 0, "reconciled_bets": 0,
-                "reconciled_execution_ids": [],
-            })
-            if stop.get("status") != "STOPPED":
-                stop.update({"status": "RECONCILIATION_REQUIRED",
-                             "reason": "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION",
-                             "execution_id": execution.get("execution_id"), "blocker": reason,
-                             "updated_at": _now()})
+            integrity = self._settlement_integrity(session)
+            if integrity.get("status") != "STOPPED":
+                integrity.update({"status": "RECONCILIATION_REQUIRED",
+                                  "reason": "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION",
+                                  "execution_id": execution.get("execution_id"), "blocker": reason,
+                                  "updated_at": _now()})
                 session.update({"status": "PAUSED", "selection_status": "STOPPED",
                                 "stop_reason": "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION",
                                 "selection_stop_reason": "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION"})
-                live_stop = session.get("live_execution_stop")
-                if isinstance(live_stop, dict) and live_stop.get("status") == "ACTIVE":
-                    pending_ids = list(live_stop.get("pending_execution_ids") or [])
-                    execution_id = str(execution.get("execution_id") or "")
-                    if execution_id and execution_id not in pending_ids:
-                        pending_ids.append(execution_id)
-                    live_stop.update({"status": "RECONCILIATION_REQUIRED",
-                                      "reason": "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION",
-                                      "pending_execution_ids": pending_ids,
-                                      "updated_at": _now()})
             self._persist()
             return {"ok": True, "session_id": session_id,
-                    "financial_stop": deepcopy(stop)}
+                    "settlement_integrity": deepcopy(integrity)}
 
     def recover_financial_state(self) -> None:
         """Rebuild reconciled totals and unresolved-transaction blocks after restart."""
@@ -913,9 +811,9 @@ class RulesEngine:
             row["configuration"] = deepcopy(config.get("parameters", row.get("parameters", {})))
         return {"engine_version": ENGINE_VERSION, "configuration_version": self.configuration_version,
                 "rules": rows, "modes": [
-                    {"id": "START_CHECK", "source_section": "Run Controls — Start a Check",
+                {"id": "START_CHECK", "source_section": "Run Controls — Start a Check",
                      "rule_ids": [START_CHECK_POLICY_ID], "window_size": WINDOW_SIZE,
-                     "stake_rwf": 100, "stop_semantics": "NET ±400 RWF"},
+                     "stop_semantics": "source-rule transitions and the verified observation window"},
                     {"id": "LEGACY_SEPARATE_TRACKER", "source_section": "Legacy — Separate Tracker",
                      "rule_ids": [LEGACY_POLICY_ID], "window_size": WINDOW_SIZE,
                      "stop_semantics": "50 verified rounds; one isolated legacy policy state"},
@@ -932,7 +830,6 @@ class RulesEngine:
         if rule_id not in known or not isinstance(enabled, bool):
             raise ValueError("INVALID_RULE_CONFIGURATION")
         allowed = {} if rule_id not in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID} else {
-            "profit_target_enabled", "profit_target_rwf", "loss_limit_enabled", "loss_limit_rwf",
             "window_size", "auto_next_check_enabled",
         }
         values = dict(parameters or {})
@@ -940,19 +837,11 @@ class RulesEngine:
             raise ValueError("UNSUPPORTED_RULE_PARAMETER")
         if rule_id not in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID} and values:
             raise ValueError("RULE_HAS_NO_CONFIGURABLE_PARAMETERS")
-        defaults = {"profit_target_enabled": True, "profit_target_rwf": 400,
-                    "loss_limit_enabled": True, "loss_limit_rwf": 400,
-                    "window_size": WINDOW_SIZE, "auto_next_check_enabled": False}
+        defaults = {"window_size": WINDOW_SIZE, "auto_next_check_enabled": False}
         if rule_id in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID}:
             defaults.update(values)
-            for key in ("profit_target_enabled", "loss_limit_enabled", "auto_next_check_enabled"):
-                if not isinstance(defaults[key], bool):
+            if not isinstance(defaults["auto_next_check_enabled"], bool):
                     raise ValueError("INVALID_BOOLEAN_PARAMETER")
-            for enabled_key, amount_key in (("profit_target_enabled", "profit_target_rwf"),
-                                            ("loss_limit_enabled", "loss_limit_rwf")):
-                if defaults[enabled_key] and (isinstance(defaults[amount_key], bool)
-                    or not isinstance(defaults[amount_key], int) or defaults[amount_key] <= 0):
-                    raise ValueError("INVALID_NET_LIMIT")
             if (isinstance(defaults["window_size"], bool) or not isinstance(defaults["window_size"], int)
                     or not 1 <= defaults["window_size"] <= 100000):
                 raise ValueError("INVALID_WINDOW_SIZE")
@@ -971,8 +860,13 @@ class RulesEngine:
         if (not isinstance(rule_ids, list) or len(set(rule_ids)) != len(rule_ids)
                 or any(rule_id not in valid for rule_id in rule_ids)):
             raise ValueError("INVALID_PRESET_RULES")
+        preset_options = dict(options or {})
+        if set(preset_options) & OPTIONAL_BANKROLL_FIELDS:
+            raise ValueError("OPTIONAL_BANKROLL_MANAGEMENT_REMOVED")
+        if set(preset_options) & EXECUTOR_CONFIGURATION_FIELDS:
+            raise ValueError("EXECUTOR_CONFIGURATION_MUST_NOT_BE_STORED_IN_RULE_SESSIONS")
         value = {"name": name.strip(), "mode": mode, "rule_ids": list(rule_ids),
-                 "options": deepcopy(dict(options or {})), "configuration_version": self.configuration_version,
+                 "options": deepcopy(preset_options), "configuration_version": self.configuration_version,
                  "saved_at": _now()}
         with self._lock:
             self.presets[value["name"]] = value
@@ -1012,39 +906,35 @@ class RulesEngine:
                 or boundary.get("continuity_status") != "VERIFIED":
             raise ValueError("VERIFIED_COMMITTED_BOUNDARY_REQUIRED")
         opts = dict(options or {})
-        window_size = opts.get("window_size", WINDOW_SIZE)
+        if set(opts) & OPTIONAL_BANKROLL_FIELDS:
+            raise ValueError("OPTIONAL_BANKROLL_MANAGEMENT_REMOVED")
+        if mode in {"START_CHECK", "LEGACY_SEPARATE_TRACKER"} and (
+                "profit_target_enabled" in opts or "loss_limit_enabled" in opts):
+            raise ValueError("OPTIONAL_BANKROLL_MANAGEMENT_REMOVED")
+        if set(opts) & EXECUTOR_CONFIGURATION_FIELDS:
+            raise ValueError("EXECUTOR_CONFIGURATION_MUST_NOT_BE_STORED_IN_RULE_SESSIONS")
+        window_size = opts.get("max_observed_rounds", opts.get("window_size", WINDOW_SIZE))
         if mode in {"START_CHECK", "LEGACY_SEPARATE_TRACKER"}:
             expected_policy = START_CHECK_POLICY_ID if mode == "START_CHECK" else LEGACY_POLICY_ID
             if rule_ids not in ([], [expected_policy]):
                 raise ValueError("SINGLE_POLICY_MODE_ACCEPTS_ONLY_ITS_POLICY")
-            configured = self.rule_configuration.get(expected_policy, {}).get("parameters", {})
-            defaults = {"window_size": WINDOW_SIZE, "stake_rwf": 100, "cashout_multiplier": 2.0,
-                        "profit_target_enabled": True, "profit_target_rwf": 400,
-                        "loss_limit_enabled": True, "loss_limit_rwf": 400,
-                        "auto_next_check_enabled": False, "execution_panel": None,
-                        "stake_currency": "RWF"}
+            stored_configured = self.rule_configuration.get(expected_policy, {}).get("parameters", {})
+            configured = {key: value for key, value in stored_configured.items()
+                         if key in {"window_size", "auto_next_check_enabled"}}
+            defaults = {"window_size": WINDOW_SIZE, "auto_next_check_enabled": False}
             defaults.update(configured)
-            defaults.update(opts)
+            defaults.update({key: value for key, value in opts.items()
+                             if key in {"window_size", "max_observed_rounds", "auto_next_check_enabled"}})
+            if "max_observed_rounds" in defaults:
+                defaults["window_size"] = defaults.pop("max_observed_rounds")
+            if not isinstance(defaults.get("auto_next_check_enabled"), bool):
+                raise ValueError("INVALID_BOOLEAN_PARAMETER")
             opts = defaults
-            if opts["stake_rwf"] != 100 or opts["cashout_multiplier"] != 2.0:
-                raise ValueError("START_CHECK_FIXED_STAKE_AND_CASHOUT")
-            for key in ("profit_target_enabled", "loss_limit_enabled", "auto_next_check_enabled"):
-                if not isinstance(opts.get(key), bool):
-                    raise ValueError("INVALID_BOOLEAN_PARAMETER")
-            if opts["profit_target_enabled"] and (isinstance(opts["profit_target_rwf"], bool)
-                    or not isinstance(opts["profit_target_rwf"], int) or opts["profit_target_rwf"] <= 0):
-                raise ValueError("INVALID_NET_LIMIT")
-            if opts["loss_limit_enabled"] and (isinstance(opts["loss_limit_rwf"], bool)
-                    or not isinstance(opts["loss_limit_rwf"], int) or opts["loss_limit_rwf"] <= 0):
-                raise ValueError("INVALID_NET_LIMIT")
         elif mode == "ALL_RULES_TOGETHER":
-            if "fixed_stake_rwf" not in opts:
-                opts["fixed_stake_rwf"] = 100
-            opts.setdefault("stake_currency", "RWF")
-            if isinstance(opts["fixed_stake_rwf"], bool) or not isinstance(opts["fixed_stake_rwf"], int) or opts["fixed_stake_rwf"] < 1:
-                raise ValueError("INVALID_FIXED_STAKE")
-            if opts["stake_currency"] != "RWF":
-                raise ValueError("FIXED_STAKE_RWF_CURRENCY_MUST_BE_RWF")
+            opts = {key: value for key, value in opts.items() if key in {
+                "window_size", "max_observed_rounds", "win_limit_enabled", "win_limit_count",
+                "loss_limit_enabled", "loss_limit_count", "max_selections", "auto_next_check_enabled",
+            }}
             for key in ("win_limit_enabled", "loss_limit_enabled", "auto_next_check_enabled"):
                 opts.setdefault(key, False)
                 if not isinstance(opts[key], bool):
@@ -1062,68 +952,7 @@ class RulesEngine:
                 else:
                     opts[amount_key] = None
         else:
-            retained = dict(opts)
-            opts = {"window_size": retained.get("max_observed_rounds", window_size),
-                    "execution_panel": retained.get("execution_panel", 0),
-                    "stake_currency": retained.get("stake_currency")}
-            for key in ("ui_fixed_stake_bif", "ui_stake_currency"):
-                if key in retained:
-                    opts[key] = retained[key]
-            for key in ("reconciled_win_limit_enabled", "reconciled_win_limit_count",
-                        "reconciled_loss_count_limit_enabled", "reconciled_loss_count_limit",
-                        "reconciled_profit_target_enabled", "reconciled_profit_target_rwf",
-                        "reconciled_loss_limit_enabled", "reconciled_loss_limit_rwf"):
-                if key in retained:
-                    opts[key] = retained[key]
-        execution_panel = opts.get("execution_panel")
-        if execution_panel is not None and (isinstance(execution_panel, bool) or execution_panel not in (0, 1)):
-            raise ValueError("INVALID_EXECUTION_PANEL")
-        opts["execution_panel"] = execution_panel
-        opts["ui_stake_config_version"] = 1
-        if "stake_currency" in opts and opts["stake_currency"] is not None:
-            currency = str(opts["stake_currency"]).strip().upper()
-            if not re.fullmatch(r"[A-Z]{3}", currency):
-                raise ValueError("INVALID_STAKE_CURRENCY")
-            opts["stake_currency"] = currency
-        ui_stake = opts.get("ui_fixed_stake_bif")
-        ui_currency = opts.get("ui_stake_currency")
-        if ui_stake is not None:
-            if isinstance(ui_stake, bool) or not isinstance(ui_stake, int) or ui_stake < 1:
-                raise ValueError("INVALID_FIXED_UI_STAKE_BIF")
-            if execution_panel not in (0, 1):
-                raise ValueError("UI_FIXED_STAKE_REQUIRES_SELECTED_PANEL")
-            if str(ui_currency or "BIF").strip().upper() != "BIF":
-                raise ValueError("UI_FIXED_STAKE_CURRENCY_MUST_BE_BIF")
-            opts["ui_stake_currency"] = "BIF"
-        elif ui_currency is not None:
-            raise ValueError("UI_STAKE_CURRENCY_REQUIRES_FIXED_STAKE")
-        if (("fixed_stake_rwf" in opts or "stake_rwf" in opts)
-                and opts.get("stake_currency") != "RWF"):
-            raise ValueError("RWF_STAKE_FIELD_CURRENCY_MUST_BE_RWF")
-        # These controls are evaluated from receipt and balance reconciliations.
-        # The existing shadow-result limits above remain separate and keep their
-        # established semantics.
-        reconciled_controls = (
-            ("reconciled_win_limit_enabled", "reconciled_win_limit_count"),
-            ("reconciled_loss_count_limit_enabled", "reconciled_loss_count_limit"),
-        )
-        for enabled_key, count_key in reconciled_controls:
-            if enabled_key in opts and not isinstance(opts[enabled_key], bool):
-                raise ValueError("INVALID_BOOLEAN_PARAMETER")
-            if opts.get(enabled_key):
-                count = opts.get(count_key)
-                if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-                    raise ValueError("INVALID_RESULT_COUNT_LIMIT")
-            elif enabled_key in opts:
-                opts[count_key] = None
-        for enabled_key, amount_key in (
-                ("reconciled_profit_target_enabled", "reconciled_profit_target_rwf"),
-                ("reconciled_loss_limit_enabled", "reconciled_loss_limit_rwf")):
-            if enabled_key in opts and not isinstance(opts[enabled_key], bool):
-                raise ValueError("INVALID_BOOLEAN_PARAMETER")
-            if opts.get(enabled_key) and (isinstance(opts.get(amount_key), bool)
-                    or not isinstance(opts.get(amount_key), int) or opts[amount_key] <= 0):
-                raise ValueError("INVALID_NET_LIMIT")
+            opts = {"window_size": window_size}
         window_size = opts.get("max_observed_rounds", opts.get("window_size", WINDOW_SIZE))
         if isinstance(window_size, bool) or not isinstance(window_size, int) or not 1 <= window_size <= 100000:
             raise ValueError("INVALID_WINDOW_SIZE")
@@ -1142,6 +971,7 @@ class RulesEngine:
         session = {
             "session_id": session_id, "mode": mode, "status": "RUNNING", "selection_status": "ACTIVE",
             "started_at": now, "ended_at": None, "window_size": window_size,
+            "configuration_schema_version": 2,
             "history_epoch": self.history_epoch,
             "configuration_version": snapshot_version, "configuration_snapshot": deepcopy(opts),
             "rule_ids": list(rule_ids), "rule_versions": {rid: self._version(rid) for rid in rule_ids},
@@ -1155,11 +985,10 @@ class RulesEngine:
             "prestart_skipped_rounds": 0,
             "selections": [], "rule_selections": {rid: [] for rid in rule_ids},
             "evaluations": [], "decisions": [], "total_wins": 0, "total_losses": 0,
-            "net_profit_rwf": 0, "selection_stop_reason": None, "stop_reason": None,
-            "financial_stop": {"status": "ACTIVE", "reason": None,
-                               "realized_betting_pl": None, "currency": None,
-                               "win_count": 0, "loss_count": 0, "reconciled_bets": 0,
-                               "reconciled_execution_ids": []},
+            "selection_stop_reason": None, "stop_reason": None,
+            "settlement_integrity": {"status": "CLEAR", "reason": None,
+                                     "reconciled_bets": 0,
+                                     "reconciled_execution_ids": []},
             "auto_next_armed": False, "automatic_execution": "OFF",
         }
         with self._lock:
@@ -1241,8 +1070,6 @@ class RulesEngine:
                     intent["blockers"] = blockers
             session["total_wins"] += result == "WIN"
             session["total_losses"] += result == "LOSS"
-            stake = session["configuration_snapshot"].get("fixed_stake_rwf", 100)
-            session["net_profit_rwf"] += stake if result == "WIN" else -stake
             for rule_id in combined["contributing_rule_ids"]:
                 state = session["engines"][rule_id]
                 if state.get("pending_selection_id") == combined["selection_id"]:
@@ -1257,12 +1084,6 @@ class RulesEngine:
                     self._stop_selecting(session, "LOSS_LIMIT_REACHED", at, source)
                 if config.get("max_selections") and len(session["selections"]) >= config["max_selections"]:
                     self._stop_selecting(session, "MAX_SELECTIONS_REACHED", at, source)
-            if session["mode"] in {"START_CHECK", "LEGACY_SEPARATE_TRACKER"}:
-                limit = session["configuration_snapshot"]
-                if limit.get("profit_target_enabled") and session["net_profit_rwf"] >= limit.get("profit_target_rwf", 400):
-                    self._stop_selecting(session, "PROFIT_TARGET_REACHED", at, source)
-                if limit.get("loss_limit_enabled") and session["net_profit_rwf"] <= -limit.get("loss_limit_rwf", 400):
-                    self._stop_selecting(session, "LOSS_LIMIT_REACHED", at, source)
         for rule_id, selections in session["rule_selections"].items():
             selection = next((item for item in selections if item["status"] == "PENDING"
                               and item["expected_target"]["streamId"] == stream_id
@@ -1800,15 +1621,20 @@ class RulesEngine:
                 continue
             session_id = str(uuid4())
             rule_ids = list(previous["rule_ids"])
+            legacy_configuration = previous.get("configuration_snapshot") or {}
+            retained_configuration = {key: deepcopy(value) for key, value in legacy_configuration.items()
+                                      if key in {"window_size", "auto_next_check_enabled", "win_limit_enabled",
+                                                 "win_limit_count", "loss_limit_enabled", "loss_limit_count",
+                                                 "max_selections"}}
             clone = {
                 "session_id": session_id, "mode": previous["mode"], "status": "RUNNING",
                 "selection_status": "ACTIVE", "started_at": at, "ended_at": None,
                 "history_epoch": self.history_epoch,
                 "window_size": previous["window_size"],
                 "configuration_version": previous["configuration_version"],
-                "configuration_snapshot": deepcopy(previous["configuration_snapshot"]),
-                "rule_ids": rule_ids, "rule_versions": deepcopy(previous["rule_versions"]),
-                "manifest": deepcopy(previous["manifest"]),
+                "configuration_snapshot": retained_configuration,
+                "rule_ids": rule_ids, "rule_versions": {rid: self._version(rid) for rid in rule_ids},
+                "manifest": self._manifest(rule_ids),
                 "start_boundary": _reference(boundary) | {"streamSequence": boundary["stream_sequence"]},
                 "last_stream_id": boundary["stream_id"], "last_stream_sequence": boundary["stream_sequence"],
                 "last_round_index": boundary["round_index"], "last_round_id": boundary["round_id"],
@@ -1816,11 +1642,11 @@ class RulesEngine:
                 "engines": {rid: _fresh_engine(rid) for rid in rule_ids}, "observed_rounds": 0,
                 "selections": [], "rule_selections": {rid: [] for rid in rule_ids},
                 "evaluations": [], "decisions": [], "total_wins": 0, "total_losses": 0,
-                "net_profit_rwf": 0, "selection_stop_reason": None, "stop_reason": None,
-                "financial_stop": {"status": "ACTIVE", "reason": None,
-                                   "realized_betting_pl": None, "currency": None,
-                                   "win_count": 0, "loss_count": 0, "reconciled_bets": 0,
-                                   "reconciled_execution_ids": []},
+                "configuration_schema_version": 2,
+                "selection_stop_reason": None, "stop_reason": None,
+                "settlement_integrity": {"status": "CLEAR", "reason": None,
+                                         "reconciled_bets": 0,
+                                         "reconciled_execution_ids": []},
                 "auto_next_armed": False, "automatic_execution": "OFF",
             }
             previous["auto_next_armed"] = False
@@ -1829,12 +1655,13 @@ class RulesEngine:
 
     def _combine(self, session: dict[str, Any], source: dict[str, Any],
                  proposals: list[dict[str, Any]], at: str) -> dict[str, Any]:
+        config = session.get("configuration_snapshot")
+        config = config if isinstance(config, dict) else {}
         true_rows = [row for row in proposals if row.get("eligible") is True]
         expected_source, expected_target = _reference(source), _expected(source)
         if any(row.get("proposal", {}).get("sourceRoundRef") != expected_source
                or row.get("proposal", {}).get("expectedTargetRef") != expected_target for row in true_rows):
             return {"action": "BLOCKED", "reason": "TARGET_MISMATCH", "true_rule_ids": [], "selection_id": None}
-        config = session["configuration_snapshot"]
         if session["selection_status"] != "ACTIVE":
             return {"action": "WAIT", "reason": session.get("selection_stop_reason") or "SELECTIONS_STOPPED",
                     "true_rule_ids": [], "selection_id": None}
@@ -1853,28 +1680,14 @@ class RulesEngine:
                      "source_round": _reference(source), "expected_target": _expected(source),
                      "contributing_rule_ids": [row["rule_id"] for row in true_rows],
                      "contributors": contributors, "selected_at": at, "status": "PENDING", "result": "PENDING",
-                     "actual_multiplier": None, "actual_target": None, "resolved_at": None,
-                     "stake_rwf": config.get("fixed_stake_rwf", 100)}
+                     "actual_multiplier": None, "actual_target": None, "resolved_at": None}
         target = selection["expected_target"]
-        configured_panel = config.get("execution_panel")
-        selected_panel = (configured_panel if type(configured_panel) is int
-                          and configured_panel in {0, 1} else None)
-        panel_key = selected_panel if selected_panel is not None else "UNSELECTED"
         intent_id = hashlib.sha256(
-            f"{target['streamId']}\0{target['roundIndex']}\0{panel_key}".encode("utf-8")
+            f"{target['streamId']}\0{target['roundIndex']}".encode("utf-8")
         ).hexdigest()
-        requested_stake = config.get("ui_fixed_stake_bif")
-        requested_currency = config.get("ui_stake_currency") if requested_stake is not None else None
-        if requested_stake is None and config.get("requested_stake_currency") == "BIF":
-            requested_stake = config.get("requested_stake")
-            requested_currency = "BIF" if requested_stake is not None else None
         panel_state_before = (_panel_observation_from_rows(
-            source.get("panel_observations"), selected_panel, at, source="COMMITTED_ROUND_PANEL_OBSERVATION")
-            if selected_panel is not None else
-            _normalize_intent_panel_observation(None, 0, at, source="PANEL_NOT_SELECTED"))
-        panel_state_after = (_current_runtime_panel_observation(selected_panel, at)
-                             if selected_panel is not None else
-                             _normalize_intent_panel_observation(None, 0, at, source="PANEL_NOT_SELECTED"))
+            source.get("panel_observations"), None, at, source="COMMITTED_ROUND_PANEL_OBSERVATION"))
+        panel_state_after = _normalize_intent_panel_observation(None, None, at, source="PANEL_NOT_SELECTED")
         panel_transition_timestamp = panel_state_after.get("transition_timestamp")
         if (panel_state_before.get("state") in {"BET_AVAILABLE", "BET_QUEUED", "BET_ACTIVE", "BET_RESET"}
                 and panel_state_after.get("state") in {"BET_AVAILABLE", "BET_QUEUED", "BET_ACTIVE", "BET_RESET"}
@@ -1887,13 +1700,12 @@ class RulesEngine:
             "EXPLICIT_SESSION_AUTHORIZATION_REQUIRED",
             "TARGET_ROUND_ID_UNVERIFIED",
             "BETTING_DEADLINE_UNVERIFIED" if deadline_evidence.get("status") != "VERIFIED" else "REAL_MONEY_EXECUTION_DISABLED",
-            "FIXED_UI_STAKE_BIF_NOT_CONFIGURED" if requested_stake is None else "STAKE_CURRENCY_NOT_RECONCILED",
+            "OPERATOR_STAKE_AND_PANEL_READBACK_REQUIRED",
             "VERIFIED_BALANCE_AND_SUFFICIENT_FUNDS_REQUIRED",
             "CASHOUT_PLATFORM_ACKNOWLEDGEMENT_UNVERIFIED",
             "PLATFORM_ACCEPTANCE_AND_SETTLEMENT_UNVERIFIED",
         ]
-        if selected_panel is None:
-            execution_blockers.append("EXECUTION_PANEL_NOT_SELECTED")
+        execution_blockers.append("EXECUTION_PANEL_NOT_SELECTED")
         selection["execution_intent"] = {
             "intent_id": intent_id,
             "decision_id": selection_id,
@@ -1906,12 +1718,6 @@ class RulesEngine:
             "target_round_ref": deepcopy(target),
             "target_identity_status": "VERIFIED" if target.get("providerRoundId") else "UNVERIFIED",
             "selected_rule_ids": list(selection["contributing_rule_ids"]),
-            "selected_panel": selected_panel,
-            "requested_stake": requested_stake,
-            "requested_stake_currency": requested_currency,
-            "stake": requested_stake,
-            "currency": requested_currency,
-            "cashout_target": 2.0,
             "created_at": at,
             "decision_timestamp": at,
             "round_observed_at": source.get("observed_at"),
@@ -1930,13 +1736,9 @@ class RulesEngine:
             "platform_evidence": None,
             "platform_acceptance": "UNVERIFIED",
             "settlement": "UNVERIFIED",
-            "execution_eligibility": "BLOCKED_MISSING_EXECUTION_PANEL" if selected_panel is None
-                else "BLOCKED_TARGET_IDENTITY_OR_DEADLINE",
+            "execution_eligibility": "BLOCKED_EXECUTION_DISABLED",
             "session_id": session["session_id"],
             "session_mode": session.get("mode"),
-            # The legacy SQL column is NOT NULL; -1 cannot collide with either
-            # selectable panel (0 or 1). selected_panel remains authoritative.
-            "panel": selected_panel if selected_panel is not None else -1,
             "execution_status": "BLOCKED_READ_ONLY",
             "blockers": list(dict.fromkeys(execution_blockers)),
         }
@@ -1998,15 +1800,14 @@ class RulesEngine:
                 has_open = getattr(self._persistence, "has_open_rule_session_executions", None)
                 if callable(has_open) and has_open(session_id):
                     raise ValueError("UNRECONCILED_EXECUTION_REMAINS")
-                financial_stop = session.get("financial_stop") or {}
-                if financial_stop.get("status") == "STOPPED":
-                    raise ValueError("SESSION_STOP_LIMIT_REACHED")
+                integrity = self._settlement_integrity(session)
+                if integrity.get("status") == "RECONCILIATION_REQUIRED":
+                    raise ValueError("UNRECONCILED_EXECUTION_REMAINS")
                 session.update({"status": "RUNNING", "stop_reason": None,
                                 "selection_status": "ACTIVE", "selection_stop_reason": None,
                                 "resumed_at": at})
-                financial_stop.update({"status": "ACTIVE", "reason": None,
-                                       "resumed_after_reconciliation_at": at})
-                session["financial_stop"] = financial_stop
+                integrity.update({"status": "CLEAR", "reason": None,
+                                  "resumed_after_reconciliation_at": at})
             elif action in {"stop", "emergency_stop"}:
                 reason = "EMERGENCY_STOP" if action == "emergency_stop" else "MANUAL_STOP"
                 prior_reason = session.get("stop_reason")
@@ -2015,14 +1816,14 @@ class RulesEngine:
                 session.update({"status": "MANUALLY_STOPPED", "selection_status": "STOPPED",
                                 "selection_stop_reason": reason, "stop_reason": reason,
                                 "ended_at": at, "auto_next_armed": False})
-                session.setdefault("financial_stop", {}).update({
+                self._settlement_integrity(session).update({
                     "status": "STOPPED", "reason": reason, "stopped_at": at,
                 })
             elif action == "reset":
                 session.update({"status": "RESET", "selection_status": "STOPPED",
                                 "selection_stop_reason": "RESET", "stop_reason": "RESET", "ended_at": at,
                                 "auto_next_armed": False})
-                session.setdefault("financial_stop", {}).update({
+                self._settlement_integrity(session).update({
                     "status": "STOPPED", "reason": "RESET", "stopped_at": at,
                 })
             else:
@@ -2068,50 +1869,13 @@ class RulesEngine:
                          None, "MANUAL_PAUSE", "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION"}), None)
 
     def install_live_execution_stops(self, configuration: Mapping[str, Any]) -> dict[str, Any]:
-        """Attach LIVE stop limits separately from the immutable rule config."""
-        with self._lock:
-            session = self._selected_session()
-            if (not session or session.get("status") != "RUNNING"
-                    or session.get("selection_status") != "ACTIVE"):
-                return {"ok": False, "reason": "ACTIVE_RULES_SELECTION_SESSION_REQUIRED"}
-            live_id = configuration.get("live_session_id")
-            currency = configuration.get("currency")
-            if not isinstance(live_id, str) or not live_id or not isinstance(currency, str) or not currency:
-                return {"ok": False, "reason": "LIVE_SESSION_ID_AND_CURRENCY_REQUIRED"}
-            prior = session.get("live_execution_stop") or {}
-            if prior.get("status") in {"ACTIVE", "STOPPED", "RECONCILIATION_REQUIRED"}:
-                return {"ok": False, "reason": "LIVE_SESSION_STOP_LIMITS_ALREADY_ATTACHED"}
-            session["live_execution_stop"] = {
-                "live_session_id": live_id, "rules_session_id": session["session_id"],
-                "started_at": configuration.get("started_at"), "currency": currency,
-                "profit_target_enabled": bool(configuration.get("profit_target_enabled")),
-                "profit_target": configuration.get("profit_target"),
-                "loss_limit_enabled": bool(configuration.get("loss_limit_enabled")),
-                "loss_limit": configuration.get("loss_limit"),
-                "win_count_limit_enabled": bool(configuration.get("win_count_limit_enabled")),
-                "win_count_limit": configuration.get("win_count_limit"),
-                "loss_count_limit_enabled": bool(configuration.get("loss_count_limit_enabled")),
-                "loss_count_limit": configuration.get("loss_count_limit"),
-                "status": "ACTIVE", "reason": None, "realized_profit_loss": 0.0,
-                "win_count": 0, "loss_count": 0, "settled_execution_ids": [],
-                "updated_at": configuration.get("started_at"),
-            }
-            self._persist()
-            return {"ok": True, "rules_session_id": session["session_id"],
-                    "live_execution_stop": deepcopy(session["live_execution_stop"])}
+        """Compatibility guard: per-session bankroll policies are retired."""
+        del configuration
+        return {"ok": False, "reason": "OPTIONAL_BANKROLL_MANAGEMENT_REMOVED"}
 
     def remove_unstarted_live_execution_stops(self, live_session_id: str) -> None:
-        """Roll back a stop configuration if the LIVE betting session never started."""
-        with self._lock:
-            for session in self.sessions.values():
-                live_stop = session.get("live_execution_stop") or {}
-                if (live_stop.get("live_session_id") == live_session_id
-                        and live_stop.get("status") == "ACTIVE"
-                        and not live_stop.get("settled_execution_ids")
-                        and not live_stop.get("pending_execution_ids")):
-                    session.pop("live_execution_stop", None)
-                    self._persist()
-                    return
+        """No new optional stop state is installed for a LIVE session."""
+        del live_session_id
 
     def stream_cursor(self, stream_id: str, latest_sequence: int) -> int:
         cursors = [int(row.get("last_stream_sequence", latest_sequence))
@@ -2139,10 +1903,7 @@ class RulesEngine:
             pending = sum(1 for row in rows if row.get("status") == "PENDING")
             results = {"WIN": session.get("total_wins", 0), "LOSS": session.get("total_losses", 0), "PENDING": pending}
         selection_count = len(rows)
-        configuration = session.get("configuration_snapshot") or {}
-        requested_stake = configuration.get("requested_stake")
-        if requested_stake is None:
-            requested_stake = configuration.get("fixed_stake_rwf", configuration.get("stake_rwf"))
+        integrity = session.get("settlement_integrity") or session.get("financial_stop") or {}
         return {"session_id": session["session_id"], "mode": session["mode"], "status": session["status"],
                 "selection_status": session.get("selection_status"), "started_at": session.get("started_at"),
                 "ended_at": session.get("ended_at"), "rule_ids": list(session.get("rule_ids", [])),
@@ -2150,84 +1911,22 @@ class RulesEngine:
                 "observed_rounds": session.get("observed_rounds", 0), "window_size": session.get("window_size"),
                 "prestart_skipped_rounds": session.get("prestart_skipped_rounds", 0),
                 "selection_count": selection_count, "results": results,
-                "net_profit_rwf": session.get("net_profit_rwf", 0),
                 "stop_reason": session.get("selection_stop_reason") or session.get("stop_reason"),
                 "integrity_stop_reason": session.get("integrity_stop_reason"),
                 "selection_results_kind": "SHADOW_ROUND_OUTCOMES",
-                "execution_panel": configuration.get("execution_panel"),
-                "requested_stake": requested_stake,
-                "requested_stake_currency": configuration.get("stake_currency"),
-                "ui_fixed_stake_bif": configuration.get("ui_fixed_stake_bif"),
-                "ui_stake_currency": configuration.get("ui_stake_currency"),
-                "financial_stop": deepcopy(session.get("financial_stop") or {
-                    "status": "ACTIVE", "reason": None, "realized_betting_pl": None,
-                    "currency": None, "win_count": 0, "loss_count": 0, "reconciled_bets": 0,
-                }),
-                "live_execution_stop": deepcopy(session.get("live_execution_stop") or {
-                    "status": "UNCONFIGURED", "reason": None, "currency": None,
-                    "realized_profit_loss": 0.0, "win_count": 0, "loss_count": 0,
-                }),
+                "settlement_integrity": {key: integrity.get(key) for key in
+                    ("status", "reason", "reconciled_bets", "updated_at")},
+                "live_execution_integrity": {
+                    "status": (session.get("live_execution_stop") or {}).get("status", "UNCONFIGURED"),
+                    "reason": (session.get("live_execution_stop") or {}).get("reason"),
+                },
                 "automatic_execution": "OFF"}
 
     def ui_setup_configuration(self) -> dict[str, Any]:
-        """Return the active session's UI stake and single selected panel.
-
-        This is configuration only. It is independent of whether any rule has
-        produced TRUE and it never authorizes a financial action.
-        """
-        with self._lock:
-            active = self._selected_session()
-            if not active:
-                return {"status": "BLOCKED", "reason": "NO_ACTIVE_RULES_SESSION",
-                        "session_id": None, "requested_stake": None,
-                        "requested_stake_currency": None, "execution_panel": None,
-                        "automatic_execution": "OFF"}
-            config = deepcopy(active.get("configuration_snapshot") or {})
-            requested_stake = config.get("requested_stake")
-            if requested_stake is None:
-                requested_stake = config.get("fixed_stake_rwf", config.get("stake_rwf"))
-            ui_fixed_stake = config.get("ui_fixed_stake_bif")
-            currency = config.get("ui_stake_currency") if ui_fixed_stake is not None else config.get("stake_currency")
-            if ui_fixed_stake is not None:
-                requested_stake = ui_fixed_stake
-            if currency is None and ("fixed_stake_rwf" in config or "stake_rwf" in config):
-                currency = "RWF"
-            panel = config.get("execution_panel")
-            if (config.get("ui_stake_config_version") == 1 and panel is not None
-                    and ui_fixed_stake is None):
-                return {"status": "BLOCKED", "reason": "FIXED_UI_STAKE_BIF_NOT_CONFIGURED",
-                        "session_id": active.get("session_id"), "requested_stake": None,
-                        "requested_stake_currency": None, "execution_panel": panel,
-                        "automatic_execution": "OFF"}
-            if (isinstance(requested_stake, bool)
-                    or not isinstance(requested_stake, (int, float))
-                    or requested_stake <= 0):
-                return {"status": "BLOCKED", "reason": "SESSION_STAKE_NOT_CONFIGURED",
-                        "session_id": active.get("session_id"), "requested_stake": None,
-                        "requested_stake_currency": currency, "execution_panel": panel,
-                        "automatic_execution": "OFF"}
-            if not isinstance(currency, str) or not re.fullmatch(r"[A-Z]{3}", currency):
-                return {"status": "BLOCKED", "reason": "SESSION_STAKE_CURRENCY_UNVERIFIED",
-                        "session_id": active.get("session_id"), "requested_stake": requested_stake,
-                        "requested_stake_currency": None, "execution_panel": panel,
-                        "automatic_execution": "OFF"}
-            if panel is None:
-                return {"status": "BLOCKED", "reason": "SESSION_EXECUTION_PANEL_NOT_SELECTED",
-                        "session_id": active.get("session_id"), "requested_stake": requested_stake,
-                        "requested_stake_currency": currency, "execution_panel": None,
-                        "automatic_execution": "OFF"}
-            if isinstance(panel, bool) or panel not in (0, 1):
-                return {"status": "BLOCKED", "reason": "SESSION_EXECUTION_PANEL_INVALID",
-                        "session_id": active.get("session_id"), "requested_stake": requested_stake,
-                        "requested_stake_currency": currency, "execution_panel": None,
-                        "automatic_execution": "OFF"}
-            return {"status": "CONFIGURED", "reason": None,
-                    "session_id": active.get("session_id"),
-                    "session_status": active.get("status"),
-                    "requested_stake": requested_stake,
-                    "requested_stake_currency": currency,
-                    "execution_panel": panel,
-                    "automatic_execution": "OFF"}
+        """Compatibility response: Rules Engine sessions do not own bet setup."""
+        return {"status": "NOT_REQUIRED", "reason": "EXECUTOR_CONFIGURATION_IS_OPERATOR_OWNED",
+                "session_id": None,
+                "automatic_execution": "OFF"}
 
     def evaluate(self, evaluated_round: dict[str, Any] | None = None) -> dict[str, Any]:
         # Compatibility endpoint deliberately does not infer from a loose/latest row.
@@ -2309,6 +2008,15 @@ class RulesEngine:
         session_rule_count = len(active.get("rule_ids", [])) if active else 0
         latest = (self.last_evaluation or {}).get("source_round",
                   (self.last_evaluation or {}).get("evaluated_round"))
+        public_presets = {}
+        for name, preset in self.presets.items():
+            row = deepcopy(preset)
+            options = row.get("options") if isinstance(row.get("options"), dict) else {}
+            allowed = {"window_size", "max_observed_rounds", "auto_next_check_enabled",
+                       "win_limit_enabled", "win_limit_count", "loss_limit_enabled",
+                       "loss_limit_count", "max_selections"}
+            row["options"] = {key: value for key, value in options.items() if key in allowed}
+            public_presets[name] = row
         return {"status": active.get("status") if active else ("READY" if configured else "NOT_CONFIGURED"),
                 "rules_configured": configured, "rules_enabled": enabled,
                 "rules_definition_state": "CONFIGURED" if configured else "NOT_CONFIGURED",
@@ -2323,7 +2031,7 @@ class RulesEngine:
                 "rules_execution_enabled": False,
                 "live_execution_authorized": False,
                 "configuration_version": self.configuration_version,
-                "presets": deepcopy(self.presets),
+                "presets": public_presets,
                 "last_rule_evaluation": self.last_evaluation_at or "NONE",
                 "last_evaluated_round": latest, "decision": (self.last_evaluation or {}).get("decision", "NO_ACTION"),
                 "automatic_execution": "OFF", "rule_evaluations": (self.last_evaluation or {}).get("rule_evaluations", []),

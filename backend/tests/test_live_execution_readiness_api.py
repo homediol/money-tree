@@ -21,7 +21,7 @@ def _request(app: FastAPI) -> Request:
     })
 
 
-def test_read_only_live_readiness_passes_fresh_balance_to_gate():
+def test_read_only_live_readiness_passes_only_operator_selected_panel_to_gate():
     observation = {
         "verified": False, "balance": None, "ui_ready": False,
         "browser_status": "UNAVAILABLE", "error": "login page is open",
@@ -31,9 +31,15 @@ def test_read_only_live_readiness_passes_fresh_balance_to_gate():
         async def _read_platform_balance(self):
             return observation
 
+        def live_configuration(self):
+            return {"configuration_valid": True,
+                    "execution_panel": 0,
+                    "persistence_source": "REVIEWED"}
+
     class Live:
-        async def production_readiness_check(self, supplied):
-            return {"ready": False, "state": "BLOCKED", "observation": supplied}
+        async def production_readiness_check(self, supplied, configuration):
+            return {"ready": False, "state": "BLOCKED", "observation": supplied,
+                    "configuration": configuration}
 
     app = FastAPI()
     app.state.betting_mode = Modes()
@@ -42,6 +48,75 @@ def test_read_only_live_readiness_passes_fresh_balance_to_gate():
 
     assert result["ready"] is False
     assert result["observation"] == observation
+    assert result["configuration"] == {
+        "execution_panel": 0,
+        "configuration_source": "REVIEWED",
+    }
+
+
+def test_readiness_does_not_apply_optional_balance_exposure_policy(tmp_path):
+    repository = Repository(tmp_path / "live-exposure-readiness.sqlite3")
+    repository.init()
+    observation = {
+        "verified": True, "balance": 414.0, "currency": "BIF",
+        "currency_verified": True, "fresh": True, "ui_ready": True,
+        "browser_status": "CONNECTED", "observed_at": datetime.now(timezone.utc).isoformat(),
+        "authentication_state": "AUTHENTICATED", "provider_identity": "winner.rw",
+        "platform_session_identity": "platform-session",
+        "cashout_panels": [], "betting_controls": {},
+    }
+
+    class Health:
+        def record_browser_observation(self, _observation):
+            pass
+
+        def browser_observation(self):
+            return observation
+
+        def refresh(self):
+            return {"state": "HEALTHY", "can_bet": {"reasons": []}}
+
+    class Rules:
+        def status(self):
+            return {"rules_enabled": 1}
+
+        def decision_interface_status(self):
+            return {"available": True, "missing_capabilities": []}
+
+    state = SimpleNamespace(
+        wp=SimpleNamespace(repository=repository), system_health=Health(),
+        betting=SimpleNamespace(settings=SimpleNamespace(allow_real_placement=True),
+                                status=lambda: {"automatic_enabled": False}),
+        risk=SimpleNamespace(emergency_latched=False, profiles=lambda: {
+            "PROFILE_A": {"maximum_balance_percentage": 0.05}}),
+        history_collector=SimpleNamespace(status=lambda: {
+            "running": True, "status": "HEALTHY", "latest": {"round_id": "round-1"}}),
+        reconciliation=object(), orchestrator=object(), rules_engine=Rules(),
+    )
+    result = asyncio.run(LiveActivationManager(SimpleNamespace(state=state))
+        .production_readiness_check(observation, {
+            "profile": "PROFILE_A", "execution_panel": 0,
+            "stake_amount": 100, "currency": "BIF",
+            "maximum_balance_percentage": 0.05,
+        }))
+
+    assert result["optional_bankroll_policy"] == "NOT_APPLIED"
+    assert "optional_bankroll_policy" not in result["checks"]
+    assert result["checks"]["real_money_execution"] == "DISABLED_FOR_REFACTORING"
+    assert result["checks"]["execution_integrity"] == "BLOCKED"
+    assert result["checks"]["emergency_stop"] == "CLEAR"
+    assert result["checks"]["selected_panel"] == "VERIFIED"
+    assert result["checks"]["betting_controls"] == "UNAVAILABLE"
+    assert "selected execution panel is not currently verified" not in result["reasons"]
+    assert result["provider_capabilities"] == {
+        "bet_submission": False, "target_identity": False,
+        "betting_deadline": False, "cashout_acknowledgement": False,
+        "acceptance_receipt": False, "settlement_receipt": False,
+        "currency_validation": False,
+    }
+    assert "maximum_balance_exposure" not in result
+    assert not any("EXPOSURE" in reason or "BALANCE_PERCENTAGE" in reason
+                   for reason in result["reasons"])
 
 
 def test_production_readiness_names_unwired_target_and_decision_contracts(tmp_path):
@@ -143,13 +218,9 @@ def test_balance_endpoint_returns_unverified_transport_failure_as_503_without_fa
     assert b"balance\":null" in response.body
 
 
-@pytest.mark.parametrize(
-    ("shown_stake", "expected"),
-    [(100, "MATCHED_SELECTED_PANEL_READBACK"),
-     (200, "MISMATCHED_SELECTED_PANEL_READBACK")],
-)
-def test_live_review_requires_selected_panel_stake_to_match_visible_input_and_bet_action(
-        tmp_path, shown_stake, expected):
+@pytest.mark.parametrize("shown_stake", [100, 200])
+def test_live_review_reports_manual_selected_panel_stake_without_app_stake_configuration(
+        tmp_path, shown_stake):
     repository = Repository(tmp_path / f"stake-readback-{shown_stake}.sqlite3")
     repository.init()
     now = datetime.now(timezone.utc).isoformat()
@@ -216,7 +287,7 @@ def test_live_review_requires_selected_panel_stake_to_match_visible_input_and_be
             "execution_panel": 0, "stake_amount": 100, "currency": "BIF",
         }))
 
-    assert result["checks"]["displayed_stake"] == expected
+    assert result["checks"]["displayed_stake"] == "MATCHED_SELECTED_PANEL_READBACK"
     assert result["checks"]["betting_controls"] == "READY"
-    if shown_stake != 100:
-        assert "selected panel displayed stake does not match the configured BIF stake" in result["reasons"]
+    assert result["checks"]["stake"] == "MATCHED_SELECTED_PANEL_READBACK"
+    assert "selected panel displayed stake does not match the configured BIF stake" not in result["reasons"]

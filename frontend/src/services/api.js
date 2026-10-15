@@ -83,7 +83,3 @@ export async function getExecutionDetail(id) {
 export async function getBalanceLedger(limit = 100) {
   return (await api.get('/api/results/ledger', { params: { limit } })).data.entries || [];
 }
-
-export async function getSessionMetrics(limit = 10) {
-  return (await api.get('/api/results/session-metrics', { params: { limit } })).data.sessions || [];
-}

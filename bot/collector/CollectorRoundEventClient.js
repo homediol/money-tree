@@ -229,6 +229,7 @@ export async function publishCollectorGamePhase(phase, sourceIdentity, {
         source_round_id: String(sourceIdentity.round_id),
         source_round_index: Number(sourceIdentity.round_index),
         phase: String(phase.phase || 'UNKNOWN'),
+        round_phase: String(phase.round_phase || 'UNKNOWN'),
         observed_at: String(phase.observed_at || ''),
         evidence: phase.evidence || {},
         panel_observations: Array.isArray(phase.panel_observations)

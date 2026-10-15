@@ -130,6 +130,9 @@ export function panelObservationTransition(previous, current) {
   }
   const frameReloaded = Boolean(oldObservation.frame_identity && nextObservation.frame_identity
     && oldObservation.frame_identity !== nextObservation.frame_identity);
+  const resetToAvailable = !frameReloaded
+    && ['BET_QUEUED', 'BET_ACTIVE'].includes(oldObservation.state)
+    && nextObservation.state === 'BET_AVAILABLE';
   const duplicate = Boolean(previous && current && !frameReloaded
     && oldObservation.state === nextObservation.state
     && oldObservation.button_text === nextObservation.button_text
@@ -143,7 +146,9 @@ export function panelObservationTransition(previous, current) {
     stale,
     frame_reloaded: frameReloaded,
     from_state: frameReloaded ? 'UNKNOWN' : previous ? (oldObservation.state || 'UNKNOWN') : null,
-    to_state: current ? (nextObservation.state || 'UNKNOWN') : 'UNKNOWN',
+    to_state: resetToAvailable ? 'BET_RESET'
+      : current ? (nextObservation.state || 'UNKNOWN') : 'UNKNOWN',
+    current_state: current ? (nextObservation.state || 'UNKNOWN') : 'UNKNOWN',
     observed_at: nextObservation.observed_at || null,
   };
 }

@@ -1,16 +1,63 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
-from app.betting.browser_client import AviatorBrowserClient
 
 router = APIRouter(prefix="/api/rules-engine", tags=["rules engine"])
 SHADOW_BOUNDARY_MAX_AGE_SECONDS = 120
 CASHOUT_READBACK_MAX_AGE_SECONDS = 300
 CASHOUT_REFRESH_READBACK_MAX_AGE_SECONDS = 60
+PUBLIC_EXECUTION_INTENT_FIELDS = (
+    "intent_id", "decision_id", "session_id", "source_round_id",
+    "source_round_index", "target_round_id", "target_round_index",
+    "target_stream_id", "selected_rule_ids", "execution_status",
+    "execution_eligibility", "blockers", "created_at", "expires_at",
+)
+PUBLIC_RULE_SESSION_OPTION_FIELDS = {
+    "window_size", "max_observed_rounds", "auto_next_check_enabled",
+    "win_limit_enabled", "win_limit_count", "loss_limit_enabled",
+    "loss_limit_count", "max_selections",
+}
+
+
+def _public_execution_intent(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: row.get(key) for key in PUBLIC_EXECUTION_INTENT_FIELDS if key in row}
+
+
+def _public_rule_session(row: dict[str, Any]) -> dict[str, Any]:
+    """Hide legacy bankroll/executor settings while keeping rule and receipt history."""
+    value = deepcopy(row)
+    options = value.get("configuration_snapshot")
+    if isinstance(options, dict):
+        value["configuration_snapshot"] = {
+            key: item for key, item in options.items() if key in PUBLIC_RULE_SESSION_OPTION_FIELDS
+        }
+    value.pop("financial_stop", None)
+    value.pop("live_execution_stop", None)
+    for selection in value.get("selections", []):
+        intent = selection.get("execution_intent")
+        if isinstance(intent, dict):
+            selection["execution_intent"] = _public_execution_intent(intent)
+    rule_selections = value.get("rule_selections")
+    if isinstance(rule_selections, dict):
+        for selections in rule_selections.values():
+            for selection in (selections if isinstance(selections, list) else []):
+                intent = selection.get("execution_intent")
+                if isinstance(intent, dict):
+                    selection["execution_intent"] = _public_execution_intent(intent)
+    integrity = value.get("settlement_integrity")
+    if not isinstance(integrity, dict):
+        legacy = row.get("financial_stop") if isinstance(row.get("financial_stop"), dict) else {}
+        integrity = {key: legacy.get(key) for key in (
+            "status", "reason", "reconciled_bets", "updated_at") if key in legacy}
+        integrity.setdefault("status", "CLEAR")
+        integrity.setdefault("reconciled_bets", 0)
+    value["settlement_integrity"] = integrity
+    return value
 
 
 def _engine(request: Request):
@@ -338,185 +385,17 @@ def status(request: Request):
 
 @router.post("/shadow-executor/start")
 async def start_shadow_executor(request: Request):
-    """Start the existing paper executor from the explicit Rules session setup."""
-    import asyncio
-
-    from app.api.live import _manual_setup_observation
-    from app.betting.browser_client import AviatorBrowserClient
-    from app.services.betting_mode import SHADOW_REALISTIC
-
-    app = request.app
-    engine = _engine(request)
-    modes = getattr(app.state, "betting_mode", None)
-    shadow = getattr(app.state, "shadow", None)
-    live = getattr(app.state, "live", None)
-    risk = getattr(app.state, "risk", None)
-    if (modes is None or modes.mode != SHADOW_REALISTIC
-            or modes.live_authorized or bool(live and live.live_active)):
-        return JSONResponse(status_code=409, content={"ok": False,
-            "error": "SHADOW_REALISTIC_MODE_REQUIRED", "real_money_action_submitted": False})
-    if risk is None or risk.emergency_latched:
-        return JSONResponse(status_code=409, content={"ok": False,
-            "error": "EMERGENCY_STOP_ACTIVE_OR_RISK_UNAVAILABLE",
-            "real_money_action_submitted": False})
-
-    configuration = engine.ui_setup_configuration()
-    active = (engine.session(configuration.get("session_id"))
-              if configuration.get("session_id") else None)
-    if (configuration.get("status") != "CONFIGURED" or not active
-            or active.get("status") != "RUNNING"
-            or active.get("selection_status") != "ACTIVE"):
-        return JSONResponse(status_code=409, content={"ok": False,
-            "error": "ACTIVE_RULES_SESSION_WITH_PANEL_AND_BIF_STAKE_REQUIRED",
-            "rules_configuration": configuration, "real_money_action_submitted": False})
-    panel = configuration.get("execution_panel")
-    stake = configuration.get("requested_stake")
-    currency = str(configuration.get("requested_stake_currency") or "").upper()
-    if type(panel) is not int or panel not in (0, 1) or type(stake) is not int or currency != "BIF":
-        return JSONResponse(status_code=409, content={"ok": False,
-            "error": "SELECTED_PANEL_FIXED_BIF_STAKE_REQUIRED",
-            "rules_configuration": configuration, "real_money_action_submitted": False})
-
-    # The risk profile is an explicit saved operator configuration, not the
-    # Risk Manager's startup default. It must match this Rules session.
-    saved = modes.live_configuration()
-    if (saved.get("configuration_valid") is not True
-            or saved.get("execution_panel") != panel
-            or saved.get("stake_amount") != stake
-            or str(saved.get("currency") or "").upper() != currency):
-        return JSONResponse(status_code=409, content={"ok": False,
-            "error": "SAVED_OPERATOR_CONFIGURATION_MISMATCH",
-            "expected": {"panel": panel + 1, "stake": stake, "currency": currency},
-            "saved": {"panel": (saved.get("execution_panel") + 1
-                                    if saved.get("execution_panel") in (0, 1) else None),
-                      "stake": saved.get("stake_amount"), "currency": saved.get("currency")},
-            "real_money_action_submitted": False})
-
-    client = AviatorBrowserClient(app.state.betting.settings)
-    try:
-        snapshot = await asyncio.wait_for(client.snapshot(), timeout=8)
-    except Exception as exc:
-        return JSONResponse(status_code=503, content={"ok": False,
-            "error": "SHARED_AVIATOR_READBACK_UNAVAILABLE",
-            "detail": type(exc).__name__, "real_money_action_submitted": False})
-    finally:
-        try:
-            await client.close()
-        except Exception:
-            pass
-    observation, readbacks = _manual_setup_observation(snapshot, configuration,
-        getattr(live, "manual_setup_readbacks", None))
-    if live is not None:
-        live.manual_setup_readbacks = readbacks
-    checklist = {row.get("item"): row.get("status") for row in observation.get("checklist", [])}
-    cashout = (observation.get("cashout_panels") or [])[panel]
-    blockers = []
-    if checklist.get("Stake manually entered") != "STAKE_VERIFIED":
-        blockers.append("STAKE_MISMATCH" if checklist.get("Stake manually entered") == "STAKE_MISMATCH"
-                        else "STAKE_READBACK_UNAVAILABLE")
-    if cashout.get("status") != "CASHOUT_VERIFIED":
-        blockers.append("AUTO_CASHOUT_CONFIGURATION_NOT_VERIFIED")
-    if str(observation.get("account_currency") or "").upper() != currency:
-        blockers.append("ACCOUNT_CURRENCY_MISMATCH")
-    if checklist.get("No active or pending bet") != "VERIFIED":
-        blockers.append("ACTIVE_OR_PENDING_BET")
-    if blockers:
-        return JSONResponse(status_code=409, content={"ok": False,
-            "error": "MANUAL_AVIATOR_SETUP_REQUIRES_OPERATOR_CORRECTION",
-            "blockers": blockers, "manual_setup": observation,
-            "real_money_action_submitted": False})
-
-    profile = str(saved.get("profile") or "").upper()
-    if shadow and shadow.mode == "SHADOW" and modes.shadow_ready:
-        current_config = shadow.session.get("config") or {}
-        panels = current_config.get("panels") or []
-        matching = (current_config.get("mode") == "MANUAL" and len(panels) == 2
-                    and sum(bool(row.get("enabled")) for row in panels) == 1
-                    and panels[panel].get("enabled") is True
-                    and panels[panel].get("stake") == stake
-                    and float(panels[panel].get("cashout") or 0) == 2.0)
-        if matching:
-            return {"ok": True, "already_running": True,
-                    "status": modes.status(), "manual_setup": observation,
-                    "real_money_action_submitted": False}
-        return JSONResponse(status_code=409, content={"ok": False,
-            "error": "SHADOW_EXECUTOR_ALREADY_RUNNING_WITH_DIFFERENT_CONFIGURATION",
-            "status": modes.status(), "real_money_action_submitted": False})
-
-    shadow_configuration = {
-        "mode": "MANUAL",
-        "panels": [{"enabled": slot == panel,
-                    "stake": stake if slot == panel else None,
-                    "cashout": 2.0} for slot in (0, 1)],
-    }
-    result = await modes.switch_shadow(profile=profile, configuration=shadow_configuration)
-    if not result.get("ok"):
-        return JSONResponse(status_code=409, content={**result,
-            "manual_setup": observation, "real_money_action_submitted": False})
-    return {**result, "manual_setup": observation, "real_money_action_submitted": False,
-            "execution_kind": "SHADOW_REALISTIC_PAPER_ONLY"}
+    """Deprecated entry point: rule observation sessions do not run executors."""
+    return JSONResponse(status_code=410, content={"ok": False,
+        "error": "RULES_ENGINE_IS_OBSERVE_ONLY",
+        "message": "Configure the platform manually; execution remains disabled.",
+        "real_money_action_submitted": False})
 
 
 @router.get("/ui-setup")
 async def ui_setup(request: Request):
-    """Read-only, fail-closed contract for synchronizing one panel's stake.
-
-    The endpoint does not depend on a TRUE rule and cannot authorize a bet.
-    """
-    import asyncio
-    configuration = _engine(request).ui_setup_configuration()
-    betting = getattr(request.app.state, "betting", None)
-    if betting is None or getattr(betting, "settings", None) is None:
-        return {**configuration, "status": "BLOCKED", "reason": "BETTING_BROWSER_SETTINGS_UNAVAILABLE",
-                "authentication_state": "UNKNOWN", "page_role": "UNKNOWN",
-                "browser_topology_verified": False, "platform_currency": None,
-                "pending_bet_states": []}
-
-    client = AviatorBrowserClient(betting.settings)
-    try:
-        readiness = await client.readiness()
-        snapshot = await client.snapshot()
-    except Exception:
-        readiness, snapshot = {}, None
-    finally:
-        try:
-            await client.close()
-        except Exception:
-            pass
-
-    authentication_state = readiness.get("authentication_state", "UNKNOWN")
-    platform_currency = getattr(snapshot, "balance_currency", None) if snapshot else None
-    panel_states = getattr(snapshot, "bet_panel_states", []) if snapshot else []
-    pending_states = [row.get("pending_bet_state", "UNKNOWN") for row in panel_states]
-    blockers = []
-    if configuration.get("status") != "CONFIGURED":
-        blockers.append(configuration.get("reason") or "SESSION_STAKE_CONFIGURATION_NOT_READY")
-    if authentication_state != "AUTHENTICATED":
-        blockers.append(f"SHARED_AVIATOR_AUTHENTICATION_{authentication_state}")
-    if readiness.get("page_role") != "SHARED_AVIATOR" or readiness.get("browser_topology_verified") is not True:
-        blockers.append("SHARED_AVIATOR_PAGE_TOPOLOGY_UNVERIFIED")
-    if not snapshot or snapshot.ok is not True or len(panel_states) != 2:
-        blockers.append("TWO_PANEL_BETTING_UI_UNVERIFIED")
-    elif any(state != "CLEAR" for state in pending_states):
-        blockers.append("ACTIVE_OR_UNKNOWN_BET_STATE")
-    if not platform_currency:
-        blockers.append("PLATFORM_CURRENCY_UNVERIFIED")
-    elif configuration.get("requested_stake_currency") != platform_currency:
-        blockers.append("STAKE_CURRENCY_MISMATCH")
-    reason = blockers[0] if blockers else None
-    return {
-        **configuration,
-        "status": "READY" if not blockers else "BLOCKED",
-        "reason": reason,
-        "blockers": list(dict.fromkeys(blockers)),
-        "authentication_state": authentication_state,
-        "page_role": readiness.get("page_role", "UNKNOWN"),
-        "browser_topology_verified": readiness.get("browser_topology_verified") is True,
-        "platform_currency": platform_currency,
-        "pending_bet_states": pending_states,
-        "observed_at": datetime.now(timezone.utc).isoformat(),
-        "automatic_execution": "OFF",
-    }
+    """Compatibility response: manual stake setup belongs to the operator."""
+    return _engine(request).ui_setup_configuration()
 
 
 @router.get("/registry")
@@ -535,7 +414,8 @@ def execution_intents(request: Request, limit: int = 100):
     if repository is None:
         raise HTTPException(status_code=503, detail="authoritative_postgresql_required")
     try:
-        return {"intents": repository.list_rule_execution_intents(limit)}
+        return {"intents": [_public_execution_intent(row)
+                            for row in repository.list_rule_execution_intents(limit)]}
     except Exception as exc:
         raise HTTPException(status_code=503, detail="execution_intent_store_unavailable") from exc
 
@@ -546,7 +426,6 @@ def dashboard(request: Request):
     repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
     status_row = engine.status()
     latest = _history(request)
-    shared_readiness = _shared_aviator_readiness(request)
     active = status_row.get("active_session") or {}
     detail = engine.session(active.get("session_id")) if active.get("session_id") else None
     latest_evaluation = ((detail or {}).get("evaluations") or [None])[-1]
@@ -560,71 +439,17 @@ def dashboard(request: Request):
             "true_rule_ids": list(decision.get("true_rule_ids") or []),
             "selection_id": decision.get("selection_id"),
         }
-    mode = (getattr(request.app.state, "betting_mode", None).status()
-            if getattr(request.app.state, "betting_mode", None) else {})
-    balance = repository.latest_platform_balance_observation() if repository else None
-    balance_age_s = None
-    if balance and balance.get("observed_at"):
-        try:
-            observed = datetime.fromisoformat(str(balance["observed_at"]).replace("Z", "+00:00"))
-            if observed.tzinfo is None:
-                observed = observed.replace(tzinfo=timezone.utc)
-            balance_age_s = max(0.0, (datetime.now(timezone.utc) - observed).total_seconds())
-        except (TypeError, ValueError):
-            balance_age_s = None
-    live_component = getattr(request.app.state, "live", None)
-    live_session = ((getattr(live_component, "status", lambda: {})() or {}).get("session") or {})
-    application_session_id = (live_session.get("session_id") or active.get("session_id")
-                              or (balance or {}).get("application_session_id"))
-    financials = (repository.rules_session_financials(str(application_session_id))
-                  if repository and application_session_id else None)
-    config = (detail or {}).get("configuration_snapshot") or {}
-    financial_stop = (detail or {}).get("financial_stop") or (active or {}).get("financial_stop") or {
-        "status": "ACTIVE", "reason": None, "realized_betting_pl": None,
-        "currency": None, "win_count": 0, "loss_count": 0, "reconciled_bets": 0,
-    }
-    blockers = ["REAL_MONEY_EXECUTION_DISABLED_UNTIL_SEPARATE_AUTHORIZATION_AND_VERIFICATION"]
-    if not balance or balance.get("verified") is not True:
-        blockers.append("AUTHENTICATED_PLATFORM_BALANCE_UNVERIFIED")
-    elif balance_age_s is None or balance_age_s > 20:
-        blockers.append("PLATFORM_BALANCE_OBSERVATION_STALE")
-    if not balance or not balance.get("currency"):
-        blockers.append("PLATFORM_BALANCE_CURRENCY_UNVERIFIED")
-    browser_pages = shared_readiness.get("browser_pages") or {}
-    browser_topology_verified = (shared_readiness.get("aviator_page_ready") == "READY"
-                                 and shared_readiness.get("game_iframe_ready") == "READY")
-    if not browser_topology_verified:
-        blockers.append("SHARED_AVIATOR_PAGE_READY_UNVERIFIED")
-    if shared_readiness.get("betting_controls_ready") != "READY":
-        blockers.append("BETTING_PANEL_CONTROLS_UNAVAILABLE")
-    cashout_initialization = shared_readiness.get("cashout_initialization") or {}
-    panels = cashout_initialization.get("panels") or []
-    panel_cashout_readback = shared_readiness.get("cashout_configured") == "READY"
-    balance_cashout = (balance or {}).get("cashout_configuration") or {}
-    cashout_acknowledged = balance_cashout.get("platform_acknowledged") is True
-    cashout = {
-        "target": 2.0,
-        "verified": panel_cashout_readback,
-        "status": shared_readiness.get("cashout_configured", "UNKNOWN"),
-        "updated_at": cashout_initialization.get("updated_at"),
-        "age_seconds": cashout_initialization.get("age_seconds"),
-        "panel_1_cashout": cashout_initialization.get("panel_1_cashout", "UNKNOWN"),
-        "panel_2_cashout": cashout_initialization.get("panel_2_cashout", "UNKNOWN"),
-        "panels": panels,
-        "platform_acknowledged": True if cashout_acknowledged else None,
-        "failures": (cashout_initialization.get("error_reason") and [cashout_initialization.get("error_reason")])
-            or ([] if panel_cashout_readback else ["CASHOUT_CONFIGURATION_UNVERIFIED_OR_STALE"]),
-    }
-    if not panel_cashout_readback:
-        blockers.extend(cashout.get("failures") or ["CASHOUT_CONFIGURATION_UNVERIFIED"])
-    if not cashout_acknowledged:
-        blockers.append("PLATFORM_CASHOUT_ACKNOWLEDGEMENT_UNVERIFIED")
-    if mode.get("live_authorized") is not True:
-        blockers.append("EXPLICIT_LIVE_SESSION_AUTHORIZATION_REQUIRED")
-    if financial_stop.get("status") == "RECONCILIATION_REQUIRED":
+    settlement = ((detail or {}).get("settlement_integrity")
+                  or (active or {}).get("settlement_integrity")
+                  or (detail or {}).get("financial_stop")
+                  or (active or {}).get("financial_stop")
+                  or {"status": "CLEAR", "reason": None, "reconciled_bets": 0})
+    settlement = {key: settlement.get(key) for key in
+                  ("status", "reason", "reconciled_bets", "updated_at")}
+    blockers = ["REAL_MONEY_EXECUTION_DISABLED_DURING_REFACTORING",
+                "EXPLICIT_OPERATOR_AUTHORIZATION_REQUIRED"]
+    if settlement.get("status") == "RECONCILIATION_REQUIRED":
         blockers.append("RULE_SESSION_TRANSACTION_RECONCILIATION_REQUIRED")
-    elif financial_stop.get("status") == "STOPPED":
-        blockers.append("RULE_SESSION_STOP_LIMIT_REACHED")
     if repository:
         try:
             if repository.open_executions():
@@ -632,6 +457,9 @@ def dashboard(request: Request):
         except Exception:
             blockers.append("EXECUTION_DATABASE_UNAVAILABLE")
     evaluations = (latest_evaluation or {}).get("rule_evaluations") or []
+    public_intents = ([_public_execution_intent(row)
+                       for row in repository.list_rule_execution_intents(50)]
+                      if repository else [])
     return {
         "ok": True,
         "current_round": latest.get("latest_real_round"),
@@ -639,46 +467,20 @@ def dashboard(request: Request):
         "selected_rules": list((detail or {}).get("rule_ids") or []),
         "rule_evaluations": evaluations,
         "shared_decision": shared_decision,
-        "shared_selection": decision if decision.get("action") == "SELECT" else None,
+        "shared_selection": ({"action": "SELECT", "reason": decision.get("reason"),
+                               "true_rule_ids": list(decision.get("true_rule_ids") or []),
+                               "selection_id": decision.get("selection_id")}
+                              if decision.get("action") == "SELECT" else None),
         "session": active or None,
-        "cashout_configuration": cashout,
-        "shared_aviator_readiness": shared_readiness,
-        "balance": balance,
-        "balance_age_seconds": balance_age_s,
-        "browser_topology": {"verified": browser_topology_verified, "pages": browser_pages},
-        "financials": financials,
-        "financial_stop": financial_stop,
-        "session_controls": {
-            "scope": "combined rule session; one result per shared selection",
-            "profit_target": config.get("profit_target_rwf"),
-            "profit_target_enabled": config.get("profit_target_enabled"),
-            "loss_limit": config.get("loss_limit_rwf"),
-            "loss_limit_enabled": config.get("loss_limit_enabled"),
-            "win_limit_count": config.get("win_limit_count"),
-            "loss_limit_count": config.get("loss_limit_count"),
-            "reconciled_profit_target_rwf": config.get("reconciled_profit_target_rwf"),
-            "reconciled_profit_target_enabled": config.get("reconciled_profit_target_enabled"),
-            "reconciled_loss_limit_rwf": config.get("reconciled_loss_limit_rwf"),
-            "reconciled_loss_limit_enabled": config.get("reconciled_loss_limit_enabled"),
-            "reconciled_win_limit_count": config.get("reconciled_win_limit_count"),
-            "reconciled_win_limit_enabled": config.get("reconciled_win_limit_enabled"),
-            "reconciled_loss_count_limit": config.get("reconciled_loss_count_limit"),
-            "reconciled_loss_count_limit_enabled": config.get("reconciled_loss_count_limit_enabled"),
-            "maximum_selected_rounds": config.get("max_selections"),
-            "manual_stop_available": True,
-            "financial_stop_status": financial_stop.get("status"),
-            "financial_stop_reason": financial_stop.get("reason"),
-        },
+        "settlement_integrity": settlement,
         "execution_readiness": {"status": "BLOCKED", "ready": False,
                                 "blockers": list(dict.fromkeys(blockers))},
-        "realized_betting_pl": (financials or {}).get("realized_betting_pl"),
         "shadow_result_summary": {
-            "net_profit_rwf": (detail or {}).get("net_profit_rwf"),
             "wins": (detail or {}).get("total_wins", 0),
             "losses": (detail or {}).get("total_losses", 0),
-            "label": "RULE OBSERVATION RESULTS; NOT RECONCILED BETTING P/L",
+            "label": "RULE OBSERVATION OUTCOMES",
         },
-        "execution_intents": repository.list_rule_execution_intents(50) if repository else [],
+        "execution_intents": public_intents,
         "real_money_execution": "DISABLED",
     }
 
@@ -688,7 +490,7 @@ def session_detail(request: Request, session_id: str):
     result = _engine(request).session(session_id)
     if result is None:
         raise HTTPException(status_code=404, detail="session_not_found")
-    return result
+    return _public_rule_session(result)
 
 
 @router.put("/configuration/{rule_id}")
@@ -747,33 +549,6 @@ async def start_session(request: Request):
             raise ValueError("invalid_session_configuration")
         session = _engine(request).start_session(mode=body.get("mode"), rule_ids=body.get("rule_ids"),
             boundary=boundary, prestart_context=context, options=body.get("options"))
-        # Balance is optional enrichment for the dashboard. It must never turn
-        # a successfully persisted SHADOW session into a 503 response.
-        try:
-            balance = await asyncio.to_thread(repository.latest_platform_balance_observation)
-        except Exception:
-            balance = None
-        if isinstance(balance, dict) and balance.get("verified") is True:
-            try:
-                observed = datetime.fromisoformat(str(balance.get("observed_at") or "").replace("Z", "+00:00"))
-                if observed.tzinfo is None:
-                    observed = observed.replace(tzinfo=timezone.utc)
-                age = (datetime.now(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds()
-            except (TypeError, ValueError, OverflowError):
-                age = float("inf")
-            if 0 <= age <= 20:
-                start_balance = await asyncio.to_thread(
-                    repository.bind_rule_session_starting_balance,
-                    str(session["session_id"]), balance)
-                if start_balance:
-                    session["starting_balance_observation"] = {
-                        "observation_id": balance.get("observation_id"),
-                        "amount": start_balance.get("starting_balance"),
-                        "currency": start_balance.get("starting_balance_currency"),
-                        "observed_at": balance.get("observed_at"),
-                        "provider_identity": balance.get("provider_identity"),
-                        "session_identity": balance.get("session_identity"),
-                    }
         return session
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

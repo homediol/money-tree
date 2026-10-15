@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -27,7 +28,9 @@ class FakeSnapshot:
         self.browser_topology_verified = True
         self.balance_currency = "BIF"
         self.balance = 10000
-        self.balance_observed_at = "2026-10-15T00:00:00+00:00"
+        self.balance_observed_at = datetime.now(timezone.utc).isoformat()
+        self.provider_identity = "winner.rw"
+        self.session_identity = "platform-session"
         self.cashout_controls = [{
             "slot": slot, "displayedValue": "2.00",
             "autoCashoutEnabled": True, "autoTabSelected": True,
@@ -107,12 +110,12 @@ def test_cashout_checklist_verifies_both_panels_without_panel_selection(monkeypa
     assert verification["selected_panel"] is None
     assert verification["status"] == "CASHOUT_VERIFIED"
     assert checklist["Execution panel selected"] == "REQUIRED"
-    assert checklist["Auto Cashout manually enabled"] == "VERIFIED"
-    assert checklist["Cashout multiplier 2.00x"] == "VERIFIED"
-    assert checklist["Auto Bet OFF"] == "VERIFIED"
+    assert checklist["Auto Cashout ON for both panels"] == "VERIFIED"
+    assert checklist["Cashout multiplier 2.00x on both panels"] == "VERIFIED"
+    assert checklist["Auto Bet OFF on both panels"] == "VERIFIED"
 
 
-def test_stake_mismatch_is_read_even_when_auto_tab_is_selected():
+def test_manual_stake_readback_does_not_compare_against_an_app_owned_target():
     from app.api.live import _manual_setup_observation
 
     snapshot = FakeSnapshot()
@@ -131,11 +134,74 @@ def test_stake_mismatch_is_read_even_when_auto_tab_is_selected():
     })
 
     checklist = {row["item"]: row["status"] for row in observation["checklist"]}
-    assert checklist["Stake manually entered"] == "STAKE_MISMATCH"
-    assert observation["expected_stake"] == 100
+    assert checklist["Stake manually entered"] == "STAKE_VERIFIED"
+    assert observation["expected_stake"] is None
     assert observation["observed_stake"] == 200
     assert observation["button_text"] == "Bet 200 BIF"
     assert observation["financial_action_submitted"] is False
+
+
+def test_manual_setup_aggregate_accepts_verified_stake_checklist_status():
+    from app.api.live import _manual_setup_observation
+
+    observation, _ = _manual_setup_observation(FakeSnapshot(), {"execution_panel": 0})
+
+    assert all(row["status"] in {"VERIFIED", "STAKE_VERIFIED"}
+               for row in observation["checklist"])
+    assert observation["status"] == "VERIFIED"
+    assert observation["financial_action_submitted"] is False
+
+
+def test_manual_checklist_requires_cashout_configuration_on_both_panels():
+    from app.api.live import _manual_setup_observation
+
+    snapshot = FakeSnapshot()
+    snapshot.cashout_controls[1]["autoCashoutEnabled"] = False
+    observation, _ = _manual_setup_observation(snapshot, {
+        "execution_panel": 0, "requested_stake": 100,
+        "requested_stake_currency": "BIF",
+    })
+    checklist = {row["item"]: row["status"] for row in observation["checklist"]}
+
+    assert checklist["Auto Cashout ON for both panels"] == "MISMATCH"
+    assert checklist["Cashout multiplier 2.00x on both panels"] == "VERIFIED"
+
+
+def test_manual_setup_uses_saved_panel_but_not_app_stake_or_rules_session():
+    app = _app(execution_panel=1)
+    app.state.rules_engine.ui_setup_configuration = lambda: {
+        "status": "CONFIGURED", "session_id": "rules-session",
+        "execution_panel": 1, "requested_stake": 100,
+        "requested_stake_currency": "RWF",
+    }
+    app.state.betting_mode.live_configuration = lambda: {
+        "configuration_valid": True, "profile": "PROFILE_A",
+        "execution_panel": 0, "stake_amount": 200, "currency": "BIF",
+        "persistence_source": "REVIEWED",
+    }
+
+    result = live_api._manual_setup_configuration(_request(app))
+
+    assert result["execution_panel"] == 0
+    assert "requested_stake" not in result
+    assert "requested_stake_currency" not in result
+    assert result["configuration_source"] == "LIVE_EXECUTOR_CONFIGURATION"
+    assert "configuration_persistence_source" not in result
+
+
+def test_manual_balance_checks_require_fresh_session_bound_evidence():
+    from app.api.live import _manual_setup_observation
+
+    snapshot = FakeSnapshot()
+    snapshot.session_identity = None
+    observation, _ = _manual_setup_observation(snapshot, {
+        "execution_panel": 0, "requested_stake": 100,
+        "requested_stake_currency": "BIF",
+    })
+    checklist = {row["item"]: row["status"] for row in observation["checklist"]}
+
+    assert checklist["Account currency verified"] == "UNAVAILABLE"
+    assert checklist["Balance verified"] == "UNAVAILABLE"
 
 
 @pytest.mark.parametrize("pending,autobet", [("PENDING", False), ("UNKNOWN", False), ("CLEAR", True)])

@@ -1,12 +1,12 @@
 {
-  "updated_at": "2026-10-15T08:20:13.416Z",
+  "updated_at": "2026-10-15T13:30:44.336Z",
   "state": "HEALTHY",
   "browser": {
     "connected": true,
-    "pid": 426502,
-    "uptime_seconds": 11566,
-    "memory_rss_mb": 346,
-    "restart_count": 160,
+    "pid": 813294,
+    "uptime_seconds": 1767,
+    "memory_rss_mb": 345,
+    "restart_count": 169,
     "cpu_percent": null
   },
   "context": {
@@ -40,21 +40,21 @@
     "evidence": [
       {
         "host": "winner.rw",
-        "address": "172.64.147.106",
+        "address": "104.18.40.150",
         "result": "TCP_REACHABLE"
       },
       {
         "host": "aviator-next.spribegaming.com",
-        "address": "3.175.179.42",
+        "address": "3.175.179.58",
         "result": "TCP_REACHABLE"
       },
       {
         "host": "aviaport.spribegaming.com",
-        "address": "3.175.179.50",
+        "address": "3.175.179.75",
         "result": "TCP_REACHABLE"
       }
     ],
-    "checked_at": "2026-10-15T08:20:03.464Z",
+    "checked_at": "2026-10-15T13:30:33.338Z",
     "freshness": "CURRENT"
   },
   "authentication": {
@@ -65,12 +65,12 @@
   "collector": {
     "running": true,
     "state": "COLLECTING",
-    "last_round_id": "aviator-91a48463ba0df0592fa1b57e",
-    "last_round_timestamp": "2026-10-15T08:19:54.545Z",
-    "last_observed_round_id": "aviator-d97c2605b400125ef38643ca",
-    "last_observed_at": "2026-10-15T08:20:12.850Z",
-    "last_successful_collection": "2026-10-15T08:20:10.151Z",
-    "heartbeat_at": "2026-10-15T08:20:13.379Z",
+    "last_round_id": "aviator-1708512f7d1fea69e44a9908",
+    "last_round_timestamp": "2026-10-15T13:30:32.095Z",
+    "last_observed_round_id": "aviator-1708512f7d1fea69e44a9908",
+    "last_observed_at": "2026-10-15T13:30:32.095Z",
+    "last_successful_collection": "2026-10-15T13:30:34.906Z",
+    "heartbeat_at": "2026-10-15T13:30:44.189Z",
     "iframe_attached": true,
     "game_readiness": {
       "frameAttached": true,
@@ -85,41 +85,36 @@
       "reasonCode": null,
       "evidence": null
     },
-    "last_error": {
-      "message": "AUTH_REQUIRED: login route visible on Aviator page",
-      "category": "AUTH_REQUIRED",
-      "recovery_action": "recovery_pending",
-      "at": "2026-10-15T08:18:19.406Z"
-    }
+    "last_error": null
   },
   "backend": {
-    "pid": 574501,
-    "ppid": 574331,
-    "started_at": "2026-10-15T08:08:32.381262+00:00",
-    "restart_count": 168,
-    "unexpected_restart_count": 71,
-    "uptime_seconds": 701,
-    "memory_rss_mb": 397,
+    "pid": 812900,
+    "ppid": 812885,
+    "started_at": "2026-10-15T13:00:31.913278+00:00",
+    "restart_count": 176,
+    "unexpected_restart_count": 76,
+    "uptime_seconds": 1812,
+    "memory_rss_mb": 318,
     "cpu_percent": null,
     "running": true,
     "last_exit": null
   },
   "last_disconnect": {
-    "at": "2026-10-15T05:06:29.941Z",
+    "at": "2026-10-15T13:00:16.723Z",
     "reason": "managed browser disconnected"
   },
   "last_browser_event": {
-    "event": "heartbeat_probe_failed",
-    "at": "2026-10-15T08:19:51.452Z",
-    "error": "page responsiveness probe timed out"
+    "event": "page_error",
+    "at": "2026-10-15T13:02:32.400Z",
+    "role": "shared_aviator",
+    "error": "optimoveSDK is not defined"
   },
   "last_recovery": {
-    "state": "HEALTHY",
-    "at": "2026-10-15T08:19:48.350Z",
-    "verified_round_id": "aviator-17472e66c897369ec7f7bddd",
-    "verified_round_timestamp": "2026-10-15T08:19:40.753Z"
+    "state": "AUTH_REQUIRED",
+    "at": "2026-10-15T12:22:06.597Z",
+    "reason": "AUTH_REQUIRED: human login or verification is required"
   },
-  "recovery_count": 851,
+  "recovery_count": 911,
   "circuit_breaker": {
     "state": "CLOSED",
     "failures_10m": 0,
@@ -128,6 +123,6 @@
   "diagnostics": {
     "page_responsive": true,
     "page_count": 1,
-    "node_memory_rss_mb": 344
+    "node_memory_rss_mb": 219
   }
 }

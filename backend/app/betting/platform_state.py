@@ -235,7 +235,13 @@ def panel_observation_transition(previous: Mapping[str, Any] | None,
         "stale": stale,
         "frame_reloaded": frame_reloaded,
         "from_state": "UNKNOWN" if frame_reloaded else old_state if old else None,
-        "to_state": new_state if new else "UNKNOWN",
+        # The green control is currently available, but its transition from
+        # a queued/active bet is a reset event. Preserve the observed state so
+        # consumers can distinguish the event from the live panel state.
+        "to_state": ("BET_RESET" if old_state in {"BET_QUEUED", "BET_ACTIVE"}
+                     and new_state == "BET_AVAILABLE" and not frame_reloaded
+                     else new_state if new else "UNKNOWN"),
+        "current_state": new_state if new else "UNKNOWN",
         "observed_at": new_id,
     }
 
@@ -311,24 +317,34 @@ def classify_round_phase(*, betting_window: Mapping[str, Any] | None = None,
         normalized = " ".join(f"{classes} {text}".lower().replace("_", " ").split())
         if (re.search(r"\b(?:flew away|crashed|round (?:is )?(?:complete|completed|finished))\b", normalized)
                 or re.search(r"\b(?:round|game)[-_ ]?(?:state[-_ ]?)?(?:crashed|completed|finished)\b", normalized)):
-            return "ROUND_COMPLETED"
+            return "ROUND_ENDED"
     for classes, text in evidence:
         normalized = " ".join(f"{classes} {text}".lower().replace("_", " ").split())
-        if (re.search(r"\b(?:waiting for (?:the )?next round|next round (?:starts|starting)|waiting for bets)\b", normalized)
+        stage_evidence = "stage" in classes.lower() or "stage" in normalized
+        transition_label = re.search(
+            r"\b(?:ufc\s*(?:/|vs\.?|versus)\s*aviator|aviator\s*(?:/|vs\.?|versus)\s*ufc)\b"
+            r"|\b(?:ufc|aviator)\b.{0,32}\b(?:transition|intermission)\b",
+            normalized,
+        )
+        if (transition_label or re.search(
+                r"\b(?:waiting for (?:the )?next round|next round (?:starts|starting)|waiting for bets)\b",
+                normalized)
                 or re.search(r"\b(?:stage|round)[-_ ]?(?:state[-_ ]?)?(?:waiting|idle|between)\b", normalized)):
-            return "WAITING_FOR_NEXT_ROUND"
-    for classes, text in evidence:
-        normalized = " ".join(f"{classes} {text}".lower().replace("_", " ").split())
-        if (re.search(r"\b(?:round|game) (?:is )?(?:in progress|running|flying)\b", normalized)
-                or re.search(r"\b(?:stage|round)[-_ ]?(?:state[-_ ]?)?(?:flying|in progress|running)\b", normalized)
-                or re.fullmatch(r"\s*\d+(?:[.,]\d+)?\s*x\s*", text.strip(), flags=re.IGNORECASE)):
-            return "ROUND_IN_PROGRESS"
-
+            # A generic page mention of the game name is not intermission
+            # evidence; a transition label must be in a matched stage node.
+            if not transition_label or stage_evidence:
+                return "INTERMISSION"
     state = str((betting_window or {}).get("state") or "UNKNOWN").upper()
     if state == "BETTING_OPEN":
         return state
     if state == "BETTING_CLOSED":
         return state
+    for classes, text in evidence:
+        normalized = " ".join(f"{classes} {text}".lower().replace("_", " ").split())
+        if (re.search(r"\b(?:round|game) (?:is )?(?:in progress|running|flying)\b", normalized)
+                or re.search(r"\b(?:stage|round)[-_ ]?(?:state[-_ ]?)?(?:flying|in progress|running)\b", normalized)
+                or re.fullmatch(r"\s*\d+(?:[.,]\d+)?\s*x\s*", text.strip(), flags=re.IGNORECASE)):
+            return "ROUND_RUNNING"
     return "UNKNOWN"
 
 

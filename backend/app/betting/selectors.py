@@ -101,10 +101,11 @@ SNAPSHOT = r"""() => {
   const directPhaseText = visiblePhaseHints.map(item => item.text).join(' ').toLowerCase();
   const countdown = directPhaseText.match(/\b(?:betting|bets?)(?:\s+window)?\s+(?:closes|ends)\s+in\s+(\d+(?:\.\d+)?)\s*(?:s|sec|seconds?)\b/i);
   const countdownSeconds = countdown ? Number(countdown[1]) : null;
-  const explicitWindowState = (Number.isFinite(countdownSeconds) && countdownSeconds >= 0 && countdownSeconds <= 300)
+  const explicitWindowState = (Number.isFinite(countdownSeconds) && countdownSeconds > 0 && countdownSeconds <= 300)
     || /\b(?:bets? open|betting open|place your bets|you can bet now)\b/i.test(directPhaseText)
     ? 'BETTING_OPEN'
-    : /\b(?:bets? closed|betting closed|no more bets|betting is over)\b/i.test(directPhaseText)
+    : (Number.isFinite(countdownSeconds) && countdownSeconds <= 0)
+      || /\b(?:bets? closed|betting closed|no more bets|betting is over)\b/i.test(directPhaseText)
       ? 'BETTING_CLOSED' : 'UNKNOWN';
   const explicitWindowEvidence = {
     source: 'AVIATOR_EXPLICIT_BETTING_PHASE_DOM', panel_index: 0,

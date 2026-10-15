@@ -11,12 +11,10 @@ def shadow(request: Request): return request.app.state.shadow
 
 @router.post("/start")
 async def start(request: Request):
-    body = await request.json()
-    result = await request.app.state.betting_mode.switch_shadow(
-        profile=body.get("profile", "PROFILE_A"), goal_balance=body.get("goal_balance"))
-    if not result.get("ok"):
-        return JSONResponse(status_code=409, content=result)
-    return result
+    return JSONResponse(status_code=410, content={
+        "ok": False, "error": "OPTIONAL_BANKROLL_MANAGEMENT_REMOVED",
+        "message": "Profile-based financial shadow execution has been retired. Use the observe-only Rules Engine.",
+    })
 
 
 @router.post("/stop")

@@ -237,14 +237,16 @@ def test_risk_api_and_frontend_state_payload():
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test",
         ) as client:
-            profiles = (await client.get("/api/risk/profiles")).json()
-            changed = (await client.post("/api/risk/profile", json={"profile": "PROFILE_B"})).json()
-            payload = (await client.get("/api/risk/status")).json()["status"]
-        assert profiles["profiles"]["PROFILE_A"]["cashout"] == 2.0
-        assert changed["profile"]["cashout"] == 1.5
-        assert payload["risk_status"] == "WAITING"
-        assert payload["risk_level"] == "NOT_EVALUATED"
-        assert "maximum_session_loss" in payload
+            profiles = await client.get("/api/risk/profiles")
+            changed = await client.post("/api/risk/profile", json={"profile": "PROFILE_B"})
+            payload = (await client.get("/api/risk/status")).json()["execution_integrity"]
+        assert profiles.status_code == 410
+        assert profiles.json()["error"] == "OPTIONAL_BANKROLL_MANAGEMENT_REMOVED"
+        assert changed.status_code == 410
+        assert changed.json()["error"] == "OPTIONAL_BANKROLL_MANAGEMENT_REMOVED"
+        assert payload["execution_state"] == "NOT_AUTHORIZED"
+        assert payload["emergency_stop"] is False
+        assert payload["reason"] == "REAL_MONEY_EXECUTION_DISABLED"
     run(go())
 
 
@@ -261,7 +263,7 @@ def test_risk_status_distinguishes_waiting_from_emergency_block():
     assert blocked["reason"] == "Emergency stop is active"
 
 
-def test_decision_api_fails_closed_without_configured_rules():
+def test_retired_financial_executor_cannot_start_or_accept_ready_decisions():
     async def go():
         settings = BettingSettings(
             cdp_http="http://127.0.0.1:1", allow_real_placement=False,
@@ -287,7 +289,8 @@ def test_decision_api_fails_closed_without_configured_rules():
                 "profile": "PROFILE_A", "starting_balance": 10_000,
                 "goal_balance": 20_000,
             })
-            assert started.status_code == 200
+            assert started.status_code == 409
+            assert started.json()["error"] == "FINANCIAL_EXECUTOR_RETIRED"
             response = await client.post("/api/betting/decisions", json={
                 "decision_id": "pipeline-1", "round_id": "round-1",
                 "execute": True, "profile": "PROFILE_A", "cashout": 2.0,
@@ -300,5 +303,7 @@ def test_decision_api_fails_closed_without_configured_rules():
             assert payload["decision"] == "NO_ACTION"
             assert payload["automatic_execution"] == "OFF"
             assert betting.ledger(10) == []
+            status = (await client.get("/api/betting/status")).json()["status"]
+            assert status["state"] == "IDLE"
         await betting.shutdown()
     run(go())

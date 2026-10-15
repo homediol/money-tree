@@ -18,25 +18,24 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def setup_rule_session(tmp_path, controls=None, *, currency="USD"):
-    repo = Repository(tmp_path / "financial-stops.sqlite3")
+def setup_rule_session(tmp_path):
+    repo = Repository(tmp_path / "settlement-integrity.sqlite3")
     repo.init()
-    session_id = "rule-session-financial"
+    session_id = "rule-session-integrity"
     selection_id = "shared-selection-101"
     session = {
         "session_id": session_id,
         "mode": "ALL_RULES_TOGETHER",
         "status": "RUNNING",
         "selection_status": "ACTIVE",
+        "configuration_schema_version": 2,
         "started_at": now(),
         "ended_at": None,
         "selection_stop_reason": None,
         "stop_reason": None,
-        "configuration_snapshot": {
-            "fixed_stake_rwf": 100,
-            "stake_currency": currency,
-            **(controls or {}),
-        },
+        "configuration_snapshot": {"window_size": 50},
+        "settlement_integrity": {"status": "CLEAR", "reason": None,
+                                  "reconciled_bets": 0, "reconciled_execution_ids": []},
         "selections": [{
             "selection_id": selection_id,
             "selected_at": now(),
@@ -46,11 +45,8 @@ def setup_rule_session(tmp_path, controls=None, *, currency="USD"):
                                 "roundIndex": 101},
             "contributing_rule_ids": ["RULE_A", "RULE_B"],
             "execution_intent": {
-                "target_round_id": "target-101",
-                "requested_stake": 100,
-                "requested_stake_currency": currency,
-                "created_at": now(),
-                "expires_at": now(),
+                "target_round_id": "target-101", "created_at": now(),
+                "expires_at": now(), "execution_status": "BLOCKED_READ_ONLY",
             },
         }],
         "rule_selections": {},
@@ -61,31 +57,14 @@ def setup_rule_session(tmp_path, controls=None, *, currency="USD"):
     return repo, engine, session_id, selection_id
 
 
-def add_selection(repo, engine, session_id, index, *, currency="USD"):
-    selection_id = f"shared-selection-{index}"
-    session = engine.sessions[session_id]
-    session["selections"].append({
-        "selection_id": selection_id,
-        "selected_at": now(),
-        "source_round": {"streamId": "verified-stream", "roundId": f"source-{index - 1}",
-                         "roundIndex": index - 1},
-        "expected_target": {"streamId": "verified-stream", "roundId": f"target-{index}",
-                            "roundIndex": index},
-        "contributing_rule_ids": ["RULE_A", "RULE_B", "RULE_C"],
-        "execution_intent": {"target_round_id": f"target-{index}", "requested_stake": 100,
-                             "requested_stake_currency": currency, "created_at": now()},
-    })
-    engine._persist()
-    return selection_id
-
-
 def execution(session_id, decision_id, target_round_id, *, currency="USD", balance_before=1000):
     stamp = now()
+    # A pre-existing ledger row is test evidence for reconciliation only.
     return {
         "execution_id": f"execution-{decision_id}",
         "decision_id": decision_id,
         "target_round_id": target_round_id,
-        "profile": "PROFILE_A",
+        "profile": "LEGACY_HISTORICAL",
         "bet_amount": 100,
         "cashout_target": 2.0,
         "status": "BET_PLACED",
@@ -141,19 +120,23 @@ def reconcile(repo, engine, row, *, outcome, balance, multiplier, currency="USD"
                          decision_id=row["decision_id"], target_round_id=row["target_round_id"])))
 
 
-def test_confirmed_shared_win_stops_once_and_survives_restart(tmp_path):
-    repo, engine, session_id, selection_id = setup_rule_session(tmp_path,
-        {"reconciled_win_limit_enabled": True, "reconciled_win_limit_count": 1})
+def test_verified_settlement_is_recorded_once_and_survives_restart(tmp_path):
+    repo, engine, session_id, selection_id = setup_rule_session(tmp_path)
     row = execution(session_id, selection_id, "target-101")
 
     result = reconcile(repo, engine, row, outcome="WIN", balance=1100, multiplier=2.5)
     current = engine.session(session_id)
+    integrity = current["settlement_integrity"]
+    financials = repo.sync_rule_session_financials(session_id)
     assert result["status"] == "RECONCILED"
-    assert current["financial_stop"]["status"] == "STOPPED"
-    assert current["financial_stop"]["reason"] == "WIN_LIMIT_REACHED"
-    assert current["financial_stop"]["win_count"] == 1
-    assert current["financial_stop"]["reconciled_bets"] == 1
-    assert current["financial_stop"]["realized_betting_pl"] == 100
+    assert financials["realized_betting_pl"] == 100
+    assert financials["starting_balance"] is None
+    assert financials["balance_change"] is None
+    assert "non_betting_balance_movement" not in financials
+    assert integrity["status"] == "CLEAR"
+    assert integrity["reconciled_bets"] == 1
+    assert integrity["reconciled_execution_ids"] == [row["execution_id"]]
+    assert current["selections"][0]["financial_result"]["status"] == "RECONCILED"
     assert current["selections"][0]["contributing_rule_ids"] == ["RULE_A", "RULE_B"]
 
     duplicate_service = ReconciliationService(repo)
@@ -162,135 +145,56 @@ def test_confirmed_shared_win_stops_once_and_survives_restart(tmp_path):
         round_id="target-101", multiplier=2.5,
         evidence=receipt("WIN", 1100, decision_id=selection_id, target_round_id="target-101")))
     assert duplicate["reconciliation_id"] == result["reconciliation_id"]
-    assert engine.session(session_id)["financial_stop"]["win_count"] == 1
-    assert engine.session(session_id)["financial_stop"]["reconciled_bets"] == 1
+    assert engine.session(session_id)["settlement_integrity"]["reconciled_bets"] == 1
 
     recovered = RulesEngine(repo).session(session_id)
-    assert recovered["financial_stop"]["status"] == "STOPPED"
-    assert recovered["financial_stop"]["reason"] == "WIN_LIMIT_REACHED"
-    assert recovered["financial_stop"]["win_count"] == 1
-    assert recovered["financial_stop"]["reconciled_bets"] == 1
+    assert recovered["settlement_integrity"]["status"] == "CLEAR"
+    assert recovered["settlement_integrity"]["reconciled_execution_ids"] == [row["execution_id"]]
 
 
-def test_loss_count_limit_waits_for_two_confirmed_losses(tmp_path):
-    repo, engine, session_id, selection_id = setup_rule_session(tmp_path,
-        {"reconciled_loss_count_limit_enabled": True, "reconciled_loss_count_limit": 2})
-    first = execution(session_id, selection_id, "target-101")
-    first_result = reconcile(repo, engine, first, outcome="LOSS", balance=900, multiplier=1.1)
-    assert first_result["status"] == "RECONCILED"
-    assert engine.session(session_id)["financial_stop"]["status"] == "ACTIVE"
-    assert engine.session(session_id)["financial_stop"]["loss_count"] == 1
-
-    second_id = add_selection(repo, engine, session_id, 102)
-    second = execution(session_id, second_id, "target-102", balance_before=900)
-    second_result = reconcile(repo, engine, second, outcome="LOSS", balance=800, multiplier=1.2)
-    assert second_result["status"] == "RECONCILED"
-    stop = engine.session(session_id)["financial_stop"]
-    assert stop["status"] == "STOPPED"
-    assert stop["reason"] == "LOSS_LIMIT_REACHED"
-    assert stop["loss_count"] == 2
-    assert stop["reconciled_bets"] == 2
-
-
-def test_live_activation_limits_count_only_receipt_reconciled_outcomes(tmp_path):
-    repo, engine, session_id, selection_id = setup_rule_session(tmp_path, currency="BIF")
-    started = now()
-    installed = engine.install_live_execution_stops({
-        "live_session_id": "LIVE-test-session", "started_at": started, "currency": "BIF",
-        "profit_target_enabled": True, "profit_target": 100,
-        "loss_limit_enabled": True, "loss_limit": 100,
-        "win_count_limit_enabled": True, "win_count_limit": 1,
-        "loss_count_limit_enabled": True, "loss_count_limit": 2,
-    })
-    assert installed["ok"] is True
-    assert installed["rules_session_id"] == session_id
-
-    row = execution(session_id, selection_id, "target-101", currency="BIF")
-    result = reconcile(repo, engine, row, outcome="WIN", balance=1100, multiplier=2.5,
-                       currency="BIF")
-    stop = engine.session(session_id)["live_execution_stop"]
-    assert result["status"] == "RECONCILED"
-    assert stop["status"] == "STOPPED"
-    assert stop["reason"] == "WIN_LIMIT_REACHED"
-    assert stop["realized_profit_loss"] == 100
-    assert stop["win_count"] == 1
-    assert stop["settled_execution_ids"] == [row["execution_id"]]
-    assert engine.session(session_id)["selection_status"] == "STOPPED"
-
-    recovered = RulesEngine(repo).session(session_id)["live_execution_stop"]
-    assert recovered["status"] == "STOPPED"
-    assert recovered["win_count"] == 1
-    assert recovered["realized_profit_loss"] == 100
-
-
-@pytest.mark.parametrize(("controls", "outcome", "balance", "expected_reason"), [
-    ({"reconciled_profit_target_enabled": True, "reconciled_profit_target_rwf": 100},
-     "WIN", 1100, "PROFIT_TARGET_REACHED"),
-    ({"reconciled_loss_limit_enabled": True, "reconciled_loss_limit_rwf": 100},
-     "LOSS", 900, "LOSS_LIMIT_REACHED"),
-])
-def test_receipt_backed_money_targets_stop_only_with_verified_matching_currency(
-        tmp_path, controls, outcome, balance, expected_reason):
-    repo, engine, session_id, selection_id = setup_rule_session(tmp_path, controls, currency="RWF")
-    row = execution(session_id, selection_id, "target-101", currency="RWF")
-
-    result = reconcile(repo, engine, row, outcome=outcome, balance=balance,
-                       multiplier=2.5 if outcome == "WIN" else 1.1, currency="RWF")
-    assert result["status"] == "RECONCILED"
-    assert engine.session(session_id)["financial_stop"]["reason"] == expected_reason
-
-
-def test_unknown_settlement_blocks_and_restart_recovers_without_counting(tmp_path):
-    repo, engine, session_id, selection_id = setup_rule_session(tmp_path,
-        {"reconciled_win_limit_enabled": True, "reconciled_win_limit_count": 1})
-    engine.install_live_execution_stops({
-        "live_session_id": "LIVE-recovery", "started_at": now(), "currency": "USD",
-        "profit_target_enabled": False, "loss_limit_enabled": False,
-        "win_count_limit_enabled": True, "win_count_limit": 1,
-        "loss_count_limit_enabled": False,
-    })
+def test_unknown_settlement_pauses_and_requires_receipt_before_resume(tmp_path):
+    repo, engine, session_id, selection_id = setup_rule_session(tmp_path)
     row = execution(session_id, selection_id, "target-101")
     pending = reconcile(repo, engine, row, outcome="WIN", balance=1100,
                         multiplier=2.5, settled=False)
+
     assert pending["status"] == "RECONCILIATION_PENDING"
-    stop = engine.session(session_id)["financial_stop"]
-    assert stop["status"] == "RECONCILIATION_REQUIRED"
-    assert stop["win_count"] == 0
-    assert stop["loss_count"] == 0
-    assert stop["reconciled_bets"] == 0
-    live_stop = engine.session(session_id)["live_execution_stop"]
-    assert live_stop["status"] == "RECONCILIATION_REQUIRED"
-    assert live_stop["win_count"] == 0
+    paused = engine.session(session_id)
+    assert paused["status"] == "PAUSED"
+    assert paused["selection_status"] == "STOPPED"
+    assert paused["settlement_integrity"]["status"] == "RECONCILIATION_REQUIRED"
+    assert paused["settlement_integrity"]["reconciled_bets"] == 0
+    assert paused["settlement_integrity"]["reconciled_execution_ids"] == []
+    with pytest.raises(ValueError, match="UNRECONCILED_EXECUTION_REMAINS"):
+        engine.session_action(session_id, "resume")
 
     recovered_engine = RulesEngine(repo)
     recovered = recovered_engine.session(session_id)
-    assert recovered["financial_stop"]["status"] == "RECONCILIATION_REQUIRED"
-    assert recovered["financial_stop"]["win_count"] == 0
+    assert recovered["settlement_integrity"]["status"] == "RECONCILIATION_REQUIRED"
     service = ReconciliationService(repo)
     service.rules_engine = recovered_engine
-    final = run(service.reconcile(row, round_id="target-101", multiplier=2.5,
+    final = run(service.reconcile(repo.execution_by_id(row["execution_id"]),
+        round_id="target-101", multiplier=2.5,
         evidence=receipt("WIN", 1100, settled=True, decision_id=selection_id,
                          target_round_id="target-101")))
     assert final["status"] == "RECONCILED"
-    resolved = recovered_engine.session(session_id)["financial_stop"]
-    assert resolved["status"] == "STOPPED"
-    assert resolved["reason"] == "WIN_LIMIT_REACHED"
-    assert resolved["win_count"] == 1
-    assert resolved["reconciled_bets"] == 1
-    recovered_live_stop = recovered_engine.session(session_id)["live_execution_stop"]
-    assert recovered_live_stop["status"] == "STOPPED"
-    assert recovered_live_stop["win_count"] == 1
-    assert recovered_live_stop["realized_profit_loss"] == 100
+    assert recovered_engine.session(session_id)["settlement_integrity"]["status"] == "CLEAR"
+    resumed = recovered_engine.session_action(session_id, "resume")
+    assert resumed["status"] == "RUNNING"
+    assert resumed["selection_status"] == "ACTIVE"
 
 
-def test_money_limits_require_valid_configuration():
-    engine = RulesEngine()
-    boundary = {"stream_id": "stream-1", "round_id": "round-1", "observation_id": "round-1",
-                "round_index": 1, "stream_sequence": 1, "multiplier": 2.0,
-                "event_type": "round.persisted", "durability": "COMMITTED",
-                "continuity_status": "VERIFIED"}
-    with pytest.raises(ValueError, match="INVALID_NET_LIMIT"):
-        engine.start_session(mode="ALL_RULES_TOGETHER", rule_ids=[], boundary=boundary, options={
-            "reconciled_profit_target_enabled": True,
-            "reconciled_profit_target_rwf": 0,
-        })
+def test_optional_live_bankroll_stops_are_retired_without_changing_session(tmp_path):
+    _repo, engine, session_id, _selection_id = setup_rule_session(tmp_path)
+    before = engine.session(session_id)
+    result = engine.install_live_execution_stops({
+        "profit_target_enabled": True, "profit_target": 100,
+        "loss_limit_enabled": True, "loss_limit": 100,
+        "maximum_exposure_percentage": 5,
+    })
+
+    assert result == {"ok": False, "reason": "OPTIONAL_BANKROLL_MANAGEMENT_REMOVED"}
+    after = engine.session(session_id)
+    assert after["configuration_snapshot"] == before["configuration_snapshot"]
+    assert after["selection_status"] == "ACTIVE"
+    assert after["settlement_integrity"] == before["settlement_integrity"]

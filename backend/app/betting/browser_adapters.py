@@ -22,6 +22,16 @@ from typing import Any, Protocol
 from app.betting.cashout import inspect_cashout_configuration
 from app.betting.selectors import GameSnapshot
 
+UNVERIFIED_LIVE_CAPABILITIES = {
+    "bet_submission": False,
+    "target_identity": False,
+    "betting_deadline": False,
+    "cashout_acknowledgement": False,
+    "acceptance_receipt": False,
+    "settlement_receipt": False,
+    "currency_validation": False,
+}
+
 log = logging.getLogger("betting.adapters")
 
 
@@ -308,10 +318,7 @@ class RealBrowserBackend:
         wager. The real rule's activation review consumes this explicit
         capability contract rather than inferring readiness from a page.
         """
-        return {"bet_submission": False, "target_identity": False,
-                "betting_deadline": False, "cashout_acknowledgement": False,
-                "acceptance_receipt": False, "settlement_receipt": False,
-                "currency_validation": False}
+        return dict(UNVERIFIED_LIVE_CAPABILITIES)
 
     async def readiness(self) -> dict:
         """Read-only readiness against the live browser."""

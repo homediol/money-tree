@@ -8,17 +8,31 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/api/live", tags=["live activation"])
+LIVE_MANUAL_SETUP_CONFIGURATION_VERSION = 1
 
 
 def live(request: Request):
     return request.app.state.live
 
 
+def _live_readiness_configuration(modes) -> dict:
+    """Read only the operator-selected executor panel; stake is platform-owned."""
+    read_configuration = getattr(modes, "live_configuration", None)
+    configuration = read_configuration() if callable(read_configuration) else None
+    if not isinstance(configuration, dict) or configuration.get("configuration_valid") is not True:
+        return {}
+    return {
+        "execution_panel": configuration.get("execution_panel"),
+        "configuration_source": configuration.get("persistence_source"),
+    }
+
+
 @router.post("/readiness")
 async def readiness(request: Request):
     modes = request.app.state.betting_mode
     observation = await modes._read_platform_balance()
-    return await live(request).production_readiness_check(observation)
+    return await live(request).production_readiness_check(
+        observation, _live_readiness_configuration(modes))
 
 
 @router.get("/readiness")
@@ -26,7 +40,8 @@ async def readiness_read_only(request: Request):
     """Fresh read-only readiness check; does not authorize or start a session."""
     modes = request.app.state.betting_mode
     observation = await modes._read_platform_balance()
-    return await live(request).production_readiness_check(observation)
+    return await live(request).production_readiness_check(
+        observation, _live_readiness_configuration(modes))
 
 
 @router.get("/balance")
@@ -71,31 +86,20 @@ def _readback_age_seconds(value: dict | None, *, now: datetime) -> float | None:
 
 
 def _manual_setup_configuration(request: Request) -> dict:
-    """Resolve an explicitly saved panel/stake without inventing a selection."""
-    engine = getattr(request.app.state, "rules_engine", None)
-    configuration = engine.ui_setup_configuration() if engine else {
-        "status": "BLOCKED", "reason": "RULES_ENGINE_UNAVAILABLE",
-        "execution_panel": None, "requested_stake": None,
-        "requested_stake_currency": None,
-    }
-    if configuration.get("status") == "CONFIGURED":
-        return {**configuration, "configuration_source": "RULES_ENGINE_SESSION"}
-
+    """Resolve only the Executor target panel. Stake/cashout remain operator-owned."""
     modes = getattr(request.app.state, "betting_mode", None)
     read_configuration = getattr(modes, "live_configuration", None)
     saved = read_configuration() if callable(read_configuration) else None
-    if not isinstance(saved, dict):
-        return configuration
-    panel, stake, currency = saved.get("execution_panel"), saved.get("stake_amount"), saved.get("currency")
-    if (type(panel) is not int or panel not in (0, 1)
-            or isinstance(stake, bool) or not isinstance(stake, (int, float)) or stake <= 0
-            or not isinstance(currency, str) or not currency.strip()):
-        return configuration
+    panel = saved.get("execution_panel") if isinstance(saved, dict) else None
+    if type(panel) is not int or panel not in (0, 1):
+        return {"status": "BLOCKED", "reason": "EXECUTION_PANEL_NOT_SELECTED",
+                "session_id": None, "execution_panel": None,
+                "configuration_source": "LIVE_EXECUTOR_CONFIGURATION",
+                "automatic_execution": "OFF"}
     return {
         "status": "CONFIGURED", "reason": None, "session_id": None,
-        "execution_panel": panel, "requested_stake": stake,
-        "requested_stake_currency": currency.strip().upper(),
-        "configuration_source": "SAVED_LIVE_CONFIGURATION_DRAFT",
+        "execution_panel": panel,
+        "configuration_source": "LIVE_EXECUTOR_CONFIGURATION",
         "automatic_execution": "OFF",
     }
 
@@ -115,6 +119,7 @@ def _manual_setup_observation(snapshot, configuration: dict, previous: dict | No
                    and snapshot.browser_topology_verified is True)
     if (not auth_ok or not page_ok or not frame_identity
             or not isinstance(previous, dict)
+            or previous.get("readback_version") != 2
             or previous.get("frame_identity") != frame_identity):
         previous = {}
     else:
@@ -133,8 +138,8 @@ def _manual_setup_observation(snapshot, configuration: dict, previous: dict | No
                 button_amount = float(match.group(1).replace(",", ""))
             except ValueError:
                 button_amount = None
-    expected_stake = configuration.get("requested_stake")
-    expected_currency = str(configuration.get("requested_stake_currency") or "").upper() or None
+    expected_stake = None
+    expected_currency = None
     observed_stake = None
     if stake_input and stake_input.get("value") not in (None, ""):
         try:
@@ -157,17 +162,14 @@ def _manual_setup_observation(snapshot, configuration: dict, previous: dict | No
                              and button_visible
                              and stake_input and stake_input.get("visible") is True and all_clear)
     cache_matches = (previous.get("execution_panel") == panel_slot
-                     and previous.get("expected_stake") == expected_stake
-                     and previous.get("expected_currency") == expected_currency
                      and previous.get("account_currency") == account_currency)
     cached_stake = previous.get("stake") if cache_matches else None
     cached_stake_age = _readback_age_seconds(cached_stake, now=current_time)
     if direct_stake_read:
         if (observed_stake is None or button_amount is None or not account_currency or not observed_currency):
             stake_status = "UNAVAILABLE"
-        elif (expected_stake is not None and expected_currency
-              and observed_stake == float(expected_stake) == button_amount
-              and observed_currency == expected_currency and account_currency == expected_currency):
+        elif (observed_stake.is_integer() and observed_stake == button_amount
+              and observed_currency == account_currency == "BIF"):
             stake_status = "STAKE_VERIFIED"
         else:
             stake_status = "STAKE_MISMATCH"
@@ -192,8 +194,7 @@ def _manual_setup_observation(snapshot, configuration: dict, previous: dict | No
         stake_status = "UNAVAILABLE"
 
     next_readbacks = {
-        "frame_identity": frame_identity, "execution_panel": panel_slot,
-        "expected_stake": expected_stake, "expected_currency": expected_currency,
+        "readback_version": 2, "frame_identity": frame_identity, "execution_panel": panel_slot,
         "account_currency": account_currency, "cashout_panels": {},
         "stake": stake_readback if direct_stake_read else cached_stake if stake_readback else None,
     }
@@ -264,11 +265,21 @@ def _manual_setup_observation(snapshot, configuration: dict, previous: dict | No
             }
         inspected_panels.append(panel_row)
 
-    currency_ok = bool(snapshot and snapshot.balance_currency and auth_ok)
-    balance_ok = bool(snapshot and snapshot.balance is not None and snapshot.balance_currency
-                      and snapshot.balance_observed_at and auth_ok)
-    selected_cashouts = ([inspected_panels[panel_slot]] if panel_slot in (0, 1)
-                         else inspected_panels)
+    balance_age = _readback_age_seconds(
+        {"observed_at": getattr(snapshot, "balance_observed_at", None)} if snapshot else None,
+        now=current_time)
+    account_evidence_fresh = bool(
+        snapshot and auth_ok and page_ok
+        and balance_age is not None and 0 <= balance_age <= 20
+        and getattr(snapshot, "provider_identity", None)
+        and getattr(snapshot, "session_identity", None))
+    currency_ok = bool(account_evidence_fresh and getattr(snapshot, "balance_currency", None))
+    balance_ok = bool(account_evidence_fresh and getattr(snapshot, "balance", None) is not None
+                      and getattr(snapshot, "balance_currency", None))
+    # LIVE readiness requires both platform cashout panels configured. Make
+    # the ten-item manual checklist use the same scope so it cannot report a
+    # fully verified setup while the other panel is still unsafe.
+    selected_cashouts = inspected_panels
 
     def all_panel_status(field: str, expected: str) -> str:
         values = [row.get(field) for row in selected_cashouts]
@@ -289,22 +300,23 @@ def _manual_setup_observation(snapshot, configuration: dict, previous: dict | No
         {"item": "Aviator game opened", "status": "VERIFIED" if page_ok else "UNAVAILABLE"},
         {"item": "Execution panel selected", "status": "VERIFIED" if panel_slot in (0, 1) else "REQUIRED"},
         {"item": "Stake manually entered", "status": stake_status},
-        {"item": "Auto Cashout manually enabled", "status": cashout_enabled_status},
-        {"item": "Cashout multiplier 2.00x", "status": multiplier_status},
-        {"item": "Auto Bet OFF", "status": auto_bet_status},
+        {"item": "Auto Cashout ON for both panels", "status": cashout_enabled_status},
+        {"item": "Cashout multiplier 2.00x on both panels", "status": multiplier_status},
+        {"item": "Auto Bet OFF on both panels", "status": auto_bet_status},
         {"item": "Account currency verified", "status": "VERIFIED" if currency_ok else "UNAVAILABLE"},
         {"item": "Balance verified", "status": "VERIFIED" if balance_ok else "UNAVAILABLE"},
         {"item": "No active or pending bet", "status": "VERIFIED" if all_clear else "BLOCKED" if "PENDING" in pending_states else "UNAVAILABLE"},
     ]
     return {
-        "status": "VERIFIED" if all(item["status"] == "VERIFIED" for item in checklist) else "REVIEW_REQUIRED",
+        "status": "VERIFIED" if all(item["status"] in {"VERIFIED", "STAKE_VERIFIED"}
+                                     for item in checklist) else "REVIEW_REQUIRED",
         "observed_at": observed_at, "source": "SHARED_AVIATOR_FRAME_READ_ONLY",
         "authentication_state": snapshot.authentication_state if snapshot else "UNKNOWN",
         "page_role": snapshot.page_role if snapshot else "UNKNOWN",
         "browser_topology_verified": snapshot.browser_topology_verified is True if snapshot else False,
         "selected_panel": panel_slot + 1 if panel_slot in (0, 1) else None,
         "configuration_source": configuration.get("configuration_source"),
-        "expected_stake": expected_stake, "expected_currency": expected_currency,
+        "expected_stake": None, "expected_currency": None,
         "observed_stake": observed_stake, "displayed_button_stake": button_amount,
         "button_text": button_text, "observed_currency": observed_currency,
         "stake_readback_observed_at": stake_readback.get("observed_at") if stake_readback else None,
@@ -312,7 +324,8 @@ def _manual_setup_observation(snapshot, configuration: dict, previous: dict | No
         "minimum_stake": stake_readback.get("minimum_stake") if stake_readback else stake_input.get("minAttribute") if stake_input else None,
         "account_balance": snapshot.balance if snapshot else None,
         "account_currency": snapshot.balance_currency if snapshot else None,
-        "balance_observed_at": snapshot.balance_observed_at if snapshot else None,
+        "balance_observed_at": getattr(snapshot, "balance_observed_at", None) if snapshot else None,
+        "balance_age_seconds": round(balance_age, 3) if balance_age is not None else None,
         "pending_bet_states": pending_states,
         "cashout_panels": inspected_panels, "checklist": checklist,
         "betting_controls": {
@@ -401,8 +414,16 @@ async def refresh_cashout(request: Request):
 
 @router.get("/risk")
 async def risk_status(request: Request):
-    betting = request.app.state.betting
-    return {"ok": True, "status": request.app.state.risk.status(betting.status())}
+    risk = getattr(request.app.state, "risk", None)
+    if risk is None:
+        return {"ok": True, "execution_integrity": {
+            "emergency_stop": None, "state": "BLOCKED",
+            "reason": "EMERGENCY_STOP_STATE_UNAVAILABLE"}}
+    return {"ok": True, "execution_integrity": {
+        "emergency_stop": bool(risk.emergency_latched),
+        "state": "BLOCKED" if risk.emergency_latched else "NOT_AUTHORIZED",
+        "reason": "EMERGENCY_STOP_LATCHED" if risk.emergency_latched else
+                  "REAL_MONEY_EXECUTION_DISABLED"}}
 
 
 @router.post("/start")

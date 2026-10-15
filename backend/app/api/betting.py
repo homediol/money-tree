@@ -9,23 +9,22 @@ import logging
 import math
 import asyncio
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from app.betting.browser_client import AviatorBrowserClient
 from app.betting.cashout import inspect_cashout_configuration
-from app.betting.profiles import profile_keys
-from app.betting.schemas import (
-    AutomaticStartRequest,
-    DecisionIntent,
-    SessionStartRequest,
-    profile_choices,
-)
 from app.betting.session import BettingError
 
 log = logging.getLogger("betting.api")
 router = APIRouter(prefix="/api/betting", tags=["betting"])
+
+
+class SessionControlRequest(BaseModel):
+    action: Literal["start", "stop"]
 
 
 def _betting(request: Request):
@@ -60,17 +59,16 @@ async def status(request: Request):
 
 @router.get("/profiles")
 async def profiles(request: Request):
-    return {"ok": True, "profiles": profile_choices(),
-            "keys": profile_keys()}
+    return JSONResponse(status_code=410, content={"ok": False,
+        "error": "OPTIONAL_BANKROLL_MANAGEMENT_REMOVED"})
 
 
 @router.post("/start")
-async def start_automatic(request: Request, body: AutomaticStartRequest):
-    """Automatic start stays blocked until a configured Rules Engine exists."""
+async def start_automatic(request: Request):
+    """Legacy financial executor start is retired."""
     return JSONResponse(status_code=409, content={
-        "ok": False, "error": "live_activation_required",
-        "message": "Use POST /api/live/start with explicit ENABLE LIVE BETTING "
-                   "confirmation and platform verification",
+        "ok": False, "error": "FINANCIAL_EXECUTOR_RETIRED",
+        "message": "Rules Engine sessions observe and record SELECT decisions only. Real-money execution remains disabled.",
     })
 
 
@@ -234,30 +232,15 @@ async def browser_readiness(request: Request, include_snapshot: bool = False):
 
 
 @router.post("/session")
-async def session_control(request: Request, body: SessionStartRequest):
+async def session_control(request: Request, body: SessionControlRequest):
     manager = _betting(request)
     try:
         if body.action == "start":
-            if getattr(request.app.state, "betting_mode", None):
-                return JSONResponse(status_code=409, content={
-                    "ok": False, "error": "backend_mode_switch_required",
-                    "message": "Use the authoritative SHADOW_REALISTIC/LIVE_REAL mode switch",
-                })
-            if body.mode == "REAL":
-                return JSONResponse(status_code=409, content={
-                    "ok": False, "error": "live_activation_required",
-                    "message": "REAL sessions require /api/live/start and "
-                               "platform verification",
-                })
-            risk = _risk(request)
-            if risk and risk.emergency_latched:
-                return JSONResponse(status_code=409, content={
-                    "ok": False, "error": "emergency_stop_latched",
-                    "message": "Reset emergency stop before starting a new session",
-                })
-            status = await manager.start_session(body)
-            if risk:
-                await risk.on_session_start(body.profile)
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": "FINANCIAL_EXECUTOR_RETIRED",
+                "message": "Rules Engine observation sessions do not submit bets. "
+                           "Real-money execution remains disabled.",
+            })
         else:
             status = await manager.stop_session(emergency=False)
         return {"ok": True, "status": status}
@@ -282,7 +265,7 @@ async def emergency_stop(request: Request):
 
 
 @router.post("/decisions")
-async def submit_decision(request: Request, body: DecisionIntent):
+async def submit_decision(request: Request, body: dict):
     engine = getattr(request.app.state, "rules_engine", None)
     evaluation = (engine.last_evaluation or engine.evaluate()
                   if engine is not None else None)

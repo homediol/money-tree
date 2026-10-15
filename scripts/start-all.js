@@ -151,10 +151,11 @@ const SERVICES = [
       "/api/risk/status",
     ],
     requiredCapabilities: [
+      "rule_settlement_integrity_recovery",
       "receipt_reconciliation_to_rule_session",
-      "rule_financial_stop_recovery",
       "manual_platform_stake_readback_v2",
-      "manual_platform_setup_readback_v3",
+      "manual_executor_v2",
+      "real_money_execution_disabled",
     ],
     restart: true,
     // Restart only after the managed API child exits. launch() rechecks the

@@ -240,7 +240,7 @@ CREATE TABLE IF NOT EXISTS rule_execution_intents (
   panel INTEGER NOT NULL DEFAULT 0,
   requested_stake NUMERIC,
   requested_stake_currency TEXT,
-  cashout_target NUMERIC NOT NULL,
+  cashout_target NUMERIC,
   execution_status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   expires_at TEXT,
@@ -424,6 +424,7 @@ class Repository:
         if self.database_url:
             with self.connect() as conn:
                 conn.executescript(SCHEMA)
+                conn.execute("ALTER TABLE rule_execution_intents ALTER COLUMN cashout_target DROP NOT NULL")
                 conn.execute("ALTER TABLE collector_round_observation_events DROP CONSTRAINT IF EXISTS collector_round_observation_events_event_status_check")
                 conn.execute("""ALTER TABLE collector_round_observation_events
                     ADD CONSTRAINT collector_round_observation_events_event_status_check
@@ -509,6 +510,39 @@ class Repository:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(SCHEMA)
+            intent_columns = {row[1]: row for row in conn.execute(
+                "PRAGMA table_info(rule_execution_intents)").fetchall()}
+            cashout_column = intent_columns.get("cashout_target")
+            if cashout_column and cashout_column[3]:
+                conn.execute("ALTER TABLE rule_execution_intents RENAME TO rule_execution_intents_legacy_v1")
+                conn.execute("""CREATE TABLE rule_execution_intents (
+                    intent_id TEXT PRIMARY KEY,
+                    decision_id TEXT NOT NULL UNIQUE,
+                    selection_id TEXT NOT NULL UNIQUE,
+                    session_id TEXT NOT NULL,
+                    source_round_id TEXT,
+                    target_stream_id TEXT NOT NULL,
+                    target_round_id TEXT,
+                    target_round_index BIGINT NOT NULL,
+                    panel INTEGER NOT NULL DEFAULT 0,
+                    requested_stake NUMERIC,
+                    requested_stake_currency TEXT,
+                    cashout_target NUMERIC,
+                    execution_status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT,
+                    payload TEXT NOT NULL,
+                    UNIQUE(target_stream_id,target_round_index,panel)
+                )""")
+                conn.execute("""INSERT INTO rule_execution_intents(
+                    intent_id,decision_id,selection_id,session_id,source_round_id,target_stream_id,
+                    target_round_id,target_round_index,panel,requested_stake,requested_stake_currency,
+                    cashout_target,execution_status,created_at,expires_at,payload)
+                    SELECT intent_id,decision_id,selection_id,session_id,source_round_id,target_stream_id,
+                    target_round_id,target_round_index,panel,requested_stake,requested_stake_currency,
+                    cashout_target,execution_status,created_at,expires_at,payload
+                    FROM rule_execution_intents_legacy_v1""")
+                conn.execute("DROP TABLE rule_execution_intents_legacy_v1")
             conn.execute("INSERT OR IGNORE INTO history_epochs(singleton,epoch,updated_at) VALUES(1,1,CURRENT_TIMESTAMP)")
             columns = {row[1] for row in conn.execute("PRAGMA table_info(rounds)").fetchall()}
             if "round_id" not in columns:
@@ -1604,11 +1638,6 @@ class Repository:
                                     else intent.get("target_identity_status", "UNVERIFIED"),
                                 "selected_rule_ids": selection.get("contributing_rule_ids")
                                     or ([selection.get("rule_id")] if selection.get("rule_id") else []),
-                                "requested_stake": intent.get("requested_stake", config.get("requested_stake",
-                                    config.get("fixed_stake", config.get("fixed_stake_rwf", selection.get("stake_rwf"))))),
-                                "requested_stake_currency": intent.get("requested_stake_currency")
-                                    or config.get("stake_currency"),
-                                "cashout_target": 2.0,
                                 "created_at": intent.get("created_at") or selection.get("selected_at") or updated_at,
                                 "expires_at": selection.get("expires_at") or intent.get("expires_at")
                                     or expected.get("expiresAt") or selection.get("resolved_at"),
@@ -1622,6 +1651,22 @@ class Repository:
                                     else intent.get("panel", -1)),
                                 "execution_status": intent.get("execution_status") or "BLOCKED_READ_ONLY",
                             })
+                            if int(session.get("configuration_schema_version") or 1) >= 2:
+                                # New observation sessions do not own stake, cashout,
+                                # or selected-panel values. Preserve the separate
+                                # operator setup and do not copy legacy bankroll
+                                # settings into fresh intent records.
+                                for field in ("requested_stake", "requested_stake_currency",
+                                              "stake", "currency", "cashout_target"):
+                                    intent.pop(field, None)
+                            else:
+                                # Keep already persisted v1 evidence readable for
+                                # history; never use it to configure new sessions.
+                                intent.setdefault("requested_stake", config.get("requested_stake",
+                                    config.get("fixed_stake", config.get("fixed_stake_rwf", selection.get("stake_rwf")))))
+                                intent.setdefault("requested_stake_currency",
+                                                  config.get("stake_currency"))
+                                intent.setdefault("cashout_target", 2.0)
                             intent.setdefault("decision_id", selection_id)
                             intent.setdefault("session_id", str(session_id))
                             intent.setdefault("selected_rule_ids", selection.get("contributing_rule_ids") or [])
@@ -1639,7 +1684,9 @@ class Repository:
                             selection["execution_intent"] = intent
                             if not intent.get("intent_id"):
                                 intent["intent_id"] = hashlib.sha256(
-                                    f"{target_stream}\0{target_index}\0{intent['panel']}".encode("utf-8")
+                                    (f"{target_stream}\0{target_index}" if int(
+                                        session.get("configuration_schema_version") or 1) >= 2
+                                     else f"{target_stream}\0{target_index}\0{intent['panel']}").encode("utf-8")
                                 ).hexdigest()
                             intent.setdefault("blockers", [
                                 "REAL_MONEY_EXECUTION_DISABLED",
@@ -1647,8 +1694,7 @@ class Repository:
                                 "TARGET_ROUND_ID_UNVERIFIED" if not intent["target_round_id"] else
                                     "PLATFORM_ACCEPTANCE_NOT_VERIFIED",
                                 "BETTING_DEADLINE_UNVERIFIED",
-                                "BET_AMOUNT_CURRENCY_UNVERIFIED" if not intent["requested_stake_currency"] else
-                                    "STAKE_CURRENCY_NOT_RECONCILED",
+                                "OPERATOR_STAKE_AND_PANEL_READBACK_REQUIRED",
                                 "VERIFIED_BALANCE_AND_SUFFICIENT_FUNDS_REQUIRED",
                                 "CASHOUT_PLATFORM_ACKNOWLEDGEMENT_UNVERIFIED",
                                 "PLATFORM_ACCEPTANCE_AND_SETTLEMENT_UNVERIFIED",
@@ -1662,7 +1708,8 @@ class Repository:
                                 (intent["intent_id"], selection_id, selection_id, str(session_id), source.get("roundId"),
                                  target_stream, intent.get("target_round_id"), target_index, intent["panel"],
                                  intent.get("requested_stake"),
-                                 intent["requested_stake_currency"], 2.0, intent["execution_status"],
+                                 intent.get("requested_stake_currency"), intent.get("cashout_target"),
+                                 intent["execution_status"],
                                 intent["created_at"], intent["expires_at"], intent_json))
                             # The exact completed target identity may become
                             # available after the prospective intent was
@@ -1699,10 +1746,10 @@ class Repository:
                     "balance_change": None, "realized_betting_pl": None,
                     "win_count": 0, "loss_count": 0, "currency": None,
                     "updated_at": updated_at,
-                    "rule_observation_summary": {
-                        "shadow_net_profit_rwf": session.get("net_profit_rwf"),
-                        "shadow_wins": session.get("total_wins", 0),
-                        "shadow_losses": session.get("total_losses", 0),
+                    "rule_outcome_counts": {
+                        "nonfinancial": True,
+                        "wins": session.get("total_wins", 0),
+                        "losses": session.get("total_losses", 0),
                     },
                     "actual_betting_financials_status": "NO_RECONCILED_BETS",
                 }
@@ -1729,56 +1776,12 @@ class Repository:
                 (observation_id, float(amount), observation.get("currency"),
                  str(observation.get("observed_at") or datetime.now(timezone.utc).isoformat()),
                  observation.get("provider_identity"), observation.get("session_identity"),
-                 str(observation.get("observation_status") or
-                     ("VERIFIED_READ_ONLY" if observation.get("verified") else "UNVERIFIED_READ_ONLY")),
-                 json.dumps(payload, sort_keys=True, separators=(",", ":"))))
-        # The platform's own session identifier is kept separately from this
-        # application's rules/live session identifier. A missing provider ID
-        # does not get filled with a backend-generated value.
-        session_id = observation.get("application_session_id") or observation.get("session_identity")
-        if session_id and observation.get("verified") is True:
-            financials = self.reconciled_session_financials(str(session_id))
-            with self.connect() as conn:
-                old_row = conn.execute("SELECT payload FROM rule_session_financials WHERE session_id=?",
-                                        (str(session_id),)).fetchone()
-                old = json.loads(old_row["payload"]) if old_row else {}
-                starting = old.get("starting_balance")
-                if starting is None:
-                    starting = float(amount)
-                starting_currency = old.get("starting_balance_currency")
-                if starting_currency is None and old.get("starting_balance") is None:
-                    starting_currency = observation.get("currency")
-                currency = observation.get("currency")
-                comparable = bool(currency and starting_currency and starting_currency == currency)
-                balance_change = float(amount) - float(starting) if comparable else None
-                row = {**financials, "session_id": str(session_id),
-                       "starting_balance": starting, "current_balance": float(amount),
-                       "starting_balance_currency": starting_currency,
-                       "balance_change": balance_change,
-                       "currency": currency if comparable else None,
-                       "balance_currency_consistent": comparable,
-                       "updated_at": str(observation.get("observed_at") or datetime.now(timezone.utc).isoformat()),
-                       "balance_observation_id": observation_id}
-                realized = row.get("realized_betting_pl")
-                residual = (balance_change - float(realized)
-                            if balance_change is not None and isinstance(realized, (int, float)) else None)
-                row["non_betting_balance_movement"] = residual
-                row["balance_movement_reconciliation"] = (
-                    "UNCLASSIFIED_NON_BETTING_MOVEMENT" if residual is not None and abs(residual) > 0.005
-                    else "BALANCE_CHANGE_MATCHES_RECONCILED_BETS" if residual is not None else
-                    "UNAVAILABLE_CURRENCY_OR_RECONCILED_P_L")
-                conn.execute("""INSERT INTO rule_session_financials(
-                    session_id,starting_balance,current_balance,balance_change,realized_betting_pl,
-                    win_count,loss_count,currency,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(session_id) DO UPDATE SET
-                    starting_balance=excluded.starting_balance,current_balance=excluded.current_balance,
-                    balance_change=excluded.balance_change,realized_betting_pl=excluded.realized_betting_pl,
-                    win_count=excluded.win_count,loss_count=excluded.loss_count,currency=excluded.currency,
-                    updated_at=excluded.updated_at,payload=excluded.payload""",
-                    (str(session_id), starting, float(amount), balance_change,
-                     financials.get("realized_betting_pl"), financials.get("win_count", 0),
-                     financials.get("loss_count", 0), row["currency"], row["updated_at"],
-                     json.dumps(row, sort_keys=True, separators=(",", ":"))))
+                str(observation.get("observation_status") or
+                    ("VERIFIED_READ_ONLY" if observation.get("verified") else "UNVERIFIED_READ_ONLY")),
+                json.dumps(payload, sort_keys=True, separators=(",", ":"))))
+        # These observations are raw read-only evidence only. Do not bind a
+        # session baseline or calculate bankroll growth between snapshots;
+        # transaction settlement is reconciled from its own receipts.
         return payload
 
     def latest_platform_balance_observation(self) -> dict[str, Any] | None:
@@ -1983,13 +1986,16 @@ class Repository:
         """Persist verified transaction totals without inventing a start balance."""
         totals = self.reconciled_session_financials(session_id)
         with self.connect() as conn:
-            row = conn.execute("SELECT payload FROM rule_session_financials WHERE session_id=?",
+            row = conn.execute("SELECT * FROM rule_session_financials WHERE session_id=?",
                                (str(session_id),)).fetchone()
         old = json.loads(row["payload"]) if row else {}
-        starting = old.get("starting_balance")
+        # Keep any pre-existing baseline fields intact for historical audit,
+        # but never derive new balance growth or bankroll movement values.
+        starting = old.get("starting_balance", row["starting_balance"] if row else None)
         starting_currency = old.get("starting_balance_currency")
-        current = old.get("current_balance")
+        current = old.get("current_balance", row["current_balance"] if row else None)
         current_currency = old.get("current_balance_currency")
+        balance_change = old.get("balance_change", row["balance_change"] if row else None)
         updated_at = old.get("updated_at")
         evidence = (execution or {}).get("platform_evidence") or {}
         if execution and _is_finite_money(execution.get("balance_after")) \
@@ -1997,19 +2003,13 @@ class Repository:
             current = float(execution["balance_after"])
             current_currency = evidence.get("balance_currency") or evidence.get("accepted_currency")
             updated_at = evidence.get("balance_observed_at") or execution.get("resolved_at")
-        comparable = bool(starting is not None and current is not None and starting_currency
-                          and current_currency and starting_currency == current_currency)
-        balance_change = float(current) - float(starting) if comparable else None
         row_payload = {
             **old, **totals, "session_id": str(session_id),
             "starting_balance": starting, "starting_balance_currency": starting_currency,
             "current_balance": current, "current_balance_currency": current_currency,
             "balance_change": balance_change,
-            "currency": current_currency if comparable else totals.get("currency"),
-            "balance_currency_consistent": comparable,
+            "currency": totals.get("currency") or current_currency,
             "updated_at": updated_at or datetime.now(timezone.utc).isoformat(),
-            "non_betting_balance_movement": (balance_change - totals["realized_betting_pl"]
-                if balance_change is not None and totals.get("realized_betting_pl") is not None else None),
         }
         with self.connect() as conn:
             conn.execute("""INSERT INTO rule_session_financials(
@@ -2027,60 +2027,9 @@ class Repository:
 
     def bind_rule_session_starting_balance(self, session_id: str,
                                            observation: dict[str, Any]) -> dict[str, Any] | None:
-        """Bind an existing verified read to the session; never synthesize a balance."""
-        amount = observation.get("balance", observation.get("displayed_amount"))
-        observation_id = observation.get("observation_id")
-        if (observation.get("verified") is not True or not observation_id
-                or not _is_finite_money(amount) or not observation.get("provider_identity")
-                or not observation.get("session_identity")):
-            return None
-        with self.connect() as conn:
-            stored = conn.execute("SELECT payload FROM platform_balance_observations WHERE observation_id=?",
-                                  (str(observation_id),)).fetchone()
-            if not stored:
-                return None
-            source = json.loads(stored["payload"])
-            if (source.get("verified") is not True
-                    or not _money_equal(source.get("balance", source.get("displayed_amount")), amount)
-                    or source.get("provider_identity") != observation.get("provider_identity")
-                    or source.get("session_identity") != observation.get("session_identity")):
-                return None
-            source["application_session_id"] = str(session_id)
-            source["session_starting_balance"] = True
-            conn.execute("UPDATE platform_balance_observations SET payload=? WHERE observation_id=?",
-                         (json.dumps(source, sort_keys=True, separators=(",", ":")), str(observation_id)))
-            old_row = conn.execute("SELECT payload FROM rule_session_financials WHERE session_id=?",
-                                   (str(session_id),)).fetchone()
-            old = json.loads(old_row["payload"]) if old_row else {}
-            if old.get("starting_balance") is not None:
-                return old
-            currency = source.get("currency")
-            totals = self.reconciled_session_financials(session_id)
-            stamp = str(source.get("observed_at") or datetime.now(timezone.utc).isoformat())
-            row = {**totals, "session_id": str(session_id),
-                   "starting_balance": float(amount), "current_balance": float(amount),
-                   "starting_balance_currency": currency, "current_balance_currency": currency,
-                   "balance_change": 0.0 if currency else None,
-                   "currency": currency, "balance_currency_consistent": bool(currency),
-                   "balance_observation_id": str(observation_id),
-                   "updated_at": stamp, "non_betting_balance_movement": None,
-                   "balance_movement_reconciliation": "SESSION_START_OBSERVATION"}
-            if old_row:
-                conn.execute("""UPDATE rule_session_financials SET starting_balance=?,current_balance=?,
-                    balance_change=?,realized_betting_pl=?,win_count=?,loss_count=?,currency=?,updated_at=?,payload=?
-                    WHERE session_id=? AND starting_balance IS NULL""",
-                    (float(amount), float(amount), row["balance_change"],
-                     totals.get("realized_betting_pl"), totals["win_count"], totals["loss_count"],
-                     currency, stamp, json.dumps(row, sort_keys=True, separators=(",", ":")),
-                     str(session_id)))
-            else:
-                conn.execute("""INSERT INTO rule_session_financials(
-                    session_id,starting_balance,current_balance,balance_change,realized_betting_pl,
-                    win_count,loss_count,currency,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                    (str(session_id), float(amount), float(amount), row["balance_change"],
-                     totals.get("realized_betting_pl"), totals["win_count"], totals["loss_count"],
-                     currency, stamp, json.dumps(row, sort_keys=True, separators=(",", ":"))))
-        return row
+        """Retired: platform observations do not create bankroll baselines."""
+        del session_id, observation
+        return None
 
     def list_reconciled_rule_executions(self, session_id: str) -> list[dict[str, Any]]:
         result = []

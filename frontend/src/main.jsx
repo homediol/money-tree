@@ -3,13 +3,14 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { ErrorBoundary } from 'react-error-boundary';
 import { Toaster } from 'sonner';
-import { Activity, Bot, History, ListChecks, ReceiptText, Settings, ShieldCheck } from 'lucide-react';
+import { Activity, KeyRound, ListChecks, ShieldCheck } from 'lucide-react';
 import './styles/index.css';
 import RulesEngine from './pages/RulesEngine.jsx';
 import LiveHistory from './pages/LiveHistory.jsx';
 import Betting from './pages/Betting.jsx';
 import BetResults from './pages/BetResults.jsx';
 import SystemSettings from './pages/SystemSettings.jsx';
+import PlatformConnection from './pages/PlatformConnection.jsx';
 import LiveActivation from './pages/LiveActivation.jsx';
 import Recovery from './pages/Recovery.jsx';
 import SystemHealth from './components/SystemHealth.jsx';
@@ -17,12 +18,9 @@ import AppErrorFallback from './components/AppErrorFallback.jsx';
 import ApiAccessGate from './components/ApiAccessGate.jsx';
 
 const nav = [
-  { to: '/', label: 'Rules Engine', icon: ListChecks },
-  { to: '/history', label: 'Round History', icon: History },
-  { to: '/betting', label: 'Betting', icon: Bot },
-  { to: '/results', label: 'Bet Results', icon: ReceiptText },
-  { to: '/operations', label: 'Operations & Recovery', icon: ShieldCheck },
-  { to: '/settings', label: 'Settings', icon: Settings },
+  { to: '/platform', label: 'Login & Aviator', icon: KeyRound },
+  { to: '/engine', label: 'Collector & Rules Engine', icon: ListChecks },
+  { to: '/executor', label: 'Betting Executor', icon: ShieldCheck },
 ];
 
 function Shell() {
@@ -55,14 +53,18 @@ function Shell() {
     <main className="lg:pl-64">
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
         <Routes>
-          <Route path="/" element={<RulesEngine />} />
+          <Route path="/platform" element={<PlatformConnection />} />
+          <Route path="/engine" element={<div className="space-y-8"><RulesEngine /><section><h2 className="mb-4 text-xl font-semibold">Round history</h2><LiveHistory /></section></div>} />
+          <Route path="/executor" element={<div className="space-y-8"><LiveActivation /><Betting /><section><h2 className="mb-4 text-xl font-semibold">Execution recovery</h2><Recovery /></section><section><h2 className="mb-4 text-xl font-semibold">Settled results</h2><BetResults /></section></div>} />
+          {/* Preserve direct links while keeping the primary workflow to three components. */}
+          <Route path="/" element={<Navigate to="/platform" replace />} />
           <Route path="/rules-engine" element={<RulesEngine />} />
           <Route path="/history" element={<LiveHistory />} />
           <Route path="/betting" element={<Betting />} />
           <Route path="/results" element={<BetResults />} />
-          <Route path="/operations" element={<div className="space-y-8"><section><h1 className="mb-4 text-2xl font-bold">Live activation safety</h1><LiveActivation /></section><section><h2 className="mb-4 text-2xl font-bold">Recovery</h2><Recovery /></section></div>} />
+          <Route path="/operations" element={<div className="space-y-8"><LiveActivation /><Recovery /></div>} />
           <Route path="/settings" element={<SystemSettings />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/platform" replace />} />
         </Routes>
       </div>
     </main>

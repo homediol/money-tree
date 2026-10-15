@@ -39,6 +39,7 @@ export class HealthMonitor {
       lastObservedRoundIndex: null,
       lastObservedAt:     null,
       gamePhase:          'UNKNOWN',
+      roundPhase:         'UNKNOWN',
       gamePhaseObservedAt: null,
       gamePhaseEventId:   null,
       gamePhaseEvidence:  null,
@@ -358,6 +359,9 @@ export class HealthMonitor {
   recordGamePhase(phase = null, sourceRound = null) {
     if (!phase || !['BETTING_OPEN', 'BETTING_CLOSED', 'UNKNOWN'].includes(phase.phase)) return;
     this._metrics.gamePhase = phase.phase;
+    this._metrics.roundPhase = ['ROUND_ENDED', 'INTERMISSION', 'BETTING_OPEN',
+      'BETTING_CLOSED', 'ROUND_RUNNING', 'UNKNOWN'].includes(phase.round_phase)
+      ? phase.round_phase : 'UNKNOWN';
     this._metrics.gamePhaseObservedAt = phase.observed_at || new Date().toISOString();
     this._metrics.gamePhaseEventId = phase.event_id || null;
     this._metrics.gamePhaseEvidence = phase.evidence || null;

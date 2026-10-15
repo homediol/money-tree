@@ -121,7 +121,7 @@ def test_combined_true_and_false_proposals_create_one_shared_selection_and_resul
     enabled = ["RECENT_5_H_GE_4", "PATTERN_LH", "PATTERN_HH", "SOURCE_H_MULT_2_3",
                "AFTER_HH_CONTINUE_MAX_3", COMBINED_POLICY_ID]
     engine, session = new_session("ALL_RULES_TOGETHER", enabled,
-        options={"window_size": 50, "fixed_stake_rwf": 100})
+        options={"window_size": 50})
     saw_mixed = False
     saw_multi_true = False
     for row in FIXTURE["rounds"]:
@@ -245,7 +245,7 @@ def test_duplicate_observed_commit_and_restart_keep_one_selection_and_provenance
 def test_total_result_limits_are_not_consecutive_and_window_keeps_observing(
         limit_field, limit_value, expected_reason, expected_wins, expected_losses):
     enabled_key = "win_limit_enabled" if limit_field.startswith("win") else "loss_limit_enabled"
-    options = {"window_size": 50, "fixed_stake_rwf": 100,
+    options = {"window_size": 50,
                "win_limit_enabled": False, "loss_limit_enabled": False,
                enabled_key: True, limit_field: limit_value}
     engine, session = new_session("ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"], options=options)
@@ -284,7 +284,7 @@ def test_zero_rule_session_is_no_action_and_one_session_stop_does_not_affect_pee
     boundary = source_boundary()
     context = FIXTURE["boundary"]["prestart_context"]
     combined = shared.start_session(mode="ALL_RULES_TOGETHER", rule_ids=["SOURCE_H_MULT_2_3"],
-        boundary=boundary, prestart_context=context, options={"window_size": 50, "fixed_stake_rwf": 100})
+        boundary=boundary, prestart_context=context, options={"window_size": 50})
     tracker = shared.start_session(mode="FIVE_RULE_TRACKER", rule_ids=["SOURCE_H_MULT_2_3"],
         boundary=boundary, prestart_context=context, options={"window_size": 50})
     initial = feed(shared, FIXTURE["rounds"][0])
@@ -293,7 +293,7 @@ def test_zero_rule_session_is_no_action_and_one_session_stop_does_not_affect_pee
     assert len(shared.session(tracker["session_id"])["selections"]) == 1
     with pytest.raises(ValueError, match="SESSION_ALREADY_ACTIVE_FOR_MODE"):
         shared.start_session(mode="ALL_RULES_TOGETHER", rule_ids=["SOURCE_H_MULT_2_3"],
-            boundary=boundary, prestart_context=context, options={"window_size": 50, "fixed_stake_rwf": 100})
+            boundary=boundary, prestart_context=context, options={"window_size": 50})
 
     shared.session_action(combined["session_id"], "stop")
     resumed = feed(shared, FIXTURE["rounds"][1])
@@ -335,7 +335,7 @@ def test_auto_next_cannot_create_a_second_active_session_for_same_mode():
 
 def test_max_selection_limit_stops_new_selections_but_observes_full_window():
     engine, session = new_session("ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"],
-                                  options={"window_size": 50, "fixed_stake_rwf": 100, "max_selections": 1})
+                                  options={"window_size": 50, "max_selections": 1})
     for row in FIXTURE["rounds"]:
         feed(engine, row)
     detail = engine.session(session["session_id"])
@@ -349,7 +349,7 @@ def test_manual_stop_event_is_durably_recorded_with_its_stop_timestamp(tmp_path)
     repository = Repository(tmp_path / "rules-stop-event.sqlite3")
     repository.init()
     engine, session = new_session("ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"],
-        options={"window_size": 50, "fixed_stake_rwf": 100}, persistence=repository)
+        options={"window_size": 50}, persistence=repository)
     stopped_at = "2026-10-14T00:05:00+00:00"
     engine.session_action(session["session_id"], "stop", now=stopped_at)
     engine._persist()
@@ -377,10 +377,13 @@ def test_concurrent_duplicate_observations_and_config_versions_are_isolated(tmp_
     engine.configure("SOURCE_H_MULT_2_3", enabled=False)
     assert engine.session(session["session_id"])["configuration_version"] == old_version
     assert engine.session(session["session_id"])["rule_ids"] == ["SOURCE_H_MULT_2_3"]
+    with pytest.raises(ValueError, match="OPTIONAL_BANKROLL_MANAGEMENT_REMOVED"):
+        engine.save_preset("invalid-one", "ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"],
+                           {"fixed_stake_rwf": 77, "max_observed_rounds": 50})
     engine.save_preset("saved-one", "ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"],
-                       {"fixed_stake_rwf": 77, "max_observed_rounds": 50})
+                       {"max_observed_rounds": 50})
     restored = RulesEngine(persistence=repository)
-    assert restored.status()["presets"]["saved-one"]["options"]["fixed_stake_rwf"] == 77
+    assert restored.status()["presets"]["saved-one"]["options"] == {"max_observed_rounds": 50}
     assert restored.session(session["session_id"])["configuration_version"] == old_version
 
 
@@ -406,7 +409,7 @@ def test_shared_select_creates_one_durable_blocked_intent_per_target_and_panel(t
     repository.init()
     rule_ids = [*RESEARCH_IDS, COMBINED_POLICY_ID]
     engine, session = new_session("ALL_RULES_TOGETHER", rule_ids,
-        options={"window_size": 50, "fixed_stake_rwf": 100}, persistence=repository)
+        options={"window_size": 50}, persistence=repository)
     observed_multiple_true = False
     # This contract is about merging concurrent TRUE rule results into one
     # durable target intent; the dedicated source-parity test below replays
@@ -424,11 +427,12 @@ def test_shared_select_creates_one_durable_blocked_intent_per_target_and_panel(t
     intents = repository.list_rule_execution_intents(100)
     assert observed_multiple_true
     assert intents
-    assert len({(item["target_stream_id"], item["target_round_index"], item["panel"])
+    assert len({(item["target_stream_id"], item["target_round_index"])
                 for item in intents}) == len(intents)
-    assert all(item["cashout_target"] == 2.0 for item in intents)
     assert all(item["execution_status"] in {"BLOCKED_READ_ONLY", "EXPIRED"} for item in intents)
     assert all(item["selected_panel"] is None and item["panel"] == -1 for item in intents)
+    assert all(not ({"requested_stake", "requested_stake_currency", "cashout_target", "stake", "currency"}
+                    & set(item)) for item in intents)
     expired = [item for item in intents if item["execution_status"] == "EXPIRED"]
     assert expired
     assert all(item["target_round_id"] and item["expires_at"] and
@@ -490,10 +494,7 @@ def test_selected_panel_intent_carries_read_only_state_timing_and_unverified_rec
     monkeypatch.setattr("app.rules_engine._current_runtime_panel_observation",
         lambda panel, at: {"panel_id": f"PANEL_{panel + 1}", "state": "UNKNOWN",
                            "observed_at": None, "pending_bet_state": "UNKNOWN"})
-    engine, session = new_session("ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"], options={
-        "fixed_stake_rwf": 100, "stake_currency": "RWF", "execution_panel": 0,
-        "ui_fixed_stake_bif": 200, "ui_stake_currency": "BIF",
-    })
+    engine, session = new_session("ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"])
     selected = None
     selected_event = None
     for fixture_row in FIXTURE["rounds"]:
@@ -534,8 +535,10 @@ def test_selected_panel_intent_carries_read_only_state_timing_and_unverified_rec
     assert intent["decision_id"] == selected["selection_id"]
     assert intent["source_round_id"] == selected["source_round"]["roundId"]
     assert intent["target_round_id"] == selected["expected_target"]["roundId"]
-    assert (intent["selected_panel"], intent["stake"], intent["currency"]) == (0, 200, "BIF")
-    assert intent["panel_state_before"]["state"] == "BET_AVAILABLE"
+    assert intent.get("selected_panel") is None
+    assert not ({"stake", "currency", "cashout_target"} & set(intent))
+    assert intent["panel_state_before"]["state"] == "UNKNOWN"
+    assert intent["panel_state_before"]["evidence"]["reason"] == "EXECUTION_PANEL_NOT_SELECTED"
     assert intent["panel_state_after"]["state"] == "UNKNOWN"
     assert intent["deadline_evidence"]["status"] == "VERIFIED"
     assert intent["decision_latency_ms"] is not None
@@ -552,7 +555,7 @@ def test_five_independent_true_rules_share_one_select_and_one_intent(tmp_path):
     repository = Repository(tmp_path / "five-rule-shared-intent.sqlite3")
     repository.init()
     engine, session = new_session("FIVE_RULE_TRACKER", RESEARCH_IDS,
-        options={"window_size": 50, "fixed_stake_rwf": 100}, persistence=repository)
+        options={"window_size": 50}, persistence=repository)
 
     output = feed(engine, FIXTURE["rounds"][0])
     detail = engine.session(session["session_id"])
@@ -569,36 +572,26 @@ def test_five_independent_true_rules_share_one_select_and_one_intent(tmp_path):
     assert len(intents) == 1
     assert intents[0]["selected_rule_ids"] == true_rules
     assert intents[0]["decision_id"] == detail["selections"][0]["selection_id"]
-    assert intents[0]["cashout_target"] == 2.0
+    assert "cashout_target" not in intents[0]
     assert intents[0]["target_round_id"] is None
-    assert intents[0]["selected_panel"] == 0 and intents[0]["panel"] == 0
+    assert intents[0]["selected_panel"] is None and intents[0]["panel"] == -1
     assert intents[0]["execution_status"] == "BLOCKED_READ_ONLY"
     assert "TARGET_ROUND_ID_UNVERIFIED" in intents[0]["blockers"]
     assert output["sessions"][0]["decision"]["action"] == "SELECT"
 
 
-def test_unselected_panel_intent_does_not_collide_with_panel_zero(tmp_path):
+def test_rule_intents_are_not_bound_to_bankroll_or_platform_panel(tmp_path):
     repository = Repository(tmp_path / "missing-panel-intent.sqlite3")
     repository.init()
-    rule_ids = [*RESEARCH_IDS, COMBINED_POLICY_ID]
-    no_panel, _ = new_session("ALL_RULES_TOGETHER", rule_ids,
-        options={"window_size": 50, "fixed_stake_rwf": 100}, persistence=repository)
-    panel_zero, _ = new_session("FIVE_RULE_TRACKER", RESEARCH_IDS,
-        options={"window_size": 50, "fixed_stake_rwf": 100, "execution_panel": 0},
-        persistence=repository)
-
+    engine, _session = new_session("ALL_RULES_TOGETHER", [*RESEARCH_IDS, COMBINED_POLICY_ID],
+                                  options={"window_size": 50}, persistence=repository)
     for row in FIXTURE["rounds"][:3]:
-        feed(no_panel, row)
-        feed(panel_zero, row)
-
+        feed(engine, row)
     intents = repository.list_rule_execution_intents(100)
-    by_target = {}
-    for intent in intents:
-        by_target.setdefault((intent["target_stream_id"], intent["target_round_index"]), {})[
-            intent["selected_panel"]
-        ] = intent
-    assert any(None in values and 0 in values for values in by_target.values())
-    assert all(intent["selected_panel"] in {None, 0} for intent in intents)
+    assert intents
+    assert all(intent["selected_panel"] is None and intent["panel"] == -1 for intent in intents)
+    assert all(not ({"requested_stake", "requested_stake_currency", "cashout_target", "stake", "currency"}
+                    & set(intent)) for intent in intents)
 
 
 def test_rule_interface_reports_persistence_without_authorizing_live(tmp_path):
@@ -614,62 +607,28 @@ def test_rule_interface_reports_persistence_without_authorizing_live(tmp_path):
     assert engine.execution_authorized() is False
 
 
-def test_balance_change_and_realized_pl_require_platform_currency_and_reconciled_transactions(tmp_path):
+def test_read_only_balance_snapshots_do_not_calculate_bankroll_growth(tmp_path):
     repository = Repository(tmp_path / "rules-financials.sqlite3")
     repository.init()
-    # A status bit and a multiplier-derived P/L are not settlement evidence.
-    unverified_execution = {
-        "execution_id": "execution-unverified", "decision_id": "decision-unverified",
-        "target_round_id": "target-unverified", "profile": "PROFILE_A", "bet_amount": 100,
-        "cashout_target": 2.0, "status": "RECONCILED", "simulated": False,
-        "created_at": "2026-10-14T00:00:00+00:00", "updated_at": "2026-10-14T00:00:01+00:00",
-        "session_id": "platform-session-one", "profit_loss": 999.0, "result": "WIN",
-    }
-    assert repository.create_execution(unverified_execution) is True
-    execution = {
-        "execution_id": "execution-one", "decision_id": "decision-one",
-        "target_round_id": "target-one", "profile": "PROFILE_A", "bet_amount": 100,
-        "cashout_target": 2.0, "status": "RECONCILED", "simulated": False,
-        "created_at": "2026-10-14T00:00:00+00:00", "updated_at": "2026-10-14T00:00:01+00:00",
-        "session_id": "platform-session-one", "profit_loss": 100.0, "result": "WIN",
-        "balance_after": 1100.0, "balance_status": "VERIFIED",
-        "platform_evidence": {
-            "platform_status": "ACCEPTED", "platform_evidence": True,
-            "platform_receipt_id": "accept-one", "settlement_receipt_id": "settle-one",
-            "target_round_id": "target-one", "decision_id": "decision-one",
-            "session_identity": "platform-session-one", "accepted_stake": 100.0,
-            "accepted_currency": "USD", "platform_observed_at": "2026-10-14T00:00:00Z",
-            "settled_at": "2026-10-14T00:00:01Z", "bet_result": "WIN", "payout": 200.0,
-            "balance_before_verified": True, "balance_provider_identity": "provider-one",
-            "balance_session_identity": "platform-session-one",
-            "balance_observed_at": "2026-10-14T00:00:02Z", "balance_currency": "USD",
-            "platform_observed_balance": 1100.0,
-        },
-    }
-    assert repository.create_execution(execution) is True
     first = repository.record_platform_balance_observation({
         "balance": 1000.0, "displayed_amount": 1000.0, "currency": "USD",
         "verified": True, "session_identity": "platform-session-one",
+        "application_session_id": "platform-session-one",
         "observed_at": "2026-10-14T00:00:02+00:00",
     })
     second = repository.record_platform_balance_observation({
         "balance": 1050.0, "displayed_amount": 1050.0, "currency": "USD",
         "verified": True, "session_identity": "platform-session-one",
+        "application_session_id": "platform-session-one",
         "observed_at": "2026-10-14T00:00:03+00:00",
     })
-    financials = repository.rules_session_financials("platform-session-one")
 
     assert first and second
-    assert financials["starting_balance"] == 1000.0
-    assert financials["current_balance"] == 1050.0
-    assert financials["balance_change"] == 50.0
-    assert financials["realized_betting_pl"] == 100.0
-    assert financials["win_count"] == 1
-    assert financials["loss_count"] == 0
-    assert financials["reconciled_bets"] == 1
+    assert repository.latest_platform_balance_observation()["balance"] == 1050.0
+    assert repository.rules_session_financials("platform-session-one") is None
 
 
-def test_balance_change_is_unknown_when_currency_changes_or_was_unknown_at_start(tmp_path):
+def test_balance_snapshots_do_not_create_currency_or_session_bankroll_totals(tmp_path):
     repository = Repository(tmp_path / "rules-balance-currency.sqlite3")
     repository.init()
     repository.record_platform_balance_observation({
@@ -680,7 +639,7 @@ def test_balance_change_is_unknown_when_currency_changes_or_was_unknown_at_start
         "balance": 500.0, "currency": "USD", "verified": True,
         "application_session_id": "currency-session", "observed_at": "2026-10-14T00:00:01Z",
     })
-    assert repository.rules_session_financials("currency-session")["balance_change"] is None
+    assert repository.rules_session_financials("currency-session") is None
 
     unknown_start = "unknown-currency-session"
     repository.record_platform_balance_observation({
@@ -691,9 +650,7 @@ def test_balance_change_is_unknown_when_currency_changes_or_was_unknown_at_start
         "balance": 1100.0, "currency": "BIF", "verified": True,
         "application_session_id": unknown_start, "observed_at": "2026-10-14T00:00:03Z",
     })
-    financials = repository.rules_session_financials(unknown_start)
-    assert financials["starting_balance_currency"] is None
-    assert financials["balance_change"] is None
+    assert repository.rules_session_financials(unknown_start) is None
 
 
 def test_source_parity_for_combined_and_independent_tracker_on_same_saved_rounds():
