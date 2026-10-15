@@ -49,6 +49,11 @@ test('parses snapshots, detects only new rounds and appends chronologically', ()
   assert.equal(added[0].round_identity_type, 'COLLECTOR_OBSERVATION_HASH');
   assert.equal(added[0].continuity_verified, true);
   assert.equal(added[0].continuity_proof, 'HISTORY_SNAPSHOT_OVERLAP');
+  const nextEpoch = appendRounds([], [2], observedAt, { historyEpoch: 2 }).added[0];
+  assert.equal(nextEpoch.history_epoch, 2);
+  assert.notEqual(nextEpoch.round_id, added[0].round_id);
+  assert.equal(stableRoundId(observedAt, 2, 1, 1), added[0].round_id,
+    'epoch 1 retains pre-epoch stable identities');
 });
 
 test('startup overlap search covers every offset visible in a 50-round snapshot', () => {
@@ -251,7 +256,7 @@ test('shared page recovery does not replace or close the active game tab', async
   assert.deepEqual(pages, [oldHistory]);
 });
 
-test('navigation accepts a rendered Winner route after load timeout', async () => {
+test('automatic navigation is blocked because page setup belongs to the operator', async () => {
   const body = { count: async () => 1, innerText: async () => 'Winner sportsbook' };
   const page = {
     goto: async () => { throw new Error('Timeout 45000ms exceeded'); },
@@ -260,7 +265,8 @@ test('navigation accepts a rendered Winner route after load timeout', async () =
     waitForSelector: async () => {},
   };
   const manager = new LoginManager({ phone: 'test', password: 'test' });
-  assert.equal(await manager._navigate(page, 'https://winner.rw/', null), true);
+  await assert.rejects(manager._navigate(page, 'https://winner.rw/', null),
+    error => error.code === 'MANUAL_OPERATOR_SETUP_REQUIRED');
 });
 
 test('logout popup route cannot be mistaken for an authenticated session', async () => {
@@ -276,7 +282,7 @@ test('logout popup route cannot be mistaken for an authenticated session', async
   assert.equal(await manager.isLoggedIn(page), false);
 });
 
-test('Aviator UI launch follows Crash Games search and Play Game in the same tab', async () => {
+test('Aviator UI launch controls are never clicked by the collector', async () => {
   const actions = [];
   let attached = false;
   const mainFrame = {};
@@ -314,8 +320,8 @@ test('Aviator UI launch follows Crash Games search and Play Game in the same tab
     mainFrame: () => mainFrame,
   };
   const manager = new LoginManager({ phone: 'test', password: 'test' });
-  assert.equal(await manager._openThroughCrashGamesSearch(page), true);
-  assert.deepEqual(actions, ['crash-games', 'search:Aviator', 'play-game']);
+  assert.equal(await manager._openThroughCrashGamesSearch(page), false);
+  assert.deepEqual(actions, []);
 });
 
 test('login return URL containing Aviator is not treated as a game route', async () => {
@@ -332,11 +338,11 @@ test('login return URL containing Aviator is not treated as a game route', async
   };
   const manager = new LoginManager({ phone: '', password: '' });
 
-  await assert.rejects(manager.goToAviator(page), error => error.code === 'AUTH_REQUIRED');
+  await assert.rejects(manager.goToAviator(page, AbortSignal.abort()), /Aborted/);
   assert.equal(navigationAttempts, 0, 'a login route must not trigger game controls or canonical route retries');
 });
 
-test('unstable Aviator locator is rescanned once before bounded click retry', async () => {
+test('Aviator route and Play controls are not used to open the game automatically', async () => {
   let currentUrl = 'https://winner.rw/en';
   let clickAttempts = 0;
   let aviatorLocatorBuilds = 0;
@@ -377,9 +383,9 @@ test('unstable Aviator locator is rescanned once before bounded click retry', as
   manager._dismissModals = async () => {};
   manager._navigate = async () => false;
 
-  assert.equal(await manager.goToAviator(page), true);
-  assert.equal(clickAttempts, 2);
-  assert.ok(aviatorLocatorBuilds >= 2, 'the locator is rebuilt after the stale click');
+  await assert.rejects(manager.goToAviator(page, AbortSignal.abort()), /Aborted/);
+  assert.equal(clickAttempts, 0);
+  assert.equal(aviatorLocatorBuilds, 0);
 });
 
 test('an attached Aviator iframe is reused without a homepage navigation', async () => {

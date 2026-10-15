@@ -44,18 +44,15 @@ test('related login route overrides a stale authenticated shell in the shared co
   assert.equal(authenticated.evidence.relatedRoute, 'https://winner.rw/en/authentication/login');
 });
 
-test('related login route starts login verification on History without navigating Betting', async () => {
+test('authentication verification does not navigate either shared page to login', async () => {
   const history = pageFixture('https://winner.rw/en/virtual/crash-games/aviator',
     new Set(['.au-m-nav-u.login-area.usr-lgd-in']));
   const betting = pageFixture('https://winner.rw/en/authentication/login');
   const login = new LoginManager({ phone: '', password: '' });
 
-  await assert.rejects(
-    login.ensureLoggedIn(history.page, undefined, { relatedPages: [betting.page] }),
-    error => error.code === 'AUTH_REQUIRED',
-  );
+  assert.equal(await login.ensureLoggedIn(history.page, undefined, { relatedPages: [betting.page] }), true);
 
-  assert.match(history.currentUrl(), /authentication\/login/);
+  assert.match(history.currentUrl(), /aviator/);
   assert.match(betting.currentUrl(), /authentication\/login/);
 });
 
@@ -125,9 +122,10 @@ test('manual verification message is not classified as a fresh logout signal', a
   assert.equal(state.reasonCode, 'HUMAN_VERIFICATION_REQUIRED');
 });
 
-test('missing credentials leaves the operator on a login route and waits for manual sign-in', async () => {
+test('expired session leaves the existing page untouched for manual sign-in', async () => {
   const fixture = pageFixture();
   const login = new LoginManager({ phone: '', password: '' });
   await assert.rejects(login.ensureLoggedIn(fixture.page), error => error.code === 'AUTH_REQUIRED');
-  assert.match(fixture.currentUrl(), /authentication\/login/);
+  assert.equal(fixture.currentUrl(), 'about:blank');
+  assert.equal(login.hasAutomaticCredentials(), false);
 });

@@ -11,9 +11,9 @@ import {
 
 function panel(overrides = {}) {
   return {
-    ok: true, panelCount: 2, autoTabVisible: true, autoTabSelected: false,
-    autoBetEnabled: false, autoCashoutEnabled: false, multiplier: '1.10',
-    inputVisible: false, pendingBetState: 'CLEAR', betButtonText: 'Bet 200 BIF',
+    ok: true, panelCount: 2, autoTabVisible: true, autoTabSelected: true,
+    autoBetEnabled: false, autoCashoutEnabled: true, multiplier: '2.00',
+    inputVisible: true, pendingBetState: 'CLEAR', betButtonText: 'Bet 200 BIF',
     missing: { autoTab: false, autoBet: false, autoCashout: false, multiplierInput: false },
     ...overrides,
   };
@@ -28,18 +28,7 @@ function harness(states, options = {}) {
         reads += 1;
         return { ...states[arg], missing: { ...states[arg].missing } };
       }
-      assert.equal(fn, mutateCashoutPanel);
-      actions.push({ slot: arg.slot, action: arg.action });
-      const current = states[arg.slot];
-      if (current.pendingBetState !== 'CLEAR') {
-        return { ok: false, reason: current.pendingBetState === 'PENDING'
-          ? 'ACTIVE_BET_PENDING' : 'BETTING_STATE_UNKNOWN' };
-      }
-      if (arg.action === 'select_auto_tab') current.autoTabSelected = true;
-      if (arg.action === 'disable_auto_bet') current.autoBetEnabled = false;
-      if (arg.action === 'enable_auto_cashout') current.autoCashoutEnabled = true;
-      if (arg.action === 'set_multiplier') current.multiplier = current.rejectMultiplier ? '2.10' : '2.00';
-      return { ok: true, changed: true };
+      assert.fail('read-only setup verification must not call a UI mutation function');
     },
   };
   const health = {
@@ -69,19 +58,18 @@ function harness(states, options = {}) {
   return { initializer, page, frameManager, frame, health, actions, reads, getReads: () => reads, states };
 }
 
-test('both disabled panels are independently initialized with Auto Bet kept off', async () => {
+test('both manually configured panels are independently read and verified', async () => {
   const h = harness([panel(), panel()]);
   const status = await h.initializer.initialize(h.page);
-  assert.equal(status.status, 'READY');
+  assert.equal(status.status, 'CASHOUT_VERIFIED');
   assert.equal(status.auto_bet, 'OFF');
-  assert.equal(status.panel_1_cashout, 'READY');
-  assert.equal(status.panel_2_cashout, 'READY');
+  assert.equal(status.panel_1_cashout, 'CASHOUT_VERIFIED');
+  assert.equal(status.panel_2_cashout, 'CASHOUT_VERIFIED');
   assert.deepEqual(h.states.map(item => [item.autoBetEnabled, item.autoCashoutEnabled, item.multiplier]), [
     [false, true, '2.00'], [false, true, '2.00'],
   ]);
-  assert.equal(h.actions.filter(item => item.action === 'set_multiplier').length, 2);
-  assert.ok(h.getReads() >= 8, 'the panel is re-read after changing the Auto tab and controls');
-  assert.ok(h.actions.every(item => !/bet|submit/i.test(item.action)));
+  assert.deepEqual(h.actions, []);
+  assert.equal(h.getReads(), 2);
 });
 
 test('page-evaluated cashout probes and mutations are self-contained after Playwright serialization', () => {
@@ -144,10 +132,10 @@ test('page-evaluated cashout probes and mutations are self-contained after Playw
   assert.equal(safety(0).pendingBetState, 'CLEAR');
 
   const mutate = serialized(mutateCashoutPanel);
-  assert.equal(mutate({ slot: 0, action: 'enable_auto_cashout' }).ok, true);
-  assert.equal(mutate({ slot: 0, action: 'set_multiplier', value: '2.00' }).ok, true);
-  assert.equal(cashout.classList.contains('off'), false);
-  assert.equal(multiplier.value, '2.00');
+  assert.equal(mutate({ slot: 0, action: 'enable_auto_cashout' }).mutation_performed, false);
+  assert.equal(mutate({ slot: 0, action: 'set_multiplier', value: '2.00' }).mutation_performed, false);
+  assert.equal(cashout.classList.contains('off'), true);
+  assert.equal(multiplier.value, '1.10');
 });
 
 test('already configured panels are a no-op, including both switches and the value', async () => {
@@ -155,33 +143,34 @@ test('already configured panels are a no-op, including both switches and the val
     autoCashoutEnabled: true, multiplier: '2.00', inputVisible: true });
   const h = harness([configured(), configured()]);
   const status = await h.initializer.initialize(h.page);
-  assert.equal(status.status, 'READY');
+  assert.equal(status.status, 'CASHOUT_VERIFIED');
   assert.deepEqual(h.actions, []);
 });
 
-test('repairs only the incorrect panel when panel one is already ready', async () => {
+test('reports an incorrect panel without changing either panel', async () => {
   const ready = panel({ autoTabSelected: true, autoBetEnabled: false,
     autoCashoutEnabled: true, multiplier: '2.00', inputVisible: true });
-  const h = harness([ready, panel()]);
+  const h = harness([ready, panel({ autoTabSelected: true, autoCashoutEnabled: false,
+    multiplier: '1.10', inputVisible: true })]);
   const status = await h.initializer.initialize(h.page);
-  assert.equal(status.status, 'READY');
-  assert.ok(h.actions.length > 0);
-  assert.ok(h.actions.every(item => item.slot === 1));
+  assert.equal(status.status, 'CASHOUT_MISMATCH');
+  assert.equal(status.panels[0].status, 'CASHOUT_VERIFIED');
+  assert.equal(status.panels[1].status, 'CASHOUT_MISMATCH');
+  assert.deepEqual(h.actions, []);
 });
 
-test('an enabled Auto Bet control is turned off before cashout is verified', async () => {
+test('an enabled Auto Bet control is reported without being changed', async () => {
   const h = harness([panel({ autoBetEnabled: true }), panel()]);
   const status = await h.initializer.initialize(h.page);
-  assert.equal(status.status, 'READY');
-  assert.equal(h.states[0].autoBetEnabled, false);
-  assert.equal(h.actions[0].action, 'select_auto_tab');
-  assert.ok(h.actions.some(item => item.slot === 0 && item.action === 'disable_auto_bet'));
+  assert.equal(status.status, 'CASHOUT_MISMATCH');
+  assert.equal(h.states[0].autoBetEnabled, true);
+  assert.deepEqual(h.actions, []);
 });
 
 test('missing iframe remains UNKNOWN and performs no panel mutation', async () => {
   const h = harness([panel(), panel()], { missingFrame: true });
   const status = await h.initializer.initialize(h.page);
-  assert.equal(status.status, 'UNKNOWN');
+  assert.equal(status.status, 'CASHOUT_UNAVAILABLE');
   assert.equal(status.error_reason.includes('AVIATOR_FRAME_UNAVAILABLE'), true);
   assert.deepEqual(h.actions, []);
 });
@@ -198,46 +187,45 @@ test('cashout setup uses the shared game frame even when round payouts are unava
 
   const status = await h.initializer.initialize(h.page);
 
-  assert.equal(status.status, 'READY');
+  assert.equal(status.status, 'CASHOUT_VERIFIED');
   assert.deepEqual(h.states.map(item => item.multiplier), ['2.00', '2.00']);
-  assert.equal(h.actions.filter(item => item.action === 'enable_auto_cashout').length, 2);
+  assert.deepEqual(h.actions, []);
 });
 
 test('missing switch is FAILED and does not change any control', async () => {
   const h = harness([panel({ missing: { ...panel().missing, autoCashout: true } }), panel()]);
   const status = await h.initializer.initialize(h.page);
-  assert.equal(status.status, 'FAILED');
-  assert.equal(status.panel_1_cashout, 'FAILED');
-  assert.equal(status.panels[0].error_reason, 'AUTOCASHOUT_NOT_FOUND');
-  assert.ok(h.actions.length > 0);
-  assert.ok(h.actions.every(item => item.slot === 1));
+  assert.equal(status.status, 'CASHOUT_UNAVAILABLE');
+  assert.equal(status.panel_1_cashout, 'CASHOUT_UNAVAILABLE');
+  assert.equal(status.panels[0].error_reason, 'MANUAL_AUTO_TAB_AND_CONTROLS_MUST_BE_VISIBLE');
+  assert.deepEqual(h.actions, []);
 });
 
-test('multiplier readback mismatch is FAILED', async () => {
-  const h = harness([panel({ rejectMultiplier: true }), panel()]);
+test('multiplier readback mismatch is reported for manual correction', async () => {
+  const h = harness([panel({ multiplier: '2.10' }), panel()]);
   const status = await h.initializer.initialize(h.page);
-  assert.equal(status.status, 'FAILED');
-  assert.equal(status.panel_1_cashout, 'FAILED');
-  assert.equal(status.panels[0].error_reason, 'CASHOUT_READBACK_MISMATCH');
+  assert.equal(status.status, 'CASHOUT_MISMATCH');
+  assert.equal(status.panel_1_cashout, 'CASHOUT_MISMATCH');
+  assert.equal(status.panels[0].error_reason, 'MANUAL_CASHOUT_SETTINGS_DO_NOT_MATCH_2_00X');
 });
 
 test('unknown authentication does not mutate either panel', async () => {
   const h = harness([panel(), panel()], { auth: 'UNKNOWN' });
   const status = await h.initializer.initialize(h.page);
-  assert.equal(status.status, 'UNKNOWN');
+  assert.equal(status.status, 'CASHOUT_UNAVAILABLE');
   assert.deepEqual(h.actions, []);
 });
 
 test('pending or ambiguous bet state blocks all settings changes', async () => {
   const h = harness([panel(), panel({ pendingBetState: 'PENDING' })]);
   const status = await h.initializer.initialize(h.page);
-  assert.equal(status.status, 'UNKNOWN');
+  assert.equal(status.status, 'CASHOUT_UNAVAILABLE');
   assert.deepEqual(h.actions, []);
   assert.equal(status.panels[0].error_reason, 'ACTIVE_BET_PENDING_PANEL_2');
 
   const ambiguous = harness([panel(), panel({ pendingBetState: 'UNKNOWN' })]);
   const ambiguousStatus = await ambiguous.initializer.initialize(ambiguous.page);
-  assert.equal(ambiguousStatus.status, 'UNKNOWN');
+  assert.equal(ambiguousStatus.status, 'CASHOUT_UNAVAILABLE');
   assert.deepEqual(ambiguous.actions, []);
 });
 
@@ -250,24 +238,24 @@ test('frame navigation rechecks configuration after a browser/page reconnect', a
   h.page.emit('framenavigated', { url: () => 'https://aviaport.spribegaming.com/aviator' });
   await new Promise(resolve => setTimeout(resolve, 180));
   assert.ok(h.getReads() > firstReadCount);
-  assert.equal(h.health.value.status, 'READY', JSON.stringify(h.health.value));
+  assert.equal(h.health.value.status, 'CASHOUT_VERIFIED', JSON.stringify(h.health.value));
   assert.deepEqual(h.actions, []);
 });
 
 test('cashout initialization retries when the shared FrameManager announces READY', async () => {
   const h = harness([panel(), panel()], { missingFrame: true });
   const initial = await h.initializer.initialize(h.page);
-  assert.equal(initial.status, 'UNKNOWN');
+  assert.equal(initial.status, 'CASHOUT_UNAVAILABLE');
   assert.deepEqual(h.actions, []);
 
   h.initializer.frameManager.waitForFrame = async () => h.frame;
   h.initializer.frameManager.emit('ready', { page: h.page, frame: h.frame, method: 'direct-cdp' });
   const deadline = Date.now() + 1500;
-  while (h.health.value.status !== 'READY' && Date.now() < deadline) {
+  while (h.health.value.status !== 'CASHOUT_VERIFIED' && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 20));
   }
 
-  assert.equal(h.health.value.status, 'READY', JSON.stringify(h.health.value));
+  assert.equal(h.health.value.status, 'CASHOUT_VERIFIED', JSON.stringify(h.health.value));
   assert.deepEqual(h.states.map(state => state.multiplier), ['2.00', '2.00']);
 });
 
@@ -288,14 +276,13 @@ test('FrameManager READY refreshes a stale cashout readback on the same shared f
 
   assert.ok(h.getReads() > oldReads);
   assert.notEqual(h.health.value.updated_at, staleAt);
-  assert.equal(h.health.value.status, 'READY');
+  assert.equal(h.health.value.status, 'CASHOUT_VERIFIED');
   assert.deepEqual(h.actions, []);
 });
 
 test('shared collector and betting page can initialize the same game controls', async () => {
   const h = harness([panel(), panel()]);
   const status = await h.initializer.initialize(h.page, { historyPage: h.page });
-  assert.equal(status.status, 'READY');
-  assert.equal(h.actions.filter(action => action.action === 'enable_auto_cashout').length, 2);
-  assert.equal(h.actions.some(action => action.action === 'place_bet'), false);
+  assert.equal(status.status, 'CASHOUT_VERIFIED');
+  assert.deepEqual(h.actions, []);
 });

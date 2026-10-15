@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { KeyRound } from 'lucide-react';
 import { API_UNAUTHORIZED_EVENT, getApiToken, logout, setApiToken } from '../auth.js';
 import { useBackendConnection } from '../services/backendConnection.js';
 import { getApiBaseUrl } from '../services/endpoints.js';
-import { accessScreenState, hasUsableApplicationState } from '../services/accessPolicy.js';
+import { accessScreenState, hasUsableApplicationState, isPublicHistoryPage } from '../services/accessPolicy.js';
 
 async function checkToken(token) {
   const controller = new AbortController();
@@ -26,6 +27,7 @@ async function checkToken(token) {
 }
 
 export default function ApiAccessGate({ children }) {
+  const location = useLocation();
   const connection = useBackendConnection();
   const [access, setAccess] = useState('checking');
   const [token, setToken] = useState('');
@@ -37,6 +39,7 @@ export default function ApiAccessGate({ children }) {
   const publicAccess = connection.health?.public_access === true
     || connection.health?.public_read_only === true;
   const screenState = accessScreenState(access, connection.state);
+  const publicHistoryPage = isPublicHistoryPage(location.pathname);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,7 +105,7 @@ export default function ApiAccessGate({ children }) {
 
   // A verified session remains mounted during transient backend failures.
   // API requests still fail closed in the API client and real 401s revoke access below.
-  if (hasUsableApplicationState(access)) return children;
+  if (publicHistoryPage || hasUsableApplicationState(access)) return children;
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-zinc-950 px-4 text-zinc-100">

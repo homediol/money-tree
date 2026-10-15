@@ -114,6 +114,14 @@ def _read_node_collector_snapshot() -> dict:
 @router.get("/capabilities")
 async def capabilities(request: Request) -> dict:
     """Report runtime features that must be active before the dashboard is safe to operate."""
+    # Keep the backend-only handoff aware of the manual setup readback contract.
+    # A healthy, older process may serve these pages but still fail to use the
+    # normalized (nested) panel evidence required to distinguish mismatch from
+    # unavailable stake data.
+    from app.api import live as live_api
+
+    manual_setup_readback_v2 = callable(getattr(live_api, "_manual_setup_observation", None))
+    manual_setup_readback_v3 = manual_setup_readback_v2
     orchestrator = getattr(request.app.state, "orchestrator", None)
     tasks = getattr(orchestrator, "tasks", ()) if orchestrator else ()
     balance_task = next((task for task in tasks if task.get_name() == "platform-balance"), None)
@@ -137,6 +145,8 @@ async def capabilities(request: Request) -> dict:
             "history_collector_status": history is not None,
             "rule_financial_stop_recovery": financial_stop_recovery,
             "receipt_reconciliation_to_rule_session": receipt_to_rules,
+            "manual_platform_stake_readback_v2": manual_setup_readback_v2,
+            "manual_platform_setup_readback_v3": manual_setup_readback_v3,
         },
     }
 

@@ -8,6 +8,12 @@ export async function resolveSharedGameFrame(frameManager, page, { timeoutMs, si
         code: 'COLLECTOR_PAGE_IS_NOT_SHARED_AVIATOR_PAGE',
       });
     }
+    // The collector may be reading a Spribe OOPIF through direct CDP because
+    // Chromium does not expose that nested target in page.frames(). Betting
+    // controls and payout history must use that exact same active frame, not
+    // the enclosing Aviaport iframe returned by the page manager.
+    const activeFrame = frameManager?.getActiveFrame?.();
+    if (activeFrame && !activeFrame.isDetached?.()) return activeFrame;
     const frame = await pageManager.getAviatorFrame();
     if (!frame || frame.isDetached?.()) {
       throw Object.assign(new Error('SHARED_GAME_FRAME_NOT_READY'), {

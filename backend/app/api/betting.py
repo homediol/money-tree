@@ -287,19 +287,27 @@ async def submit_decision(request: Request, body: DecisionIntent):
     evaluation = (engine.last_evaluation or engine.evaluate()
                   if engine is not None else None)
     rule_status = engine.status() if engine is not None else {}
-    rule_execution_path_ready = bool(
+    interface_status = (engine.decision_interface_status()
+                        if engine is not None
+                        and callable(getattr(engine, "decision_interface_status", None))
+                        else {"available": False})
+    rule_execution_path_ready = interface_status.get("available") is True
+    financial_authorized = bool(
         engine is not None
         and callable(getattr(engine, "execution_authorized", None))
         and engine.execution_authorized() is True
     )
     configured = int(rule_status.get("rules_enabled") or 0) > 0
-    blocker = ("decision_interface_not_connected" if configured
-               else "rules_engine_not_configured")
+    blocker = ("rules_engine_not_configured" if not configured else
+               "decision_interface_not_connected" if not rule_execution_path_ready else
+               "live_execution_authorization_required")
     reasons = []
     if not configured:
         reasons.append("No configured, enabled Rules Engine rule can authorize execution")
     if not rule_execution_path_ready:
-        reasons.append("Rule selections are not connected to a target-bound decision intent")
+        reasons.append("Durable Shared SELECT intent persistence is unavailable")
+    if not financial_authorized:
+        reasons.append("LIVE financial execution authorization is not active")
     reasons.extend([
         "No final Risk Engine approval is attached to this intent",
         "The next stream/index target is not bound to a verified provider round ID",
@@ -314,6 +322,8 @@ async def submit_decision(request: Request, body: DecisionIntent):
         "automatic_execution": "OFF",
         "rule_evaluation": evaluation,
         "rule_execution_path_ready": rule_execution_path_ready,
+        "financial_execution_authorized": financial_authorized,
+        "decision_interface": interface_status,
         "reasons": list(dict.fromkeys(reasons)),
     })
 

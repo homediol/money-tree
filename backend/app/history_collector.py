@@ -20,8 +20,8 @@ log = get_logger("HISTORY")
 Broadcaster = Callable[[dict], Awaitable[None]]
 ROOT = Path(__file__).resolve().parents[2]
 CASHOUT_INITIALIZATION_UNKNOWN = {
-    "target": "2.00", "auto_bet": "UNKNOWN", "status": "UNKNOWN",
-    "panel_1_cashout": "UNKNOWN", "panel_2_cashout": "UNKNOWN",
+    "target": "2.00", "auto_bet": "UNKNOWN", "status": "CASHOUT_UNAVAILABLE",
+    "panel_1_cashout": "CASHOUT_UNAVAILABLE", "panel_2_cashout": "CASHOUT_UNAVAILABLE",
     "panels": [], "updated_at": None,
     "error_reason": "COLLECTOR_CASHOUT_INITIALIZATION_NOT_REPORTED",
 }
@@ -222,12 +222,81 @@ class HistoryCollectorManager:
         # observations. A stopped collector or dead heartbeat cannot vouch
         # for the browser last recorded in its sidecar.
         observation_current = process_status == "RUNNING" and heartbeat_state == "FRESH"
+        game_phase = "UNKNOWN"
+        game_phase_observed_at = None
+        game_phase_evidence = {}
+        game_phase_age = None
+        deadline_evidence = {"status": "UNKNOWN", "deadline_at": None,
+                             "reason": "EXPLICIT_BETTING_DEADLINE_NOT_OBSERVED"}
+        if observation_current:
+            phase_value = str(node.get("gamePhase") or "UNKNOWN").upper()
+            phase_time = node.get("gamePhaseObservedAt")
+            try:
+                parsed_phase_time = datetime.fromisoformat(str(phase_time).replace("Z", "+00:00"))
+                if parsed_phase_time.tzinfo is None:
+                    raise ValueError("timezone required")
+                game_phase_age = (datetime.now(timezone.utc) - parsed_phase_time.astimezone(timezone.utc)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                game_phase_age = None
+            if phase_value in {"BETTING_OPEN", "BETTING_CLOSED", "UNKNOWN"} and game_phase_age is not None and -30 <= game_phase_age <= 15:
+                game_phase = phase_value
+                game_phase_observed_at = phase_time
+                game_phase_evidence = node.get("gamePhaseEvidence") if isinstance(node.get("gamePhaseEvidence"), dict) else {}
+                raw_deadline = game_phase_evidence.get("deadline_at")
+                raw_countdown = game_phase_evidence.get("countdown_seconds")
+                try:
+                    parsed_deadline = datetime.fromisoformat(str(raw_deadline).replace("Z", "+00:00"))
+                    if parsed_deadline.tzinfo is None:
+                        raise ValueError("timezone required")
+                    remaining = (parsed_deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+                except (TypeError, ValueError, OverflowError):
+                    remaining = None
+                if (game_phase == "BETTING_OPEN" and isinstance(raw_countdown, (int, float))
+                        and not isinstance(raw_countdown, bool) and remaining is not None
+                        and -2 <= remaining <= 300):
+                    deadline_evidence = {"status": "VERIFIED", "deadline_at": parsed_deadline.astimezone(timezone.utc).isoformat(),
+                        "remaining_seconds": round(max(0.0, remaining), 3), "observed_at": phase_time,
+                        "source": "AVIATOR_EXPLICIT_BETTING_PHASE_DOM"}
+                else:
+                    deadline_evidence = {"status": "UNKNOWN", "deadline_at": None,
+                        "reason": "EXPLICIT_BETTING_DEADLINE_NOT_OBSERVED"}
+        panel_observations = []
+        if observation_current:
+            now = datetime.now(timezone.utc)
+            raw_panels = node.get("panelObservations") or []
+            by_panel = {str(row.get("panel_id")): dict(row) for row in raw_panels
+                        if isinstance(row, dict) and row.get("panel_id") in {"PANEL_1", "PANEL_2"}}
+            for panel_id in ("PANEL_1", "PANEL_2"):
+                row = by_panel.get(panel_id)
+                if row:
+                    try:
+                        stamp = datetime.fromisoformat(str(row.get("observed_at") or "").replace("Z", "+00:00"))
+                        if stamp.tzinfo is None:
+                            raise ValueError("timezone required")
+                        age = (now - stamp.astimezone(timezone.utc)).total_seconds()
+                    except (TypeError, ValueError, OverflowError):
+                        age = None
+                    if age is None or age < -30 or age > 15:
+                        row["state"] = "UNKNOWN"
+                        row["pending_bet_state"] = "UNKNOWN"
+                        row["confidence"] = 0.0
+                        evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+                        row["evidence"] = {**evidence, "reason": "STALE_OR_INVALID_PANEL_OBSERVATION"}
+                    else:
+                        row["age_seconds"] = round(max(0.0, age), 3)
+                else:
+                    row = {"panel_id": panel_id, "slot": int(panel_id[-1]) - 1,
+                           "state": "UNKNOWN", "button_text": None, "displayed_stake": None,
+                           "currency": None, "cashout_amount": None, "observed_at": None,
+                           "source": "COLLECTOR_PANEL_STATE_OBSERVER", "evidence": {"reason": "NO_OBSERVATION"},
+                           "confidence": 0.0, "frame_identity": None, "pending_bet_state": "UNKNOWN"}
+                panel_observations.append(row)
         browser_pages = node.get("browser_pages") or {}
         cashout_initialization = node.get("cashout_initialization") or {
             **CASHOUT_INITIALIZATION_UNKNOWN,
         }
         bet_amount_initialization = node.get("bet_amount_initialization") or {
-            "status": "UNKNOWN", "execution_panel": None, "requested_stake": None,
+            "status": "STAKE_UNAVAILABLE", "execution_panel": None, "requested_stake": None,
             "requested_stake_currency": None, "platform_currency": None,
             "observed_value": None, "updated_at": None,
             "error_reason": "COLLECTOR_STAKE_INITIALIZATION_NOT_REPORTED",
@@ -254,7 +323,7 @@ class HistoryCollectorManager:
                 "error_reason": "COLLECTOR_OBSERVATION_NOT_CURRENT",
             }
             bet_amount_initialization = {
-                "status": "UNKNOWN", "execution_panel": None, "requested_stake": None,
+                "status": "STAKE_UNAVAILABLE", "execution_panel": None, "requested_stake": None,
                 "requested_stake_currency": None, "platform_currency": None,
                 "observed_value": None, "updated_at": None,
                 "error_reason": "COLLECTOR_OBSERVATION_NOT_CURRENT",
@@ -314,6 +383,10 @@ class HistoryCollectorManager:
             "cashout_initialization": cashout_initialization,
             "bet_amount_initialization": bet_amount_initialization,
             "betting_ui_configuration": betting_ui_configuration,
+            "panel_observations": panel_observations,
+            "betting_window": {"state": game_phase, "observed_at": game_phase_observed_at,
+                               "evidence": game_phase_evidence},
+            "target_deadline_evidence": deadline_evidence,
             "authentication_state": authentication_state,
             "browser_pages": browser_pages,
             "backlog_size": int((node.get("storage") or {}).get("backlog_size", 0) or 0),

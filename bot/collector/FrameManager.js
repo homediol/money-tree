@@ -26,6 +26,7 @@ export class FrameManager extends EventEmitter {
     // Playwright frames are always resolved fresh. The direct CDP adapter is
     // retained only while its websocket/context remain alive.
     this._directFrame = null;
+    this._activeFrame = null;
     this._lastReadiness = { frameAttached: false, contentLoaded: false, payoutsReady: false, reason: 'NOT_CHECKED' };
   }
 
@@ -58,6 +59,12 @@ export class FrameManager extends EventEmitter {
       log.debug(`Frame liveness check failed: ${error.message}`);
       return false;
     }
+  }
+
+  /** Frame currently used by the collector observer (including an OOPIF). */
+  getActiveFrame() {
+    if (this.isFrameAlive(this._directFrame)) return this._directFrame;
+    return this.isFrameAlive(this._activeFrame) ? this._activeFrame : null;
   }
 
   /** Verify a frame is alive AND has the payout selector. */
@@ -167,6 +174,7 @@ export class FrameManager extends EventEmitter {
       });
 
       if (found?.method === 'payout-selector') {
+        this._activeFrame = found.frame;
         log.info(`FrameManager: frame ready (payout-selector) — ${this._describe(found.frame)}`);
         this._emitReady(page, found.frame, found.method);
         return found.frame;
@@ -182,6 +190,7 @@ export class FrameManager extends EventEmitter {
         });
       }
       if (await this.isFrameReady(this._directFrame)) {
+        this._activeFrame = this._directFrame;
         this._lastReadiness = { frameAttached: true, contentLoaded: true, payoutsReady: true, reason: 'DIRECT_CDP_PAYOUT_SELECTOR_PRESENT' };
         log.info(`FrameManager: frame ready (direct-cdp) — ${this._describe(this._directFrame)}`);
         this._emitReady(page, this._directFrame, 'direct-cdp');

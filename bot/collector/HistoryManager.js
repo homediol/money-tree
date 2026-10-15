@@ -34,8 +34,12 @@ export function fmt(v) {
   return `${Number(v).toFixed(2)}x`;
 }
 
-export function stableRoundId(timestamp, multiplier, ordinal = '') {
-  const source = `${timestamp || 'unknown'}|${Number(multiplier).toFixed(2)}|${ordinal}`;
+export function stableRoundId(timestamp, multiplier, ordinal = '', historyEpoch = 1) {
+  const epoch = Math.max(1, Number(historyEpoch) || 1);
+  // Preserve IDs already stored before history epochs existed; namespace only
+  // post-reset epochs so their identities cannot collide with the old stream.
+  const prefix = epoch > 1 ? `epoch:${epoch}|` : '';
+  const source = `${prefix}${timestamp || 'unknown'}|${Number(multiplier).toFixed(2)}|${ordinal}`;
   return `aviator-${crypto.createHash('sha256').update(source).digest('hex').slice(0, 24)}`;
 }
 
@@ -165,7 +169,7 @@ export function inferNewMultipliers(prev, curr) {
  * Append new multipliers (newest-first array) to history (oldest-first).
  * Returns { history, added }.
  */
-export function appendRounds(history, newestFirst, observedAt = null, { gapBefore = false } = {}) {
+export function appendRounds(history, newestFirst, observedAt = null, { gapBefore = false, historyEpoch = 1 } = {}) {
   if (!newestFirst.length) return { history, added: [] };
 
   const added = [];
@@ -175,12 +179,12 @@ export function appendRounds(history, newestFirst, observedAt = null, { gapBefor
     const normalized = normalizeMultiplier(mult);
     if (normalized === null || normalized < 1) continue;
     const timestamp = observedAt || new Date().toISOString();
-    const roundId = stableRoundId(timestamp, normalized, idx);
+    const roundId = stableRoundId(timestamp, normalized, idx, historyEpoch);
     if (history.some(row => String(row.round_id) === roundId)) continue;
     const record = { round_id: roundId, multiplier: normalized, timestamp,
       platform_round_id: null, platform_round_index: null, platform_timestamp: null,
       observed_at: observedAt || timestamp,
-      stored_at: null, local_round_index: idx, round_index: idx,
+      stored_at: null, local_round_index: idx, round_index: idx, history_epoch: historyEpoch,
       round_identity_type: 'COLLECTOR_OBSERVATION_HASH', round_index_source: 'LOCAL_SEQUENCE',
       identity_confidence: 'OVERLAP_VERIFIED_ORDER_ONLY',
       continuity_verified: true, gap_before: Boolean(gapBefore && added.length === 0),

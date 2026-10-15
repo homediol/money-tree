@@ -14,6 +14,14 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def shadow_target_id(stream_id: str, round_index: int) -> str:
+    """Stable SHADOW-only identity for a prospective provider-unnamed target."""
+    stream = str(stream_id or "").strip()
+    if not stream or isinstance(round_index, bool) or not isinstance(round_index, int) or round_index < 1:
+        raise ValueError("invalid canonical shadow target")
+    return f"rules-target:{stream}:{round_index}"
+
+
 class ShadowManager:
     def __init__(self, *, repository, broadcaster=None):
         self.repository, self.broadcaster = repository, broadcaster
@@ -261,13 +269,42 @@ class ShadowManager:
         if self.mode not in {"SHADOW", "PAUSED"} or not self.session:
             return
         round_id = str(observed.get("round_id"))
+        try:
+            canonical_id = shadow_target_id(str(observed.get("stream_id") or ""),
+                                            observed.get("round_index"))
+        except ValueError:
+            canonical_id = None
+        processed_id = canonical_id or round_id
         async with self._lock:
-            if round_id in self._processed_rounds: return
-            self._processed_rounds.add(round_id)
+            if processed_id in self._processed_rounds or round_id in self._processed_rounds: return
             self.session["latest_round_id"] = round_id
-            pending = self._pending.pop(round_id, None)
+            pending = self._pending.pop(canonical_id, None) if canonical_id else None
+            if pending is None:
+                pending = self._pending.pop(round_id, None)
             if pending:
+                self._processed_rounds.add(processed_id)
+                self._processed_rounds.add(round_id)
                 await self._reconcile(pending, observed)
+                trades = pending if isinstance(pending, list) else [pending]
+                decision_ids = {str(trade.get("decision_id") or "") for trade in trades}
+                for decision_id in decision_ids - {""}:
+                    record = getattr(self.repository, "record_rule_shadow_execution", None)
+                    if callable(record):
+                        record(decision_id, {
+                            "status": "PAPER_RECONCILED",
+                            "target_round_id": trades[0].get("target_round_id"),
+                            "target_round_index": observed.get("round_index"),
+                            "resolved_at": _now(),
+                            "settlement": "SHADOW_SIMULATED",
+                            "real_money_action_submitted": False,
+                            "panel_results": [{
+                                "panel": trade.get("panel"), "result": trade.get("result"),
+                                "result_multiplier": trade.get("result_multiplier"),
+                                "pnl": trade.get("pnl"), "execution_id": trade.get("execution_id"),
+                            } for trade in trades],
+                            "trade_ids": [str(trade.get("execution_id")) for trade in trades
+                                          if trade.get("execution_id")],
+                        })
 
     async def submit_decision(self, decision: dict, *, emergency_stop: bool = False):
         async with self._lock:
@@ -293,6 +330,15 @@ class ShadowManager:
             return {"accepted": False, "reason": "risk_profile_or_approval_mismatch"}
         decision_id = str(decision.get("decision_id") or "")
         target_round_id = str(decision.get("target_round_id") or "")
+        target_stream_id = str(decision.get("target_stream_id") or "")
+        target_round_index = decision.get("target_round_index")
+        if target_stream_id and isinstance(target_round_index, int) and not isinstance(target_round_index, bool):
+            try:
+                canonical_target = shadow_target_id(target_stream_id, target_round_index)
+            except ValueError:
+                return {"accepted": False, "reason": "target_identity_invalid"}
+            if target_round_id != canonical_target:
+                return {"accepted": False, "reason": "target_identity_mismatch"}
         if not decision_id or not target_round_id:
             return {"accepted": False, "reason": "decision_identity_missing"}
         all_trades = self.repository.list_shadow_trades(limit=5000)
@@ -355,6 +401,9 @@ class ShadowManager:
                 "execution_id": "P-" + uuid.uuid4().hex,
                 "session_id": self.session["session_id"], "decision_id": decision_id,
                 "target_round_id": target_round_id, "panel": panel["panel"],
+                "target_stream_id": target_stream_id or None,
+                "target_round_index": target_round_index,
+                "target_identity_status": decision.get("target_identity_status", "PROVIDER_ROUND_ID"),
                 "profile": self.session["profile"], "bet_amount": stakes[panel["panel"]],
                 "cashout_target": intent.cashout, "balance_before": self.session["current_balance"],
                 "status": "PAPER_AUTHORIZED", "bet_accepted": True, "cashout_confirmed": False,

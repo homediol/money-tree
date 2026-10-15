@@ -77,12 +77,12 @@ def _request(repository, engine):
                 "status": "READY", "updated_at": datetime.now(timezone.utc).isoformat(),
             },
             "cashout_initialization": {
-                "status": "READY", "updated_at": datetime.now(timezone.utc).isoformat(),
-                "panel_1_cashout": "READY", "panel_2_cashout": "READY",
+                "status": "CASHOUT_VERIFIED", "updated_at": datetime.now(timezone.utc).isoformat(),
+                "panel_1_cashout": "CASHOUT_VERIFIED", "panel_2_cashout": "CASHOUT_VERIFIED",
                 "panels": [
-                    {"status": "READY", "auto_bet": "OFF", "auto_cashout": "ON",
+                    {"status": "CASHOUT_VERIFIED", "auto_bet": "OFF", "auto_cashout": "ON",
                      "multiplier": "2.00", "auto_tab_selected": True},
-                    {"status": "READY", "auto_bet": "OFF", "auto_cashout": "ON",
+                    {"status": "CASHOUT_VERIFIED", "auto_bet": "OFF", "auto_cashout": "ON",
                      "multiplier": "2.00", "auto_tab_selected": True},
                 ],
             },

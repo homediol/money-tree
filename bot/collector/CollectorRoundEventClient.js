@@ -1,7 +1,26 @@
 const DEFAULT_ROUND_EVENT_URL = 'http://127.0.0.1:8000/api/collector/round-observed';
+const DEFAULT_BACKEND_EVENT_TIMEOUT_MS = 15_000;
+
+// Panel and betting-window evidence is useful only while it is fresh. It is
+// also sent as a separate, live game-phase observation. A delayed durable
+// round retry must not let stale UI evidence reject the whole round batch.
+function freshGamePhase(round, now = Date.now()) {
+  const phase = round?.game_phase;
+  if (!phase || typeof phase !== 'object') return null;
+  const timestamps = [phase.observed_at,
+    ...(Array.isArray(phase.panel_observations)
+      ? phase.panel_observations.map(panel => panel?.observed_at) : [])];
+  if (timestamps.length < 3 || timestamps.some(value => {
+    const observedAt = Date.parse(value || '');
+    const ageMs = now - observedAt;
+    return !Number.isFinite(observedAt) || ageMs < -30_000 || ageMs > 30_000;
+  })) return null;
+  return phase;
+}
 
 function directRound(round, { httpStartedAt = null } = {}) {
   const id = String(round.round_id);
+  const gamePhase = freshGamePhase(round);
   return {
     event_id: `aviator-round:${id}`,
     observation_id: String(round.observation_id || id),
@@ -26,7 +45,7 @@ function directRound(round, { httpStartedAt = null } = {}) {
       && round.observation_to_commit_ms !== undefined
       && Number.isFinite(Number(round.observation_to_commit_ms))
       ? Number(round.observation_to_commit_ms) : null,
-    ...(round.game_phase ? { game_phase: round.game_phase } : {}),
+    ...(gamePhase ? { game_phase: gamePhase } : {}),
   };
 }
 
@@ -37,7 +56,7 @@ function directRound(round, { httpStartedAt = null } = {}) {
 export async function publishDirectRoundObservations(rounds, {
   url = process.env.COLLECTOR_BACKEND_ROUND_OBSERVED_URL || DEFAULT_ROUND_EVENT_URL,
   apiKey = process.env.API_KEY,
-  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 3000,
+  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || DEFAULT_BACKEND_EVENT_TIMEOUT_MS,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!Array.isArray(rounds) || rounds.length === 0) {
@@ -126,7 +145,7 @@ export async function drainDirectRoundEventOutbox(outbox, options = {}) {
 export async function publishCommittedRoundEvents(rounds, {
   url = process.env.COLLECTOR_BACKEND_ROUND_PERSISTED_URL || 'http://127.0.0.1:8000/api/collector/round-persisted',
   apiKey = process.env.API_KEY,
-  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 3000,
+  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || DEFAULT_BACKEND_EVENT_TIMEOUT_MS,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!Array.isArray(rounds) || rounds.length === 0) return { ok: true, accepted: 0, events: [] };
@@ -186,7 +205,7 @@ export async function publishCommittedRoundEvents(rounds, {
 export async function publishCollectorGamePhase(phase, sourceIdentity, {
   url = process.env.COLLECTOR_BACKEND_GAME_PHASE_URL || 'http://127.0.0.1:8000/api/collector/game-phase',
   apiKey = process.env.API_KEY,
-  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 3000,
+  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || DEFAULT_BACKEND_EVENT_TIMEOUT_MS,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!phase || !sourceIdentity?.round_id || !Number.isSafeInteger(Number(sourceIdentity.round_index))) {
@@ -212,6 +231,8 @@ export async function publishCollectorGamePhase(phase, sourceIdentity, {
         phase: String(phase.phase || 'UNKNOWN'),
         observed_at: String(phase.observed_at || ''),
         evidence: phase.evidence || {},
+        panel_observations: Array.isArray(phase.panel_observations)
+          ? phase.panel_observations : [],
       }),
       signal: controller.signal,
     });

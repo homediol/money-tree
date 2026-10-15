@@ -4,9 +4,11 @@ import asyncio
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.database.repository import Repository
 from app.services.system_health import SystemHealth
+from main import update_rules_engine_health
 
 
 class FakeHistory:
@@ -97,6 +99,53 @@ def test_unverified_collector_is_not_misreported_as_stopped(tmp_path):
     assert "stopped" not in component["last_error"]
     assert component["metadata"]["process_status"] == "UNKNOWN"
     assert monitor.can_bet_now(mode="REAL")["allowed"] is False
+
+
+def test_rules_health_does_not_require_an_active_session_when_definitions_are_enabled():
+    monitor = SystemHealth()
+    app = SimpleNamespace(state=SimpleNamespace(
+        system_health=monitor,
+        rules_engine=SimpleNamespace(status=lambda: {
+            "rules_configured": 6, "rules_enabled": 1,
+            "active_session_status": "NONE", "latest_session_status": "COMPLETED",
+        }),
+        betting_mode=SimpleNamespace(mode="SHADOW_REALISTIC", shadow_ready=False,
+                                     live_authorized=False),
+        shadow=SimpleNamespace(mode="STOPPED"),
+    ))
+
+    metadata = update_rules_engine_health(app)
+    component = monitor.snapshot()["components"]["rules_engine"]
+
+    assert component["state"] == "HEALTHY"
+    assert component["last_error"] is None
+    assert metadata["rules_configured"] == 6
+    assert metadata["rules_enabled"] == 1
+    assert metadata["active_session_status"] == "NONE"
+    assert metadata["execution_enabled"] is False
+    assert metadata["live_execution_authorized"] is False
+
+
+def test_rules_health_reports_configured_but_disabled_as_waiting_not_missing():
+    monitor = SystemHealth()
+    app = SimpleNamespace(state=SimpleNamespace(
+        system_health=monitor,
+        rules_engine=SimpleNamespace(status=lambda: {
+            "rules_configured": 6, "rules_enabled": 0,
+            "active_session_status": "NONE", "latest_session_status": "NONE",
+        }),
+        betting_mode=SimpleNamespace(mode="SHADOW_REALISTIC", shadow_ready=False,
+                                     live_authorized=False),
+        shadow=SimpleNamespace(mode="STOPPED"),
+    ))
+
+    metadata = update_rules_engine_health(app)
+    component = monitor.snapshot()["components"]["rules_engine"]
+
+    assert component["state"] == "WAITING"
+    assert component["last_error"] == "Rules are configured but none are enabled"
+    assert metadata["rules_definition_state"] == "CONFIGURED"
+    assert metadata["rules_enabled_state"] == "NONE_ENABLED"
 
 
 def test_safety_enforcement_requests_stop_and_emits_alert(tmp_path, monkeypatch):

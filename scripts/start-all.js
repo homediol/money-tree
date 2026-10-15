@@ -146,12 +146,15 @@ const SERVICES = [
       "/api/backend/capabilities",
       "/api/history/status",
       "/api/rules-engine/status",
+      "/api/rules-engine/shadow-executor/start",
       "/api/rules-engine/ui-setup",
       "/api/risk/status",
     ],
     requiredCapabilities: [
       "receipt_reconciliation_to_rule_session",
       "rule_financial_stop_recovery",
+      "manual_platform_stake_readback_v2",
+      "manual_platform_setup_readback_v3",
     ],
     restart: true,
     // Restart only after the managed API child exits. launch() rechecks the

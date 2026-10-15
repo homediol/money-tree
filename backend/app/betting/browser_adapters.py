@@ -308,9 +308,10 @@ class RealBrowserBackend:
         wager. The real rule's activation review consumes this explicit
         capability contract rather than inferring readiness from a page.
         """
-        return {"target_identity": False, "betting_deadline": False,
+        return {"bet_submission": False, "target_identity": False,
+                "betting_deadline": False, "cashout_acknowledgement": False,
                 "acceptance_receipt": False, "settlement_receipt": False,
-                "currency_rwf": False}
+                "currency_validation": False}
 
     async def readiness(self) -> dict:
         """Read-only readiness against the live browser."""
@@ -330,18 +331,16 @@ class RealBrowserBackend:
         return await self.cashout_configuration(panel)
 
     async def set_auto_cashout(self, target: float = 2.00, panel: int = 0) -> dict:
-        """Delegate fixed cashout UI practice to the guarded browser client."""
-        method = getattr(self.browser, "set_auto_cashout", None)
-        if method is None:
-            return {**inspect_cashout_configuration(None), "error": "UI_CONFIGURATION_UNAVAILABLE"}
-        return await method(target=target, panel=panel)
+        """Cashout configuration is operator-owned; this adapter is read-only."""
+        del target, panel
+        return {**inspect_cashout_configuration(None), "status": "CASHOUT_UNAVAILABLE",
+                "error": "MANUAL_OPERATOR_CONFIGURATION_REQUIRED", "mutation_performed": False}
 
     async def set_stake_input(self, amount: int | float | str = 100, panel: int = 0) -> dict:
-        """Edit only a visible stake input; never invoke the platform bet button."""
-        method = getattr(self.browser, "set_stake_input", None)
-        if method is None:
-            return {"ok": False, "error": "STAKE_INPUT_CONFIGURATION_UNAVAILABLE"}
-        return await method(amount=amount, panel=panel)
+        """Stake entry is operator-owned; this adapter never writes to the UI."""
+        del amount, panel
+        return {"ok": False, "error": "MANUAL_OPERATOR_CONFIGURATION_REQUIRED",
+                "mutation_performed": False}
 
     async def read_stake_input(self, panel: int = 0) -> dict:
         method = getattr(self.browser, "read_stake_input", None)

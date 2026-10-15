@@ -50,6 +50,8 @@ function normalizeRound(record, index = 0) {
     continuity_verified: Boolean(record?.continuity_verified),
     gap_before: Boolean(record?.gap_before),
     continuity_proof: record?.continuity_proof || 'UNVERIFIED',
+    history_epoch: Number.isSafeInteger(Number(record?.history_epoch)) && Number(record.history_epoch) > 0
+      ? Number(record.history_epoch) : 1,
   };
 }
 
@@ -64,6 +66,7 @@ export class PostgresRoundStore {
     this.outbox = new DurableRoundOutbox();
     this.collectorSequenceRebaseOffset = null;
     this.collectorSequenceLastLocalIndex = null;
+    this.historyEpoch = 1;
     this.storageError = null;
     this.storageRetryAt = 0;
     this.lastCommitAcknowledgedAt = null;
@@ -120,6 +123,12 @@ export class PostgresRoundStore {
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS continuity_verified BOOLEAN NOT NULL DEFAULT FALSE`);
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS gap_before BOOLEAN NOT NULL DEFAULT FALSE`);
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS continuity_proof TEXT`);
+      await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS history_epoch BIGINT NOT NULL DEFAULT 1`);
+      await this.pool.query(`CREATE TABLE IF NOT EXISTS history_epochs (
+        singleton SMALLINT PRIMARY KEY CHECK(singleton=1), epoch BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+      await this.pool.query(`INSERT INTO history_epochs(singleton,epoch,updated_at) VALUES(1,1,NOW()) ON CONFLICT(singleton) DO NOTHING`);
+      const epochResult = await this.pool.query('SELECT epoch FROM history_epochs WHERE singleton=1');
+      this.historyEpoch = Math.max(1, Number(epochResult.rows?.[0]?.epoch || 1));
       await this.pool.query(`UPDATE ${this.tableIdent} SET stored_at = COALESCE(stored_at, created_at)`);
       await this.pool.query(`UPDATE ${this.tableIdent} SET local_round_index = COALESCE(local_round_index, round_index)`);
       await this.pool.query(`UPDATE ${this.tableIdent} SET observed_at = COALESCE(observed_at, timestamp) WHERE round_id ~ '^aviator-[0-9a-f]{24}$'`);
@@ -229,7 +238,7 @@ export class PostgresRoundStore {
 
     if (!this.pool) return [];
     const result = await this.pool.query(`
-      SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index, multiplier::float8 AS multiplier,
+      SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index, history_epoch, multiplier::float8 AS multiplier,
              COALESCE(platform_timestamp, timestamp) AS timestamp,
              platform_timestamp, observed_at, COALESCE(stored_at, created_at) AS stored_at,
              round_identity_type, round_index_source, identity_confidence, continuity_verified, gap_before, continuity_proof
@@ -242,6 +251,7 @@ export class PostgresRoundStore {
       platform_round_id: row.platform_round_id == null ? null : String(row.platform_round_id),
       platform_round_index: row.platform_round_index == null ? null : Number(row.platform_round_index),
       local_round_index: Number(row.local_round_index ?? row.round_index),
+      history_epoch: Number(row.history_epoch || 1),
       round_index: Number(row.round_index),
       multiplier: Number(row.multiplier),
       timestamp: row.timestamp ? new Date(row.timestamp).toISOString() : null,
@@ -261,7 +271,7 @@ export class PostgresRoundStore {
     const ids = [...new Set(roundIds.map(value => String(value)).filter(Boolean))];
     if (!ids.length || !this.pool || this.usingFileFallback) return [];
     const result = await this.pool.query(`
-      SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index,
+      SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index, history_epoch,
              multiplier::float8 AS multiplier, COALESCE(platform_timestamp, timestamp) AS timestamp,
              platform_timestamp, observed_at, COALESCE(stored_at, created_at) AS stored_at,
              round_identity_type, round_index_source, identity_confidence,
@@ -274,6 +284,7 @@ export class PostgresRoundStore {
       platform_round_id: row.platform_round_id == null ? null : String(row.platform_round_id),
       platform_round_index: row.platform_round_index == null ? null : Number(row.platform_round_index),
       local_round_index: Number(row.local_round_index ?? row.round_index),
+      history_epoch: Number(row.history_epoch || 1),
       round_index: Number(row.round_index),
       multiplier: Number(row.multiplier),
       timestamp: row.timestamp ? new Date(row.timestamp).toISOString() : null,
@@ -298,6 +309,7 @@ export class PostgresRoundStore {
       .map((record, index) => normalizeRound(record, index))
       .filter(Boolean);
     for (const record of normalized) {
+      record.history_epoch = this.historyEpoch;
       if (!record.observed_at && source.startsWith('collector')) record.observed_at = new Date().toISOString();
     }
 
@@ -345,6 +357,12 @@ export class PostgresRoundStore {
       catch (closeError) { log.warn(`PostgreSQL disconnect cleanup failed: ${formatError(closeError)}`); }
       return this._queueOffline(normalized, error);
     }
+  }
+
+  resetLocalSequenceForHistoryEpoch(epoch) {
+    this.historyEpoch = Math.max(1, Number(epoch) || 1);
+    this.collectorSequenceRebaseOffset = null;
+    this.collectorSequenceLastLocalIndex = null;
   }
 
   async _queueOffline(normalized, cause = this.storageError) {
@@ -514,14 +532,14 @@ export class PostgresRoundStore {
           }
 
           const result = await client.query(
-            `INSERT INTO ${this.tableIdent} (round_id, platform_round_id, platform_round_index, round_index, local_round_index, multiplier, timestamp, platform_timestamp, observed_at, stored_at, round_identity_type, round_index_source, identity_confidence, continuity_verified, gap_before, continuity_proof, source, raw)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17::jsonb)
+            `INSERT INTO ${this.tableIdent} (round_id, platform_round_id, platform_round_index, round_index, local_round_index, history_epoch, multiplier, timestamp, platform_timestamp, observed_at, stored_at, round_identity_type, round_index_source, identity_confidence, continuity_verified, gap_before, continuity_proof, source, raw)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11, $12, $13, $14, $15, $16, $17, $18::jsonb)
              ON CONFLICT DO NOTHING
-             RETURNING id, round_id, round_index, platform_round_id, platform_round_index,
+             RETURNING id, round_id, round_index, history_epoch, platform_round_id, platform_round_index,
                        multiplier, platform_timestamp, observed_at, stored_at, source,
                        continuity_verified, gap_before, identity_confidence`,
             [candidate.round_id, candidate.platform_round_id, candidate.platform_round_index,
-              candidate.round_index, candidate.local_round_index, candidate.multiplier,
+              candidate.round_index, candidate.local_round_index, this.historyEpoch, candidate.multiplier,
               candidate.timestamp, candidate.platform_timestamp, candidate.observed_at,
               candidate.round_identity_type, candidate.round_index_source, candidate.identity_confidence,
               candidate.continuity_verified, candidate.gap_before, candidate.continuity_proof,
@@ -536,6 +554,7 @@ export class PostgresRoundStore {
                 db_id: Number(persisted.id),
                 round_id: String(persisted.round_id),
                 round_index: Number(persisted.round_index),
+                history_epoch: Number(persisted.history_epoch || this.historyEpoch),
                 local_round_index: Number(candidate.local_round_index || persisted.round_index),
                 platform_round_id: persisted.platform_round_id == null ? null : String(persisted.platform_round_id),
                 platform_round_index: persisted.platform_round_index == null ? null : Number(persisted.platform_round_index),

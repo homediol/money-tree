@@ -39,6 +39,24 @@ async def status(request: Request):
     return {"ok": True, "mode": request.app.state.betting_mode.status()}
 
 
+@router.get("/live-configuration")
+async def live_configuration(request: Request):
+    """Return the latest saved inert LIVE configuration without authorizing it."""
+    return {"ok": True,
+            "configuration": request.app.state.betting_mode.live_configuration()}
+
+
+@router.post("/live-configuration")
+async def save_live_configuration(request: Request, body: dict):
+    """Save an inert operator draft; activation still requires a fresh review."""
+    try:
+        configuration = request.app.state.betting_mode.save_live_configuration_draft(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "configuration": configuration,
+            "live_authorized": False, "activation_required": True}
+
+
 @router.get("/shadow-review")
 async def shadow_review(request: Request):
     """Read the existing platform balance for the SHADOW session confirmation."""
@@ -53,6 +71,10 @@ async def live_review(request: Request, profile: str = "PROFILE_A",
                       win_limit_enabled: bool | None = None, win_limit: float | None = None,
                       session_loss_limit_enabled: bool | None = None,
                       session_loss_limit: float | None = None,
+                      reconciled_win_limit_enabled: bool | None = None,
+                      reconciled_win_limit_count: int | None = None,
+                      reconciled_loss_count_limit_enabled: bool | None = None,
+                      reconciled_loss_count_limit: int | None = None,
                       execution_panel: int | None = None,
                       stake_amount: int | None = None,
                       currency: str | None = None):
@@ -64,7 +86,12 @@ async def live_review(request: Request, profile: str = "PROFILE_A",
         return await request.app.state.betting_mode.live_review(
             profile=profile, win_limit_enabled=win_limit_enabled, win_limit=win_limit,
             session_loss_limit_enabled=session_loss_limit_enabled,
-            session_loss_limit=session_loss_limit, execution_panel=execution_panel,
+            session_loss_limit=session_loss_limit,
+            reconciled_win_limit_enabled=reconciled_win_limit_enabled,
+            reconciled_win_limit_count=reconciled_win_limit_count,
+            reconciled_loss_count_limit_enabled=reconciled_loss_count_limit_enabled,
+            reconciled_loss_count_limit=reconciled_loss_count_limit,
+            execution_panel=execution_panel,
             stake_amount=stake_amount, currency=currency)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

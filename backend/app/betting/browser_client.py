@@ -43,8 +43,6 @@ from app.betting.selectors import (
     NEXT_GAME_HINT,
     PAGE_HINT,
     READ_BALANCE,
-    SET_AUTO_CASHOUT,
-    SET_STAKE_INPUT,
     SNAPSHOT,
     GameSnapshot,
     parse_balance_display,
@@ -511,40 +509,9 @@ class AviatorBrowserClient:
         }
 
     async def set_auto_cashout(self, target: float = 2.00, panel: int = 0) -> dict:
-        """Set the fixed 2.00x UI control; platform acknowledgement stays separate."""
-        if not self._valid_panel(panel):
-            raise BrowserUiError("BETTING_PANEL_SLOT_INVALID")
-        try:
-            requested = Decimal(str(target))
-        except (InvalidOperation, ValueError):
-            raise BrowserUiError("CASHOUT_TARGET_MUST_EQUAL_2_00") from None
-        if requested != Decimal("2.00"):
-            raise BrowserUiError("CASHOUT_TARGET_MUST_EQUAL_2_00")
-        from app.betting.ui_lock import shared_aviator_ui_lock
-
-        async with shared_aviator_ui_lock():
-            session, context_id = await self._require_authenticated_betting_page()
-            before = await self.snapshot()
-            self._require_clear_two_panel_state(before)
-            self._require_auto_bet_off_two_panel_state(before)
-            self._require_cashout_control(before, panel)
-            current = await self.snapshot()
-            self._require_clear_two_panel_state(current)
-            self._require_auto_bet_off_two_panel_state(current)
-            self._require_cashout_control(current, panel)
-            expression = (SET_AUTO_CASHOUT.replace("__SLOT__", str(panel))
-                          .replace("__TARGET__", json.dumps("2.00")))
-            result = await session.evaluate(expression, context_id=context_id)
-            if not isinstance(result, dict) or result.get("ok") is not True:
-                reason = result.get("reason") if isinstance(result, dict) else None
-                raise BrowserUiError(reason or "AUTO_CASHOUT_UI_CONFIGURATION_FAILED")
-            observed = await self.read_auto_cashout(panel)
-            return {
-                "ok": observed.get("configuration_valid") is True,
-                "target": 2.00,
-                "interaction": result,
-                **observed,
-            }
+        """Compatibility guard: cashout settings are configured manually."""
+        del target, panel
+        raise BrowserUiError("MANUAL_OPERATOR_CONFIGURATION_REQUIRED: verify cashout settings read-only")
 
     async def read_stake_input(self, panel: int = 0) -> dict:
         """Read the panel stake input and report minimum-stake evidence if present."""
@@ -567,45 +534,9 @@ class AviatorBrowserClient:
         }
 
     async def set_stake_input(self, amount: int | float | str = 100, panel: int = 0) -> dict:
-        """Set a visible stake input for UI practice; this never submits a bet."""
-        if not self._valid_panel(panel):
-            raise BrowserUiError("BETTING_PANEL_SLOT_INVALID")
-        try:
-            requested = Decimal(str(amount))
-        except (InvalidOperation, ValueError):
-            raise BrowserUiError("STAKE_AMOUNT_INVALID") from None
-        if not requested.is_finite() or requested <= 0:
-            raise BrowserUiError("STAKE_AMOUNT_INVALID")
-        text_value = format(requested.normalize(), "f")
-        from app.betting.ui_lock import shared_aviator_ui_lock
-
-        async with shared_aviator_ui_lock():
-            session, context_id = await self._require_authenticated_betting_page()
-            before = await self.snapshot()
-            self._require_clear_two_panel_state(before)
-            self._require_visible_stake_field(before, panel)
-            current = await self.snapshot()
-            self._require_clear_two_panel_state(current)
-            self._require_visible_stake_field(current, panel)
-            expression = (SET_STAKE_INPUT.replace("__SLOT__", str(panel))
-                          .replace("__VALUE__", json.dumps(text_value)))
-            result = await session.evaluate(expression, context_id=context_id)
-            if not isinstance(result, dict) or result.get("ok") is not True:
-                reason = result.get("reason") if isinstance(result, dict) else None
-                raise BrowserUiError(reason or "STAKE_INPUT_UPDATE_FAILED")
-            observed = await self.read_stake_input(panel)
-            try:
-                readback = Decimal(str((observed.get("input") or {}).get("value")))
-                accepted = readback == requested
-            except (InvalidOperation, ValueError):
-                accepted = False
-            return {
-                "ok": accepted,
-                "requested_value": text_value,
-                "readback_accepted": accepted,
-                "interaction": result,
-                **observed,
-            }
+        """Compatibility guard: stake entry is operator-owned."""
+        del amount, panel
+        raise BrowserUiError("MANUAL_OPERATOR_CONFIGURATION_REQUIRED: enter stake in Aviator UI manually")
 
     @staticmethod
     def _require_clear_two_panel_state(snapshot: GameSnapshot) -> None:

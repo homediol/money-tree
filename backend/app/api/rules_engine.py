@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from app.betting.browser_client import AviatorBrowserClient
 
 router = APIRouter(prefix="/api/rules-engine", tags=["rules engine"])
@@ -192,7 +193,7 @@ def _shared_aviator_readiness(request: Request) -> dict[str, Any]:
     cashout_age = _timestamp_age_seconds(cashout.get("updated_at"), now=now)
     panels = cashout.get("panels") or []
     panel_values_ready = len(panels) == 2 and all(
-        panel.get("status") == "READY"
+        panel.get("status") == "CASHOUT_VERIFIED"
         and panel.get("auto_bet") == "OFF"
         and panel.get("auto_cashout") == "ON"
         and str(panel.get("multiplier") or "").strip() == "2.00"
@@ -200,7 +201,7 @@ def _shared_aviator_readiness(request: Request) -> dict[str, Any]:
         for panel in panels
     )
     cashout_ready = frame_ready and (
-        cashout.get("status") == "READY"
+        cashout.get("status") == "CASHOUT_VERIFIED"
         and panel_values_ready
         and cashout_age is not None
         and -60 <= cashout_age <= CASHOUT_READBACK_MAX_AGE_SECONDS
@@ -221,6 +222,23 @@ def _shared_aviator_readiness(request: Request) -> dict[str, Any]:
         "heartbeat_state": health.get("heartbeat_state", "UNKNOWN"),
         "last_observed_round": health.get("last_observed_round"),
         "last_observed_age_seconds": round(observed_age, 3) if observed_age is not None else None,
+        "betting_window": health.get("betting_window") or {"state": "UNKNOWN", "observed_at": None},
+        "target_deadline_evidence": health.get("target_deadline_evidence") or {
+            "status": "UNKNOWN", "deadline_at": None,
+            "reason": "COLLECTOR_DEADLINE_OBSERVATION_NOT_CURRENT",
+        },
+        "panel_observations": health.get("panel_observations") or [
+            {"panel_id": "PANEL_1", "slot": 0, "state": "UNKNOWN",
+             "button_text": None, "displayed_stake": None, "currency": None,
+             "cashout_amount": None, "observed_at": None, "source": "UNKNOWN",
+             "evidence": {"reason": "COLLECTOR_PANEL_OBSERVATION_NOT_CURRENT"},
+             "confidence": 0.0, "frame_identity": None, "pending_bet_state": "UNKNOWN"},
+            {"panel_id": "PANEL_2", "slot": 1, "state": "UNKNOWN",
+             "button_text": None, "displayed_stake": None, "currency": None,
+             "cashout_amount": None, "observed_at": None, "source": "UNKNOWN",
+             "evidence": {"reason": "COLLECTOR_PANEL_OBSERVATION_NOT_CURRENT"},
+             "confidence": 0.0, "frame_identity": None, "pending_bet_state": "UNKNOWN"},
+        ],
         "browser_connected": state(health.get("browser_connected") is True and snapshot_current,
                                     known=snapshot_current),
         "aviator_page_ready": state(page_ready, known=snapshot_current),
@@ -230,7 +248,7 @@ def _shared_aviator_readiness(request: Request) -> dict[str, Any]:
             known=frame_ready and ui_config.get("status") in {"READY", "BLOCKED"},
             stale=bool(frame_ready and ui_age is not None and ui_age > CASHOUT_READBACK_MAX_AGE_SECONDS)),
         "cashout_configured": state(cashout_ready,
-            known=frame_ready and cashout.get("status") in {"READY", "FAILED"},
+            known=frame_ready and cashout.get("status") in {"CASHOUT_VERIFIED", "CASHOUT_MISMATCH", "CASHOUT_UNAVAILABLE"},
             stale=bool(frame_ready and cashout_age is not None and cashout_age > CASHOUT_READBACK_MAX_AGE_SECONDS)),
         "browser_pages": pages if snapshot_current else {},
         "betting_ui_configuration": ui_config,
@@ -238,6 +256,18 @@ def _shared_aviator_readiness(request: Request) -> dict[str, Any]:
             **cashout,
             "age_seconds": round(cashout_age, 3) if cashout_age is not None else None,
         },
+        "panel_observations": health.get("panel_observations") or [
+            {"panel_id": "PANEL_1", "slot": 0, "state": "UNKNOWN",
+             "button_text": None, "displayed_stake": None, "currency": None,
+             "cashout_amount": None, "observed_at": None, "source": "UNKNOWN",
+             "evidence": {"reason": "COLLECTOR_PANEL_OBSERVATION_NOT_CURRENT"},
+             "confidence": 0.0, "frame_identity": None, "pending_bet_state": "UNKNOWN"},
+            {"panel_id": "PANEL_2", "slot": 1, "state": "UNKNOWN",
+             "button_text": None, "displayed_stake": None, "currency": None,
+             "cashout_amount": None, "observed_at": None, "source": "UNKNOWN",
+             "evidence": {"reason": "COLLECTOR_PANEL_OBSERVATION_NOT_CURRENT"},
+             "confidence": 0.0, "frame_identity": None, "pending_bet_state": "UNKNOWN"},
+        ],
         "platform_cashout_acknowledged": None,
         "automatic_execution": "OFF",
     }
@@ -256,7 +286,7 @@ def _shared_aviator_readiness(request: Request) -> dict[str, Any]:
         refreshed_panels = refreshed.get("panels") or []
         panel_rows = [{
             "slot": int(row["panel"]) - 1,
-            "status": row.get("status", "UNKNOWN"),
+            "status": row.get("status", "CASHOUT_UNAVAILABLE"),
             "auto_bet": row.get("auto_bet", "UNKNOWN"),
             "auto_cashout": row.get("auto_cashout", "UNKNOWN"),
             "multiplier": row.get("multiplier"),
@@ -264,9 +294,9 @@ def _shared_aviator_readiness(request: Request) -> dict[str, Any]:
             "observed_at": refreshed.get("observed_at"),
             "error_reason": ",".join(row.get("failures") or []) or None,
         } for row in refreshed_panels]
-        fresh_cashout_ready = (refreshed.get("status") == "READY"
+        fresh_cashout_ready = (refreshed.get("status") == "CASHOUT_VERIFIED"
                                and len(panel_rows) == 2
-                               and all(row.get("status") == "READY" for row in panel_rows))
+                               and all(row.get("status") == "CASHOUT_VERIFIED" for row in panel_rows))
         result["cashout_configured"] = "READY" if fresh_cashout_ready else "BLOCKED"
         result["cashout_initialization"] = {
             "target": "2.00", "status": refreshed.get("status", "UNKNOWN"),
@@ -291,8 +321,140 @@ def _shared_aviator_readiness(request: Request) -> dict[str, Any]:
 @router.get("/status")
 def status(request: Request):
     engine = _engine(request)
+    mode_manager = getattr(request.app.state, "betting_mode", None)
+    mode_status = mode_manager.status() if mode_manager else {}
+    shadow_running = mode_status.get("shadow_running") is True
+    live_authorized = mode_status.get("live_authorized") is True
     return {**engine.status(), **_history(request),
+            "execution": {
+                "mode": mode_status.get("mode", "UNKNOWN"),
+                "enabled": shadow_running or live_authorized,
+                "shadow_running": shadow_running,
+                "live_authorized": live_authorized,
+                "automatic_execution": "OFF",
+            },
             "shadow_readiness": _shadow_readiness(request, engine)}
+
+
+@router.post("/shadow-executor/start")
+async def start_shadow_executor(request: Request):
+    """Start the existing paper executor from the explicit Rules session setup."""
+    import asyncio
+
+    from app.api.live import _manual_setup_observation
+    from app.betting.browser_client import AviatorBrowserClient
+    from app.services.betting_mode import SHADOW_REALISTIC
+
+    app = request.app
+    engine = _engine(request)
+    modes = getattr(app.state, "betting_mode", None)
+    shadow = getattr(app.state, "shadow", None)
+    live = getattr(app.state, "live", None)
+    risk = getattr(app.state, "risk", None)
+    if (modes is None or modes.mode != SHADOW_REALISTIC
+            or modes.live_authorized or bool(live and live.live_active)):
+        return JSONResponse(status_code=409, content={"ok": False,
+            "error": "SHADOW_REALISTIC_MODE_REQUIRED", "real_money_action_submitted": False})
+    if risk is None or risk.emergency_latched:
+        return JSONResponse(status_code=409, content={"ok": False,
+            "error": "EMERGENCY_STOP_ACTIVE_OR_RISK_UNAVAILABLE",
+            "real_money_action_submitted": False})
+
+    configuration = engine.ui_setup_configuration()
+    active = (engine.session(configuration.get("session_id"))
+              if configuration.get("session_id") else None)
+    if (configuration.get("status") != "CONFIGURED" or not active
+            or active.get("status") != "RUNNING"
+            or active.get("selection_status") != "ACTIVE"):
+        return JSONResponse(status_code=409, content={"ok": False,
+            "error": "ACTIVE_RULES_SESSION_WITH_PANEL_AND_BIF_STAKE_REQUIRED",
+            "rules_configuration": configuration, "real_money_action_submitted": False})
+    panel = configuration.get("execution_panel")
+    stake = configuration.get("requested_stake")
+    currency = str(configuration.get("requested_stake_currency") or "").upper()
+    if type(panel) is not int or panel not in (0, 1) or type(stake) is not int or currency != "BIF":
+        return JSONResponse(status_code=409, content={"ok": False,
+            "error": "SELECTED_PANEL_FIXED_BIF_STAKE_REQUIRED",
+            "rules_configuration": configuration, "real_money_action_submitted": False})
+
+    # The risk profile is an explicit saved operator configuration, not the
+    # Risk Manager's startup default. It must match this Rules session.
+    saved = modes.live_configuration()
+    if (saved.get("configuration_valid") is not True
+            or saved.get("execution_panel") != panel
+            or saved.get("stake_amount") != stake
+            or str(saved.get("currency") or "").upper() != currency):
+        return JSONResponse(status_code=409, content={"ok": False,
+            "error": "SAVED_OPERATOR_CONFIGURATION_MISMATCH",
+            "expected": {"panel": panel + 1, "stake": stake, "currency": currency},
+            "saved": {"panel": (saved.get("execution_panel") + 1
+                                    if saved.get("execution_panel") in (0, 1) else None),
+                      "stake": saved.get("stake_amount"), "currency": saved.get("currency")},
+            "real_money_action_submitted": False})
+
+    client = AviatorBrowserClient(app.state.betting.settings)
+    try:
+        snapshot = await asyncio.wait_for(client.snapshot(), timeout=8)
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={"ok": False,
+            "error": "SHARED_AVIATOR_READBACK_UNAVAILABLE",
+            "detail": type(exc).__name__, "real_money_action_submitted": False})
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
+    observation, readbacks = _manual_setup_observation(snapshot, configuration,
+        getattr(live, "manual_setup_readbacks", None))
+    if live is not None:
+        live.manual_setup_readbacks = readbacks
+    checklist = {row.get("item"): row.get("status") for row in observation.get("checklist", [])}
+    cashout = (observation.get("cashout_panels") or [])[panel]
+    blockers = []
+    if checklist.get("Stake manually entered") != "STAKE_VERIFIED":
+        blockers.append("STAKE_MISMATCH" if checklist.get("Stake manually entered") == "STAKE_MISMATCH"
+                        else "STAKE_READBACK_UNAVAILABLE")
+    if cashout.get("status") != "CASHOUT_VERIFIED":
+        blockers.append("AUTO_CASHOUT_CONFIGURATION_NOT_VERIFIED")
+    if str(observation.get("account_currency") or "").upper() != currency:
+        blockers.append("ACCOUNT_CURRENCY_MISMATCH")
+    if checklist.get("No active or pending bet") != "VERIFIED":
+        blockers.append("ACTIVE_OR_PENDING_BET")
+    if blockers:
+        return JSONResponse(status_code=409, content={"ok": False,
+            "error": "MANUAL_AVIATOR_SETUP_REQUIRES_OPERATOR_CORRECTION",
+            "blockers": blockers, "manual_setup": observation,
+            "real_money_action_submitted": False})
+
+    profile = str(saved.get("profile") or "").upper()
+    if shadow and shadow.mode == "SHADOW" and modes.shadow_ready:
+        current_config = shadow.session.get("config") or {}
+        panels = current_config.get("panels") or []
+        matching = (current_config.get("mode") == "MANUAL" and len(panels) == 2
+                    and sum(bool(row.get("enabled")) for row in panels) == 1
+                    and panels[panel].get("enabled") is True
+                    and panels[panel].get("stake") == stake
+                    and float(panels[panel].get("cashout") or 0) == 2.0)
+        if matching:
+            return {"ok": True, "already_running": True,
+                    "status": modes.status(), "manual_setup": observation,
+                    "real_money_action_submitted": False}
+        return JSONResponse(status_code=409, content={"ok": False,
+            "error": "SHADOW_EXECUTOR_ALREADY_RUNNING_WITH_DIFFERENT_CONFIGURATION",
+            "status": modes.status(), "real_money_action_submitted": False})
+
+    shadow_configuration = {
+        "mode": "MANUAL",
+        "panels": [{"enabled": slot == panel,
+                    "stake": stake if slot == panel else None,
+                    "cashout": 2.0} for slot in (0, 1)],
+    }
+    result = await modes.switch_shadow(profile=profile, configuration=shadow_configuration)
+    if not result.get("ok"):
+        return JSONResponse(status_code=409, content={**result,
+            "manual_setup": observation, "real_money_action_submitted": False})
+    return {**result, "manual_setup": observation, "real_money_action_submitted": False,
+            "execution_kind": "SHADOW_REALISTIC_PAPER_ONLY"}
 
 
 @router.get("/ui-setup")

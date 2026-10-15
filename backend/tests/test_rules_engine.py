@@ -36,6 +36,41 @@ def test_empty_evaluation_updates_last_evaluation_without_creating_a_decision():
     assert status["last_evaluated_round"] == {"round_id": "r-5", "round_index": 5}
 
 
+def test_history_epoch_reset_invalidates_only_old_prospective_state_and_preserves_financials():
+    engine = RulesEngine()
+    financial_stop = {"status": "ACTIVE", "currency": "BIF", "win_count": 2,
+                      "loss_count": 1, "realized_betting_pl": 50.0}
+    engine.sessions["old-session"] = {
+        "session_id": "old-session", "mode": "ALL_RULES_TOGETHER", "status": "RUNNING",
+        "selection_status": "ACTIVE", "started_at": "2026-10-14T10:00:00Z",
+        "financial_stop": financial_stop.copy(), "selections": [
+            {"selection_id": "pending-selection", "status": "PENDING", "result": "PENDING",
+             "execution_intent": {"execution_status": "BLOCKED_READ_ONLY"}},
+            {"selection_id": "settled-selection", "status": "WIN", "result": "WIN",
+             "financial_result": {"status": "RECONCILED", "profit_loss": 50.0}},
+        ], "rule_selections": {"RULE_A": []}, "history_epoch": 1,
+        "auto_next_armed": True,
+    }
+
+    result = engine.reset_history_epoch(2)
+
+    session = engine.session("old-session")
+    assert result == {"history_epoch": 2, "invalidated_sessions": 1,
+                      "expired_selections": 1, "already_current": False}
+    assert session["status"] == "COMPLETED"
+    assert session["selection_status"] == "STOPPED"
+    assert session["auto_next_armed"] is False
+    assert session["history_epoch"] == 2
+    assert session["selections"][0]["status"] == "EXPIRED"
+    assert session["selections"][0]["execution_intent"]["execution_status"] == "EXPIRED"
+    assert session["selections"][1]["status"] == "WIN"
+    assert session["selections"][1]["financial_result"]["profit_loss"] == 50.0
+    assert session["financial_stop"] == financial_stop
+    assert engine.last_evaluation["reason"] == "HISTORY_EPOCH_RESET"
+    assert engine.last_evaluation["history_epoch"] == 2
+    assert engine._snapshot()["history_epoch"] == 2
+
+
 def test_unconfigured_rule_contract_has_no_evaluation_or_signal():
     assert RulesEngine.not_configured("RULE_001") == {
         "rule_id": "RULE_001",
@@ -104,6 +139,29 @@ def test_rules_status_includes_real_history_snapshot_and_zero_rule_counts():
     assert result["automatic_execution"] == "OFF"
 
 
+def test_rules_status_counts_registry_separately_from_active_session_lifecycle():
+    engine = RulesEngine()
+    rule_ids = [row["rule_id"] for row in engine.registry()["rules"]]
+    research_ids = set(engine.registry()["modes"][-2]["rule_ids"])
+    participating = next(rule_id for rule_id in rule_ids if rule_id in research_ids)
+    for rule_id in rule_ids[:6]:
+        engine.configure(rule_id, enabled=(rule_id == participating))
+    boundary = {"event_type": "round.persisted", "durability": "COMMITTED",
+                "continuity_status": "VERIFIED", "stream_id": "stream", "stream_sequence": 5,
+                "round_id": "round-5", "round_index": 5, "multiplier": 1.5}
+    engine.start_session(mode="FIVE_RULE_TRACKER", rule_ids=[participating], boundary=boundary)
+
+    status = engine.status()
+
+    assert status["rules_configured"] == 6
+    assert status["rules_enabled"] == 1
+    assert status["active_session_status"] == "RUNNING"
+    assert status["session_running"] is True
+    assert status["session_rule_count"] == 1
+    assert status["rules_execution_enabled"] is False
+    assert status["live_execution_authorized"] is False
+
+
 def test_decision_submission_fails_closed_with_no_rules():
     engine = RulesEngine()
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(rules_engine=engine)))
@@ -146,7 +204,8 @@ def test_true_rule_selection_does_not_bypass_missing_intent_risk_or_platform_con
     assert body["rule_evaluation"]["true_rule_ids"] == ["RULE_A", "RULE_B"]
     assert body["rule_evaluation"]["selection_id"] == "one-canonical-selection"
     assert body["automatic_execution"] == "OFF"
-    assert any("target-bound decision intent" in reason for reason in body["reasons"])
+    assert any("Durable Shared SELECT intent persistence is unavailable" in reason
+               for reason in body["reasons"])
     assert any("Risk Engine approval" in reason for reason in body["reasons"])
     assert any("provider round ID" in reason for reason in body["reasons"])
     assert any("settlement receipts" in reason for reason in body["reasons"])

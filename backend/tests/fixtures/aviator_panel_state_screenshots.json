@@ -1,0 +1,50 @@
+[
+  {
+    "fixture": "screenshot_green_bet_200_bif",
+    "panel_id": "PANEL_1",
+    "state": "BET_AVAILABLE",
+    "panel_visible": true,
+    "button_visible": true,
+    "button_enabled": true,
+    "main_label": "Bet",
+    "button_text": "Bet 200 BIF",
+    "secondary_text": "200 BIF",
+    "displayed_stake_text": "Bet 200 BIF",
+    "button_color": "rgb(40, 167, 69)",
+    "visible_action_labels": ["Bet 200 BIF"],
+    "pending_indicator": false,
+    "active_indicator": false
+  },
+  {
+    "fixture": "screenshot_red_cancel_waiting",
+    "panel_id": "PANEL_1",
+    "state": "BET_QUEUED",
+    "panel_visible": true,
+    "button_visible": true,
+    "button_enabled": true,
+    "main_label": "Cancel",
+    "button_text": "Cancel",
+    "secondary_text": "Waiting for next round",
+    "displayed_stake_text": "",
+    "button_color": "rgb(220, 53, 69)",
+    "visible_action_labels": ["Cancel Waiting for next round"],
+    "pending_indicator": true,
+    "active_indicator": false
+  },
+  {
+    "fixture": "screenshot_amber_cash_out_121_bif",
+    "panel_id": "PANEL_1",
+    "state": "BET_ACTIVE",
+    "panel_visible": true,
+    "button_visible": true,
+    "button_enabled": true,
+    "main_label": "Cash Out",
+    "button_text": "Cash Out 121 BIF",
+    "secondary_text": "121 BIF",
+    "cashout_text": "Cash Out 121 BIF",
+    "button_color": "rgb(255, 193, 7)",
+    "visible_action_labels": ["Cash Out 121 BIF"],
+    "pending_indicator": false,
+    "active_indicator": true
+  }
+]

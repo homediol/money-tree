@@ -173,10 +173,17 @@ export class LoginManager {
     this.phone    = credentials.phone;
     this.password = credentials.password;
     this.loginCount = 0;
+    this.manualOperatorSetup = true;
   }
 
   /** Navigate safely, trying multiple waitUntil strategies. */
   async _navigate(page, url, signal, { timeoutMs = 15000 } = {}) {
+    void page; void url; void timeoutMs;
+    if (this.manualOperatorSetup) {
+      throw Object.assign(new Error('MANUAL_OPERATOR_ACTION_REQUIRED: login and Aviator navigation are operator-owned'), {
+        code: 'MANUAL_OPERATOR_SETUP_REQUIRED',
+      });
+    }
     // Winner keeps chat/analytics requests alive, so the browser's full
     // ``load`` event is not a reliable readiness boundary.
     for (const waitUntil of ['commit', 'domcontentloaded']) {
@@ -415,7 +422,7 @@ export class LoginManager {
   }
 
   hasAutomaticCredentials() {
-    return Boolean(this.phone && this.password);
+    return false;
   }
 
   /**
@@ -424,6 +431,18 @@ export class LoginManager {
    * Otherwise navigates to login and submits credentials.
    */
   async ensureLoggedIn(page, signal, { relatedPages = [] } = {}) {
+    if (signal?.aborted) throw new Error('Aborted');
+    const session = await this.inspectSession(page);
+    if (session.status === 'AUTHENTICATED') {
+      for (const relatedPage of relatedPages) acknowledgeAuthRoute(relatedPage);
+      return true;
+    }
+    const error = new AuthRequiredError('MANUAL_LOGIN_REQUIRED: authenticate in the shared Aviator browser; automation will not enter credentials or navigate to login');
+    error.evidence = session.evidence || null;
+    error.reasonCode = session.reasonCode || 'MANUAL_LOGIN_REQUIRED';
+    throw error;
+    // Legacy login flow below is intentionally unreachable. Credentials are
+    // retained only for compatibility with existing configuration files.
     return withRetry(async (attempt) => {
       if (signal?.aborted) throw new Error('Aborted');
 
@@ -512,6 +531,10 @@ export class LoginManager {
   }
 
   async _doLogin(page, signal) {
+    void page; void signal;
+    throw Object.assign(new AuthRequiredError('MANUAL_LOGIN_REQUIRED: complete sign-in in the shared browser'), {
+      code: 'AUTH_REQUIRED', reasonCode: 'MANUAL_LOGIN_REQUIRED',
+    });
     // Try clicking the login link from homepage first
     const loginLinkSelectors = [
       '#user-menu-login',
@@ -788,6 +811,8 @@ export class LoginManager {
   /** Open the game through the authenticated virtual-games UI when the route
    * shell is present but the Spribe game itself has not launched. */
   async _openThroughCrashGamesSearch(page, signal) {
+    void page; void signal;
+    if (this.manualOperatorSetup) return false;
     await this._requireNoAuthRedirect(page);
     const crashControls = () => [
       page.getByRole?.('button', { name: /crash games/i }),
@@ -881,6 +906,16 @@ export class LoginManager {
 
   /** Navigate to the Aviator game page. */
   async goToAviator(page, signal) {
+    if (!page || page.isClosed?.()) return false;
+    if (signal?.aborted) throw new Error('Aborted');
+    // Read-only wait on the existing page. The operator owns opening or
+    // restoring the game; do not navigate, click, reload, or create a tab.
+    while (!signal?.aborted && !page.isClosed?.()) {
+      if (await this._hasAviatorFrame(page)) return true;
+      await sleep(1000, signal);
+    }
+    return false;
+    // Legacy navigation flow below is intentionally unreachable.
     return withRetry(async () => {
       if (signal?.aborted) throw new Error('Aborted');
       await this._requireNoAuthRedirect(page);
@@ -1012,6 +1047,9 @@ export class LoginManager {
 
   /** Navigate the existing history tab straight to Aviator during recovery. */
   async openAviatorRoute(page, signal, { timeoutMs = 7000 } = {}) {
+    void timeoutMs;
+    return this.goToAviator(page, signal);
+    // Legacy route navigation below is intentionally unreachable.
     for (const candidate of aviatorUrls()) {
       const previousUrl = page.url();
       if (!await this._navigate(page, candidate, signal, { timeoutMs })) continue;

@@ -23,10 +23,7 @@ from app.betting.browser_adapters import (
     SimulationBackend,
 )
 from app.betting.browser_client import AviatorBrowserClient, CdpSession, BrowserUiError, BrowserUnreachable, Target
-from app.betting.selectors import (
-    GAME_DOCUMENT_PROBE, READ_BALANCE, SET_AUTO_CASHOUT, SET_STAKE_INPUT,
-    GameSnapshot, SNAPSHOT, parse_amount,
-)
+from app.betting.selectors import GAME_DOCUMENT_PROBE, READ_BALANCE, GameSnapshot, SNAPSHOT, parse_amount
 from app.betting.config import BettingSettings
 from app.betting.events import betting_event, ledger_event, notice_event, state_event
 from app.betting.profiles import PROFILES, profile_keys
@@ -127,12 +124,14 @@ def test_snapshot_queries_directly_inside_aviator_next_context():
     assert "d.querySelectorAll('.payouts-block .payout')" in SNAPSHOT
     assert "d.querySelectorAll('app-bet-control')" in SNAPSHOT
     assert "panel.querySelector('.bet-block')" in SNAPSHOT
-    assert r"/^Bet\b/i.test(buttonText)" in SNAPSHOT
-    assert "pending_bet_state: pendingBetState" in SNAPSHOT
-    assert "d.querySelectorAll('.btn-success.bet')" in SNAPSHOT
+    assert r"const actionPattern = /^(bet|cancel|cash\s*out)\b/i" in SNAPSHOT
+    assert "visible_action_labels: actionLabels" in SNAPSHOT
+    assert "pending_indicator:" in SNAPSHOT
+    assert "panel_id: `PANEL_${i + 1}`" in SNAPSHOT
     assert "[role=\"alert\"]" in SNAPSHOT
-    assert ".btn-success.bet" not in SET_AUTO_CASHOUT
-    assert ".btn-success.bet" not in SET_STAKE_INPUT
+    from app.betting import selectors
+    assert not hasattr(selectors, "SET_AUTO_CASHOUT")
+    assert not hasattr(selectors, "SET_STAKE_INPUT")
 
 
 def test_provider_session_auth_is_hashed_and_login_prompt_takes_precedence():
@@ -191,7 +190,8 @@ def test_mock_ui_practice_configures_cashout_and_stake_without_bet_submission():
 
         async def snapshot():
             value = GameSnapshot.from_value({
-                "ok": True, "betPanel": True, "betTabActive": True,
+                "ok": True, "observedAt": datetime.now(timezone.utc).isoformat(),
+                "betPanel": True, "betTabActive": True,
                 "stakeInputs": [{"slot": 0, "placeholder": "100", "value": state["stake"],
                                  "visible": True, "minAttribute": None},
                                 {"slot": 1, "placeholder": "100", "value": "200",
@@ -218,17 +218,24 @@ def test_mock_ui_practice_configures_cashout_and_stake_without_bet_submission():
                     "button_visible": True,
                     "button_enabled": True, "stake_input_visible": True, "bet_tab_active": True,
                 }},
-                "betPanelStates": [{"slot": 0,
+                "betPanelStates": [{"slot": 0, "panel_id": "PANEL_1", "panel_visible": True,
                     "source": "AVIATOR_BETTING_PANEL_READ_ONLY",
-                    "selector": ".btn-success.bet", "panel_index": 0,
                     "button_visible": True, "button_enabled": True,
-                    "stake_input_visible": True, "bet_tab_active": True,
-                    "pending_bet_state": "CLEAR"},
-                    {"slot": 1, "source": "AVIATOR_BETTING_PANEL_READ_ONLY",
-                     "selector": ".btn-success.bet", "panel_index": 1,
+                    "main_label": "Bet", "button_text": "Bet 200 BIF",
+                    "displayed_stake_text": "Bet 200 BIF", "button_color": "rgb(40, 167, 69)",
+                    "visible_action_labels": ["Bet 200 BIF"],
+                    "frame_identity": "https://aviator-next.spribegaming.com/",
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                    "stake_input_visible": True, "bet_tab_active": True},
+                    {"slot": 1, "panel_id": "PANEL_2", "panel_visible": True,
+                     "source": "AVIATOR_BETTING_PANEL_READ_ONLY",
                      "button_visible": True, "button_enabled": True,
-                     "stake_input_visible": True, "bet_tab_active": True,
-                     "pending_bet_state": "CLEAR"}],
+                     "main_label": "Bet", "button_text": "Bet 200 BIF",
+                     "displayed_stake_text": "Bet 200 BIF", "button_color": "rgb(40, 167, 69)",
+                     "visible_action_labels": ["Bet 200 BIF"],
+                     "frame_identity": "https://aviator-next.spribegaming.com/",
+                     "observed_at": datetime.now(timezone.utc).isoformat(),
+                     "stake_input_visible": True, "bet_tab_active": True}],
                 "statusMessages": state["alerts"],
                 "balanceText": "28 BIF",
             })
@@ -248,8 +255,10 @@ def test_mock_ui_practice_configures_cashout_and_stake_without_bet_submission():
         async def _session(value): return value
         async def _context(value): return value
 
-        cashout = await client.set_auto_cashout(2.00, panel=0)
-        stake = await client.set_stake_input(100, panel=0)
+        with pytest.raises(BrowserUiError, match="MANUAL_OPERATOR_CONFIGURATION_REQUIRED"):
+            await client.set_auto_cashout(2.00, panel=0)
+        with pytest.raises(BrowserUiError, match="MANUAL_OPERATOR_CONFIGURATION_REQUIRED"):
+            await client.set_stake_input(100, panel=0)
         button = await client.detect_bet_button(panel=0)
         window = await client.detect_betting_window(panel=0)
         state["alerts"] = [{"text": "Insufficient balance. Please enter a lower stake."}]
@@ -257,22 +266,18 @@ def test_mock_ui_practice_configures_cashout_and_stake_without_bet_submission():
         balance = await client.read_verified_balance()
         stake_details = await client.read_stake_input(panel=0)
 
-        assert cashout["ok"] is True
-        assert cashout["verified"] is False
-        assert cashout["platform_acknowledged"] is None
-        assert stake["ok"] is True and stake["readback_accepted"] is True
-        assert stake["input"]["value"] == "100"
         assert stake_details["minimum_stake_evidence"]["platform_enforcement_verified"] is False
         assert button["detected"] is True and button["interaction_performed"] is False
-        assert window["state"] == "BETTING_OPEN"
+        # An enabled Bet button is panel affordance, not direct phase evidence.
+        assert window["state"] == "UNKNOWN"
         assert insufficient["detected"] is True
         assert insufficient["source"] == "OBSERVED_ALERT_TEXT"
         assert balance["verified"] is True
-        assert len(session.calls) == 2
+        assert session.calls == []
         return session.calls
 
     calls = _run(go())
-    assert len(calls) == 2
+    assert calls == []
 
 
 def test_ui_practice_mutations_block_on_unverified_history_page():
@@ -282,11 +287,11 @@ def test_ui_practice_mutations_block_on_unverified_history_page():
         client.readiness = lambda: _unknown_history_readiness()
         client._connect_session = lambda: pytest.fail("unverified page must not be mutated")
 
-        with pytest.raises(BrowserUiError, match="AUTHENTICATED_SHARED_AVIATOR_PAGE"):
+        with pytest.raises(BrowserUiError, match="MANUAL_OPERATOR_CONFIGURATION_REQUIRED"):
             await client.set_auto_cashout(2.00)
-        with pytest.raises(BrowserUiError, match="AUTHENTICATED_SHARED_AVIATOR_PAGE"):
+        with pytest.raises(BrowserUiError, match="MANUAL_OPERATOR_CONFIGURATION_REQUIRED"):
             await client.set_stake_input(100)
-        with pytest.raises(BrowserUiError, match="CASHOUT_TARGET_MUST_EQUAL_2_00"):
+        with pytest.raises(BrowserUiError, match="MANUAL_OPERATOR_CONFIGURATION_REQUIRED"):
             await client.set_auto_cashout(1.50)
 
     async def _snapshot_with_controls():

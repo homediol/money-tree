@@ -42,6 +42,20 @@ import {
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(__dirname, '..', '..', 'data', 'bot', 'config.json');
+const HISTORY_MAINTENANCE_PATH = path.join(__dirname, '..', '..', 'data', 'bot', 'history-maintenance.json');
+const HISTORY_MAINTENANCE_ACK_PATH = path.join(__dirname, '..', '..', 'data', 'bot', 'history-maintenance-ack.json');
+
+function readJsonFile(filePath) {
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
+  catch { return null; }
+}
+
+function writeJsonFileAtomic(filePath, payload) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(temporary, filePath);
+}
 
 function conciseErrorMessage(error, maxLength = 200) {
   const message = String(error?.message || error || 'Unknown error').split(/\r?\n/, 1)[0].trim();
@@ -150,6 +164,8 @@ class AviatorCollector {
     this._lastSavedSig= null;
     this._totalAdded  = 0;
     this._unverifiedGapPending = false;
+    this.historyEpoch = 1;
+    this._historyMaintenanceOperation = null;
     this.roundDelivery = new RoundDeliveryPipeline({
       outbox: this.directEventOutbox,
       roundStore: this.roundStore,
@@ -229,6 +245,7 @@ class AviatorCollector {
       event.event_id = [event.phase, event.observed_at, sourceIdentity.round_id].join(':');
     }
     this.health.recordGamePhase(event, sourceIdentity);
+    this.health.recordPanelObservations?.(event.panel_observations, sourceIdentity);
     if (!sourceIdentity.round_id || !Number.isSafeInteger(Number(sourceIdentity.round_index))) return;
     try {
       await publishCollectorGamePhase(event, sourceIdentity);
@@ -237,7 +254,7 @@ class AviatorCollector {
         component: 'collector', phase: event.phase,
         error_category: error?.category || 'GAME_PHASE_EVENT_FAILURE',
         ...(error?.category === 'BACKEND_EVENT_TIMEOUT'
-          ? { timeout_ms: error.timeoutMs || Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 3000 }
+          ? { timeout_ms: error.timeoutMs || Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 15000 }
           : { error: conciseErrorMessage(error) }),
         source_round_id: sourceIdentity.round_id,
       });
@@ -248,9 +265,10 @@ class AviatorCollector {
     // Claim the PostgreSQL lease before touching the browser so a duplicate
     // collector start cannot create a second browser or compete for round IDs.
     await this.roundStore.init({ acquireCollectorLease: true });
+    this.historyEpoch = Math.max(1, Number(this.roundStore.historyEpoch || 1));
 
     if (this.roundStore.pool && !this.roundStore.usingFileFallback) {
-      const fileHistory = readRoundHistory();
+      const fileHistory = this.historyEpoch === 1 ? readRoundHistory() : [];
       const persisted = await this.roundStore.loadRounds();
       const { missing, indexConflicts } = selectMissingLegacyRounds(fileHistory, persisted);
       if (indexConflicts) {
@@ -334,44 +352,99 @@ class AviatorCollector {
     }
     // UI setup is best effort and never blocks history collection. It shares
     // the collector's Aviator page and never submits a betting transaction.
-    void this.cashoutInitializer.initialize(aviatorPage, {
+    const cashoutObservation = this.cashoutInitializer.initialize(aviatorPage, {
       signal: this.signal,
-    }).then(result => {
-      if (result?.status === 'READY') {
-        log.info('Both Aviator panels independently verified with Auto Cash Out 2.00x and Auto Bet OFF');
-        return this.betAmountSynchronizer.initialize(aviatorPage, { signal: this.signal });
-      } else {
-        log.warn('Aviator cashout initialization is not READY; history collection continues', {
-          state: result?.status || 'UNKNOWN',
-          panel_1: result?.panel_1_cashout || 'UNKNOWN',
-          panel_2: result?.panel_2_cashout || 'UNKNOWN',
-          reason: result?.error_reason || null,
-        });
-      }
-      return null;
-    }).then(amountResult => {
-      if (amountResult?.status === 'READY') {
-        log.info('Configured Rules Engine stake read back on the selected execution panel');
-      } else if (amountResult) {
-        log.warn('Stake synchronization is blocked; no bet was submitted', {
-          status: amountResult.status || 'UNKNOWN', reason: amountResult.error_reason || null,
-          panel: amountResult.execution_panel == null ? null : amountResult.execution_panel + 1,
-          requested_stake: amountResult.requested_stake,
-          requested_currency: amountResult.requested_stake_currency,
-          platform_currency: amountResult.platform_currency || amountResult.currency,
-        });
-      }
+    });
+    const stakeObservation = this.betAmountSynchronizer.initialize(aviatorPage, { signal: this.signal });
+    void Promise.all([cashoutObservation, stakeObservation]).then(([cashout, stake]) => {
+      log.info('Manual Aviator settings read-only verification completed', {
+        cashout_status: cashout?.status || 'CASHOUT_UNAVAILABLE',
+        panel_1_cashout: cashout?.panel_1_cashout || 'UNKNOWN',
+        panel_2_cashout: cashout?.panel_2_cashout || 'UNKNOWN',
+        stake_status: stake?.status || 'STAKE_UNAVAILABLE',
+        selected_panel: stake?.execution_panel == null ? null : stake.execution_panel + 1,
+        requested_stake: stake?.requested_stake ?? null,
+        observed_stake: stake?.observed_value ?? null,
+        currency: stake?.observed_currency || stake?.currency || null,
+      });
     }).catch(err => {
       this.health.setCashoutInitialization?.({
-        target: '2.00', auto_bet: 'UNKNOWN', status: 'UNKNOWN',
+        target: '2.00', auto_bet: 'UNKNOWN', status: 'CASHOUT_UNAVAILABLE',
         panel_1_cashout: 'UNKNOWN', panel_2_cashout: 'UNKNOWN', panels: [],
         updated_at: new Date().toISOString(),
-        error_reason: `INITIALIZATION_SCHEDULING_FAILED:${conciseErrorMessage(err, 120)}`,
+        error_reason: `READ_ONLY_VERIFICATION_FAILED:${conciseErrorMessage(err, 120)}`,
       });
       log.warn(`Aviator cashout initialization could not start; history collection continues: ${formatError(err)}`);
     });
     await this.browser.focusGamePage?.(aviatorPage);
     return true;
+  }
+
+  async _handleHistoryMaintenance() {
+    const request = readJsonFile(HISTORY_MAINTENANCE_PATH);
+    if (!request?.operation_id) return;
+    const operationId = String(request.operation_id);
+    const acknowledge = (status, extra = {}) => writeJsonFileAtomic(HISTORY_MAINTENANCE_ACK_PATH, {
+      operation_id: operationId, status, pid: process.pid,
+      history_epoch: this.historyEpoch, observed_at: new Date().toISOString(), ...extra,
+    });
+    if (request.status === 'RESUME_REQUESTED' && this._historyMaintenanceOperation === operationId) {
+      if (request.reset_history_epoch === true && Number.isSafeInteger(Number(request.history_epoch))) {
+        this.historyEpoch = Math.max(1, Number(request.history_epoch));
+        this.roundStore.resetLocalSequenceForHistoryEpoch(this.historyEpoch);
+        this._history = [];
+        this._totalAdded = 0;
+        this._lastSavedSig = null;
+      }
+      this._historyMaintenanceOperation = null;
+      acknowledge('RESUMED');
+      return;
+    }
+    if (request.status !== 'PAUSE_REQUESTED') return;
+    if (Date.parse(request.expires_at || '') < Date.now()) {
+      acknowledge('EXPIRED');
+      return;
+    }
+    if (this._historyMaintenanceOperation && this._historyMaintenanceOperation !== operationId) return;
+    this._historyMaintenanceOperation = operationId;
+    const storage = this.roundStore.storageSnapshot();
+    const delivery = this.roundDelivery.snapshot();
+    if (this._storageRetryBusy || Number(storage.backlog_size || 0) > 0
+        || Number(delivery.backlog_size || 0) > 0 || delivery.worker_busy === true) {
+      acknowledge('DRAINING', {
+        pending_rounds: Number(storage.backlog_size || 0) + Number(delivery.backlog_size || 0),
+      });
+      return;
+    }
+    const health = this.health.snapshot?.() || {};
+    acknowledge('PAUSED', {
+      pending_rounds: 0,
+      boundary_round_id: health.lastRoundId || null,
+      boundary_round_index: health.lastRoundIndex ?? null,
+    });
+    log.info('Collector entered history maintenance write barrier', { operation_id: operationId });
+
+    while (!this.signal?.aborted) {
+      const current = readJsonFile(HISTORY_MAINTENANCE_PATH);
+      const expired = Date.parse(current?.expires_at || '') < Date.now();
+      if (current?.operation_id === operationId
+          && (current.status === 'RESUME_REQUESTED' || expired)) {
+        if (current.status === 'RESUME_REQUESTED' && current.reset_history_epoch === true
+            && Number.isSafeInteger(Number(current.history_epoch))) {
+          this.historyEpoch = Math.max(1, Number(current.history_epoch));
+          this.roundStore.resetLocalSequenceForHistoryEpoch(this.historyEpoch);
+          this._history = [];
+          this._totalAdded = 0;
+          this._lastSavedSig = null;
+          log.info('Collector resumed into a new history epoch', { history_epoch: this.historyEpoch });
+        }
+        this._historyMaintenanceOperation = null;
+        acknowledge('RESUMED', { expired_without_clear: expired && current?.status !== 'RESUME_REQUESTED' });
+        log.info('Collector left history maintenance write barrier', { operation_id: operationId });
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
   }
 
   async _waitForNetwork() {
@@ -947,7 +1020,8 @@ class AviatorCollector {
           const maxSearchableShift = Math.max(0, initMults.length - 10);
           log.warn(`Startup continuity gap: no 10-round overlap found (PostgreSQL tail snapshot=${persistedSnapshot.length}, Aviator snapshot=${initMults.length}, largest searchable shift=${maxSearchableShift}); skipped uncertain catch-up and marked the next observed segment with a gap`);
         } else if (inferred.length) {
-          const { history, added } = appendRounds(this._history, inferred, new Date().toISOString());
+          const { history, added } = appendRounds(this._history, inferred, new Date().toISOString(),
+            { historyEpoch: this.historyEpoch });
           if (added.length) {
             this._stageDirectRoundObservations(added, 'startup_catchup');
             this._history = history;
@@ -967,7 +1041,7 @@ class AviatorCollector {
         log.warn(`History reconnect opened a continuity gap: no 10-round overlap found (previous snapshot=${this._prevSnapshot.length}, Aviator snapshot=${initMults.length}, largest searchable shift=${maxSearchableShift}); uncertain rounds were not inferred`);
       } else if (inferred.length > 0) {
           const { history, added } = appendRounds(this._history, inferred, new Date().toISOString(),
-            { gapBefore: this._unverifiedGapPending });
+            { gapBefore: this._unverifiedGapPending, historyEpoch: this.historyEpoch });
         if (added.length > 0) {
           this._stageDirectRoundObservations(added, 'history_reconnect');
           this._history = history;
@@ -985,6 +1059,7 @@ class AviatorCollector {
 
     // ── Mutation loop ─────────────────────────────────────────────────────
     while (!this.signal?.aborted) {
+      await this._handleHistoryMaintenance();
       // Check watchdog alert inside the inner loop too
       if (this._watchdogReason) throw new Error(this._watchdogReason);
 
@@ -993,7 +1068,7 @@ class AviatorCollector {
         throw new Error('Frame detached');
       }
 
-      const event = await this.collector.waitForMutation(frame);
+      const event = await this.collector.waitForMutation(frame, 3000);
 
       if (this.signal?.aborted) break;
 
@@ -1017,6 +1092,13 @@ class AviatorCollector {
 
       if (event?.phaseOnly) {
         void this._publishGamePhase(event.gamePhase);
+        // Re-check the persisted session configuration on the detector's
+        // bounded phase event. A Rules Engine session can start after the
+        // shared page is ready; the synchronizer only reads and compares the
+        // operator-entered stake, and fails closed on pending/unknown bets.
+        if (this._page && !this._page.isClosed?.()) {
+          void this.betAmountSynchronizer.initialize(this._page, { signal: this.signal });
+        }
         continue;
       }
 
@@ -1042,7 +1124,7 @@ class AviatorCollector {
       // Save new rounds
       if (currSig !== this._lastSavedSig) {
         const { history, added } = appendRounds(this._history, inferred, event.timestamp || new Date().toISOString(),
-          { gapBefore: this._unverifiedGapPending });
+          { gapBefore: this._unverifiedGapPending, historyEpoch: this.historyEpoch });
         if (added.length > 0) {
           if (event.gamePhase && added.length) {
             const phaseSource = added.at(-1);
@@ -1055,7 +1137,10 @@ class AviatorCollector {
           this._stageDirectRoundObservations(added, 'live_history');
           this._history = history;
           this._lastSavedSig = currSig;
-          if (event.gamePhase) this.health.recordGamePhase(added.at(-1)?.game_phase, added.at(-1));
+          if (event.gamePhase) {
+            this.health.recordGamePhase(added.at(-1)?.game_phase, added.at(-1));
+            this.health.recordPanelObservations?.(added.at(-1)?.game_phase?.panel_observations, added.at(-1));
+          }
           this._unverifiedGapPending = false;
           log.info('Completed round durably observed; PostgreSQL persistence is running in the background', {
             count: added.length, backlog_size: this.directEventOutbox.stats().backlog_size,

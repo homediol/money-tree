@@ -57,7 +57,9 @@ def test_production_readiness_blocks_unverified_platform_execution():
 
     assert result["ready"] is False
     assert result["checks"]["platform_execution"] == "UNVERIFIED"
-    assert "platform acceptance, round and cashout controls are unverified" in result["reasons"]
+    assert "platform_capability_unverified:bet_submission" in result["reasons"]
+    assert "platform_capability_unverified:acceptance_receipt" in result["reasons"]
+    assert "platform_capability_unverified:settlement_receipt" in result["reasons"]
 
 
 def test_idle_readiness_uses_fresh_background_ui_balance(tmp_path):

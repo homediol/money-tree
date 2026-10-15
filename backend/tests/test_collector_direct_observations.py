@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.database.repository import Repository
-from main import _collector_target_identity, _validate_direct_collector_observations
+from main import (_collector_target_identity, _validate_collector_game_phase,
+                  _validate_direct_collector_observations)
 
 
 def _observation(round_id="direct-1", multiplier=2.35, observed_at="2026-10-06T17:00:00+00:00"):
@@ -108,6 +109,49 @@ def test_collector_event_payload_preserves_direct_identity_and_timing():
     assert payload[0]["round_id"] == "direct-1"
     assert payload[0]["platform_round_id"] == "winner-1"
     assert payload[0]["observed_at"] == "2026-10-06T17:00:00+00:00"
+
+
+def _game_phase(observed_at):
+    return {
+        "phase": "UNKNOWN",
+        "event_id": "phase-1",
+        "observed_at": observed_at,
+        "evidence": {"source": "AVIATOR_EXPLICIT_BETTING_PHASE_DOM",
+                     "explicit_window_state": "UNKNOWN"},
+        "panel_observations": [
+            {"panel_id": panel_id, "state": "BET_AVAILABLE", "observed_at": observed_at,
+             "frame_identity": "https://game.example/frame", "confidence": 0.98,
+             "displayed_stake": 100, "currency": "BIF"}
+            for panel_id in ("PANEL_1", "PANEL_2")
+        ],
+    }
+
+
+def test_stale_attached_panel_snapshot_does_not_block_durable_round_handoff():
+    stale_at = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    payload = _validate_direct_collector_observations({
+        "source": "WINNER_DIRECT_PAGE_HISTORY",
+        "rounds": [{**_observation(), "game_phase": _game_phase(stale_at)}],
+    })
+    assert payload[0]["round_id"] == "direct-1"
+    assert payload[0]["game_phase"] is None
+
+
+def test_stale_panel_snapshot_remains_rejected_on_live_phase_endpoint_validator():
+    stale_at = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    with pytest.raises(ValueError, match="panel observation is stale"):
+        _validate_collector_game_phase(_game_phase(stale_at), require_source=True)
+
+
+def test_fresh_attached_panel_snapshot_is_preserved_with_round_observation():
+    fresh_at = datetime.now(timezone.utc).isoformat()
+    payload = _validate_direct_collector_observations({
+        "source": "WINNER_DIRECT_PAGE_HISTORY",
+        "rounds": [{**_observation(), "observed_at": fresh_at,
+                    "game_phase": _game_phase(fresh_at)}],
+    })
+    assert payload[0]["game_phase"]["observed_at"] == fresh_at
+    assert len(payload[0]["game_phase"]["panel_observations"]) == 2
 
 
 def test_rule_target_identity_is_only_forwarded_with_explicit_collector_proof():

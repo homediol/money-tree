@@ -3,6 +3,7 @@ import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from app.rules_engine import (
     COMBINED_POLICY_ID,
     LEGACY_POLICY_ID,
     RESEARCH_RULES,
+    STATE_KEY,
     START_CHECK_POLICY_ID,
     RulesEngine,
     classify_outcome,
@@ -425,15 +427,125 @@ def test_shared_select_creates_one_durable_blocked_intent_per_target_and_panel(t
     assert len({(item["target_stream_id"], item["target_round_index"], item["panel"])
                 for item in intents}) == len(intents)
     assert all(item["cashout_target"] == 2.0 for item in intents)
-    assert all(item["execution_status"] == "BLOCKED_READ_ONLY" for item in intents)
-    assert all(item["expires_at"] is None for item in intents)
+    assert all(item["execution_status"] in {"BLOCKED_READ_ONLY", "EXPIRED"} for item in intents)
+    assert all(item["selected_panel"] is None and item["panel"] == -1 for item in intents)
+    expired = [item for item in intents if item["execution_status"] == "EXPIRED"]
+    assert expired
+    assert all(item["target_round_id"] and item["expires_at"] and
+               item["execution_eligibility"] == "EXPIRED" and
+               item["provider_target_round_id"] is None and
+               item["target_identity_status"] == "UNVERIFIED" and
+               "TARGET_ALREADY_COMPLETED" in item["blockers"] for item in expired)
+    assert all(item["expires_at"] is None for item in intents if item["execution_status"] != "EXPIRED")
     assert all("BETTING_DEADLINE_UNVERIFIED" in item["blockers"] for item in intents)
     assert all(item["selected_rule_ids"] for item in intents)
     original_ids = {item["intent_id"] for item in intents}
 
+
+    # Recreate the legacy state where a completed target has no persisted ID
+    # or expiry in its intent. A normal engine restart must repair both the
+    # in-memory selection and the durable row from its committed target event.
+    completed_selection = next(item for item in selections if item.get("actual_target"))
+    legacy_snapshot = deepcopy(engine._snapshot())
+    legacy_session = legacy_snapshot["sessions"][session["session_id"]]
+    legacy_selection = next(item for item in legacy_session["selections"]
+                            if item["selection_id"] == completed_selection["selection_id"])
+    legacy_intent = legacy_selection["execution_intent"]
+    legacy_intent.update({"target_round_id": None, "provider_target_round_id": None,
+                          "expires_at": None, "execution_status": "BLOCKED_READ_ONLY",
+                          "selected_panel": None, "panel": 0})
+    legacy_intent.pop("execution_eligibility", None)
+    legacy_intent.pop("target_completed_at", None)
+    legacy_intent.pop("target_identity_status", None)
+    legacy_intent["blockers"] = [value for value in legacy_intent.get("blockers", [])
+                                  if value != "TARGET_ALREADY_COMPLETED"]
+    serialized_intent = json.dumps(legacy_intent, sort_keys=True, separators=(",", ":"))
+    serialized_selection = json.dumps({**legacy_selection, "selection_kind": "SHARED"},
+                                      sort_keys=True, separators=(",", ":"))
+    with repository.connect() as conn:
+        conn.execute("UPDATE application_state SET payload=? WHERE state_key=?",
+                     (json.dumps(legacy_snapshot, sort_keys=True, separators=(",", ":")), STATE_KEY))
+        conn.execute("""UPDATE rule_execution_intents SET target_round_id=NULL,expires_at=NULL,
+            execution_status='BLOCKED_READ_ONLY',panel=0,payload=? WHERE decision_id=?""",
+                     (serialized_intent, completed_selection["selection_id"]))
+        conn.execute("UPDATE rule_selections SET payload=? WHERE selection_id=?",
+                     (serialized_selection, completed_selection["selection_id"]))
+
     restarted = RulesEngine(persistence=repository)
-    restarted._persist()
+    repaired_intent = repository.rule_execution_intent(completed_selection["selection_id"])
+    assert repaired_intent["execution_status"] == "EXPIRED"
+    assert repaired_intent["target_round_id"] == completed_selection["actual_target"]["roundId"]
+    assert repaired_intent["provider_target_round_id"] is None
+    assert repaired_intent["target_identity_status"] == "UNVERIFIED"
+    assert repaired_intent["expires_at"] == completed_selection["resolved_at"]
+    restarted_selection = next(item for item in restarted.session(session["session_id"])["selections"]
+                               if item["selection_id"] == completed_selection["selection_id"])
+    assert restarted_selection["execution_intent"]["execution_status"] == "EXPIRED"
+    assert restarted_selection["execution_intent"]["selected_panel"] is None
+    assert restarted_selection["execution_intent"]["panel"] == -1
     assert {item["intent_id"] for item in repository.list_rule_execution_intents(100)} == original_ids
+
+
+def test_selected_panel_intent_carries_read_only_state_timing_and_unverified_receipt(monkeypatch):
+    monkeypatch.setattr("app.rules_engine._current_runtime_panel_observation",
+        lambda panel, at: {"panel_id": f"PANEL_{panel + 1}", "state": "UNKNOWN",
+                           "observed_at": None, "pending_bet_state": "UNKNOWN"})
+    engine, session = new_session("ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"], options={
+        "fixed_stake_rwf": 100, "stake_currency": "RWF", "execution_panel": 0,
+        "ui_fixed_stake_bif": 200, "ui_stake_currency": "BIF",
+    })
+    selected = None
+    selected_event = None
+    for fixture_row in FIXTURE["rounds"]:
+        row = deepcopy(fixture_row)
+        observed_at = datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
+        deadline_at = (observed_at + timedelta(seconds=6)).isoformat()
+        panels = [
+            {"panel_id": "PANEL_1", "state": "BET_AVAILABLE", "button_text": "Bet 200 BIF",
+             "displayed_stake": 200, "currency": "BIF", "observed_at": row["observed_at"],
+             "source": "AVIATOR_BETTING_PANEL_MUTATION_OBSERVER", "confidence": 0.98,
+             "frame_identity": "https://aviator-next.spribegaming.com/", "pending_bet_state": "CLEAR",
+             "evidence": {"reason": "BET_ACTION_VISIBLE_ENABLED"}},
+            {"panel_id": "PANEL_2", "state": "BET_ACTIVE", "button_text": "Cash Out 121 BIF",
+             "displayed_stake": None, "cashout_amount": 121, "currency": "BIF",
+             "observed_at": row["observed_at"], "source": "AVIATOR_BETTING_PANEL_MUTATION_OBSERVER",
+             "confidence": 0.98, "frame_identity": "https://aviator-next.spribegaming.com/",
+             "pending_bet_state": "ACTIVE", "evidence": {"reason": "CASHOUT_ACTION_VISIBLE_ENABLED"}},
+        ]
+        row["game_phase"] = {"phase": "BETTING_OPEN", "observed_at": row["observed_at"],
+            "evidence": {"source": "AVIATOR_EXPLICIT_BETTING_PHASE_DOM",
+                "explicit_window_state": "BETTING_OPEN", "deadline_status": "VERIFIED",
+                "countdown_seconds": 6, "deadline_at": deadline_at},
+            "panel_observations": panels}
+        observed_event = observed(row)
+        committed_event = committed(row)
+        result = engine.observe_round(observed_event, now=row["receiver_received_at"])
+        result = engine.observe_round(committed_event, now=row["database_committed_at"])
+        session_result = next((item for item in result.get("sessions", [])
+                               if item["session_id"] == session["session_id"]), None)
+        if session_result and session_result.get("decision", {}).get("action") == "SELECT":
+            selected_event = committed_event
+            selected = next(item for item in engine.sessions[session["session_id"]]["selections"]
+                            if item["selection_id"] == session_result["decision"]["selection_id"])
+            break
+    assert selected is not None
+    intent = selected["execution_intent"]
+    assert intent["session_id"] == session["session_id"]
+    assert intent["decision_id"] == selected["selection_id"]
+    assert intent["source_round_id"] == selected["source_round"]["roundId"]
+    assert intent["target_round_id"] == selected["expected_target"]["roundId"]
+    assert (intent["selected_panel"], intent["stake"], intent["currency"]) == (0, 200, "BIF")
+    assert intent["panel_state_before"]["state"] == "BET_AVAILABLE"
+    assert intent["panel_state_after"]["state"] == "UNKNOWN"
+    assert intent["deadline_evidence"]["status"] == "VERIFIED"
+    assert intent["decision_latency_ms"] is not None
+    assert intent["platform_evidence"] is None
+    assert intent["platform_acceptance"] == "UNVERIFIED"
+    assert intent["settlement"] == "UNVERIFIED"
+    assert intent["execution_status"] == "BLOCKED_READ_ONLY"
+
+    engine.observe_round(selected_event, now=selected_event["database_committed_at"])
+    assert len(engine.sessions[session["session_id"]]["selections"]) == 1
 
 
 def test_five_independent_true_rules_share_one_select_and_one_intent(tmp_path):
@@ -459,9 +571,47 @@ def test_five_independent_true_rules_share_one_select_and_one_intent(tmp_path):
     assert intents[0]["decision_id"] == detail["selections"][0]["selection_id"]
     assert intents[0]["cashout_target"] == 2.0
     assert intents[0]["target_round_id"] is None
+    assert intents[0]["selected_panel"] == 0 and intents[0]["panel"] == 0
     assert intents[0]["execution_status"] == "BLOCKED_READ_ONLY"
     assert "TARGET_ROUND_ID_UNVERIFIED" in intents[0]["blockers"]
     assert output["sessions"][0]["decision"]["action"] == "SELECT"
+
+
+def test_unselected_panel_intent_does_not_collide_with_panel_zero(tmp_path):
+    repository = Repository(tmp_path / "missing-panel-intent.sqlite3")
+    repository.init()
+    rule_ids = [*RESEARCH_IDS, COMBINED_POLICY_ID]
+    no_panel, _ = new_session("ALL_RULES_TOGETHER", rule_ids,
+        options={"window_size": 50, "fixed_stake_rwf": 100}, persistence=repository)
+    panel_zero, _ = new_session("FIVE_RULE_TRACKER", RESEARCH_IDS,
+        options={"window_size": 50, "fixed_stake_rwf": 100, "execution_panel": 0},
+        persistence=repository)
+
+    for row in FIXTURE["rounds"][:3]:
+        feed(no_panel, row)
+        feed(panel_zero, row)
+
+    intents = repository.list_rule_execution_intents(100)
+    by_target = {}
+    for intent in intents:
+        by_target.setdefault((intent["target_stream_id"], intent["target_round_index"]), {})[
+            intent["selected_panel"]
+        ] = intent
+    assert any(None in values and 0 in values for values in by_target.values())
+    assert all(intent["selected_panel"] in {None, 0} for intent in intents)
+
+
+def test_rule_interface_reports_persistence_without_authorizing_live(tmp_path):
+    repository = Repository(tmp_path / "decision-interface.sqlite3")
+    repository.init()
+    engine = RulesEngine(persistence=repository)
+
+    interface = engine.decision_interface_status()
+
+    assert interface["available"] is True
+    assert interface["persistence"] == "DURABLE_REPOSITORY"
+    assert interface["live_authorized"] is False
+    assert engine.execution_authorized() is False
 
 
 def test_balance_change_and_realized_pl_require_platform_currency_and_reconciled_transactions(tmp_path):

@@ -7,12 +7,13 @@ import hmac
 import json
 import math
 import os
+import re
 import sqlite3
 import time
 import uuid
 from pathlib import Path
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,11 +38,13 @@ from app.services.betting_mode import BettingModeManager
 from app.shadow import ShadowManager
 from app.risk.engine import RiskManager
 from app.history_collector import HistoryCollectorManager
+from app.history_access import is_public_history_request
 from app.reconciliation import ReconciliationService
 from app.live import LiveActivationManager
 from app.services.operations import OperationsManager
 from app.services.disaster_recovery import DisasterRecoveryManager
 from app.services.process_lifecycle import ProcessLifecycle
+from app.services.rules_shadow_executor import execute_rules_selection_in_shadow
 from app.round_distribution import RoundDistributionHub
 from app.api.round_distribution import observed_round_event
 from app.round_observation_inbox import (
@@ -105,11 +108,34 @@ async def process_history_update(app: FastAPI):
                 stream_id, after_sequence, current_sequence, 500)
             latest_marker = await asyncio.to_thread(repository.latest_round_marker)
             for committed_event in events:
+                if hasattr(app.state, "shadow"):
+                    # Resolve only against the exact committed stream/index
+                    # target; the shadow bridge uses the same canonical key.
+                    await app.state.shadow.reconcile_round(committed_event)
                 target_already_completed = (str(committed_event.get("delivery_mode") or "LIVE").upper() == "RECOVERED"
                     or latest_marker is None
                     or int(latest_marker[0]) >= int(committed_event.get("round_index") or 0) + 1)
                 evaluation = await asyncio.to_thread(app.state.rules_engine.observe_round, committed_event,
                     target_already_completed=target_already_completed)
+                if not target_already_completed:
+                    for session_result in evaluation.get("sessions", []):
+                        decision = session_result.get("decision") or {}
+                        if decision.get("action") != "SELECT" or not decision.get("selection_id"):
+                            continue
+                        selection_id = str(decision["selection_id"])
+                        intent = await asyncio.to_thread(repository.rule_execution_intent, selection_id)
+                        if not intent:
+                            continue
+                        shadow_result = await execute_rules_selection_in_shadow(
+                            app, selection_id, intent)
+                        await manager.broadcast({
+                            "type": "rules-engine:shadow-execution",
+                            "decision_id": selection_id,
+                            "session_id": intent.get("session_id"),
+                            "source_round_id": intent.get("source_round_id"),
+                            "target_round_id": shadow_result.get("target_round_id"),
+                            "execution": shadow_result,
+                        })
         if evaluation is None:
             evaluation = app.state.rules_engine.status()
         await manager.broadcast({"type": "rules-engine:evaluated", "evaluation": evaluation})
@@ -360,6 +386,7 @@ def _collector_runtime_status() -> dict:
 async def monitor_health(app: FastAPI):
     while True:
         try:
+            update_rules_engine_health(app)
             await app.state.system_health.enforce_safety()
             modes = getattr(app.state, "betting_mode", None)
             if modes is not None:
@@ -374,6 +401,52 @@ async def monitor_health(app: FastAPI):
         except Exception:
             log.exception("system health monitor cycle failed; retrying")
             await asyncio.sleep(2)
+
+
+def update_rules_engine_health(app: FastAPI) -> dict:
+    """Report rule definitions, session lifecycle, and execution independently."""
+    health = getattr(app.state, "system_health", None)
+    engine = getattr(app.state, "rules_engine", None)
+    if health is None or engine is None:
+        return {"status": "UNAVAILABLE"}
+    status = engine.status()
+    configured = int(status.get("rules_configured") or 0)
+    enabled = int(status.get("rules_enabled") or 0)
+    mode_manager = getattr(app.state, "betting_mode", None)
+    shadow = getattr(app.state, "shadow", None)
+    mode = getattr(mode_manager, "mode", "UNKNOWN")
+    shadow_running = bool(mode_manager and getattr(mode_manager, "shadow_ready", False)
+                          and shadow and getattr(shadow, "mode", None) == "SHADOW")
+    live_authorized = bool(mode_manager and getattr(mode_manager, "live_authorized", False)
+                           and mode == "LIVE_REAL")
+    metadata = {
+        "rules_configured": configured,
+        "rules_enabled": enabled,
+        "rules_definition_state": "CONFIGURED" if configured else "NOT_CONFIGURED",
+        "rules_enabled_state": "ENABLED" if enabled else "NONE_ENABLED",
+        "active_session_status": status.get("active_session_status", "NONE"),
+        "latest_session_status": status.get("latest_session_status", "NONE"),
+        "execution_mode": mode,
+        "execution_enabled": shadow_running or live_authorized,
+        "execution_kind": "SHADOW_REALISTIC" if shadow_running else
+            "LIVE_REAL" if live_authorized else "DISABLED",
+        "shadow_executor_running": shadow_running,
+        "live_execution_authorized": live_authorized,
+        "automatic_execution": "OFF",
+    }
+    if not configured:
+        health.heartbeat("rules_engine", ok=False,
+            error="No Rules Engine definitions are configured", metadata=metadata,
+            stale_after_s=10)
+    elif not enabled:
+        health.heartbeat("rules_engine", ok=False,
+            error="Rules are configured but none are enabled", metadata=metadata,
+            stale_after_s=10, waiting=True)
+    else:
+        # No active session is a valid configured state; it only means that
+        # prospective evaluation has not been started yet.
+        health.heartbeat("rules_engine", ok=True, metadata=metadata, stale_after_s=10)
+    return metadata
 
 
 
@@ -546,8 +619,7 @@ async def lifespan(app: FastAPI):
         app.state.betting_mode = BettingModeManager(app)
         betting.execution_gate = app.state.betting_mode.final_execution_gate
         betting.execution_failure_handler = app.state.betting_mode.handle_execution_failure
-        app.state.system_health.heartbeat("rules_engine", ok=False,
-            error="Rules Engine is not configured", metadata=app.state.rules_engine.status())
+        update_rules_engine_health(app)
         for component in ("risk", "executor", "reconciliation", "api"):
             app.state.system_health.heartbeat(component, ok=True,
                 metadata={"initialized": True}, stale_after_s=3600)
@@ -653,8 +725,9 @@ async def require_api_key(request: Request, call_next):
         "/api/v1/rounds/pending",
         "/api/v1/collector/status",
     }
+    public_history = is_public_history_request(request.method, request.url.path)
     if (settings.api_key and request.url.path.startswith("/api/")
-            and not (settings.public_access or public_read or external_round_read)):
+            and not (settings.public_access or public_read or external_round_read or public_history)):
         supplied = request.headers.get("authorization", "")
         expected = f"Bearer {settings.api_key}"
         if not hmac.compare_digest(supplied, expected):
@@ -678,7 +751,8 @@ def _utc_timestamp(value: object) -> datetime | None:
         return None
 
 
-def _validate_collector_game_phase(raw: dict, *, require_source: bool = False) -> dict:
+def _validate_collector_game_phase(raw: dict, *, require_source: bool = False,
+                                   allow_stale_panels: bool = False) -> dict:
     if not isinstance(raw, dict):
         raise ValueError("game phase evidence must be an object")
     phase = str(raw.get("phase") or "").upper()
@@ -697,38 +771,95 @@ def _validate_collector_game_phase(raw: dict, *, require_source: bool = False) -
     evidence = raw.get("evidence")
     if not isinstance(evidence, dict):
         raise ValueError("game phase evidence details are missing")
+    explicit_window_state = str(evidence.get("explicit_window_state") or "UNKNOWN").upper()
+    phase_source = str(evidence.get("source") or "")[:80]
+    phase_text = str(evidence.get("text") or "")[:240]
+    if phase_source != "AVIATOR_EXPLICIT_BETTING_PHASE_DOM":
+        raise ValueError("game phase must come from explicit visible Aviator phase text")
+    if phase != "UNKNOWN" and not (
+        evidence.get("phase_indicator_visible") is True
+        and explicit_window_state == phase
+        and bool(phase_text.strip())
+    ):
+        raise ValueError("betting window status requires an explicit matching visible phase indicator")
+    panel_rows = raw.get("panel_observations")
+    if not isinstance(panel_rows, list) or len(panel_rows) != 2:
+        raise ValueError("both independently identified panel observations are required")
+    normalized_panels = []
+    seen_panels = set()
+    for row in panel_rows:
+        if not isinstance(row, dict):
+            raise ValueError("panel observations must be objects")
+        panel_id = str(row.get("panel_id") or "")
+        state = str(row.get("state") or "").upper()
+        if panel_id not in {"PANEL_1", "PANEL_2"} or panel_id in seen_panels:
+            raise ValueError("panel observations require one unique row for each panel")
+        if state not in {"BET_AVAILABLE", "BET_QUEUED", "BET_ACTIVE", "BET_RESET", "UNKNOWN"}:
+            raise ValueError("panel observation state is invalid")
+        seen_panels.add(panel_id)
+        panel_time = _utc_timestamp(row.get("observed_at"))
+        if panel_time is None:
+            raise ValueError("panel observation timestamp must be timezone aware")
+        panel_age = (datetime.now(timezone.utc) - panel_time).total_seconds()
+        if panel_age < -30 or (panel_age > 30 and not allow_stale_panels):
+            raise ValueError("panel observation is stale or from the future")
+        frame_identity = str(row.get("frame_identity") or "")[:180]
+        if not frame_identity.startswith("https://"):
+            raise ValueError("panel observation frame identity is missing")
+        confidence = row.get("confidence")
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            raise ValueError("panel observation confidence must be between zero and one")
+        amount = row.get("displayed_stake")
+        cashout_amount = row.get("cashout_amount")
+        if amount is not None and (isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount < 0):
+            raise ValueError("panel stake must be a nonnegative numeric value or null")
+        if cashout_amount is not None and (isinstance(cashout_amount, bool) or not isinstance(cashout_amount, (int, float)) or cashout_amount < 0):
+            raise ValueError("panel cashout amount must be a nonnegative numeric value or null")
+        currency = row.get("currency")
+        if currency is not None and (not isinstance(currency, str) or not re.fullmatch(r"[A-Z]{3}", currency)):
+            raise ValueError("panel currency must be an uppercase three-letter code or null")
+        normalized_panels.append({
+            "panel_id": panel_id, "state": state,
+            "button_text": str(row.get("button_text") or "")[:240] or None,
+            "displayed_stake": amount, "currency": currency,
+            "cashout_amount": cashout_amount,
+            "observed_at": panel_time.astimezone(timezone.utc).isoformat(),
+            "source": str(row.get("source") or "")[:80],
+            "confidence": float(confidence), "frame_identity": frame_identity,
+            "pending_bet_state": str(row.get("pending_bet_state") or "UNKNOWN")[:16],
+            "evidence": row.get("evidence") if isinstance(row.get("evidence"), dict) else {},
+            "transition": row.get("transition") if isinstance(row.get("transition"), dict) else {},
+        })
+    if seen_panels != {"PANEL_1", "PANEL_2"}:
+        raise ValueError("both Panel 1 and Panel 2 observations are required")
+    countdown_seconds = evidence.get("countdown_seconds")
+    deadline_at = _utc_timestamp(evidence.get("deadline_at"))
+    deadline_status = "UNKNOWN"
+    if countdown_seconds is not None:
+        if (isinstance(countdown_seconds, bool) or not isinstance(countdown_seconds, (int, float))
+                or not math.isfinite(float(countdown_seconds)) or not 0 <= float(countdown_seconds) <= 300):
+            raise ValueError("betting countdown must be a finite value between zero and 300 seconds")
+        if not re.search(r"\b(?:betting|bets?)(?:\s+window)?\s+(?:closes|ends)\s+in\s+\d+(?:\.\d+)?\s*(?:s|sec|seconds?)\b", phase_text, re.IGNORECASE):
+            raise ValueError("betting countdown requires matching visible phase text")
+        if deadline_at is None:
+            raise ValueError("betting countdown requires a timezone-aware target deadline")
+        expected_deadline = observed_time.astimezone(timezone.utc) + timedelta(seconds=float(countdown_seconds))
+        if abs((deadline_at - expected_deadline).total_seconds()) > 2:
+            raise ValueError("betting deadline does not match the observed countdown")
+        deadline_status = "VERIFIED"
     evidence_fields = {
-        "source": str(evidence.get("source") or "")[:80],
+        "source": phase_source,
         "selector": str(evidence.get("selector") or "")[:120],
-        "button_visible": evidence.get("button_visible") is True,
-        "button_enabled": evidence.get("button_enabled") is True,
-        "stake_input_visible": evidence.get("stake_input_visible") is True,
-        "bet_tab_active": evidence.get("bet_tab_active") is True,
-        "button_text": str(evidence.get("button_text") or "")[:40],
-        "button_class": str(evidence.get("button_class") or "")[:160],
+        "phase_indicator_visible": evidence.get("phase_indicator_visible") is True,
+        "explicit_window_state": explicit_window_state,
+        "text": phase_text,
+        "countdown_seconds": float(countdown_seconds) if deadline_status == "VERIFIED" else None,
+        "deadline_at": deadline_at.isoformat() if deadline_status == "VERIFIED" else None,
+        "deadline_status": deadline_status,
     }
-    if phase == "BETTING_OPEN" and not (
-        evidence_fields["button_visible"] and evidence_fields["button_enabled"]
-        and evidence_fields["stake_input_visible"] and evidence_fields["bet_tab_active"]
-    ):
-        raise ValueError("BETTING_OPEN requires a visible enabled game button and active betting controls")
-    if phase == "BETTING_CLOSED" and not (
-        evidence.get("source") == "AVIATOR_BETTING_PANEL_READ_ONLY"
-        and evidence.get("selector") == ".bet-block .btn-success.bet"
-        and evidence.get("button_visible") is True
-        and evidence.get("button_enabled") is False
-        and evidence.get("stake_input_visible") is True
-        and evidence.get("bet_tab_active") is True
-    ):
-        raise ValueError("BETTING_CLOSED requires a visible disabled game button and active betting controls")
-    if phase == "BETTING_OPEN" and not (
-        evidence.get("source") == "AVIATOR_BETTING_PANEL_READ_ONLY"
-        and evidence.get("selector") == ".bet-block .btn-success.bet"
-    ):
-        raise ValueError("BETTING_OPEN requires the owned Aviator betting-panel selector")
     result = {"event_id": event_id, "phase": phase,
               "observed_at": observed_time.astimezone(timezone.utc).isoformat(),
-              "evidence": evidence_fields}
+              "evidence": evidence_fields, "panel_observations": normalized_panels}
     if require_source:
         source_id = str(raw.get("source_round_id") or "").strip()
         if not source_id or len(source_id) > 256:
@@ -833,7 +964,17 @@ def _validate_direct_collector_observations(body: dict) -> list[dict]:
             platform_timestamp = parsed_platform_timestamp.isoformat()
         game_phase = raw.get("game_phase")
         if game_phase is not None:
-            game_phase = _validate_collector_game_phase(game_phase)
+            # A durable round retry can arrive after its attached UI snapshot
+            # has aged out. Keep round delivery independent of that side
+            # evidence, and never expose stale panel/window state as current.
+            game_phase = _validate_collector_game_phase(game_phase, allow_stale_panels=True)
+            now = datetime.now(timezone.utc)
+            phase_time = _utc_timestamp(game_phase.get("observed_at"))
+            stale_phase = (phase_time is None or (now - phase_time).total_seconds() > 30
+                           or any((now - _utc_timestamp(panel["observed_at"])).total_seconds() > 30
+                                  for panel in game_phase["panel_observations"]))
+            if stale_phase:
+                game_phase = None
         delivery_mode = str(raw.get("delivery_mode") or "LIVE").upper()
         if delivery_mode not in {"LIVE", "RECOVERED"}:
             raise ValueError("delivery_mode must be LIVE or RECOVERED")

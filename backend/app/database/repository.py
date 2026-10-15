@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS rounds (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id TEXT,
   round_index INTEGER UNIQUE NOT NULL,
+  history_epoch BIGINT NOT NULL DEFAULT 1,
   multiplier REAL NOT NULL,
   timestamp TEXT,
   target INTEGER NOT NULL
@@ -174,6 +175,27 @@ CREATE TABLE IF NOT EXISTS application_state (
   state_key TEXT PRIMARY KEY,
   payload TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS history_epochs (
+  singleton SMALLINT PRIMARY KEY CHECK(singleton=1),
+  epoch BIGINT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS history_export_manifests (
+  export_id TEXT PRIMARY KEY,
+  format TEXT NOT NULL,
+  history_epoch BIGINT NOT NULL,
+  record_count BIGINT NOT NULL,
+  first_round TEXT,
+  last_round TEXT,
+  schema_version TEXT NOT NULL,
+  checksum_sha256 TEXT NOT NULL,
+  snapshot_id TEXT,
+  artifact_path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  verified_at TEXT,
+  verification_json TEXT,
+  status TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS rule_sessions (
   session_id TEXT PRIMARY KEY,
@@ -430,6 +452,8 @@ class Repository:
                 conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS continuity_verified BOOLEAN NOT NULL DEFAULT FALSE")
                 conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS gap_before BOOLEAN NOT NULL DEFAULT FALSE")
                 conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS continuity_proof TEXT")
+                conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS history_epoch BIGINT NOT NULL DEFAULT 1")
+                conn.execute("INSERT INTO history_epochs(singleton,epoch,updated_at) VALUES(1,1,NOW()) ON CONFLICT(singleton) DO NOTHING")
                 conn.execute("UPDATE aviator_rounds SET stored_at=COALESCE(stored_at,created_at)")
                 conn.execute("UPDATE aviator_rounds SET local_round_index=COALESCE(local_round_index,round_index)")
                 conn.execute("UPDATE aviator_rounds SET observed_at=COALESCE(observed_at,timestamp) WHERE round_id ~ '^aviator-[0-9a-f]{24}$'")
@@ -471,6 +495,7 @@ class Repository:
                 )""")
                 conn.execute("CREATE INDEX IF NOT EXISTS external_project_tokens_project_idx ON external_project_tokens(project_id,created_at)")
                 conn.execute("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS round_id TEXT")
+                conn.execute("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS history_epoch BIGINT NOT NULL DEFAULT 1")
                 conn.execute("UPDATE rounds SET round_id = round_index::text WHERE round_id IS NULL")
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS rounds_round_id_idx ON rounds(round_id)")
                 conn.execute("ALTER TABLE shadow_trades ADD COLUMN IF NOT EXISTS panel INTEGER NOT NULL DEFAULT 1")
@@ -484,9 +509,12 @@ class Repository:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(SCHEMA)
+            conn.execute("INSERT OR IGNORE INTO history_epochs(singleton,epoch,updated_at) VALUES(1,1,CURRENT_TIMESTAMP)")
             columns = {row[1] for row in conn.execute("PRAGMA table_info(rounds)").fetchall()}
             if "round_id" not in columns:
                 conn.execute("ALTER TABLE rounds ADD COLUMN round_id TEXT")
+            if "history_epoch" not in columns:
+                conn.execute("ALTER TABLE rounds ADD COLUMN history_epoch BIGINT NOT NULL DEFAULT 1")
             conn.execute("UPDATE rounds SET round_id = CAST(round_index AS TEXT) WHERE round_id IS NULL")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS rounds_round_id_idx ON rounds(round_id)")
             shadow_columns = {row[1] for row in conn.execute("PRAGMA table_info(shadow_trades)").fetchall()}
@@ -540,12 +568,16 @@ class Repository:
             return
         rows = [{**row, "round_id": str(row.get("round_id") or row["round_index"])} for row in rows]
         with self.connect() as conn:
+            epoch_row = conn.execute("SELECT epoch FROM history_epochs WHERE singleton=1").fetchone()
+            epoch = max(1, int(epoch_row["epoch"] or 1)) if epoch_row else 1
+            rows = [{**row, "history_epoch": epoch} for row in rows]
             conn.executemany(
                 """
-                INSERT INTO rounds(round_id, round_index, multiplier, timestamp, target)
-                VALUES(:round_id, :round_index, :multiplier, :timestamp, :target)
+                INSERT INTO rounds(round_id, round_index, history_epoch, multiplier, timestamp, target)
+                VALUES(:round_id, :round_index, :history_epoch, :multiplier, :timestamp, :target)
                 ON CONFLICT(round_id) DO UPDATE SET
                   round_index=excluded.round_index,
+                  history_epoch=excluded.history_epoch,
                   multiplier=excluded.multiplier,
                   timestamp=excluded.timestamp,
                   target=excluded.target
@@ -622,6 +654,15 @@ class Repository:
             "latest": as_round(ordered[-1]) if ordered else None,
             "previous": as_round(ordered[-2]) if len(ordered) > 1 else None,
         }
+
+    def current_history_epoch(self) -> int:
+        """Return the authoritative history generation, defaulting to epoch 1."""
+        with self.connect() as conn:
+            try:
+                row = conn.execute("SELECT epoch FROM history_epochs WHERE singleton=1").fetchone()
+            except Exception:
+                return 1
+        return max(1, int(row["epoch"] or 1)) if row else 1
 
     def load_rounds_from(self, round_index: int) -> list[dict[str, Any]]:
         """Load a live history tail, including an overlap for identity rechecks."""
@@ -1550,10 +1591,17 @@ class Repository:
                             intent = dict(selection.get("execution_intent") or {})
                             intent.update({
                                 "decision_id": selection_id,
+                                "decision_timestamp": intent.get("decision_timestamp")
+                                    or selection.get("selected_at") or updated_at,
                                 "source_round_id": source.get("roundId"),
                                 "target_round_id": actual_target.get("roundId") or intent.get("target_round_id"),
+                                "provider_target_round_id": actual_target.get("providerRoundId")
+                                    or intent.get("provider_target_round_id"),
                                 "target_stream_id": target_stream,
                                 "target_round_index": target_index,
+                                "target_round_ref": actual_target or expected,
+                                "target_identity_status": "VERIFIED" if actual_target.get("providerRoundId")
+                                    else intent.get("target_identity_status", "UNVERIFIED"),
                                 "selected_rule_ids": selection.get("contributing_rule_ids")
                                     or ([selection.get("rule_id")] if selection.get("rule_id") else []),
                                 "requested_stake": intent.get("requested_stake", config.get("requested_stake",
@@ -1563,11 +1611,32 @@ class Repository:
                                 "cashout_target": 2.0,
                                 "created_at": intent.get("created_at") or selection.get("selected_at") or updated_at,
                                 "expires_at": selection.get("expires_at") or intent.get("expires_at")
-                                    or expected.get("expiresAt"),
+                                    or expected.get("expiresAt") or selection.get("resolved_at"),
                                 "session_id": str(session_id),
-                                "panel": int(intent.get("panel") or 0),
-                                "execution_status": "BLOCKED_READ_ONLY",
+                                "selected_panel": (intent.get("selected_panel")
+                                    if type(intent.get("selected_panel")) is int
+                                    and intent.get("selected_panel") in {0, 1} else None),
+                                "panel": int(intent.get("selected_panel")
+                                    if type(intent.get("selected_panel")) is int
+                                    and intent.get("selected_panel") in {0, 1}
+                                    else intent.get("panel", -1)),
+                                "execution_status": intent.get("execution_status") or "BLOCKED_READ_ONLY",
                             })
+                            intent.setdefault("decision_id", selection_id)
+                            intent.setdefault("session_id", str(session_id))
+                            intent.setdefault("selected_rule_ids", selection.get("contributing_rule_ids") or [])
+                            if actual_target.get("roundId") and selection.get("resolved_at"):
+                                intent["target_completed_at"] = selection.get("resolved_at")
+                                intent["execution_eligibility"] = "EXPIRED"
+                                if intent.get("execution_status") not in {
+                                    "ACCEPTED", "PENDING", "UNKNOWN", "RECONCILIATION_REQUIRED",
+                                }:
+                                    intent["execution_status"] = "EXPIRED"
+                                    blockers = list(intent.get("blockers") or [])
+                                    if "TARGET_ALREADY_COMPLETED" not in blockers:
+                                        blockers.append("TARGET_ALREADY_COMPLETED")
+                                    intent["blockers"] = blockers
+                            selection["execution_intent"] = intent
                             if not intent.get("intent_id"):
                                 intent["intent_id"] = hashlib.sha256(
                                     f"{target_stream}\0{target_index}\0{intent['panel']}".encode("utf-8")
@@ -1601,9 +1670,15 @@ class Repository:
                             # never replace another session's target reservation.
                             conn.execute("""UPDATE rule_execution_intents SET
                                 target_round_id=COALESCE(?,target_round_id),
-                                expires_at=COALESCE(?,expires_at),payload=?
+                                expires_at=COALESCE(?,expires_at),
+                                panel=?,
+                                execution_status=CASE
+                                  WHEN execution_status IN ('ACCEPTED','PENDING','UNKNOWN','RECONCILIATION_REQUIRED')
+                                    THEN execution_status ELSE ? END,
+                                payload=?
                                 WHERE intent_id=?""",
-                                (intent.get("target_round_id"), intent.get("expires_at"), intent_json,
+                                (intent.get("target_round_id"), intent.get("expires_at"),
+                                 intent["panel"], intent["execution_status"], intent_json,
                                  intent["intent_id"]))
 
                 reason = session.get("selection_stop_reason") or session.get("stop_reason")
@@ -1776,6 +1851,29 @@ class Repository:
             row = conn.execute("SELECT payload FROM rule_execution_intents WHERE decision_id=?",
                                (str(decision_id),)).fetchone()
         return json.loads(row["payload"]) if row else None
+
+    def record_rule_shadow_execution(self, decision_id: str,
+                                     observation: dict[str, Any]) -> dict[str, Any] | None:
+        """Persist paper-executor state without changing LIVE execution status."""
+        if not isinstance(observation, dict):
+            return None
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM rule_execution_intents WHERE decision_id=?",
+                               (str(decision_id),)).fetchone()
+            if not row:
+                return None
+            intent = json.loads(row["payload"])
+            previous = intent.get("shadow_execution")
+            previous = previous if isinstance(previous, dict) else {}
+            merged = {**previous, **observation}
+            trade_ids = list(dict.fromkeys(
+                [*(previous.get("trade_ids") or []), *(observation.get("trade_ids") or [])]))
+            if trade_ids:
+                merged["trade_ids"] = trade_ids
+            intent["shadow_execution"] = merged
+            conn.execute("UPDATE rule_execution_intents SET payload=? WHERE decision_id=?",
+                         (json.dumps(intent, sort_keys=True, separators=(",", ":")), str(decision_id)))
+            return intent
 
     def _rule_intent_matches_canonical_target(self, intent: dict[str, Any],
                                               target_round_id: str) -> bool:

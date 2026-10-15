@@ -10,7 +10,9 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import json
 import hashlib
+import math
 import re
+from pathlib import Path
 from threading import RLock
 from typing import Any, Mapping
 from uuid import uuid4
@@ -206,11 +208,17 @@ def _identity(event: Mapping[str, Any], *, require_sequence: bool = True) -> dic
         "durability": event.get("durability"), "event_type": event.get("event_type"),
         "observed_at": event.get("observed_at"),
         "stored_at": event.get("stored_at") or event.get("commit_acknowledged_at"),
+        "game_phase": deepcopy(event.get("game_phase")) if isinstance(event.get("game_phase"), Mapping) else None,
+        "panel_observations": deepcopy(event.get("panel_observations"))
+            if isinstance(event.get("panel_observations"), list)
+            else deepcopy((event.get("game_phase") or {}).get("panel_observations", []))
+            if isinstance(event.get("game_phase"), Mapping) else [],
     }
 
 
 def _reference(row: Mapping[str, Any]) -> dict[str, Any]:
     return {"streamId": row["stream_id"], "roundId": row["round_id"],
+            "providerRoundId": row.get("platform_round_id"),
             "observationId": row["observation_id"], "roundIndex": row["round_index"],
             "multiplier": row["multiplier"], "outcome": row["outcome"]}
 
@@ -219,6 +227,102 @@ def _expected(row: Mapping[str, Any]) -> dict[str, Any]:
     return {"streamId": row["stream_id"], "roundId": None, "observationId": None,
             "roundIndex": row["round_index"] + 1,
             "expectedImmediateSuccessorOf": _reference(row)}
+
+
+def _normalize_intent_panel_observation(raw: Mapping[str, Any] | None, panel: int,
+                                        at: str, *, source: str) -> dict[str, Any]:
+    row = raw if isinstance(raw, Mapping) else {}
+    observed_at = row.get("observed_at")
+    stamp = _parse_time(observed_at) if isinstance(observed_at, str) else None
+    reference = _parse_time(at)
+    age = None
+    if stamp and reference and stamp.tzinfo and reference.tzinfo:
+        age = (reference.astimezone(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds()
+    state = str(row.get("state") or "UNKNOWN").upper()
+    reason = None
+    if row.get("panel_id") != f"PANEL_{panel + 1}":
+        state, reason = "UNKNOWN", "PANEL_IDENTITY_MISMATCH"
+    elif not row.get("frame_identity"):
+        state, reason = "UNKNOWN", "FRAME_IDENTITY_UNAVAILABLE"
+    elif age is None or age < -30 or age > 15:
+        state, reason = "UNKNOWN", "STALE_PANEL_OBSERVATION"
+    elif state not in {"BET_AVAILABLE", "BET_QUEUED", "BET_ACTIVE", "BET_RESET", "UNKNOWN"}:
+        state, reason = "UNKNOWN", "INVALID_PANEL_STATE"
+    evidence = dict(row.get("evidence") or {}) if isinstance(row.get("evidence"), Mapping) else {}
+    if reason:
+        evidence["reason"] = reason
+    return {
+        "panel_id": f"PANEL_{panel + 1}", "state": state,
+        "button_text": str(row.get("button_text") or "")[:240] or None,
+        "displayed_stake": row.get("displayed_stake") if state in {"BET_AVAILABLE", "BET_RESET"} else None,
+        "currency": row.get("currency"),
+        "cashout_amount": row.get("cashout_amount") if state == "BET_ACTIVE" else None,
+        "observed_at": observed_at, "source": str(row.get("source") or source)[:80],
+        "evidence": evidence,
+        "confidence": float(row.get("confidence") or 0.0) if state != "UNKNOWN" else 0.0,
+        "frame_identity": str(row.get("frame_identity") or "")[:180] or None,
+        "pending_bet_state": str(row.get("pending_bet_state") or "UNKNOWN"),
+        "transition": deepcopy(row.get("transition"))
+            if isinstance(row.get("transition"), Mapping) else {},
+        "transition_timestamp": row.get("transition_timestamp"),
+    }
+
+
+def _panel_observation_from_rows(rows: Any, panel: int, at: str, *, source: str) -> dict[str, Any]:
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, Mapping) and row.get("panel_id") == f"PANEL_{panel + 1}":
+                return _normalize_intent_panel_observation(row, panel, at, source=source)
+    return _normalize_intent_panel_observation(None, panel, at, source=source)
+
+
+def _current_runtime_panel_observation(panel: int, at: str) -> dict[str, Any]:
+    status_path = Path(__file__).resolve().parents[2] / "data" / "bot" / "status.json"
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        rows = status.get("panelObservations") if isinstance(status, dict) else None
+    except (OSError, json.JSONDecodeError):
+        rows = None
+    return _panel_observation_from_rows(rows, panel, at, source="COLLECTOR_PANEL_STATE_OBSERVER")
+
+
+def _target_deadline_evidence(row: Mapping[str, Any], at: str) -> dict[str, Any]:
+    phase = row.get("game_phase") if isinstance(row.get("game_phase"), Mapping) else {}
+    evidence = phase.get("evidence") if isinstance(phase.get("evidence"), Mapping) else {}
+    phase_time = _parse_time(str(phase.get("observed_at") or ""))
+    reference = _parse_time(at)
+    deadline = _parse_time(str(evidence.get("deadline_at") or ""))
+    seconds = evidence.get("countdown_seconds")
+    if (str(phase.get("phase") or "").upper() != "BETTING_OPEN"
+            or evidence.get("deadline_status") not in {"VERIFIED", None}
+            or not isinstance(seconds, (int, float)) or isinstance(seconds, bool)
+            or not phase_time or not reference or not deadline
+            or not phase_time.tzinfo or not reference.tzinfo or not deadline.tzinfo):
+        return {"status": "UNKNOWN", "deadline_at": None,
+                "reason": "DIRECT_BETTING_DEADLINE_EVIDENCE_UNAVAILABLE"}
+    age = (reference.astimezone(timezone.utc) - phase_time.astimezone(timezone.utc)).total_seconds()
+    remaining = (deadline.astimezone(timezone.utc) - reference.astimezone(timezone.utc)).total_seconds()
+    if age < -30 or age > 15:
+        return {"status": "UNKNOWN", "deadline_at": None,
+                "reason": "BETTING_DEADLINE_OBSERVATION_STALE"}
+    return {"status": "EXPIRED" if remaining < 0 else "VERIFIED",
+            "deadline_at": deadline.astimezone(timezone.utc).isoformat(),
+            "remaining_seconds": round(max(0.0, remaining), 3),
+            "observed_at": phase_time.astimezone(timezone.utc).isoformat(),
+            "source": "AVIATOR_EXPLICIT_BETTING_PHASE_DOM"}
+
+
+def _elapsed_ms(start: Any, end: Any) -> float | None:
+    start_time = _parse_time(str(start or ""))
+    end_time = _parse_time(str(end or ""))
+    if not start_time or not end_time or not start_time.tzinfo or not end_time.tzinfo:
+        return None
+    latency = (end_time.astimezone(timezone.utc) - start_time.astimezone(timezone.utc)).total_seconds() * 1000
+    return round(latency, 3) if latency >= 0 else None
+
+
+def _decision_latency_ms(row: Mapping[str, Any], at: str) -> float | None:
+    return _elapsed_ms(row.get("observed_at"), at)
 
 
 def _fresh_engine(rule_id: str) -> dict[str, Any]:
@@ -285,11 +389,94 @@ class RulesEngine:
         self.presets: dict[str, dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
         self.evaluation_count = 0
+        self.history_epoch = 1
         if persistence is not None:
             saved = persistence.load_application_state(STATE_KEY)
             if isinstance(saved, dict) and saved.get("engine_version") == ENGINE_VERSION:
                 self._restore(saved)
+                if self._repair_restored_completed_selection_intents():
+                    self._persist()
             self.recover_financial_state()
+            epoch_reader = getattr(persistence, "current_history_epoch", None)
+            if callable(epoch_reader):
+                try:
+                    current_epoch = max(1, int(epoch_reader()))
+                    if current_epoch != self.history_epoch:
+                        self.reset_history_epoch(current_epoch)
+                except Exception:
+                    # Fail closed: do not guess an epoch when the database is
+                    # temporarily unavailable during startup recovery.
+                    pass
+
+    def _repair_restored_completed_selection_intents(self) -> bool:
+        """Upgrade legacy durable intents from their committed session evidence.
+
+        Older snapshots could record a resolved selection while leaving its
+        execution intent targetless and BLOCKED_READ_ONLY. On restart, preserve
+        the canonical target linkage and expire that intent. A provider ID is
+        copied only when the collector actually supplied one.
+        """
+        changed = False
+        protected_states = {"ACCEPTED", "PENDING", "UNKNOWN", "RECONCILIATION_REQUIRED"}
+        for session in self.sessions.values():
+            config = session.get("configuration_snapshot") or {}
+            for selection in session.get("selections") or []:
+                actual = selection.get("actual_target")
+                expected = selection.get("expected_target") or {}
+                if (not isinstance(actual, dict) or selection.get("status") not in {"WIN", "LOSS"}
+                        or selection.get("target_persistence_status") != "COMMITTED"
+                        or not actual.get("roundId")
+                        or actual.get("streamId") != expected.get("streamId")
+                        or actual.get("roundIndex") != expected.get("roundIndex")):
+                    continue
+                intent = selection.get("execution_intent")
+                if not isinstance(intent, dict):
+                    continue
+                selected_panel = intent.get("selected_panel")
+                if type(selected_panel) is not int or selected_panel not in {0, 1}:
+                    configured_panel = config.get("execution_panel")
+                    selected_panel = (configured_panel if type(configured_panel) is int
+                                      and configured_panel in {0, 1} else None)
+                completed_at = selection.get("resolved_at")
+                new_values = {
+                    "decision_id": selection.get("selection_id"),
+                    "decision_timestamp": intent.get("decision_timestamp") or selection.get("selected_at"),
+                    "source_round_id": (selection.get("source_round") or {}).get("roundId"),
+                    "target_round_id": actual.get("roundId"),
+                    "provider_target_round_id": actual.get("providerRoundId"),
+                    "target_stream_id": expected.get("streamId"),
+                    "target_round_index": expected.get("roundIndex"),
+                    "target_round_ref": deepcopy(actual),
+                    "target_identity_status": ("VERIFIED" if actual.get("providerRoundId")
+                                               else "UNVERIFIED"),
+                    "selected_rule_ids": selection.get("contributing_rule_ids") or [],
+                    "selected_panel": selected_panel,
+                    "requested_stake": intent.get("requested_stake", config.get(
+                        "requested_stake", config.get("fixed_stake_rwf", selection.get("stake_rwf")))),
+                    "requested_stake_currency": intent.get("requested_stake_currency")
+                        or config.get("stake_currency"),
+                    "cashout_target": 2.0,
+                    "created_at": intent.get("created_at") or selection.get("selected_at"),
+                    "expires_at": completed_at,
+                    "target_completed_at": completed_at,
+                    "execution_eligibility": "EXPIRED",
+                    "session_id": str(session.get("session_id") or ""),
+                    "panel": selected_panel if selected_panel is not None else -1,
+                }
+                for field, value in new_values.items():
+                    if intent.get(field) != value:
+                        intent[field] = value
+                        changed = True
+                if intent.get("execution_status") not in protected_states:
+                    if intent.get("execution_status") != "EXPIRED":
+                        intent["execution_status"] = "EXPIRED"
+                        changed = True
+                blockers = list(intent.get("blockers") or [])
+                if "TARGET_ALREADY_COMPLETED" not in blockers:
+                    blockers.append("TARGET_ALREADY_COMPLETED")
+                    intent["blockers"] = blockers
+                    changed = True
+        return changed
 
     @staticmethod
     def not_configured(rule_id: str) -> dict[str, Any]:
@@ -380,7 +567,8 @@ class RulesEngine:
         return {"engine_version": ENGINE_VERSION, "configuration_version": self.configuration_version,
                 "rule_configuration": deepcopy(self.rule_configuration), "presets": deepcopy(self.presets),
                 "sessions": deepcopy(self.sessions), "last_evaluation": deepcopy(self.last_evaluation),
-                "last_evaluation_at": self.last_evaluation_at, "evaluation_count": self.evaluation_count}
+                "last_evaluation_at": self.last_evaluation_at, "evaluation_count": self.evaluation_count,
+                "history_epoch": self.history_epoch}
 
     def _restore(self, state: dict[str, Any]) -> None:
         self.configuration_version = int(state.get("configuration_version") or 0)
@@ -390,6 +578,59 @@ class RulesEngine:
         self.last_evaluation = deepcopy(state.get("last_evaluation"))
         self.last_evaluation_at = state.get("last_evaluation_at")
         self.evaluation_count = int(state.get("evaluation_count") or 0)
+        self.history_epoch = max(1, int(state.get("history_epoch") or 1))
+
+    def reset_history_epoch(self, epoch: int) -> dict[str, Any]:
+        """Invalidate old prospective rule windows without touching finance."""
+        next_epoch = max(1, int(epoch))
+        at = _now()
+        with self._lock:
+            if next_epoch == self.history_epoch:
+                return {"history_epoch": next_epoch, "invalidated_sessions": 0,
+                        "expired_selections": 0, "already_current": True}
+            invalidated_sessions = 0
+            expired_selections = 0
+            protected_execution = {"ACCEPTED", "PENDING", "UNKNOWN", "RECONCILIATION_REQUIRED",
+                                   "RECONCILIATION_PENDING", "RECONCILED", "SETTLED"}
+            for session in self.sessions.values():
+                old_epoch = max(1, int(session.get("history_epoch") or self.history_epoch))
+                if old_epoch >= next_epoch:
+                    continue
+                if session.get("status") in {"RUNNING", "PAUSED", "MANUALLY_STOPPED"}:
+                    session.update({"status": "COMPLETED", "selection_status": "STOPPED",
+                                    "selection_stop_reason": "HISTORY_EPOCH_RESET",
+                                    "stop_reason": "HISTORY_EPOCH_RESET", "ended_at": at,
+                                    "auto_next_armed": False})
+                    invalidated_sessions += 1
+                collections = [session.get("selections") or []]
+                collections.extend((session.get("rule_selections") or {}).values())
+                for selections in collections:
+                    for selection in selections:
+                        intent = selection.get("execution_intent")
+                        execution_status = str((intent or {}).get("execution_status") or "").upper()
+                        if execution_status in protected_execution:
+                            continue
+                        if selection.get("status") == "PENDING":
+                            selection.update({"status": "EXPIRED", "result": "EXPIRED",
+                                              "resolved_at": at,
+                                              "expiration_reason": "HISTORY_EPOCH_RESET"})
+                            expired_selections += 1
+                        if isinstance(intent, dict):
+                            intent.update({"execution_status": "EXPIRED",
+                                           "execution_eligibility": "EXPIRED",
+                                           "history_epoch_reset": next_epoch,
+                                           "expiration_reason": "HISTORY_EPOCH_RESET"})
+                session["history_epoch"] = next_epoch
+            self.history_epoch = next_epoch
+            self.last_evaluation = {"decision": "NO_ACTION", "result": False,
+                                    "reason": "HISTORY_EPOCH_RESET", "evaluated_at": at,
+                                    "history_epoch": next_epoch, "automatic_execution": "OFF",
+                                    "can_bet": False, "rule_evaluations": []}
+            self.last_evaluation_at = at
+            self.evaluation_count = 0
+            self._persist()
+            return {"history_epoch": next_epoch, "invalidated_sessions": invalidated_sessions,
+                    "expired_selections": expired_selections, "already_current": False}
 
     def _persist(self) -> None:
         if self._persistence is not None:
@@ -431,6 +672,75 @@ class RulesEngine:
 
         config = session.get("configuration_snapshot") or {}
         reason = None
+        live_stop = session.get("live_execution_stop")
+        pending_live_ids = list((live_stop or {}).get("pending_execution_ids") or [])
+        live_stop_can_apply = (live_stop and live_stop.get("status") == "ACTIVE") or (
+            live_stop and live_stop.get("status") == "RECONCILIATION_REQUIRED"
+            and live_stop.get("reason") == "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION"
+            and execution_id in pending_live_ids
+        )
+        if (isinstance(live_stop, dict) and live_stop_can_apply
+                and execution_id and execution_id not in (live_stop.get("settled_execution_ids") or [])):
+            evidence = execution.get("platform_evidence") or {}
+            try:
+                created = datetime.fromisoformat(str(execution.get("created_at")).replace("Z", "+00:00"))
+                started = datetime.fromisoformat(str(live_stop.get("started_at")).replace("Z", "+00:00"))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                target_is_live = created >= started
+                execution_time_verified = True
+            except (TypeError, ValueError, OverflowError):
+                target_is_live = True
+                execution_time_verified = False
+            currency = evidence.get("accepted_currency") or evidence.get("currency")
+            amount = execution.get("profit_loss")
+            verified = (
+                execution.get("status") in {"RECONCILED", "CLOSED"}
+                and execution.get("simulated") is not True
+                and execution.get("balance_status") == "VERIFIED"
+                and execution.get("result") in {"WIN", "LOSS"}
+                and isinstance(amount, (int, float)) and not isinstance(amount, bool)
+                and math.isfinite(float(amount))
+                and currency == live_stop.get("currency")
+                and financials.get("currency_status") == "VERIFIED"
+                and financials.get("currency") == live_stop.get("currency")
+                and execution_time_verified
+            )
+            if target_is_live and not verified:
+                live_stop.update({"status": "RECONCILIATION_REQUIRED",
+                                  "reason": "LIVE_SETTLEMENT_CURRENCY_OR_RECEIPT_EVIDENCE_UNVERIFIED",
+                                  "updated_at": at})
+                reason = "LIVE_SETTLEMENT_VERIFICATION_REQUIRED"
+            elif target_is_live:
+                pending_live_ids = [value for value in pending_live_ids if value != execution_id]
+                live_stop["pending_execution_ids"] = pending_live_ids
+                live_stop.update({"status": "ACTIVE", "reason": None})
+                settled_ids = list(live_stop.get("settled_execution_ids") or [])
+                settled_ids.append(execution_id)
+                live_stop["settled_execution_ids"] = settled_ids
+                live_stop["realized_profit_loss"] = round(
+                    float(live_stop.get("realized_profit_loss") or 0) + float(amount), 2)
+                if execution.get("result") == "WIN":
+                    live_stop["win_count"] = int(live_stop.get("win_count") or 0) + 1
+                else:
+                    live_stop["loss_count"] = int(live_stop.get("loss_count") or 0) + 1
+                live_stop["updated_at"] = at
+                if (live_stop.get("win_count_limit_enabled")
+                        and live_stop["win_count"] >= int(live_stop.get("win_count_limit") or 1)):
+                    reason = "WIN_LIMIT_REACHED"
+                elif (live_stop.get("loss_count_limit_enabled")
+                      and live_stop["loss_count"] >= int(live_stop.get("loss_count_limit") or 1)):
+                    reason = "LOSS_LIMIT_REACHED"
+                elif (live_stop.get("profit_target_enabled")
+                      and live_stop["realized_profit_loss"] >= float(live_stop.get("profit_target") or 0)):
+                    reason = "PROFIT_TARGET_REACHED"
+                elif (live_stop.get("loss_limit_enabled")
+                      and live_stop["realized_profit_loss"] <= -float(live_stop.get("loss_limit") or 0)):
+                    reason = "LOSS_LIMIT_REACHED"
+                if reason:
+                    live_stop.update({"status": "STOPPED", "reason": reason, "stopped_at": at})
         win_limit_enabled = config.get("reconciled_win_limit_enabled",
                                        config.get("win_limit_enabled", False))
         win_limit_count = config.get("reconciled_win_limit_count",
@@ -439,7 +749,9 @@ class RulesEngine:
                                         config.get("loss_limit_enabled", False))
         loss_count_limit = config.get("reconciled_loss_count_limit",
                                       config.get("loss_limit_count"))
-        if win_limit_enabled and stop["win_count"] >= int(win_limit_count or 1):
+        if reason:
+            pass
+        elif win_limit_enabled and stop["win_count"] >= int(win_limit_count or 1):
             reason = "WIN_LIMIT_REACHED"
         elif loss_count_enabled and stop["loss_count"] >= int(loss_count_limit or 1):
             reason = "LOSS_LIMIT_REACHED"
@@ -474,8 +786,15 @@ class RulesEngine:
         # a later receipt. Unknown transactions remain paused until a person
         # explicitly resumes after reconciliation.
         if reason:
-            stop.update({"status": "STOPPED", "reason": reason, "stopped_at": at})
-            if session.get("selection_stop_reason") not in {"MANUAL_STOP", "EMERGENCY_STOP", "RESET"}:
+            if reason == "LIVE_SETTLEMENT_VERIFICATION_REQUIRED":
+                stop.update({"status": "RECONCILIATION_REQUIRED", "reason": reason,
+                             "updated_at": at})
+                session.update({"status": "PAUSED", "selection_status": "STOPPED",
+                                "selection_stop_reason": reason, "stop_reason": reason})
+            else:
+                stop.update({"status": "STOPPED", "reason": reason, "stopped_at": at})
+            if (reason != "LIVE_SETTLEMENT_VERIFICATION_REQUIRED"
+                    and session.get("selection_stop_reason") not in {"MANUAL_STOP", "EMERGENCY_STOP", "RESET"}):
                 session.update({"selection_status": "STOPPED", "selection_stop_reason": reason,
                                 "selection_stopped_at": at,
                                 "selection_stopped_at_round_id": execution.get("target_round_id"),
@@ -542,6 +861,16 @@ class RulesEngine:
                 session.update({"status": "PAUSED", "selection_status": "STOPPED",
                                 "stop_reason": "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION",
                                 "selection_stop_reason": "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION"})
+                live_stop = session.get("live_execution_stop")
+                if isinstance(live_stop, dict) and live_stop.get("status") == "ACTIVE":
+                    pending_ids = list(live_stop.get("pending_execution_ids") or [])
+                    execution_id = str(execution.get("execution_id") or "")
+                    if execution_id and execution_id not in pending_ids:
+                        pending_ids.append(execution_id)
+                    live_stop.update({"status": "RECONCILIATION_REQUIRED",
+                                      "reason": "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION",
+                                      "pending_execution_ids": pending_ids,
+                                      "updated_at": _now()})
             self._persist()
             return {"ok": True, "session_id": session_id,
                     "financial_stop": deepcopy(stop)}
@@ -737,6 +1066,9 @@ class RulesEngine:
             opts = {"window_size": retained.get("max_observed_rounds", window_size),
                     "execution_panel": retained.get("execution_panel", 0),
                     "stake_currency": retained.get("stake_currency")}
+            for key in ("ui_fixed_stake_bif", "ui_stake_currency"):
+                if key in retained:
+                    opts[key] = retained[key]
             for key in ("reconciled_win_limit_enabled", "reconciled_win_limit_count",
                         "reconciled_loss_count_limit_enabled", "reconciled_loss_count_limit",
                         "reconciled_profit_target_enabled", "reconciled_profit_target_rwf",
@@ -747,11 +1079,24 @@ class RulesEngine:
         if execution_panel is not None and (isinstance(execution_panel, bool) or execution_panel not in (0, 1)):
             raise ValueError("INVALID_EXECUTION_PANEL")
         opts["execution_panel"] = execution_panel
+        opts["ui_stake_config_version"] = 1
         if "stake_currency" in opts and opts["stake_currency"] is not None:
             currency = str(opts["stake_currency"]).strip().upper()
             if not re.fullmatch(r"[A-Z]{3}", currency):
                 raise ValueError("INVALID_STAKE_CURRENCY")
             opts["stake_currency"] = currency
+        ui_stake = opts.get("ui_fixed_stake_bif")
+        ui_currency = opts.get("ui_stake_currency")
+        if ui_stake is not None:
+            if isinstance(ui_stake, bool) or not isinstance(ui_stake, int) or ui_stake < 1:
+                raise ValueError("INVALID_FIXED_UI_STAKE_BIF")
+            if execution_panel not in (0, 1):
+                raise ValueError("UI_FIXED_STAKE_REQUIRES_SELECTED_PANEL")
+            if str(ui_currency or "BIF").strip().upper() != "BIF":
+                raise ValueError("UI_FIXED_STAKE_CURRENCY_MUST_BE_BIF")
+            opts["ui_stake_currency"] = "BIF"
+        elif ui_currency is not None:
+            raise ValueError("UI_STAKE_CURRENCY_REQUIRES_FIXED_STAKE")
         if (("fixed_stake_rwf" in opts or "stake_rwf" in opts)
                 and opts.get("stake_currency") != "RWF"):
             raise ValueError("RWF_STAKE_FIELD_CURRENCY_MUST_BE_RWF")
@@ -797,6 +1142,7 @@ class RulesEngine:
         session = {
             "session_id": session_id, "mode": mode, "status": "RUNNING", "selection_status": "ACTIVE",
             "started_at": now, "ended_at": None, "window_size": window_size,
+            "history_epoch": self.history_epoch,
             "configuration_version": snapshot_version, "configuration_snapshot": deepcopy(opts),
             "rule_ids": list(rule_ids), "rule_versions": {rid: self._version(rid) for rid in rule_ids},
             "manifest": self._manifest(rule_ids),
@@ -871,6 +1217,28 @@ class RulesEngine:
             combined.update({"status": result, "result": result, "actual_multiplier": source["multiplier"],
                              "actual_target": _reference(source), "resolved_at": at,
                              "target_persistence_status": source.get("durability", "UNKNOWN")})
+            intent = combined.get("execution_intent")
+            if isinstance(intent, dict):
+                target_completed_at = source.get("observed_at") or source.get("stored_at") or at
+                intent["target_round_id"] = source.get("round_id")
+                intent["provider_target_round_id"] = source.get("platform_round_id")
+                intent["target_round_ref"] = _reference(source)
+                intent["target_identity_status"] = (
+                    "VERIFIED" if source.get("platform_round_id") else "UNVERIFIED")
+                intent["target_completed_at"] = target_completed_at
+                intent["expires_at"] = target_completed_at
+                intent["execution_eligibility"] = "EXPIRED"
+                # Unknown or accepted transactions must go through receipt
+                # reconciliation; only an intent with no platform transaction
+                # is closed as expired when its observed target completes.
+                if str(intent.get("execution_status") or "").upper() not in {
+                    "ACCEPTED", "PENDING", "UNKNOWN", "RECONCILIATION_REQUIRED",
+                }:
+                    intent["execution_status"] = "EXPIRED"
+                    blockers = list(intent.get("blockers") or [])
+                    if "TARGET_ALREADY_COMPLETED" not in blockers:
+                        blockers.append("TARGET_ALREADY_COMPLETED")
+                    intent["blockers"] = blockers
             session["total_wins"] += result == "WIN"
             session["total_losses"] += result == "LOSS"
             stake = session["configuration_snapshot"].get("fixed_stake_rwf", 100)
@@ -1435,6 +1803,7 @@ class RulesEngine:
             clone = {
                 "session_id": session_id, "mode": previous["mode"], "status": "RUNNING",
                 "selection_status": "ACTIVE", "started_at": at, "ended_at": None,
+                "history_epoch": self.history_epoch,
                 "window_size": previous["window_size"],
                 "configuration_version": previous["configuration_version"],
                 "configuration_snapshot": deepcopy(previous["configuration_snapshot"]),
@@ -1487,40 +1856,89 @@ class RulesEngine:
                      "actual_multiplier": None, "actual_target": None, "resolved_at": None,
                      "stake_rwf": config.get("fixed_stake_rwf", 100)}
         target = selection["expected_target"]
-        panel = config.get("execution_panel", 0)
+        configured_panel = config.get("execution_panel")
+        selected_panel = (configured_panel if type(configured_panel) is int
+                          and configured_panel in {0, 1} else None)
+        panel_key = selected_panel if selected_panel is not None else "UNSELECTED"
         intent_id = hashlib.sha256(
-            f"{target['streamId']}\0{target['roundIndex']}\0{panel}".encode("utf-8")
+            f"{target['streamId']}\0{target['roundIndex']}\0{panel_key}".encode("utf-8")
         ).hexdigest()
-        requested_stake = config.get("requested_stake")
-        if requested_stake is None:
-            requested_stake = config.get("fixed_stake_rwf", selection["stake_rwf"])
+        requested_stake = config.get("ui_fixed_stake_bif")
+        requested_currency = config.get("ui_stake_currency") if requested_stake is not None else None
+        if requested_stake is None and config.get("requested_stake_currency") == "BIF":
+            requested_stake = config.get("requested_stake")
+            requested_currency = "BIF" if requested_stake is not None else None
+        panel_state_before = (_panel_observation_from_rows(
+            source.get("panel_observations"), selected_panel, at, source="COMMITTED_ROUND_PANEL_OBSERVATION")
+            if selected_panel is not None else
+            _normalize_intent_panel_observation(None, 0, at, source="PANEL_NOT_SELECTED"))
+        panel_state_after = (_current_runtime_panel_observation(selected_panel, at)
+                             if selected_panel is not None else
+                             _normalize_intent_panel_observation(None, 0, at, source="PANEL_NOT_SELECTED"))
+        panel_transition_timestamp = panel_state_after.get("transition_timestamp")
+        if (panel_state_before.get("state") in {"BET_AVAILABLE", "BET_QUEUED", "BET_ACTIVE", "BET_RESET"}
+                and panel_state_after.get("state") in {"BET_AVAILABLE", "BET_QUEUED", "BET_ACTIVE", "BET_RESET"}
+                and panel_state_before.get("state") != panel_state_after.get("state")
+                and not panel_transition_timestamp):
+            panel_transition_timestamp = panel_state_after.get("observed_at")
+        deadline_evidence = _target_deadline_evidence(source, at)
+        execution_blockers = [
+            "REAL_MONEY_EXECUTION_DISABLED",
+            "EXPLICIT_SESSION_AUTHORIZATION_REQUIRED",
+            "TARGET_ROUND_ID_UNVERIFIED",
+            "BETTING_DEADLINE_UNVERIFIED" if deadline_evidence.get("status") != "VERIFIED" else "REAL_MONEY_EXECUTION_DISABLED",
+            "FIXED_UI_STAKE_BIF_NOT_CONFIGURED" if requested_stake is None else "STAKE_CURRENCY_NOT_RECONCILED",
+            "VERIFIED_BALANCE_AND_SUFFICIENT_FUNDS_REQUIRED",
+            "CASHOUT_PLATFORM_ACKNOWLEDGEMENT_UNVERIFIED",
+            "PLATFORM_ACCEPTANCE_AND_SETTLEMENT_UNVERIFIED",
+        ]
+        if selected_panel is None:
+            execution_blockers.append("EXECUTION_PANEL_NOT_SELECTED")
         selection["execution_intent"] = {
             "intent_id": intent_id,
             "decision_id": selection_id,
+            "decision_timestamp": at,
             "source_round_id": selection["source_round"]["roundId"],
             "target_round_id": target.get("roundId"),
+            "provider_target_round_id": target.get("providerRoundId"),
             "target_stream_id": target["streamId"],
             "target_round_index": target["roundIndex"],
+            "target_round_ref": deepcopy(target),
+            "target_identity_status": "VERIFIED" if target.get("providerRoundId") else "UNVERIFIED",
             "selected_rule_ids": list(selection["contributing_rule_ids"]),
+            "selected_panel": selected_panel,
             "requested_stake": requested_stake,
-            "requested_stake_currency": config.get("stake_currency"),
+            "requested_stake_currency": requested_currency,
+            "stake": requested_stake,
+            "currency": requested_currency,
             "cashout_target": 2.0,
             "created_at": at,
+            "decision_timestamp": at,
+            "round_observed_at": source.get("observed_at"),
+            "rules_evaluation_completed_at": at,
+            "decision_latency_ms": _decision_latency_ms(source, at),
+            "completed_round_to_panel_observation_ms": _elapsed_ms(
+                source.get("observed_at"), panel_state_before.get("observed_at")),
+            "select_to_panel_observation_ms": _elapsed_ms(
+                at, panel_state_after.get("observed_at")),
             "expires_at": target.get("expiresAt"),
+            "deadline_evidence": deadline_evidence,
+            "panel_state_before": panel_state_before,
+            "panel_state_after": {**panel_state_after,
+                "observation_relation": "READ_ONLY_POST_DECISION_SNAPSHOT"},
+            "transition_timestamp": panel_transition_timestamp,
+            "platform_evidence": None,
+            "platform_acceptance": "UNVERIFIED",
+            "settlement": "UNVERIFIED",
+            "execution_eligibility": "BLOCKED_MISSING_EXECUTION_PANEL" if selected_panel is None
+                else "BLOCKED_TARGET_IDENTITY_OR_DEADLINE",
             "session_id": session["session_id"],
-            "panel": panel,
+            "session_mode": session.get("mode"),
+            # The legacy SQL column is NOT NULL; -1 cannot collide with either
+            # selectable panel (0 or 1). selected_panel remains authoritative.
+            "panel": selected_panel if selected_panel is not None else -1,
             "execution_status": "BLOCKED_READ_ONLY",
-            "blockers": [
-                "REAL_MONEY_EXECUTION_DISABLED",
-                "EXPLICIT_SESSION_AUTHORIZATION_REQUIRED",
-                "TARGET_ROUND_ID_UNVERIFIED",
-                "BETTING_DEADLINE_UNVERIFIED",
-                "BET_AMOUNT_CURRENCY_UNVERIFIED" if not config.get("stake_currency") else
-                    "STAKE_CURRENCY_NOT_RECONCILED",
-                "VERIFIED_BALANCE_AND_SUFFICIENT_FUNDS_REQUIRED",
-                "CASHOUT_PLATFORM_ACKNOWLEDGEMENT_UNVERIFIED",
-                "PLATFORM_ACCEPTANCE_AND_SETTLEMENT_UNVERIFIED",
-            ],
+            "blockers": list(dict.fromkeys(execution_blockers)),
         }
         session["selections"].append(selection)
         for proposal in true_rows:
@@ -1649,6 +2067,52 @@ class RulesEngine:
                      and item.get("stop_reason") in {
                          None, "MANUAL_PAUSE", "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION"}), None)
 
+    def install_live_execution_stops(self, configuration: Mapping[str, Any]) -> dict[str, Any]:
+        """Attach LIVE stop limits separately from the immutable rule config."""
+        with self._lock:
+            session = self._selected_session()
+            if (not session or session.get("status") != "RUNNING"
+                    or session.get("selection_status") != "ACTIVE"):
+                return {"ok": False, "reason": "ACTIVE_RULES_SELECTION_SESSION_REQUIRED"}
+            live_id = configuration.get("live_session_id")
+            currency = configuration.get("currency")
+            if not isinstance(live_id, str) or not live_id or not isinstance(currency, str) or not currency:
+                return {"ok": False, "reason": "LIVE_SESSION_ID_AND_CURRENCY_REQUIRED"}
+            prior = session.get("live_execution_stop") or {}
+            if prior.get("status") in {"ACTIVE", "STOPPED", "RECONCILIATION_REQUIRED"}:
+                return {"ok": False, "reason": "LIVE_SESSION_STOP_LIMITS_ALREADY_ATTACHED"}
+            session["live_execution_stop"] = {
+                "live_session_id": live_id, "rules_session_id": session["session_id"],
+                "started_at": configuration.get("started_at"), "currency": currency,
+                "profit_target_enabled": bool(configuration.get("profit_target_enabled")),
+                "profit_target": configuration.get("profit_target"),
+                "loss_limit_enabled": bool(configuration.get("loss_limit_enabled")),
+                "loss_limit": configuration.get("loss_limit"),
+                "win_count_limit_enabled": bool(configuration.get("win_count_limit_enabled")),
+                "win_count_limit": configuration.get("win_count_limit"),
+                "loss_count_limit_enabled": bool(configuration.get("loss_count_limit_enabled")),
+                "loss_count_limit": configuration.get("loss_count_limit"),
+                "status": "ACTIVE", "reason": None, "realized_profit_loss": 0.0,
+                "win_count": 0, "loss_count": 0, "settled_execution_ids": [],
+                "updated_at": configuration.get("started_at"),
+            }
+            self._persist()
+            return {"ok": True, "rules_session_id": session["session_id"],
+                    "live_execution_stop": deepcopy(session["live_execution_stop"])}
+
+    def remove_unstarted_live_execution_stops(self, live_session_id: str) -> None:
+        """Roll back a stop configuration if the LIVE betting session never started."""
+        with self._lock:
+            for session in self.sessions.values():
+                live_stop = session.get("live_execution_stop") or {}
+                if (live_stop.get("live_session_id") == live_session_id
+                        and live_stop.get("status") == "ACTIVE"
+                        and not live_stop.get("settled_execution_ids")
+                        and not live_stop.get("pending_execution_ids")):
+                    session.pop("live_execution_stop", None)
+                    self._persist()
+                    return
+
     def stream_cursor(self, stream_id: str, latest_sequence: int) -> int:
         cursors = [int(row.get("last_stream_sequence", latest_sequence))
                    for row in self.sessions.values()
@@ -1693,9 +2157,15 @@ class RulesEngine:
                 "execution_panel": configuration.get("execution_panel"),
                 "requested_stake": requested_stake,
                 "requested_stake_currency": configuration.get("stake_currency"),
+                "ui_fixed_stake_bif": configuration.get("ui_fixed_stake_bif"),
+                "ui_stake_currency": configuration.get("ui_stake_currency"),
                 "financial_stop": deepcopy(session.get("financial_stop") or {
                     "status": "ACTIVE", "reason": None, "realized_betting_pl": None,
                     "currency": None, "win_count": 0, "loss_count": 0, "reconciled_bets": 0,
+                }),
+                "live_execution_stop": deepcopy(session.get("live_execution_stop") or {
+                    "status": "UNCONFIGURED", "reason": None, "currency": None,
+                    "realized_profit_loss": 0.0, "win_count": 0, "loss_count": 0,
                 }),
                 "automatic_execution": "OFF"}
 
@@ -1716,10 +2186,19 @@ class RulesEngine:
             requested_stake = config.get("requested_stake")
             if requested_stake is None:
                 requested_stake = config.get("fixed_stake_rwf", config.get("stake_rwf"))
-            currency = config.get("stake_currency")
+            ui_fixed_stake = config.get("ui_fixed_stake_bif")
+            currency = config.get("ui_stake_currency") if ui_fixed_stake is not None else config.get("stake_currency")
+            if ui_fixed_stake is not None:
+                requested_stake = ui_fixed_stake
             if currency is None and ("fixed_stake_rwf" in config or "stake_rwf" in config):
                 currency = "RWF"
             panel = config.get("execution_panel")
+            if (config.get("ui_stake_config_version") == 1 and panel is not None
+                    and ui_fixed_stake is None):
+                return {"status": "BLOCKED", "reason": "FIXED_UI_STAKE_BIF_NOT_CONFIGURED",
+                        "session_id": active.get("session_id"), "requested_stake": None,
+                        "requested_stake_currency": None, "execution_panel": panel,
+                        "automatic_execution": "OFF"}
             if (isinstance(requested_stake, bool)
                     or not isinstance(requested_stake, (int, float))
                     or requested_stake <= 0):
@@ -1771,7 +2250,33 @@ class RulesEngine:
         self._persist()
         return deepcopy(result)
 
+    def decision_interface_status(self) -> dict[str, Any]:
+        """Report the SELECT-to-durable-intent bridge, not LIVE authorization.
+
+        Shared selections are stored atomically with their session snapshot in
+        the repository. This interface is available when that durable writer
+        and the intent read/recovery methods are wired. LIVE authorization is
+        a separate gate and remains false until the operator and platform gates
+        are satisfied.
+        """
+        repository = self._persistence
+        required = {
+            "session_snapshot_writer": "save_rules_engine_snapshot",
+            "intent_lookup": "rule_execution_intent",
+            "intent_listing": "list_rule_execution_intents",
+        }
+        missing = [name for name, method in required.items()
+                   if repository is None or not callable(getattr(repository, method, None))]
+        return {
+            "available": not missing,
+            "state": "AVAILABLE" if not missing else "UNAVAILABLE",
+            "persistence": "DURABLE_REPOSITORY" if not missing else "UNAVAILABLE",
+            "missing_capabilities": missing,
+            "live_authorized": False,
+        }
+
     def execution_authorized(self) -> bool:
+        """Financial execution authorization is independent and fail-closed."""
         return False
 
     def needs_round_observation(self) -> bool:
@@ -1793,15 +2298,30 @@ class RulesEngine:
     def status(self) -> dict[str, Any]:
         active = self._selected_session()
         summary = self._session_summary(active) if active else None
+        # These counts describe the shared rule registry.  They must not be
+        # replaced by the subset captured in the active session snapshot: an
+        # operator needs to be able to distinguish definitions, enabled rules,
+        # and the session's participating rules.
         configured = sum(1 for row in self.rule_configuration.values() if row.get("configured"))
         enabled = sum(1 for row in self.rule_configuration.values() if row.get("configured") and row.get("enabled"))
-        if active:
-            configured = len(active.get("rule_ids", []))
-            enabled = len(active.get("rule_ids", []))
+        latest_session = next(iter(self.sessions_status()), None)
+        active_status = active.get("status") if active else "NONE"
+        session_rule_count = len(active.get("rule_ids", [])) if active else 0
         latest = (self.last_evaluation or {}).get("source_round",
                   (self.last_evaluation or {}).get("evaluated_round"))
         return {"status": active.get("status") if active else ("READY" if configured else "NOT_CONFIGURED"),
                 "rules_configured": configured, "rules_enabled": enabled,
+                "rules_definition_state": "CONFIGURED" if configured else "NOT_CONFIGURED",
+                "rules_enabled_state": "ENABLED" if enabled else "NONE_ENABLED",
+                "active_session_status": active_status,
+                "latest_session_status": (latest_session or {}).get("status", "NONE"),
+                "session_running": active_status == "RUNNING",
+                "session_paused": active_status == "PAUSED",
+                "session_completed": active is None and (latest_session or {}).get("status") == "COMPLETED",
+                "session_rule_count": session_rule_count,
+                "session_enabled_rule_count": session_rule_count,
+                "rules_execution_enabled": False,
+                "live_execution_authorized": False,
                 "configuration_version": self.configuration_version,
                 "presets": deepcopy(self.presets),
                 "last_rule_evaluation": self.last_evaluation_at or "NONE",

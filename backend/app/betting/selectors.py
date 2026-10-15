@@ -70,14 +70,14 @@ SNAPSHOT = r"""() => {
   if (!d.body) return { ok: false, err: 'aviator-next body is not ready' };
   const out = {
     ok: true,
+    observedAt: new Date().toISOString(),
     payouts: [], bets: 0, balanceText: '', betPanel: false,
     stakeInputs: [], placeBetButtons: [], presets: [],
     phaseHints: [], betTabActive: false, cashoutControls: [], statusMessages: [],
     betPanelStates: [],
     bettingWindow: { state: 'UNKNOWN', observedAt: new Date().toISOString(), evidence: {
-      source: 'AVIATOR_BETTING_PANEL_READ_ONLY', selector: '.btn-success.bet',
-      panel_index: 0, button_visible: false, button_enabled: false,
-      stake_input_visible: false, bet_tab_active: false,
+      source: 'AVIATOR_EXPLICIT_BETTING_PHASE_DOM', panel_index: 0,
+      phase_indicator_visible: false, explicit_window_state: 'UNKNOWN',
     } },
   };
   const payEls = d.querySelectorAll('.payouts-block .payout');
@@ -86,58 +86,125 @@ SNAPSHOT = r"""() => {
 
   const appPanels = Array.from(d.querySelectorAll('app-bet-control'));
   out.betPanel = appPanels.length > 0;
-  appPanels.forEach((panel, i) => {
-    if (i >= 2) return;
+  const visible = node => !!node && !!(node.offsetWidth || node.offsetHeight);
+  const textOf = node => (node?.textContent || '').trim().replace(/\s+/g, ' ');
+  const panelRoots = [0, 1].map(slot => appPanels[slot] || null);
+  const observedAt = new Date().toISOString();
+  const frameIdentity = `${location.origin}${location.pathname}#${Math.trunc(performance.timeOrigin)}`.slice(0, 180);
+  const actionPattern = /^(bet|cancel|cash\s*out)\b/i;
+  const visiblePhaseHints = [];
+  d.querySelectorAll('[class*="betting" i], [class*="bet-status" i], [data-phase], [data-testid*="betting" i], [role="alert"], [aria-live="assertive"]').forEach((node, index) => {
+    if (index >= 20 || !visible(node)) return;
+    const text = textOf(node).slice(0, 120);
+    if (text) visiblePhaseHints.push({text, source: 'VISIBLE_GAME_PHASE_DOM', visible: true});
+  });
+  const directPhaseText = visiblePhaseHints.map(item => item.text).join(' ').toLowerCase();
+  const countdown = directPhaseText.match(/\b(?:betting|bets?)(?:\s+window)?\s+(?:closes|ends)\s+in\s+(\d+(?:\.\d+)?)\s*(?:s|sec|seconds?)\b/i);
+  const countdownSeconds = countdown ? Number(countdown[1]) : null;
+  const explicitWindowState = (Number.isFinite(countdownSeconds) && countdownSeconds >= 0 && countdownSeconds <= 300)
+    || /\b(?:bets? open|betting open|place your bets|you can bet now)\b/i.test(directPhaseText)
+    ? 'BETTING_OPEN'
+    : /\b(?:bets? closed|betting closed|no more bets|betting is over)\b/i.test(directPhaseText)
+      ? 'BETTING_CLOSED' : 'UNKNOWN';
+  const explicitWindowEvidence = {
+    source: 'AVIATOR_EXPLICIT_BETTING_PHASE_DOM', panel_index: 0,
+    phase_indicator_visible: explicitWindowState !== 'UNKNOWN',
+    explicit_window_state: explicitWindowState,
+    text: visiblePhaseHints.map(item => item.text).join(' ').slice(0, 240),
+    countdown_seconds: Number.isFinite(countdownSeconds) ? countdownSeconds : null,
+    deadline_at: Number.isFinite(countdownSeconds) && countdownSeconds >= 0 && countdownSeconds <= 300
+      ? new Date(Date.now() + countdownSeconds * 1000).toISOString() : null,
+  };
+  out.bettingWindow = {state: 'UNKNOWN', observedAt, evidence: explicitWindowEvidence};
+  out.phaseHints.push(...visiblePhaseHints.slice(0, 6));
+
+  for (let i = 0; i < 2; i++) {
+    const panel = panelRoots[i];
+    if (!panel) {
+      out.betPanelStates.push({panel_id: `PANEL_${i + 1}`, slot: i, panel_visible: false,
+        button_visible: false, button_enabled: false, source: 'AVIATOR_BETTING_PANEL_READ_ONLY',
+        frame_identity: frameIdentity, observed_at: observedAt});
+      continue;
+    }
     const b = panel.querySelector('.bet-block');
     const inp = b?.querySelector('input[type="text"]:not([placeholder=""])');
-    const visible = node => !!node && !!(node.offsetWidth || node.offsetHeight);
-    const textOf = node => (node?.textContent || '').trim().replace(/\s+/g, ' ');
-    const button = panel.querySelector('.btn-success.bet');
-    const buttonText = textOf(button);
-    const buttonStyle = button ? view.getComputedStyle(button) : null;
-    const buttonVisible = !!button && !!buttonStyle && buttonStyle.display !== 'none'
-      && buttonStyle.visibility !== 'hidden' && visible(button);
-    const buttonDisabled = !!button && (button.disabled
-      || button.getAttribute('aria-disabled') === 'true'
-      || button.classList.contains('disabled'));
-    const pendingControls = Array.from(panel.querySelectorAll('button, .btn')).filter(node => {
-      if (!visible(node)) return false;
-      return /^(?:cash\s*out|take\s*win|collect|cancel(?:\s*bet)?)\b/i.test(textOf(node));
-    });
-    const pendingBetState = pendingControls.length ? 'PENDING'
-      : /^Bet\b/i.test(buttonText) ? 'CLEAR' : 'UNKNOWN';
+    const inputVisible = visible(inp);
+    const candidates = Array.from(panel.querySelectorAll('button, [role="button"], .btn'))
+      .filter(node => !node.closest('.navigation-switcher'))
+      .filter(visible).map(node => {
+        const text = textOf(node);
+        const aria = node.getAttribute('aria-label') || '';
+        const title = node.getAttribute('title') || '';
+        const combined = [aria, text, title].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        const label = combined.match(actionPattern);
+        const style = view.getComputedStyle(node);
+        return {node, text, aria, title, combined, main: label ? label[1].replace(/\s+/g, ' ') : '',
+          visible: style.display !== 'none' && style.visibility !== 'hidden' && visible(node)};
+      }).filter(item => item.visible && item.main);
+    const action = candidates[0] || null;
+    const actionLabels = candidates.map(item => item.combined.slice(0, 120));
+    const actionNode = action?.node || null;
+    const actionStyle = actionNode ? view.getComputedStyle(actionNode) : null;
+    const panelText = textOf(panel);
+    const waitingText = panelText.match(/\bwaiting for (?:the )?next round\b/i)?.[0] || '';
+    const buttonText = action?.text || action?.aria || action?.title || '';
+    const mainLabel = action?.main.toLowerCase() === 'cash out' ? 'Cash Out'
+      : action?.main ? action.main[0].toUpperCase() + action.main.slice(1).toLowerCase() : '';
+    const fullActionText = action?.combined || '';
+    const currencyCodes = [...new Set([...`${panelText} ${fullActionText}`.matchAll(/(?<![A-Z])([A-Z]{3})(?![A-Z])/g)]
+      .map(item => item[1]).filter(code => !['BET', 'OUT'].includes(code)))];
+    const secondaryText = [fullActionText.replace(actionPattern, '').replace(/\s+/g, ' ').trim(),
+      waitingText].filter(Boolean).join(' ').slice(0, 160);
+    const disabled = !!actionNode && (actionNode.disabled
+      || actionNode.getAttribute('aria-disabled') === 'true'
+      || actionNode.classList.contains('disabled'));
+    const attrs = {};
+    if (actionNode) for (const name of ['id', 'class', 'data-state', 'data-status', 'aria-label']) {
+      const value = actionNode.getAttribute(name);
+      if (value) attrs[name] = value.slice(0, 160);
+    }
+    const panelAttrs = {};
+    for (const name of ['id', 'data-panel-id', 'data-slot', 'data-index']) {
+      const value = panel.getAttribute(name);
+      if (value) panelAttrs[name] = value.slice(0, 120);
+    }
+    const tabs = Array.from(panel.querySelectorAll('.navigation-switcher .tab'));
+    const betTab = tabs.find(t => (t.textContent || '').trim() === 'Bet');
+    const betTabActive = !!betTab && betTab.classList.contains('active');
     out.stakeInputs.push({
-      slot: i,
+      slot: i, panel_id: `PANEL_${i + 1}`,
       selector: '.bet-block input[type="text"]:not([placeholder=""])',
       placeholder: inp ? (inp.placeholder || '') : null,
       value: inp ? (inp.value || '') : null,
-      visible: visible(inp),
+      visible: inputVisible,
       minAttribute: inp ? (inp.getAttribute('min') || null) : null,
       maxAttribute: inp ? (inp.getAttribute('max') || null) : null,
     });
-    const tabs = Array.from(panel?.querySelectorAll('.navigation-switcher .tab') || []);
-    const betTab = tabs.find(t => (t.textContent || '').trim() === 'Bet');
-    const betTabActive = !!betTab && betTab.classList.contains('active');
-    const inputVisible = visible(inp);
-    const panelEvidence = {
-      source: 'AVIATOR_BETTING_PANEL_READ_ONLY', selector: '.btn-success.bet',
-      panel_index: i,
-      button_visible: buttonVisible, button_enabled: buttonVisible && !buttonDisabled,
+    out.betPanelStates.push({
+      panel_id: `PANEL_${i + 1}`, slot: i,
+      panel_visible: visible(panel), button_visible: !!action && !!actionStyle && action.visible,
+      button_enabled: !!action && !disabled,
+      main_label: mainLabel, button_text: buttonText.slice(0, 240),
+      secondary_text: secondaryText.slice(0, 160),
+      aria_label: action?.aria || null, title: action?.title || null,
+      button_attributes: attrs, panel_attributes: panelAttrs,
+      button_color: actionStyle ? actionStyle.backgroundColor : null,
+      displayed_stake_text: mainLabel === 'Bet' ? fullActionText : (inp?.value || ''),
+      cashout_text: mainLabel === 'Cash Out' ? fullActionText : '',
+      visible_action_labels: actionLabels,
+      pending_indicator: Boolean(waitingText) || /\bwaiting for (?:the )?next round\b/i.test(fullActionText),
+      active_indicator: candidates.some(item => /^cash\s*out$/i.test(item.main)),
+      currency_hint: currencyCodes.length === 1 ? currencyCodes[0] : null,
+      data_state: actionNode?.getAttribute('data-state') || panel.getAttribute('data-state') || null,
+      observed_at: observedAt, source: 'AVIATOR_BETTING_PANEL_READ_ONLY', frame_identity: frameIdentity,
+      selector: 'app-bet-control .bet-block action button',
       stake_input_visible: inputVisible, bet_tab_active: betTabActive,
-      button_text: buttonText.slice(0, 40),
-      button_class: button ? String(button.className || '').slice(0, 160) : null,
-      pending_bet_state: pendingBetState,
-    };
-    out.betPanelStates.push({slot: i, ...panelEvidence});
-    if (i === 0) {
-      out.betTabActive = betTabActive;
-      const controlsReady = buttonVisible && inputVisible && betTabActive;
-      out.bettingWindow = {
-        state: controlsReady ? (buttonDisabled ? 'BETTING_CLOSED' : 'BETTING_OPEN') : 'UNKNOWN',
-        observedAt: new Date().toISOString(),
-        evidence: panelEvidence,
-      };
-    }
+    });
+    if (i === 0) out.betTabActive = betTabActive;
+    if (mainLabel === 'Bet' && actionNode) out.placeBetButtons.push({
+      slot: i, selector: 'app-bet-control .bet-block action button', associatedPanel: i,
+      text: buttonText.slice(0, 240), disabled, visible: !!action.visible,
+    });
     const autoTabs = Array.from(panel.querySelectorAll('.navigation-switcher .tab'));
     const autoTab = autoTabs.find(t => (t.textContent || '').trim() === 'Auto');
     const cashoutSwitch = panel.querySelector('.cash-out-switcher .input-switch');
@@ -153,22 +220,7 @@ SNAPSHOT = r"""() => {
       inputVisible: visible(cashoutInput),
       platformAcknowledged: null,
     });
-  });
-
-  d.querySelectorAll('.btn-success.bet').forEach((btn, i) => {
-    if (i >= 2) return;
-    const cs = view.getComputedStyle(btn);
-    out.placeBetButtons.push({
-      slot: i,
-      selector: '.btn-success.bet',
-      associatedPanel: appPanels.indexOf(btn.closest('app-bet-control')),
-      text: (btn.textContent || '').trim(),
-      disabled: btn.disabled || btn.getAttribute('aria-disabled') === 'true' ||
-                btn.classList.contains('disabled'),
-      visible: cs.display !== 'none' && cs.visibility !== 'hidden' &&
-               !!(btn.offsetWidth || btn.offsetHeight),
-    });
-  });
+  }
 
   d.querySelectorAll('[role="alert"], [aria-live="assertive"]').forEach((el, i) => {
     if (i >= 8) return;
@@ -186,72 +238,17 @@ SNAPSHOT = r"""() => {
   d.querySelectorAll('[class*="stage" i], [class*="status" i]').forEach(e => {
     const c = (e.className || '').toString();
     if (c.length < 90 && out.phaseHints.length < 6) {
-      out.phaseHints.push({ cls: c, txt: (e.textContent || '').trim().slice(0, 40) });
+      const style = view.getComputedStyle(e);
+      const visible = style.display !== 'none' && style.visibility !== 'hidden'
+        && !!(e.offsetWidth || e.offsetHeight);
+      if (visible) out.phaseHints.push({ cls: c,
+        txt: (e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
+        visible: true, source: 'AVIATOR_STAGE_STATUS_DOM' });
     }
   });
 
   return out;
 }"""
-
-# These two interaction expressions are used only by explicitly invoked UI
-# practice methods. They never locate or click the bet button.
-SET_AUTO_CASHOUT = r"""async () => {
-  const slot = __SLOT__;
-  const target = __TARGET__;
-  const block = document.querySelectorAll('.bet-block')[slot];
-  const panel = block?.closest('app-bet-control') || block?.parentElement;
-  if (!block || !panel) return { ok: false, reason: 'BETTING_PANEL_NOT_FOUND' };
-  const autoTab = Array.from(panel.querySelectorAll('.navigation-switcher .tab'))
-    .find(el => (el.textContent || '').trim() === 'Auto');
-  if (!autoTab) return { ok: false, reason: 'AUTO_TAB_NOT_FOUND' };
-  const autoTabClicked = !autoTab.classList.contains('active');
-  if (autoTabClicked) autoTab.click();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  const toggle = panel.querySelector('.cash-out-switcher .input-switch');
-  if (!toggle) return { ok: false, reason: 'AUTO_CASHOUT_TOGGLE_NOT_FOUND', autoTabClicked };
-  const toggleClicked = toggle.classList.contains('off');
-  if (toggleClicked) toggle.click();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  const input = panel.querySelector('.cashout-spinner input[type="text"]');
-  if (!input) return { ok: false, reason: 'CASHOUT_VALUE_INPUT_NOT_FOUND', autoTabClicked, toggleClicked };
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-  if (!setter) return { ok: false, reason: 'INPUT_VALUE_SETTER_UNAVAILABLE', autoTabClicked, toggleClicked };
-  setter.call(input, target);
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  input.dispatchEvent(new Event('change', { bubbles: true }));
-  input.blur();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  return {
-    ok: true,
-    autoTabClicked,
-    toggleClicked,
-    autoTabSelected: autoTab.classList.contains('active'),
-    enabled: !toggle.classList.contains('off'),
-    displayedValue: (input.value || '').trim(),
-    inputVisible: !!(input.offsetWidth || input.offsetHeight),
-    target,
-    platformAcknowledged: null,
-  };
-}"""
-
-SET_STAKE_INPUT = r"""() => {
-  const slot = __SLOT__;
-  const value = __VALUE__;
-  const block = document.querySelectorAll('.bet-block')[slot];
-  const input = block?.querySelector('input[type="text"]:not([placeholder=""])');
-  if (!input || !(input.offsetWidth || input.offsetHeight))
-    return { ok: false, reason: 'VISIBLE_STAKE_INPUT_NOT_FOUND' };
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-  if (!setter) return { ok: false, reason: 'INPUT_VALUE_SETTER_UNAVAILABLE' };
-  setter.call(input, value);
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  input.dispatchEvent(new Event('change', { bubbles: true }));
-  input.blur();
-  return { ok: true, displayedValue: (input.value || '').trim(),
-    selector: '.bet-block input[type="text"]:not([placeholder=""])',
-    associatedPanel: slot };
-}"""
-
 
 # ── Parsing helpers (pure, unit-testable) ───────────────────────────────────
 _NUM_RE = re.compile(r"[0-9][0-9.,]*")
@@ -357,6 +354,9 @@ class GameSnapshot:
     status_messages: list[dict] = field(default_factory=list)
     bet_panel_states: list[dict] = field(default_factory=list)
     betting_window: dict = field(default_factory=lambda: {"state": "UNKNOWN"})
+    round_phase: str = "UNKNOWN"
+    deadline_evidence: dict = field(default_factory=lambda: {"status": "UNKNOWN"})
+    observed_at: str | None = None
     error: str | None = None
 
     @property
@@ -395,15 +395,58 @@ class GameSnapshot:
         raw_window = value.get("bettingWindow")
         betting_window = dict(raw_window) if isinstance(raw_window, dict) else {}
         try:
-            from app.betting.platform_state import classify_betting_window
+            from app.betting.platform_state import (
+                classify_bet_panel_observation, classify_betting_window,
+                classify_round_phase, observe_betting_deadline,
+            )
             betting_window["state"] = classify_betting_window(
                 betting_window.get("evidence"), panel=0,
             )
         except Exception:
             betting_window["state"] = "UNKNOWN"
+        phase_hints = list(value.get("phaseHints") or [])
+        status_messages = list(value.get("statusMessages") or [])
+        try:
+            from app.betting.platform_state import classify_round_phase, observe_betting_deadline
+            round_phase = classify_round_phase(
+                betting_window=betting_window, phase_hints=phase_hints,
+                status_messages=status_messages,
+            )
+            deadline_evidence = observe_betting_deadline(
+                phase_hints=phase_hints, status_messages=status_messages,
+                observed_at=value.get("observedAt"),
+            )
+        except Exception:
+            round_phase = "UNKNOWN"
+            deadline_evidence = {"status": "UNKNOWN", "reason": "PHASE_PARSER_ERROR"}
         balance_text = value.get("balanceText") or ""
         parsed_balance = parse_balance_display(balance_text, value.get("balanceCurrency"))
         bal = parsed_balance["amount"]
+        raw_panel_states = value.get("betPanelStates")
+        raw_panel_states = raw_panel_states if isinstance(raw_panel_states, list) else []
+        by_slot = {}
+        for row in raw_panel_states:
+            if not isinstance(row, dict):
+                continue
+            try:
+                slot = int(row.get("slot", row.get("panel_index")))
+            except (TypeError, ValueError):
+                continue
+            if slot in (0, 1):
+                by_slot[slot] = row
+        panel_states = []
+        for slot in (0, 1):
+            raw_panel = by_slot.get(slot, {
+                "panel_id": f"PANEL_{slot + 1}", "panel_visible": False,
+                "source": "AVIATOR_BETTING_PANEL_READ_ONLY", "observed_at": value.get("observedAt"),
+            })
+            normalized = classify_bet_panel_observation(raw_panel)
+            if isinstance(raw_panel.get("stake_input_visible"), bool):
+                normalized["stake_input_visible"] = raw_panel["stake_input_visible"]
+            if isinstance(raw_panel.get("bet_tab_active"), bool):
+                normalized["bet_tab_active"] = raw_panel["bet_tab_active"]
+            normalized["panel_attributes"] = raw_panel.get("panel_attributes") or {}
+            panel_states.append(normalized)
         return cls(
             ok=True,
             payouts=payouts,
@@ -415,12 +458,15 @@ class GameSnapshot:
             stake_inputs=list(value.get("stakeInputs") or []),
             place_bet_buttons=list(value.get("placeBetButtons") or []),
             presets=list(value.get("presets") or []),
-            phase_hints=list(value.get("phaseHints") or []),
+            phase_hints=phase_hints,
             bet_tab_active=bool(value.get("betTabActive")),
             cashout_controls=list(value.get("cashoutControls") or []),
-            status_messages=list(value.get("statusMessages") or []),
-            bet_panel_states=list(value.get("betPanelStates") or []),
+            status_messages=status_messages,
+            bet_panel_states=panel_states,
             betting_window=betting_window or {"state": "UNKNOWN"},
+            round_phase=round_phase,
+            deadline_evidence=deadline_evidence,
+            observed_at=value.get("observedAt"),
         )
 
     def as_dict(self) -> dict:
@@ -445,9 +491,13 @@ class GameSnapshot:
             "stake_inputs": self.stake_inputs,
             "place_bet_buttons": self.place_bet_buttons,
             "presets": self.presets,
+            "phase_hints": self.phase_hints,
             "bet_tab_active": self.bet_tab_active,
             "cashout_controls": self.cashout_controls,
             "status_messages": self.status_messages,
             "bet_panel_states": self.bet_panel_states,
             "betting_window": self.betting_window,
+            "round_phase": self.round_phase,
+            "deadline_evidence": self.deadline_evidence,
+            "observed_at": self.observed_at,
         }

@@ -202,6 +202,30 @@ class RoundDistributionHub:
                                              "reason": "backend_shutdown",
                                              "stream_id": (self._last_published or {}).get("stream_id")})
 
+    async def reset_history_epoch(self, stream_id: str, epoch: int) -> None:
+        """Close old-stream subscribers and discard disposable per-stream metrics."""
+        async with self._lock:
+            notice = {"event_type": "stream.overflow", "stream_id": str(stream_id),
+                      "reason": "history_epoch_reset", "history_epoch": int(epoch),
+                      "resume_with_rest": True}
+            for subscriber in self._subscribers.values():
+                subscriber.closed = True
+                subscriber.pending_event_ids.clear()
+                while not subscriber.queue.empty():
+                    try:
+                        subscriber.queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                subscriber.queue.put_nowait(dict(notice))
+            self._committed_event_ids.clear()
+            self._committed_event_order.clear()
+            self._last_published = None
+            self._latencies.clear()
+            self._measured.clear()
+            self._measured_order.clear()
+            self._delivery_lag_ms.clear()
+            self._reconnect_backlogs.clear()
+
     def _record_once(self, stage: str, event_id: str, value: float) -> None:
         known = self._measured[stage]
         if event_id in known:

@@ -9,12 +9,12 @@ def test_collector_api_status_exposes_each_cashout_panel(tmp_path, monkeypatch):
     manager.status_path = tmp_path / "status.json"
     heartbeat_at = datetime.now(timezone.utc).isoformat()
     value = {
-        "target": "2.00", "auto_bet": "OFF", "status": "READY",
-        "panel_1_cashout": "READY", "panel_2_cashout": "READY",
+        "target": "2.00", "auto_bet": "OFF", "status": "CASHOUT_VERIFIED",
+        "panel_1_cashout": "CASHOUT_VERIFIED", "panel_2_cashout": "CASHOUT_VERIFIED",
         "panels": [
-            {"slot": 0, "status": "READY", "auto_bet": "OFF", "auto_cashout": "ON",
+            {"slot": 0, "status": "CASHOUT_VERIFIED", "auto_bet": "OFF", "auto_cashout": "ON",
              "multiplier": "2.00", "observed_at": heartbeat_at},
-            {"slot": 1, "status": "READY", "auto_bet": "OFF", "auto_cashout": "ON",
+            {"slot": 1, "status": "CASHOUT_VERIFIED", "auto_bet": "OFF", "auto_cashout": "ON",
              "multiplier": "2.00", "observed_at": heartbeat_at},
         ],
         "updated_at": heartbeat_at, "error_reason": None,
@@ -28,8 +28,8 @@ def test_collector_api_status_exposes_each_cashout_panel(tmp_path, monkeypatch):
 
     status = manager.health_status(persist=False)
     assert status["cashout_initialization"] == value
-    assert status["cashout_initialization"]["panel_1_cashout"] == "READY"
-    assert status["cashout_initialization"]["panel_2_cashout"] == "READY"
+    assert status["cashout_initialization"]["panel_1_cashout"] == "CASHOUT_VERIFIED"
+    assert status["cashout_initialization"]["panel_2_cashout"] == "CASHOUT_VERIFIED"
 
 
 def test_missing_collector_cashout_status_is_unknown(tmp_path, monkeypatch):
@@ -39,9 +39,9 @@ def test_missing_collector_cashout_status_is_unknown(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "_external_process", lambda: (True, None))
 
     status = manager.health_status(persist=False)
-    assert status["cashout_initialization"]["status"] == "UNKNOWN"
-    assert status["cashout_initialization"]["panel_1_cashout"] == "UNKNOWN"
-    assert status["cashout_initialization"]["panel_2_cashout"] == "UNKNOWN"
+    assert status["cashout_initialization"]["status"] == "CASHOUT_UNAVAILABLE"
+    assert status["cashout_initialization"]["panel_1_cashout"] == "CASHOUT_UNAVAILABLE"
+    assert status["cashout_initialization"]["panel_2_cashout"] == "CASHOUT_UNAVAILABLE"
 
 
 def test_stopped_or_stale_collector_cannot_publish_old_browser_readiness(tmp_path, monkeypatch):
@@ -65,8 +65,8 @@ def test_stopped_or_stale_collector_cannot_publish_old_browser_readiness(tmp_pat
                 "game_frame_state": "READY", "page_role": "SHARED_AVIATOR",
             },
             "cashout_initialization": {
-                "target": "2.00", "auto_bet": "OFF", "status": "READY",
-                "panel_1_cashout": "READY", "panel_2_cashout": "READY",
+            "target": "2.00", "auto_bet": "OFF", "status": "CASHOUT_VERIFIED",
+            "panel_1_cashout": "CASHOUT_VERIFIED", "panel_2_cashout": "CASHOUT_VERIFIED",
             },
         }), encoding="utf-8")
         monkeypatch.setattr(manager, "_external_process",
@@ -82,6 +82,6 @@ def test_stopped_or_stale_collector_cannot_publish_old_browser_readiness(tmp_pat
         assert status["frame_connected"] is False
         assert status["logged_in"] is None
         assert status["authentication_state"] == "UNKNOWN"
-        assert status["cashout_initialization"]["status"] == "UNKNOWN"
-        assert status["cashout_initialization"]["panel_1_cashout"] == "UNKNOWN"
+        assert status["cashout_initialization"]["status"] == "CASHOUT_UNAVAILABLE"
+        assert status["cashout_initialization"]["panel_1_cashout"] == "CASHOUT_UNAVAILABLE"
         assert status["betting_ui_configuration"]["status"] == "UNKNOWN"

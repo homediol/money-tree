@@ -4,6 +4,10 @@ export function hasUsableApplicationState(access) {
   return access === 'granted';
 }
 
+export function isPublicHistoryPage(pathname) {
+  return pathname === '/history' || pathname === '/history/';
+}
+
 export function accessScreenState(access, connectionState) {
   if (hasUsableApplicationState(access)) return connectionState;
   if (access === 'required') return 'AUTH_REQUIRED';

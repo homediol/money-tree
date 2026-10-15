@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/api/live", tags=["live activation"])
 
@@ -29,119 +32,371 @@ async def readiness_read_only(request: Request):
 @router.get("/balance")
 async def balance(request: Request):
     """Read current platform balance from the already-owned CDP context."""
-    observation = await request.app.state.betting_mode._read_platform_balance()
+    try:
+        observation = await request.app.state.betting_mode._read_platform_balance()
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
+        observation = {
+            "verified": False, "balance": None, "currency": None,
+            "session_identity": None, "observed_at": datetime.now(timezone.utc).isoformat(),
+            "source": "existing_cdp_page_read_only", "error": "browser_balance_snapshot_cancelled",
+        }
+    except Exception as exc:
+        observation = {
+            "verified": False, "balance": None, "currency": None,
+            "session_identity": None, "observed_at": datetime.now(timezone.utc).isoformat(),
+            "source": "existing_cdp_page_read_only", "error": str(exc) or "balance_read_failed",
+        }
+    if not isinstance(observation, dict) or observation.get("verified") is not True:
+        value = observation if isinstance(observation, dict) else {
+            "verified": False, "balance": None, "currency": None,
+            "error": "balance_observation_unavailable",
+        }
+        return JSONResponse(status_code=503, content={"ok": False, "platform_balance": value})
     return {"ok": True, "platform_balance": observation}
+
+
+def _readback_age_seconds(value: dict | None, *, now: datetime) -> float | None:
+    if not isinstance(value, dict) or not value.get("observed_at"):
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(value["observed_at"]).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            return None
+        return (now - stamp.astimezone(timezone.utc)).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _manual_setup_configuration(request: Request) -> dict:
+    """Resolve an explicitly saved panel/stake without inventing a selection."""
+    engine = getattr(request.app.state, "rules_engine", None)
+    configuration = engine.ui_setup_configuration() if engine else {
+        "status": "BLOCKED", "reason": "RULES_ENGINE_UNAVAILABLE",
+        "execution_panel": None, "requested_stake": None,
+        "requested_stake_currency": None,
+    }
+    if configuration.get("status") == "CONFIGURED":
+        return {**configuration, "configuration_source": "RULES_ENGINE_SESSION"}
+
+    modes = getattr(request.app.state, "betting_mode", None)
+    read_configuration = getattr(modes, "live_configuration", None)
+    saved = read_configuration() if callable(read_configuration) else None
+    if not isinstance(saved, dict):
+        return configuration
+    panel, stake, currency = saved.get("execution_panel"), saved.get("stake_amount"), saved.get("currency")
+    if (type(panel) is not int or panel not in (0, 1)
+            or isinstance(stake, bool) or not isinstance(stake, (int, float)) or stake <= 0
+            or not isinstance(currency, str) or not currency.strip()):
+        return configuration
+    return {
+        "status": "CONFIGURED", "reason": None, "session_id": None,
+        "execution_panel": panel, "requested_stake": stake,
+        "requested_stake_currency": currency.strip().upper(),
+        "configuration_source": "SAVED_LIVE_CONFIGURATION_DRAFT",
+        "automatic_execution": "OFF",
+    }
+
+
+def _manual_setup_observation(snapshot, configuration: dict, previous: dict | None = None) -> tuple[dict, dict]:
+    from app.betting.cashout import inspect_cashout_configuration
+    from app.live import MANUAL_SETUP_READBACK_MAX_AGE_SECONDS
+
+    current_time = datetime.now(timezone.utc)
+    observed_at = current_time.isoformat()
+    panel_slot = configuration.get("execution_panel")
+    panel_states = {row.get("slot"): row for row in (snapshot.bet_panel_states if snapshot and snapshot.ok else [])}
+    frame_identity = next((row.get("frame_identity") for row in panel_states.values()
+                          if row.get("frame_identity")), None)
+    auth_ok = bool(snapshot and snapshot.authentication_state == "AUTHENTICATED")
+    page_ok = bool(snapshot and snapshot.page_role == "SHARED_AVIATOR"
+                   and snapshot.browser_topology_verified is True)
+    if (not auth_ok or not page_ok or not frame_identity
+            or not isinstance(previous, dict)
+            or previous.get("frame_identity") != frame_identity):
+        previous = {}
+    else:
+        previous = dict(previous)
+
+    panel = next((row for row in snapshot.bet_panel_states
+                  if row.get("slot") == panel_slot), None) if snapshot and snapshot.ok else None
+    stake_input = next((row for row in snapshot.stake_inputs
+                        if row.get("slot") == panel_slot), None) if snapshot and snapshot.ok else None
+    button_amount = None
+    button_text = panel.get("button_text") if panel else None
+    if button_text:
+        match = re.search(r"^Bet\s+([\d,]+(?:\.\d+)?)", str(button_text), re.IGNORECASE)
+        if match:
+            try:
+                button_amount = float(match.group(1).replace(",", ""))
+            except ValueError:
+                button_amount = None
+    expected_stake = configuration.get("requested_stake")
+    expected_currency = str(configuration.get("requested_stake_currency") or "").upper() or None
+    observed_stake = None
+    if stake_input and stake_input.get("value") not in (None, ""):
+        try:
+            observed_stake = float(stake_input["value"])
+        except (TypeError, ValueError):
+            observed_stake = None
+    observed_currency = (str(panel.get("currency_hint") or snapshot.balance_currency or "").upper()
+                         if panel and snapshot else "") or None
+    account_currency = str(snapshot.balance_currency or "").upper() if snapshot else ""
+    pending_states = [row.get("pending_bet_state", "UNKNOWN") for row in panel_states.values()]
+    all_clear = len(pending_states) == 2 and all(state == "CLEAR" for state in pending_states)
+    # A currently visible stake input and its associated button label are
+    # sufficient read-only evidence even when Auto is the selected tab. Do
+    # not require the operator to switch tabs just to verify the value.
+    panel_evidence = panel.get("evidence") if isinstance(panel, dict) else {}
+    button_visible = (isinstance(panel, dict) and panel.get("button_visible") is True
+                      or isinstance(panel_evidence, dict)
+                      and panel_evidence.get("button_visible") is True)
+    direct_stake_read = bool(auth_ok and page_ok and panel
+                             and button_visible
+                             and stake_input and stake_input.get("visible") is True and all_clear)
+    cache_matches = (previous.get("execution_panel") == panel_slot
+                     and previous.get("expected_stake") == expected_stake
+                     and previous.get("expected_currency") == expected_currency
+                     and previous.get("account_currency") == account_currency)
+    cached_stake = previous.get("stake") if cache_matches else None
+    cached_stake_age = _readback_age_seconds(cached_stake, now=current_time)
+    if direct_stake_read:
+        if (observed_stake is None or button_amount is None or not account_currency or not observed_currency):
+            stake_status = "UNAVAILABLE"
+        elif (expected_stake is not None and expected_currency
+              and observed_stake == float(expected_stake) == button_amount
+              and observed_currency == expected_currency and account_currency == expected_currency):
+            stake_status = "STAKE_VERIFIED"
+        else:
+            stake_status = "STAKE_MISMATCH"
+        stake_readback = {
+            "status": stake_status, "observed_stake": observed_stake,
+            "displayed_button_stake": button_amount, "button_text": panel.get("button_text"),
+            "observed_currency": observed_currency,
+            "minimum_stake": stake_input.get("minAttribute"), "observed_at": observed_at,
+            "frame_identity": frame_identity, "source": "SHARED_AVIATOR_FRAME_READ_ONLY",
+        }
+    elif (all_clear and panel_slot in (0, 1) and cached_stake_age is not None
+          and -5 <= cached_stake_age <= MANUAL_SETUP_READBACK_MAX_AGE_SECONDS):
+        stake_readback = {**cached_stake, "readback_age_seconds": round(max(0.0, cached_stake_age), 3),
+                          "source": "CACHED_READ_ONLY_PLATFORM_READBACK"}
+        stake_status = stake_readback["status"]
+        observed_stake = stake_readback.get("observed_stake")
+        button_amount = stake_readback.get("displayed_button_stake")
+        button_text = stake_readback.get("button_text")
+        observed_currency = stake_readback.get("observed_currency")
+    else:
+        stake_readback = None
+        stake_status = "UNAVAILABLE"
+
+    next_readbacks = {
+        "frame_identity": frame_identity, "execution_panel": panel_slot,
+        "expected_stake": expected_stake, "expected_currency": expected_currency,
+        "account_currency": account_currency, "cashout_panels": {},
+        "stake": stake_readback if direct_stake_read else cached_stake if stake_readback else None,
+    }
+
+    controls = {row.get("slot"): row for row in (snapshot.cashout_controls if snapshot and snapshot.ok else [])}
+    inspected_panels = []
+    for slot in (0, 1):
+        control = controls.get(slot)
+        panel_state = panel_states.get(slot) or {}
+        inspected = inspect_cashout_configuration(control)
+        auto_bet_off = bool(control and control.get("autoBetEnabled") is False)
+        direct_cashout_read = bool(auth_ok and page_ok and control and control.get("autoTabSelected") is True)
+        # Auto-tab values are a read-only configuration observation. A queued
+        # or active bet blocks execution readiness, but it must not erase a
+        # valid settings readback; that separate blocker is reported below in
+        # the pending-bet checklist and panel state.
+        if direct_cashout_read:
+            if (control.get("inputVisible") is not True or inspected.get("enabled") is None
+                    or control.get("autoBetEnabled") is None or inspected.get("displayed_value") is None):
+                status = "CASHOUT_UNAVAILABLE"
+            elif inspected.get("configuration_valid") and auto_bet_off:
+                status = "CASHOUT_VERIFIED"
+            else:
+                status = "CASHOUT_MISMATCH"
+            cashout_readback = {
+                "panel_id": f"PANEL_{slot + 1}", "status": status,
+                "auto_tab_selected": control.get("autoTabSelected"),
+                "auto_bet": "OFF" if auto_bet_off else "ON" if control.get("autoBetEnabled") is True else "UNAVAILABLE",
+                "auto_cashout": "ON" if inspected.get("enabled") is True else "OFF" if inspected.get("enabled") is False else "UNAVAILABLE",
+                "multiplier": inspected.get("displayed_value"),
+                "platform_acknowledged": inspected.get("platform_acknowledged"),
+                "observed_at": observed_at, "frame_identity": frame_identity,
+                "source": "SHARED_AVIATOR_FRAME_READ_ONLY",
+            }
+        else:
+            cached = (previous.get("cashout_panels") or {}).get(str(slot))
+            cached_age = _readback_age_seconds(cached, now=current_time)
+            if (cached_age is not None and -5 <= cached_age <= MANUAL_SETUP_READBACK_MAX_AGE_SECONDS
+                    and cached.get("frame_identity") == frame_identity):
+                cashout_readback = {**cached, "readback_age_seconds": round(max(0.0, cached_age), 3),
+                                    "source": "CACHED_READ_ONLY_PLATFORM_READBACK"}
+                status = cashout_readback["status"]
+            else:
+                cashout_readback = None
+                status = "CASHOUT_UNAVAILABLE"
+        if not direct_cashout_read and cashout_readback:
+            next_readbacks["cashout_panels"][str(slot)] = cached
+        elif direct_cashout_read and cashout_readback:
+            next_readbacks["cashout_panels"][str(slot)] = cashout_readback
+        if cashout_readback:
+            panel_row = {**cashout_readback,
+                         "pending_bet_state": panel_state.get("pending_bet_state", "UNKNOWN"),
+                         "failures": [] if status == "CASHOUT_VERIFIED" else list(inspected.get("failures", []))}
+        else:
+            panel_row = {
+                "panel_id": f"PANEL_{slot + 1}", "status": status,
+                "auto_tab_selected": control.get("autoTabSelected") if control else None,
+                "auto_bet": "OFF" if auto_bet_off else "ON" if control and control.get("autoBetEnabled") is True else "UNAVAILABLE",
+                "auto_cashout": "ON" if inspected.get("enabled") is True else "OFF" if inspected.get("enabled") is False else "UNAVAILABLE",
+                "multiplier": inspected.get("displayed_value"), "platform_acknowledged": inspected.get("platform_acknowledged"),
+                "observed_at": observed_at, "frame_identity": frame_identity,
+                "source": "SHARED_AVIATOR_FRAME_READ_ONLY",
+                "pending_bet_state": panel_state.get("pending_bet_state", "UNKNOWN"),
+                "failures": (list(inspected.get("failures", []))
+                    + ([] if panel_state.get("pending_bet_state") == "CLEAR"
+                       else ["ACTIVE_OR_PENDING_BET" if panel_state.get("pending_bet_state") == "PENDING"
+                             else "PENDING_BET_STATE_UNAVAILABLE"])),
+            }
+        inspected_panels.append(panel_row)
+
+    currency_ok = bool(snapshot and snapshot.balance_currency and auth_ok)
+    balance_ok = bool(snapshot and snapshot.balance is not None and snapshot.balance_currency
+                      and snapshot.balance_observed_at and auth_ok)
+    selected_cashouts = ([inspected_panels[panel_slot]] if panel_slot in (0, 1)
+                         else inspected_panels)
+
+    def all_panel_status(field: str, expected: str) -> str:
+        values = [row.get(field) for row in selected_cashouts]
+        if not values:
+            return "UNAVAILABLE"
+        if any(value not in (expected, "UNAVAILABLE", None) for value in values):
+            return "MISMATCH"
+        return "VERIFIED" if all(value == expected for value in values) else "UNAVAILABLE"
+
+    cashout_enabled_status = all_panel_status("auto_cashout", "ON")
+    multiplier_values = [row.get("multiplier") for row in selected_cashouts]
+    multiplier_status = ("MISMATCH" if any(value is not None and value != "2.00" for value in multiplier_values)
+                         else "VERIFIED" if multiplier_values and all(value == "2.00" for value in multiplier_values)
+                         else "UNAVAILABLE")
+    auto_bet_status = all_panel_status("auto_bet", "OFF")
+    checklist = [
+        {"item": "Browser authenticated", "status": "VERIFIED" if auth_ok else "UNAVAILABLE"},
+        {"item": "Aviator game opened", "status": "VERIFIED" if page_ok else "UNAVAILABLE"},
+        {"item": "Execution panel selected", "status": "VERIFIED" if panel_slot in (0, 1) else "REQUIRED"},
+        {"item": "Stake manually entered", "status": stake_status},
+        {"item": "Auto Cashout manually enabled", "status": cashout_enabled_status},
+        {"item": "Cashout multiplier 2.00x", "status": multiplier_status},
+        {"item": "Auto Bet OFF", "status": auto_bet_status},
+        {"item": "Account currency verified", "status": "VERIFIED" if currency_ok else "UNAVAILABLE"},
+        {"item": "Balance verified", "status": "VERIFIED" if balance_ok else "UNAVAILABLE"},
+        {"item": "No active or pending bet", "status": "VERIFIED" if all_clear else "BLOCKED" if "PENDING" in pending_states else "UNAVAILABLE"},
+    ]
+    return {
+        "status": "VERIFIED" if all(item["status"] == "VERIFIED" for item in checklist) else "REVIEW_REQUIRED",
+        "observed_at": observed_at, "source": "SHARED_AVIATOR_FRAME_READ_ONLY",
+        "authentication_state": snapshot.authentication_state if snapshot else "UNKNOWN",
+        "page_role": snapshot.page_role if snapshot else "UNKNOWN",
+        "browser_topology_verified": snapshot.browser_topology_verified is True if snapshot else False,
+        "selected_panel": panel_slot + 1 if panel_slot in (0, 1) else None,
+        "configuration_source": configuration.get("configuration_source"),
+        "expected_stake": expected_stake, "expected_currency": expected_currency,
+        "observed_stake": observed_stake, "displayed_button_stake": button_amount,
+        "button_text": button_text, "observed_currency": observed_currency,
+        "stake_readback_observed_at": stake_readback.get("observed_at") if stake_readback else None,
+        "stake_readback_source": stake_readback.get("source") if stake_readback else None,
+        "minimum_stake": stake_readback.get("minimum_stake") if stake_readback else stake_input.get("minAttribute") if stake_input else None,
+        "account_balance": snapshot.balance if snapshot else None,
+        "account_currency": snapshot.balance_currency if snapshot else None,
+        "balance_observed_at": snapshot.balance_observed_at if snapshot else None,
+        "pending_bet_states": pending_states,
+        "cashout_panels": inspected_panels, "checklist": checklist,
+        "betting_controls": {
+            "status": "READY" if (direct_stake_read and panel is not None
+                                     and stake_status == "STAKE_VERIFIED" and all_clear) else
+                "BLOCKED" if direct_stake_read and stake_status == "STAKE_MISMATCH" else "UNKNOWN",
+            "panels": snapshot.bet_panel_states if snapshot else [],
+            "stake_inputs": snapshot.stake_inputs if snapshot else [],
+            "bet_buttons": snapshot.place_bet_buttons if snapshot else [],
+            "betting_window": snapshot.betting_window if snapshot else {"state": "UNKNOWN"},
+            "observed_at": observed_at,
+        },
+        "platform_acknowledged": None,
+        "financial_action_submitted": False,
+    }, next_readbacks
+
+
+def _observe_manual_setup(request: Request, snapshot, configuration: dict) -> dict:
+    live_manager = live(request)
+    observation, readbacks = _manual_setup_observation(
+        snapshot, configuration, getattr(live_manager, "manual_setup_readbacks", None))
+    live_manager.manual_setup_readbacks = readbacks
+    return observation
+
+
+@router.get("/manual-setup")
+async def manual_setup(request: Request):
+    from app.betting.browser_client import AviatorBrowserClient
+
+    configuration = _manual_setup_configuration(request)
+    client = AviatorBrowserClient(request.app.state.betting.settings)
+    try:
+        snapshot = await client.snapshot()
+        return {"ok": True, "manual_setup": _observe_manual_setup(request, snapshot, configuration)}
+    except Exception as exc:
+        return {"ok": False, "manual_setup": _observe_manual_setup(request, None, configuration),
+                "error": f"READ_ONLY_OBSERVATION_UNAVAILABLE:{type(exc).__name__}"}
+    finally:
+        await client.close()
+
+
+async def _read_cashout_verification(request: Request):
+    from app.betting.browser_client import AviatorBrowserClient
+
+    configuration = _manual_setup_configuration(request)
+    client = AviatorBrowserClient(request.app.state.betting.settings)
+    try:
+        snapshot = await client.snapshot()
+        observation = _observe_manual_setup(request, snapshot, configuration)
+        panels = [{**row, "panel": int(row["panel_id"][-1])} for row in observation["cashout_panels"]]
+        panel_observation_times = []
+        for row in panels:
+            try:
+                stamp = datetime.fromisoformat(str(row.get("observed_at") or "").replace("Z", "+00:00"))
+                if stamp.tzinfo is not None:
+                    panel_observation_times.append(stamp.astimezone(timezone.utc))
+            except (TypeError, ValueError, OverflowError):
+                continue
+        cashout_observed_at = min(panel_observation_times).isoformat() if panel_observation_times else observation["observed_at"]
+        status = "CASHOUT_VERIFIED" if (len(panels) == 2
+                                          and all(row["status"] == "CASHOUT_VERIFIED" for row in panels)) else \
+            "CASHOUT_MISMATCH" if any(row["status"] == "CASHOUT_MISMATCH" for row in panels) else "CASHOUT_UNAVAILABLE"
+        result = {"status": status, "observed_at": cashout_observed_at,
+                  "source": "SHARED_AVIATOR_FRAME_READBACK", "target": "2.00", "panels": panels,
+                  "selected_panel": observation["selected_panel"],
+                  "page_role": observation["page_role"],
+                  "browser_topology_verified": observation["browser_topology_verified"],
+                  "betting_controls": observation["betting_controls"],
+                  "platform_acknowledged": None, "financial_action_submitted": False}
+        request.app.state.live.last_cashout_refresh = result
+        return {"ok": True, "cashout_verification": result, "manual_setup": observation}
+    finally:
+        await client.close()
+
+
+@router.get("/cashout/verification")
+async def cashout_verification(request: Request):
+    return await _read_cashout_verification(request)
 
 
 @router.post("/cashout/refresh")
 async def refresh_cashout(request: Request):
-    """Refresh both Auto Cash Out controls on the one owned Aviator frame.
-
-    This operation only changes the two settings panels. It never submits a
-    bet, and refuses to proceed if either panel has an active/unknown bet or
-    either Auto Bet switch is not verified OFF.
-    """
-    live_manager = request.app.state.live
-    mode_manager = request.app.state.betting_mode
-    if live_manager.live_active or mode_manager.mode == "LIVE_REAL":
-        raise HTTPException(status_code=409, detail={
-            "reason": "CASHOUT_REFRESH_REQUIRES_LIVE_SESSION_STOPPED",
-            "message": "Stop LIVE_REAL before changing platform controls.",
-        })
-
-    from app.betting.browser_client import AviatorBrowserClient, BrowserUiError
-    from app.betting.cashout import inspect_cashout_configuration
-
-    client = AviatorBrowserClient(request.app.state.betting.settings)
-    try:
-        before = await client.snapshot()
-        client._require_clear_two_panel_state(before)
-        client._require_auto_bet_off_two_panel_state(before)
-
-        for panel in (0, 1):
-            await client.set_auto_cashout(target=2.00, panel=panel)
-
-        final_snapshot = await client.snapshot()
-        client._require_clear_two_panel_state(final_snapshot)
-        client._require_auto_bet_off_two_panel_state(final_snapshot)
-        controls = {item.get("slot"): item for item in final_snapshot.cashout_controls}
-        panels: list[dict] = []
-        for panel in (0, 1):
-            control = controls.get(panel)
-            inspected = inspect_cashout_configuration(control)
-            auto_bet_off = bool(control and control.get("autoBetEnabled") is False)
-            ready = bool(inspected.get("configuration_valid") and auto_bet_off)
-            panels.append({
-                "panel": panel + 1,
-                "status": "READY" if ready else "FAILED",
-                "auto_tab_selected": control.get("autoTabSelected") if control else None,
-                "auto_bet": "OFF" if auto_bet_off else "UNVERIFIED",
-                "auto_cashout": "ON" if inspected.get("enabled") is True else
-                    "OFF" if inspected.get("enabled") is False else "UNVERIFIED",
-                "multiplier": inspected.get("displayed_value"),
-                "active_or_pending_bet": "CLEAR",
-                "platform_acknowledged": inspected.get("platform_acknowledged"),
-                "failures": inspected.get("failures", []),
-            })
-        observed_at = datetime.now(timezone.utc).isoformat()
-        betting_controls = {
-            "status": "READY" if len(final_snapshot.bet_panel_states) == 2
-                and len(final_snapshot.stake_inputs) == 2
-                and len(final_snapshot.place_bet_buttons) == 2
-                and all(row.get("pending_bet_state") == "CLEAR"
-                        and row.get("button_visible") is True
-                        and row.get("stake_input_visible") is True
-                        for row in final_snapshot.bet_panel_states)
-                else "UNAVAILABLE",
-            "panels": final_snapshot.bet_panel_states,
-            "stake_inputs": final_snapshot.stake_inputs,
-            "bet_buttons": final_snapshot.place_bet_buttons,
-            "betting_window": final_snapshot.betting_window,
-            "observed_at": observed_at,
-        }
-        status = "READY" if all(panel["status"] == "READY" for panel in panels) else "FAILED"
-        readback = {
-            "status": status,
-            "observed_at": observed_at,
-            "source": "SHARED_AVIATOR_FRAME_READBACK",
-            "page_role": final_snapshot.page_role,
-            "authentication_state": final_snapshot.authentication_state,
-            "browser_topology_verified": final_snapshot.browser_topology_verified,
-            "target": "2.00",
-            "auto_bet": "OFF" if status == "READY" else "UNVERIFIED",
-            "panels": panels,
-            "betting_controls": betting_controls,
-            "platform_acknowledged": None,
-            "financial_action_submitted": False,
-        }
-        live_manager.last_cashout_refresh = readback
-        if status != "READY":
-            raise HTTPException(status_code=409, detail={
-                "reason": "CASHOUT_CONFIGURATION_READBACK_FAILED",
-                "cashout_refresh": readback,
-            })
-        return {"ok": True, "cashout_refresh": readback}
-    except HTTPException:
-        raise
-    except BrowserUiError as exc:
-        failure = {
-            "status": "FAILED", "observed_at": datetime.now(timezone.utc).isoformat(),
-            "source": "SHARED_AVIATOR_FRAME_READBACK", "reason": str(exc),
-            "platform_acknowledged": None, "financial_action_submitted": False,
-        }
-        live_manager.last_cashout_refresh = failure
-        raise HTTPException(status_code=409, detail=failure) from exc
-    except Exception as exc:
-        failure = {
-            "status": "FAILED", "observed_at": datetime.now(timezone.utc).isoformat(),
-            "source": "SHARED_AVIATOR_FRAME_READBACK",
-            "reason": f"CASHOUT_REFRESH_FAILED:{type(exc).__name__}",
-            "platform_acknowledged": None, "financial_action_submitted": False,
-        }
-        live_manager.last_cashout_refresh = failure
-        raise HTTPException(status_code=503, detail=failure) from exc
-    finally:
-        await client.close()
+    """Deprecated compatibility route; refreshes read-only evidence only."""
+    return await _read_cashout_verification(request)
 
 
 @router.get("/risk")

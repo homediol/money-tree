@@ -1,15 +1,19 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from app.api.rules_engine import dashboard
 from app.betting.cashout import MockCashoutReadAdapter, inspect_cashout_configuration
 from app.betting.browser_adapters import RealBrowserBackend
 from app.betting.platform_state import (
     PlatformBetState,
     classify_betting_window,
+    classify_round_phase,
     classify_platform_bet_result,
     classify_platform_bet_state,
     detect_insufficient_balance,
+    observe_betting_deadline,
 )
 from app.betting.selectors import GameSnapshot, parse_balance_display
 from app.database.repository import Repository
@@ -59,13 +63,13 @@ def test_mock_cashout_adapter_is_read_only_and_reports_missing_panel():
 def test_real_browser_backend_delegates_practice_reads_and_writes_to_guarded_client():
     class MockUiClient:
         async def set_auto_cashout(self, *, target, panel):
-            return {"ok": target == 2.0 and panel == 0, "platform_acknowledged": None}
+            pytest.fail("read-only adapter must not call the browser setter")
 
         async def read_auto_cashout(self, *, panel):
             return {"verified": False, "panel": panel}
 
         async def set_stake_input(self, *, amount, panel):
-            return {"ok": amount == 100 and panel == 0, "submitted": False}
+            pytest.fail("read-only adapter must not call the browser setter")
 
         async def read_stake_input(self, *, panel):
             return {"found": panel == 0, "input": {"value": "100"}}
@@ -84,9 +88,16 @@ def test_real_browser_backend_delegates_practice_reads_and_writes_to_guarded_cli
 
     async def go():
         adapter = RealBrowserBackend(MockUiClient(), allow_real_placement=False)
-        assert (await adapter.set_auto_cashout(2.0))["ok"] is True
+        capabilities = adapter.verified_capabilities()
+        assert capabilities["bet_submission"] is False
+        assert capabilities["acceptance_receipt"] is False
+        assert capabilities["settlement_receipt"] is False
+        cashout_write = await adapter.set_auto_cashout(2.0)
+        assert cashout_write["status"] == "CASHOUT_UNAVAILABLE"
+        assert cashout_write["mutation_performed"] is False
         assert (await adapter.read_auto_cashout())["verified"] is False
-        assert (await adapter.set_stake_input(100))["submitted"] is False
+        stake_write = await adapter.set_stake_input(100)
+        assert stake_write["mutation_performed"] is False
         assert (await adapter.read_stake_input())["input"]["value"] == "100"
         assert (await adapter.detect_bet_button())["interaction_performed"] is False
         assert (await adapter.detect_betting_window())["state"] == "UNKNOWN"
@@ -118,9 +129,9 @@ def test_snapshot_retains_account_identity_and_cashout_observation_without_claim
             "autoTabSelected": True,
             "autoCashoutEnabled": True, "platformAcknowledged": None}],
         "bettingWindow": {"state": "BETTING_OPEN", "evidence": {
-            "source": "AVIATOR_BETTING_PANEL_READ_ONLY",
-            "selector": ".btn-success.bet", "panel_index": 0, "button_visible": True,
-            "button_enabled": True, "stake_input_visible": True, "bet_tab_active": True,
+            "source": "AVIATOR_EXPLICIT_BETTING_PHASE_DOM", "panel_index": 0,
+            "phase_indicator_visible": True, "explicit_window_state": "BETTING_OPEN",
+            "text": "Place your bets",
         }},
     })
 
@@ -130,18 +141,37 @@ def test_snapshot_retains_account_identity_and_cashout_observation_without_claim
     assert snapshot.betting_window["state"] == "BETTING_OPEN"
 
 
-def test_betting_window_requires_owned_visible_controls_and_button_state():
-    base = {"source": "AVIATOR_BETTING_PANEL_READ_ONLY",
-            "selector": ".btn-success.bet", "panel_index": 0, "button_visible": True,
-            "button_enabled": True, "stake_input_visible": True, "bet_tab_active": True}
+def test_betting_window_requires_explicit_visible_phase_not_just_an_enabled_bet_button():
+    base = {"source": "AVIATOR_EXPLICIT_BETTING_PHASE_DOM", "panel_index": 0,
+            "phase_indicator_visible": True, "explicit_window_state": "BETTING_OPEN",
+            "text": "Place your bets"}
     assert classify_betting_window(base) == "BETTING_OPEN"
-    assert classify_betting_window({**base, "button_enabled": False}) == "BETTING_CLOSED"
-    assert classify_betting_window({**base, "bet_tab_active": False}) == "UNKNOWN"
+    assert classify_betting_window({**base, "explicit_window_state": "BETTING_CLOSED"}) == "BETTING_CLOSED"
+    assert classify_betting_window({**base, "phase_indicator_visible": False}) == "UNKNOWN"
     assert classify_betting_window({**base, "source": "arbitrary-dom"}) == "UNKNOWN"
+    button_only = {"source": "AVIATOR_BETTING_PANEL_READ_ONLY", "panel_index": 0,
+                   "button_visible": True, "button_enabled": True,
+                   "stake_input_visible": True, "bet_tab_active": True}
+    assert classify_betting_window(button_only) == "UNKNOWN"
     untrusted_snapshot = GameSnapshot.from_value({"ok": True, "bettingWindow": {
         "state": "BETTING_OPEN", "evidence": {**base, "source": "arbitrary-dom"},
     }})
     assert untrusted_snapshot.betting_window["state"] == "UNKNOWN"
+
+
+def test_round_phase_and_deadline_require_explicit_visible_frame_evidence():
+    assert classify_round_phase() == "UNKNOWN"
+    assert classify_round_phase(phase_hints=[{"txt": "Waiting for next round", "visible": True}]) == \
+        "WAITING_FOR_NEXT_ROUND"
+    assert classify_round_phase(status_messages=["Round in progress"]) == "ROUND_IN_PROGRESS"
+    assert classify_round_phase(phase_hints=[{"txt": "Round completed", "visible": False}]) == "UNKNOWN"
+    deadline = observe_betting_deadline(
+        status_messages=[{"text": "Betting closes in 4.5 seconds", "visible": True}],
+        observed_at="2026-10-14T20:00:00+00:00",
+    )
+    assert deadline["status"] == "VERIFIED"
+    assert deadline["deadline_at"] == "2026-10-14T20:00:04.500000+00:00"
+    assert observe_betting_deadline(status_messages=["Betting closes in 500 seconds"])["status"] == "UNKNOWN"
 
 
 def test_insufficient_balance_requires_explicit_observed_response_text():

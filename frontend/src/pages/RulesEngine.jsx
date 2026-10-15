@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, Database, ListChecks, ShieldCheck } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api } from '../services/api.js';
-import LiveActivation from './LiveActivation.jsx';
+import { currentExecutionIntents, currentSelections } from '../services/rulesEngineView.js';
 
 const MODE_LABELS = {
   START_CHECK: 'Start a Check',
@@ -46,6 +47,7 @@ export default function RulesEngine() {
   const [presetChoice, setPresetChoice] = useState('');
   const [stake, setStake] = useState(100);
   const [executionPanel, setExecutionPanel] = useState(null);
+  const [uiStakeBif, setUiStakeBif] = useState('');
   const [winEnabled, setWinEnabled] = useState(false);
   const [winCount, setWinCount] = useState(1);
   const [lossEnabled, setLossEnabled] = useState(false);
@@ -82,6 +84,7 @@ export default function RulesEngine() {
       if (selectedSession?.session_id) {
         setExecutionPanel(Number.isInteger(selectedSession.execution_panel)
           && [0, 1].includes(selectedSession.execution_panel) ? selectedSession.execution_panel : null);
+        setUiStakeBif(selectedSession.ui_fixed_stake_bif == null ? '' : String(selectedSession.ui_fixed_stake_bif));
         const detail = await api.get(`/api/rules-engine/sessions/${encodeURIComponent(selectedSession.session_id)}`);
         setDetailSession(detail.data);
       } else setDetailSession(null);
@@ -115,6 +118,27 @@ export default function RulesEngine() {
   const latestLabel = current
     ? `${Number(current.multiplier).toFixed(2)}x${current.round_index != null ? ` · #${current.round_index}` : ''}`
     : 'NONE';
+  const latestEvaluation = detailSession?.evaluations?.slice(-1)[0] || null;
+  const executionIntents = currentExecutionIntents(dashboard?.execution_intents || []);
+  const latestIntent = executionIntents[0] || null;
+  const targetRound = latestIntent?.target_round_index
+    ?? latestEvaluation?.target_round?.roundIndex ?? 'UNKNOWN';
+  const selectedPanel = Number.isInteger(activeSession?.execution_panel)
+    ? `Panel ${activeSession.execution_panel + 1}`
+    : 'UNSELECTED';
+  const hasConfiguredExecutionPanel = Number.isInteger(executionPanel) && [0, 1].includes(executionPanel);
+  const hasValidUiStake = Number.isInteger(Number(uiStakeBif)) && Number(uiStakeBif) >= 1;
+  const sourceObservedAt = latestEvaluation?.source_round?.observed_at
+    || latestEvaluation?.source_round?.timestamp;
+  const decisionLatencyMs = sourceObservedAt && latestEvaluation?.evaluated_at
+    ? Date.parse(latestEvaluation.evaluated_at) - Date.parse(sourceObservedAt) : null;
+  const shadowExecutorRunning = executionMode?.shadow_running === true;
+  const runMode = liveModeActive ? 'LIVE_REAL · execution disabled'
+    : shadowExecutorRunning ? 'SHADOW_REALISTIC · paper executor running'
+      : activeSession ? 'SHADOW_REALISTIC · rules observing; executor stopped'
+        : executionMode?.mode || 'UNCONFIGURED';
+  const panelObservations = aviatorReadiness?.panel_observations || [];
+  const cashoutPanelRows = aviatorReadiness?.cashout_initialization?.panels || [];
 
   const withBusy = async (operation, action = 'request') => {
     setBusy(true);
@@ -155,6 +179,7 @@ export default function RulesEngine() {
     setStake(options.fixed_stake_rwf ?? 100);
     setExecutionPanel(Number.isInteger(options.execution_panel) && [0, 1].includes(options.execution_panel)
       ? options.execution_panel : null);
+    setUiStakeBif(options.ui_fixed_stake_bif == null ? '' : String(options.ui_fixed_stake_bif));
     setWinEnabled(Boolean(options.win_limit_enabled));
     setWinCount(options.win_limit_count ?? 1);
     setLossEnabled(Boolean(options.loss_limit_enabled));
@@ -178,9 +203,21 @@ export default function RulesEngine() {
     setError(disabled.length ? `Preset loaded. Enable its disabled rules before starting: ${disabled.join(', ')}` : '');
   };
 
-  const start = () => withBusy(async () => {
+  const start = () => {
+    const hasPanel = Number.isInteger(executionPanel) && [0, 1].includes(executionPanel);
+    const parsedUiStake = Number(uiStakeBif);
+    if (!hasPanel) {
+      setError('Select Panel 1 or Panel 2 before starting this session.');
+      return;
+    }
+    if (!Number.isInteger(parsedUiStake) || parsedUiStake < 1) {
+      setError('Enter a positive whole-number BIF stake for the selected panel.');
+      return;
+    }
+    return withBusy(async () => {
     const participatingRuleIds = selectedIds.filter((id) => availableRules.find((rule) => rule.rule_id === id)?.enabled);
-    const optionalPanel = [0, 1].includes(executionPanel) ? { execution_panel: executionPanel } : {};
+    const optionalPanel = hasPanel ? { execution_panel: executionPanel,
+      ui_fixed_stake_bif: parsedUiStake, ui_stake_currency: 'BIF' } : {};
     const reconciledOptions = {
       reconciled_profit_target_enabled: reconciledProfitEnabled,
       reconciled_profit_target_rwf: Number(reconciledProfitTarget),
@@ -210,6 +247,7 @@ export default function RulesEngine() {
         active_session: response.data } : previous);
     }
   }, 'start-shadow');
+  };
 
   const sessionAction = (sessionId, action) => withBusy(() =>
     api.post(`/api/rules-engine/sessions/${encodeURIComponent(sessionId)}/${action}`), action);
@@ -217,12 +255,18 @@ export default function RulesEngine() {
   const disarmLive = () => withBusy(() => api.post('/api/live/stop'));
   const emergencyStop = () => withBusy(() => api.post('/api/live/emergency-stop'));
   const readBalance = () => withBusy(() => api.get('/api/live/balance'));
-  const refreshCashout = () => withBusy(() => api.post('/api/live/cashout/refresh'), 'cashout-refresh');
+  const refreshCashout = () => withBusy(() => api.get('/api/live/cashout/verification'), 'cashout-refresh');
+  const startShadowExecutor = () => withBusy(
+    () => api.post('/api/rules-engine/shadow-executor/start'), 'shadow-executor-start');
 
   const savePreset = () => withBusy(async () => {
     const options = { window_size: 50, max_observed_rounds: Number(maxObservedRounds),
       auto_next_check_enabled: autoNext,
       ...([0, 1].includes(executionPanel) ? { execution_panel: executionPanel } : {}) };
+    if ([0, 1].includes(executionPanel) && uiStakeBif !== '') {
+      options.ui_fixed_stake_bif = Number(uiStakeBif);
+      options.ui_stake_currency = 'BIF';
+    }
     Object.assign(options, {
       reconciled_profit_target_enabled: reconciledProfitEnabled,
       reconciled_profit_target_rwf: Number(reconciledProfitTarget),
@@ -249,9 +293,9 @@ export default function RulesEngine() {
   });
 
   const recentEvaluations = detailSession?.evaluations?.slice(-12).reverse() || [];
-  const allSelections = detailSession?.mode === 'ALL_RULES_TOGETHER'
+  const allSelections = currentSelections(detailSession?.mode === 'ALL_RULES_TOGETHER'
     ? [...(detailSession.selections || [])].reverse()
-    : Object.values(detailSession?.rule_selections || {}).flat().reverse();
+    : Object.values(detailSession?.rule_selections || {}).flat().reverse());
 
   return <main className="space-y-6">
     <header className="flex flex-wrap items-end justify-between gap-4">
@@ -274,21 +318,36 @@ export default function RulesEngine() {
         </div>
       </div>
 
-      <label className="min-w-52 text-sm text-zinc-300">Optional UI setup panel
-        <select aria-label="Optional UI setup panel" value={executionPanel ?? ''}
-          onChange={(event) => setExecutionPanel(event.target.value === '' ? null : Number(event.target.value))}
+      <label className="min-w-52 text-sm text-zinc-300">Execution panel (required)
+        <select aria-label="Execution panel (required)" value={executionPanel ?? ''}
+          onChange={(event) => {
+            const selected = event.target.value === '' ? null : Number(event.target.value);
+            setExecutionPanel(selected);
+            if (selected === null) setUiStakeBif('');
+          }}
           disabled={busy || Boolean(activeSession)}
           className="mt-1 block w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100">
           <option value="">Choose one panel</option>
           <option value={0}>Panel 1</option>
           <option value={1}>Panel 2</option>
         </select>
-        <span className="mt-1 block text-xs text-zinc-500">Optional for SHADOW. This only selects a panel for later stake synchronization.</span>
+        <span className="mt-1 block text-xs text-zinc-500">Choose exactly one panel. Its fixed BIF stake is set up once and read back before it can be used; this does not place a bet.</span>
+      </label>
+      <label className="min-w-40 text-sm text-zinc-300">Fixed UI stake (BIF)
+        <input aria-label="Fixed UI stake in BIF" inputMode="numeric" type="number" min="1" step="1"
+          value={uiStakeBif} onChange={(event) => setUiStakeBif(event.target.value)}
+          disabled={busy || Boolean(activeSession) || ![0, 1].includes(executionPanel)}
+          className="mt-1 block w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100" />
+        <span className="mt-1 block text-xs text-zinc-500">Read back on the selected panel after the collector verifies both panels are clear. This does not place a bet.</span>
       </label>
     </header>
 
-    <section aria-label="LIVE REAL session controls">
-      <LiveActivation />
+    <section aria-label="LIVE REAL activation location" className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+      <h2 className="text-sm font-semibold text-zinc-100">LIVE_REAL activation review</h2>
+      <p className="mt-1 text-sm text-zinc-400">Configuration and selected-panel readback are managed once under Operations &amp; Recovery.</p>
+      <Link to="/operations" className="mt-3 inline-flex rounded-lg border border-zinc-700 px-3 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-800">
+        Open Operations &amp; Recovery
+      </Link>
     </section>
 
     {error && <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">{error}</div>}
@@ -303,9 +362,14 @@ export default function RulesEngine() {
             Cashout target 2.00x · platform acknowledgement {dashboard?.cashout_configuration?.platform_acknowledged === true ? 'confirmed' : 'unverified'}
           </div>
           <Button onClick={readBalance} disabled={busy}>Read balance</Button>
-          <Button onClick={refreshCashout} disabled={busy || liveModeActive}>
-            {busyAction === 'cashout-refresh' ? 'Verifying panels…' : 'Set and verify both panels · 2.00x'}
+          <Button onClick={refreshCashout} disabled={busy}>
+            {busyAction === 'cashout-refresh' ? 'Verifying panels…' : 'Refresh verification'}
           </Button>
+          {executionMode?.mode === 'SHADOW_REALISTIC' && activeSession
+            && <Button onClick={startShadowExecutor} disabled={busy || shadowExecutorRunning} tone="good">
+              {busyAction === 'shadow-executor-start' ? 'Verifying and starting…'
+                : shadowExecutorRunning ? 'SHADOW executor running' : 'Start SHADOW executor'}
+            </Button>}
         </div>
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -352,6 +416,37 @@ export default function RulesEngine() {
           detail="Confirmed reconciled wins" />
         <Metric label="Financial LOSS stop" value={dashboard?.session_controls?.reconciled_loss_count_limit ?? 'Disabled'}
           detail="Confirmed reconciled losses" />
+        {[0, 1].map((slot) => {
+          const observation = panelObservations.find((row) => row.panel_id === `PANEL_${slot + 1}`)
+            || panelObservations.find((row) => row.slot === slot);
+          const auto = cashoutPanelRows.find((row) => row.slot === slot) || cashoutPanelRows[slot];
+          const stakeLabel = observation?.displayed_stake == null ? 'stake unknown'
+            : `${observation.displayed_stake} ${observation.currency || 'currency unknown'}`;
+          const cashoutLabel = observation?.cashout_amount == null ? ''
+            : ` · cash out ${observation.cashout_amount} ${observation.currency || ''}`;
+          return <Metric key={`panel-state-${slot}`} label={`Panel ${slot + 1} button state`}
+            value={observation?.state || 'UNKNOWN'}
+            detail={`${observation?.button_text || 'Button text unavailable'} · ${stakeLabel}${cashoutLabel} · Auto Bet ${auto?.auto_bet || 'unknown'} · Auto Cash Out ${auto?.auto_cashout || 'unknown'} @ ${auto?.multiplier || '—'}x · ${observation?.pending_bet_state || 'UNKNOWN'} · observed ${observation?.observed_at || 'never'} · READ ONLY`} />;
+        })}
+        <Metric label="Run mode" value={runMode}
+          detail="SHADOW outcomes are simulations; LIVE_REAL placement remains disabled." />
+        <Metric label="Rules session" value={status?.active_session_status || (activeSession?.status ?? 'NONE')}
+          detail={`${status?.rules_definition_state || 'UNKNOWN'} · ${status?.rules_enabled_state || 'UNKNOWN'} · latest ${status?.latest_session_status || 'NONE'}`} />
+        <Metric label="SHADOW executor" value={shadowExecutorRunning ? 'RUNNING · PAPER ONLY' : executionMode?.shadow?.mode || 'STOPPED'}
+          detail={shadowExecutorRunning ? `Session ${executionMode?.shadow?.session_id || '—'} · LIVE authorization ${executionMode?.live_authorized ? 'ON' : 'OFF'}`
+            : 'Start requires the selected panel, matching BIF stake, current readback, cashout 2.00x, Auto Bet OFF, and no pending bet.'} />
+        <Metric label="Selected execution panel" value={selectedPanel} />
+        <Metric label="Current target round" value={targetRound}
+          detail={latestIntent?.target_round_id || latestEvaluation?.target_round?.roundId || ''} />
+        <Metric label="Execution status" value={latestIntent?.execution_status || 'OBSERVE_ONLY'}
+          detail={latestIntent?.platform_evidence ? 'Platform evidence is recorded separately' : 'No platform acceptance or settlement evidence'} />
+        <Metric label="Decision latency" value={decisionLatencyMs == null || !Number.isFinite(decisionLatencyMs)
+          || decisionLatencyMs < 0 ? 'UNKNOWN' : `${decisionLatencyMs} ms`}
+          detail="Completed-round observation to Rules Engine evaluation." />
+        <Metric label="Betting window" value={aviatorReadiness?.betting_window?.state || 'UNKNOWN'}
+          detail="A visible Bet action alone does not establish an open window." />
+        <Metric label="Target deadline evidence" value={aviatorReadiness?.target_deadline_evidence?.status || 'UNKNOWN'}
+          detail={aviatorReadiness?.target_deadline_evidence?.deadline_at || 'Deadline unavailable'} />
       </div>
       <p className="mt-3 text-xs text-zinc-500">
         Balance provider: {dashboard?.balance?.provider_identity || 'unverified'} · session: {dashboard?.balance?.application_session_id || dashboard?.balance?.session_identity || 'unassigned'}
@@ -373,9 +468,9 @@ export default function RulesEngine() {
           </ul>
         </article>
       </div>
-      {dashboard?.execution_intents?.length > 0 && <details className="mt-4 rounded-lg border border-zinc-800 p-4">
+      {executionIntents.length > 0 && <details className="mt-4 rounded-lg border border-zinc-800 p-4">
         <summary className="cursor-pointer text-sm font-semibold">Durable execution intents (blocked)</summary>
-        <div className="mt-3 space-y-2 text-xs">{dashboard.execution_intents.map((intent) => <div key={intent.intent_id} className="rounded bg-zinc-950 p-3">
+        <div className="mt-3 space-y-2 text-xs">{executionIntents.map((intent) => <div key={intent.intent_id} className="rounded bg-zinc-950 p-3">
           <div>{intent.execution_status} · target round #{intent.target_round_index} · stake {intent.requested_stake ?? '—'} · cashout {intent.cashout_target}x</div>
           <div className="mt-1 text-zinc-500">Rules: {intent.selected_rule_ids?.join(', ') || '—'} · blockers: {intent.blockers?.join(', ')}</div>
         </div>)}</div>
@@ -391,6 +486,8 @@ export default function RulesEngine() {
       <Metric label="Last rule evaluation" value={status?.last_rule_evaluation || 'NONE'} />
       <Metric label={activeSession?.mode === 'FIVE_RULE_TRACKER' ? 'Independent tracker decision' : 'Session decision'} value={status?.decision || 'NO_ACTION'} />
       <Metric label="Execution" value="DISABLED" icon={ShieldCheck} />
+      <Metric label="Active session state" value={status?.active_session_status || 'NONE'}
+        detail={`Latest session: ${status?.latest_session_status || 'NONE'} · definitions are independent of session state.`} />
     </section>
 
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
@@ -480,6 +577,7 @@ export default function RulesEngine() {
 
       <div className="mt-5 flex flex-wrap gap-2">
         <Button tone="good" onClick={start} disabled={busy || Boolean(activeSession)
+          || !hasConfiguredExecutionPanel || !hasValidUiStake
           || shadowReadiness?.ready === false
           || !selectedIds.some((id) => availableRules.find((rule) => rule.rule_id === id)?.enabled)}>
           {busyAction === 'start-shadow' ? 'Starting SHADOW session…' : 'Start SHADOW session'}

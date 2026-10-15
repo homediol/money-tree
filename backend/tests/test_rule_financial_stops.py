@@ -192,6 +192,37 @@ def test_loss_count_limit_waits_for_two_confirmed_losses(tmp_path):
     assert stop["reconciled_bets"] == 2
 
 
+def test_live_activation_limits_count_only_receipt_reconciled_outcomes(tmp_path):
+    repo, engine, session_id, selection_id = setup_rule_session(tmp_path, currency="BIF")
+    started = now()
+    installed = engine.install_live_execution_stops({
+        "live_session_id": "LIVE-test-session", "started_at": started, "currency": "BIF",
+        "profit_target_enabled": True, "profit_target": 100,
+        "loss_limit_enabled": True, "loss_limit": 100,
+        "win_count_limit_enabled": True, "win_count_limit": 1,
+        "loss_count_limit_enabled": True, "loss_count_limit": 2,
+    })
+    assert installed["ok"] is True
+    assert installed["rules_session_id"] == session_id
+
+    row = execution(session_id, selection_id, "target-101", currency="BIF")
+    result = reconcile(repo, engine, row, outcome="WIN", balance=1100, multiplier=2.5,
+                       currency="BIF")
+    stop = engine.session(session_id)["live_execution_stop"]
+    assert result["status"] == "RECONCILED"
+    assert stop["status"] == "STOPPED"
+    assert stop["reason"] == "WIN_LIMIT_REACHED"
+    assert stop["realized_profit_loss"] == 100
+    assert stop["win_count"] == 1
+    assert stop["settled_execution_ids"] == [row["execution_id"]]
+    assert engine.session(session_id)["selection_status"] == "STOPPED"
+
+    recovered = RulesEngine(repo).session(session_id)["live_execution_stop"]
+    assert recovered["status"] == "STOPPED"
+    assert recovered["win_count"] == 1
+    assert recovered["realized_profit_loss"] == 100
+
+
 @pytest.mark.parametrize(("controls", "outcome", "balance", "expected_reason"), [
     ({"reconciled_profit_target_enabled": True, "reconciled_profit_target_rwf": 100},
      "WIN", 1100, "PROFIT_TARGET_REACHED"),
@@ -212,6 +243,12 @@ def test_receipt_backed_money_targets_stop_only_with_verified_matching_currency(
 def test_unknown_settlement_blocks_and_restart_recovers_without_counting(tmp_path):
     repo, engine, session_id, selection_id = setup_rule_session(tmp_path,
         {"reconciled_win_limit_enabled": True, "reconciled_win_limit_count": 1})
+    engine.install_live_execution_stops({
+        "live_session_id": "LIVE-recovery", "started_at": now(), "currency": "USD",
+        "profit_target_enabled": False, "loss_limit_enabled": False,
+        "win_count_limit_enabled": True, "win_count_limit": 1,
+        "loss_count_limit_enabled": False,
+    })
     row = execution(session_id, selection_id, "target-101")
     pending = reconcile(repo, engine, row, outcome="WIN", balance=1100,
                         multiplier=2.5, settled=False)
@@ -221,6 +258,9 @@ def test_unknown_settlement_blocks_and_restart_recovers_without_counting(tmp_pat
     assert stop["win_count"] == 0
     assert stop["loss_count"] == 0
     assert stop["reconciled_bets"] == 0
+    live_stop = engine.session(session_id)["live_execution_stop"]
+    assert live_stop["status"] == "RECONCILIATION_REQUIRED"
+    assert live_stop["win_count"] == 0
 
     recovered_engine = RulesEngine(repo)
     recovered = recovered_engine.session(session_id)
@@ -237,6 +277,10 @@ def test_unknown_settlement_blocks_and_restart_recovers_without_counting(tmp_pat
     assert resolved["reason"] == "WIN_LIMIT_REACHED"
     assert resolved["win_count"] == 1
     assert resolved["reconciled_bets"] == 1
+    recovered_live_stop = recovered_engine.session(session_id)["live_execution_stop"]
+    assert recovered_live_stop["status"] == "STOPPED"
+    assert recovered_live_stop["win_count"] == 1
+    assert recovered_live_stop["realized_profit_loss"] == 100
 
 
 def test_money_limits_require_valid_configuration():

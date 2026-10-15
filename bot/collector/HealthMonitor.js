@@ -44,6 +44,7 @@ export class HealthMonitor {
       gamePhaseEvidence:  null,
       gamePhaseSourceRoundId: null,
       gamePhaseSourceRoundIndex: null,
+      panelObservations:   [],
       lastSuccessfulCollection: null,
       roundCommitSamples: [],
       heartbeatAt:        null,
@@ -57,13 +58,13 @@ export class HealthMonitor {
         history_target_id: null, betting_target_id: null,
         history_page_state: 'UNKNOWN', betting_page_state: 'SHARED_PAGE_UNAVAILABLE' },
       cashout_initialization: {
-        target: '2.00', auto_bet: 'UNKNOWN', status: 'UNKNOWN',
-        panel_1_cashout: 'UNKNOWN', panel_2_cashout: 'UNKNOWN',
+        target: '2.00', auto_bet: 'UNKNOWN', status: 'CASHOUT_UNAVAILABLE',
+        panel_1_cashout: 'CASHOUT_UNAVAILABLE', panel_2_cashout: 'CASHOUT_UNAVAILABLE',
         panels: [], updated_at: new Date().toISOString(),
         error_reason: 'WAITING_FOR_AUTHENTICATED_SHARED_AVIATOR_PAGE',
       },
       bet_amount_initialization: {
-        status: 'UNKNOWN', execution_panel: null, requested_stake: null,
+        status: 'STAKE_UNAVAILABLE', execution_panel: null, requested_stake: null,
         currency: null, requested_stake_currency: null, platform_currency: null,
         observed_value: null, session_id: null,
         updated_at: null, error_reason: 'NOT_INITIALIZED',
@@ -158,23 +159,27 @@ export class HealthMonitor {
     const nextUpdatedAt = Date.parse(value.updated_at || '');
     if (Number.isFinite(priorUpdatedAt) && Number.isFinite(nextUpdatedAt)
         && nextUpdatedAt < priorUpdatedAt) return;
-    const status = ['READY', 'FAILED', 'UNKNOWN'].includes(value.status) ? value.status : 'UNKNOWN';
+    const cashoutStatuses = ['CASHOUT_VERIFIED', 'CASHOUT_MISMATCH', 'CASHOUT_UNAVAILABLE'];
+    const status = cashoutStatuses.includes(value.status) ? value.status : 'CASHOUT_UNAVAILABLE';
     const target = '2.00';
     const panels = Array.isArray(value.panels) ? value.panels.slice(0, 2).map((panel, slot) => ({
       slot,
-      status: ['READY', 'FAILED', 'UNKNOWN'].includes(panel?.status) ? panel.status : 'UNKNOWN',
+      status: cashoutStatuses.includes(panel?.status) ? panel.status : 'CASHOUT_UNAVAILABLE',
+      panel_id: panel?.panel_id || `PANEL_${slot + 1}`,
+      frame_identity: typeof panel?.frame_identity === 'string' ? panel.frame_identity.slice(0, 240) : null,
       auto_bet: ['OFF', 'ON', 'UNKNOWN'].includes(panel?.auto_bet) ? panel.auto_bet : 'UNKNOWN',
       auto_cashout: ['OFF', 'ON', 'UNKNOWN'].includes(panel?.auto_cashout) ? panel.auto_cashout : 'UNKNOWN',
       multiplier: panel?.multiplier == null ? null : String(panel.multiplier).slice(0, 16),
       auto_tab_selected: panel?.auto_tab_selected === true,
       observed_at: typeof panel?.observed_at === 'string' ? panel.observed_at : new Date().toISOString(),
       error_reason: typeof panel?.error_reason === 'string' ? panel.error_reason.slice(0, 200) : null,
+      manual_correction: typeof panel?.manual_correction === 'string' ? panel.manual_correction.slice(0, 240) : null,
     })) : [];
     const next = {
       target, auto_bet: ['OFF', 'ON', 'UNKNOWN'].includes(value.auto_bet) ? value.auto_bet : 'UNKNOWN',
       status,
-      panel_1_cashout: ['READY', 'FAILED', 'UNKNOWN'].includes(value.panel_1_cashout) ? value.panel_1_cashout : 'UNKNOWN',
-      panel_2_cashout: ['READY', 'FAILED', 'UNKNOWN'].includes(value.panel_2_cashout) ? value.panel_2_cashout : 'UNKNOWN',
+      panel_1_cashout: cashoutStatuses.includes(value.panel_1_cashout) ? value.panel_1_cashout : 'CASHOUT_UNAVAILABLE',
+      panel_2_cashout: cashoutStatuses.includes(value.panel_2_cashout) ? value.panel_2_cashout : 'CASHOUT_UNAVAILABLE',
       panels,
       updated_at: typeof value.updated_at === 'string' ? value.updated_at : new Date().toISOString(),
       error_reason: typeof value.error_reason === 'string' ? value.error_reason.slice(0, 300) : null,
@@ -185,7 +190,8 @@ export class HealthMonitor {
   }
   setBetAmountInitialization(value) {
     if (!value || typeof value !== 'object') return;
-    const status = ['READY', 'BLOCKED', 'FAILED', 'UNKNOWN'].includes(value.status) ? value.status : 'UNKNOWN';
+    const stakeStatuses = ['STAKE_VERIFIED', 'STAKE_MISMATCH', 'STAKE_UNAVAILABLE'];
+    const status = stakeStatuses.includes(value.status) ? value.status : 'STAKE_UNAVAILABLE';
     const panel = Number.isInteger(value.execution_panel) && [0, 1].includes(value.execution_panel)
       ? value.execution_panel : null;
     this._metrics.bet_amount_initialization = {
@@ -198,6 +204,9 @@ export class HealthMonitor {
       platform_currency: typeof value.platform_currency === 'string'
         ? value.platform_currency.slice(0, 3) : null,
       observed_value: value.observed_value == null ? null : String(value.observed_value).slice(0, 32),
+      observed_currency: typeof value.observed_currency === 'string' ? value.observed_currency.slice(0, 3) : null,
+      minimum_stake: value.minimum_stake == null ? null : String(value.minimum_stake).slice(0, 32),
+      pending_bet_state: ['CLEAR', 'PENDING', 'UNKNOWN'].includes(value.pending_bet_state) ? value.pending_bet_state : 'UNKNOWN',
       session_id: typeof value.session_id === 'string' ? value.session_id.slice(0, 80) : null,
       updated_at: typeof value.updated_at === 'string' ? value.updated_at : new Date().toISOString(),
       error_reason: typeof value.error_reason === 'string' ? value.error_reason.slice(0, 200) : null,
@@ -208,9 +217,9 @@ export class HealthMonitor {
   _refreshBettingUiConfiguration() {
     const cashout = this._metrics.cashout_initialization || {};
     const amount = this._metrics.bet_amount_initialization || {};
-    const status = cashout.status === 'READY' && amount.status === 'READY' ? 'READY'
-      : cashout.status === 'FAILED' || amount.status === 'FAILED' || amount.status === 'BLOCKED'
-        ? 'BLOCKED' : 'UNKNOWN';
+    const verified = cashout.status === 'CASHOUT_VERIFIED' && amount.status === 'STAKE_VERIFIED';
+    const mismatch = cashout.status === 'CASHOUT_MISMATCH' || amount.status === 'STAKE_MISMATCH';
+    const status = verified ? 'READY' : mismatch ? 'BLOCKED' : 'UNKNOWN';
     const reasons = [cashout.error_reason, amount.error_reason].filter(Boolean);
     this._metrics.betting_ui_configuration = {
       status,
@@ -356,6 +365,27 @@ export class HealthMonitor {
       ? null : String(sourceRound.round_id);
     this._metrics.gamePhaseSourceRoundIndex = Number.isSafeInteger(Number(sourceRound?.round_index))
       ? Number(sourceRound.round_index) : null;
+    this._flush();
+  }
+  recordPanelObservations(observations = [], sourceRound = null) {
+    if (!Array.isArray(observations)) return;
+    const previous = new Map((this._metrics.panelObservations || [])
+      .map(row => [String(row.panel_id || ''), row]));
+    const latest = new Map(previous);
+    for (const row of observations) {
+      if (!row || !['PANEL_1', 'PANEL_2'].includes(String(row.panel_id || ''))) continue;
+      const observedAt = Date.parse(row.observed_at || '');
+      const existingAt = Date.parse(latest.get(row.panel_id)?.observed_at || '');
+      if (!Number.isFinite(observedAt) || (Number.isFinite(existingAt) && observedAt < existingAt)) continue;
+      latest.set(row.panel_id, {
+        ...row,
+        source_round_id: sourceRound?.round_id == null ? null : String(sourceRound.round_id),
+        source_round_index: Number.isSafeInteger(Number(sourceRound?.round_index))
+          ? Number(sourceRound.round_index) : null,
+      });
+    }
+    this._metrics.panelObservations = ['PANEL_1', 'PANEL_2']
+      .map(panelId => latest.get(panelId)).filter(Boolean);
     this._flush();
   }
   recordRecovery(action)     { this._metrics.recoveryCount++; this._metrics.lastRecovery = { action, ts: new Date().toISOString() }; }

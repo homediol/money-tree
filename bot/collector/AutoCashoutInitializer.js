@@ -1,4 +1,4 @@
-/** Configure and verify the two Aviator auto-cashout panels. */
+/** Read-only verification of the operator-configured Aviator cashout panels. */
 import { inspectGameFrameSession } from './GameFrameAuth.js';
 import { resolveSharedGameFrame } from './SharedGameFrame.js';
 
@@ -97,65 +97,11 @@ export function readCashoutPanel(slot) {
   };
 }
 
-/** Apply one idempotent settings change; this function never targets a bet button. */
-export function mutateCashoutPanel({ slot, action, value = '2.00' }) {
-  const panel = Array.from(document.querySelectorAll('app-bet-control'))[slot];
-  if (!panel) return { ok: false, reason: 'BETTING_PANEL_NOT_FOUND' };
-  const visible = element => {
-    if (!element) return false;
-    const style = getComputedStyle(element);
-    return style.display !== 'none' && style.visibility !== 'hidden'
-      && Boolean(element.offsetWidth || element.offsetHeight);
-  };
-  const normalizedText = element => (element?.innerText || element?.textContent || '')
-    .replace(/\s+/g, ' ').trim();
-  const pendingControls = Array.from(panel.querySelectorAll('button, .btn'))
-    .filter(element => visible(element) && /^(?:cash\s*out|take\s*win|collect|cancel(?:\s*bet)?)\b/i
-      .test(normalizedText(element)));
-  const betText = normalizedText(panel.querySelector('.btn-success.bet'));
-  const pending = pendingControls.length ? 'PENDING'
-    : /^Bet\b/i.test(betText) ? 'CLEAR' : 'UNKNOWN';
-  if (pending !== 'CLEAR') {
-    return { ok: false, reason: pending === 'PENDING' ? 'ACTIVE_BET_PENDING' : 'BETTING_STATE_UNKNOWN' };
-  }
-
-  if (action === 'select_auto_tab') {
-    const tab = Array.from(panel.querySelectorAll('.navigation-switcher .tab'))
-      .find(element => (element.textContent || '').trim() === 'Auto');
-    if (!tab) return { ok: false, reason: 'AUTO_TAB_NOT_FOUND' };
-    const changed = !tab.classList.contains('active');
-    if (changed) tab.click();
-    return { ok: true, changed };
-  }
-  if (action === 'disable_auto_bet') {
-    const toggle = panel.querySelector('.auto-bet .input-switch');
-    if (!toggle) return { ok: false, reason: 'AUTO_BET_TOGGLE_NOT_FOUND' };
-    const changed = !toggle.classList.contains('off');
-    if (changed) toggle.click();
-    return { ok: true, changed };
-  }
-  if (action === 'enable_auto_cashout') {
-    const toggle = panel.querySelector('.cash-out-switcher .input-switch');
-    if (!toggle) return { ok: false, reason: 'AUTO_CASHOUT_TOGGLE_NOT_FOUND' };
-    const changed = toggle.classList.contains('off');
-    if (changed) toggle.click();
-    return { ok: true, changed };
-  }
-  if (action === 'set_multiplier') {
-    const input = panel.querySelector('.cashout-spinner input[type="text"]');
-    if (!input) return { ok: false, reason: 'CASHOUT_VALUE_INPUT_NOT_FOUND' };
-    const changed = String(input.value || '').trim() !== value;
-    if (changed) {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      if (!setter) return { ok: false, reason: 'INPUT_VALUE_SETTER_UNAVAILABLE' };
-      setter.call(input, value);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.blur();
-    }
-    return { ok: true, changed, multiplier: String(input.value || '').trim() };
-  }
-  return { ok: false, reason: 'CASHOUT_ACTION_UNKNOWN' };
+/** Compatibility guard for legacy callers; manual setup is read-only. */
+export function mutateCashoutPanel() {
+  // Retained as a compatibility export for old callers/tests. There is no UI
+  // mutation path: all setup is manual and this function fails closed.
+  return { ok: false, reason: 'MANUAL_OPERATOR_CONFIGURATION_REQUIRED', mutation_performed: false };
 }
 
 function panelResult(slot, state, status, reason = null) {
@@ -166,24 +112,28 @@ function panelResult(slot, state, status, reason = null) {
   return {
     slot,
     status,
+    panel_id: `PANEL_${slot + 1}`,
     auto_bet: autoBet,
     auto_cashout: autoCashout,
     multiplier: state?.multiplier ?? null,
     auto_tab_selected: state?.autoTabSelected === true,
     observed_at: new Date().toISOString(),
+    frame_identity: state?.frame_identity || null,
     error_reason: reason,
+    manual_correction: status === 'CASHOUT_MISMATCH'
+      ? 'In this panel, select Auto, enable Auto Cash Out, set 2.00x, and keep Auto Bet OFF.' : null,
   };
 }
 
 export function summarizeCashoutInitialization(panels, reason = null) {
-  const bothReady = panels.length === PANEL_COUNT && panels.every(panel => panel.status === 'READY');
-  const anyFailed = panels.some(panel => panel.status === 'FAILED');
+  const bothVerified = panels.length === PANEL_COUNT && panels.every(panel => panel.status === 'CASHOUT_VERIFIED');
+  const anyMismatch = panels.some(panel => panel.status === 'CASHOUT_MISMATCH');
   const autoBet = panels.length === PANEL_COUNT && panels.every(panel => panel.auto_bet === 'OFF')
     ? 'OFF' : panels.some(panel => panel.auto_bet === 'ON') ? 'ON' : 'UNKNOWN';
   return {
     target: CASHOUT_TARGET,
     auto_bet: autoBet,
-    status: bothReady ? 'READY' : anyFailed ? 'FAILED' : 'UNKNOWN',
+    status: bothVerified ? 'CASHOUT_VERIFIED' : anyMismatch ? 'CASHOUT_MISMATCH' : 'CASHOUT_UNAVAILABLE',
     panel_1_cashout: panels[0]?.status || 'UNKNOWN',
     panel_2_cashout: panels[1]?.status || 'UNKNOWN',
     panels,
@@ -213,7 +163,7 @@ export class AutoCashoutInitializer {
       const current = this.health?.snapshot?.().cashout_initialization;
       const updatedAt = Date.parse(current?.updated_at || '');
       const readbackAge = Date.now() - updatedAt;
-      const readbackFresh = current?.status === 'READY'
+      const readbackFresh = current?.status === 'CASHOUT_VERIFIED'
         && Number.isFinite(updatedAt) && readbackAge >= 0 && readbackAge <= READBACK_FRESH_MS;
       if (page && frame && frame === this.readyFrame && readbackFresh) return;
       if (!page || !frame || page.isClosed?.() || frame.isDetached?.()) return;
@@ -236,7 +186,9 @@ export class AutoCashoutInitializer {
   }
 
   _unknown(reason) {
-    return this._publish(Array.from({ length: PANEL_COUNT }, (_, slot) => unknownPanel(slot, reason)), reason);
+    return this._publish(Array.from({ length: PANEL_COUNT }, (_, slot) => ({
+      ...unknownPanel(slot, reason), status: 'CASHOUT_UNAVAILABLE', panel_id: `PANEL_${slot + 1}`,
+    })), reason);
   }
 
   _trackPage(page, historyPage, signal) {
@@ -319,21 +271,19 @@ export class AutoCashoutInitializer {
       const pendingPanel = initialStates.findIndex(state => state.pendingBetState === 'PENDING');
       const reason = pendingPanel >= 0 ? `ACTIVE_BET_PENDING_PANEL_${pendingPanel + 1}`
         : 'BETTING_WINDOW_STATE_UNKNOWN';
-      return this._publish(initialStates.map((state, slot) => panelResult(slot, state, 'UNKNOWN',
+      return this._publish(initialStates.map((state, slot) => panelResult(slot, state, 'CASHOUT_UNAVAILABLE',
         state.pendingBetState === 'CLEAR' ? reason : state.pendingBetState === 'PENDING'
           ? 'ACTIVE_BET_PENDING' : 'BETTING_WINDOW_STATE_UNKNOWN')), reason);
     }
 
+    let frameIdentity = null;
+    try { frameIdentity = typeof frame.url === 'function' ? frame.url() : null; } catch { /* identity unavailable */ }
+    for (const state of initialStates) state.frame_identity = frameIdentity;
     const panels = [];
-    for (let slot = 0; slot < PANEL_COUNT; slot += 1) {
-      const configure = () => this._initializePanel(frame, slot);
-      panels.push(await (this.coordinator?.withBettingUiLock
-        ? this.coordinator.withBettingUiLock(configure, { signal })
-        : configure()));
-    }
+    for (let slot = 0; slot < PANEL_COUNT; slot += 1) panels.push(this._verifyPanel(slot, initialStates[slot]));
     const status = this._publish(panels);
-    this.readyPage = status.status === 'READY' ? page : null;
-    this.readyFrame = status.status === 'READY' ? frame : this.readyFrame;
+    this.readyPage = status.status === 'CASHOUT_VERIFIED' ? page : null;
+    this.readyFrame = status.status === 'CASHOUT_VERIFIED' ? frame : this.readyFrame;
     return status;
   }
 
@@ -341,80 +291,22 @@ export class AutoCashoutInitializer {
     return frame.evaluate(readCashoutPanel, slot);
   }
 
-  async _act(frame, slot, action) {
-    // Recheck both panels immediately before each setting mutation so an
-    // active or ambiguous bet in either panel blocks changes in both.
-    for (let otherSlot = 0; otherSlot < PANEL_COUNT; otherSlot += 1) {
-      const otherState = await this._read(frame, otherSlot);
-      if (!otherState?.ok || otherState.panelCount !== PANEL_COUNT) {
-        throw Object.assign(new Error('TWO_PANEL_PREFLIGHT_UNAVAILABLE'), { code: 'TWO_PANEL_PREFLIGHT_UNAVAILABLE' });
-      }
-      if (otherState.pendingBetState !== 'CLEAR') {
-        const reason = otherState.pendingBetState === 'PENDING'
-          ? `ACTIVE_BET_PENDING_PANEL_${otherSlot + 1}` : 'BETTING_WINDOW_STATE_UNKNOWN';
-        throw Object.assign(new Error(reason), { code: reason });
-      }
+  _verifyPanel(slot, state) {
+    if (!state?.ok || state.panelCount !== PANEL_COUNT) {
+      return panelResult(slot, state, 'CASHOUT_UNAVAILABLE', state?.reason || 'TWO_PANEL_CONTROLS_UNAVAILABLE');
     }
-    const result = await frame.evaluate(mutateCashoutPanel, { slot, action, value: CASHOUT_TARGET });
-    if (result?.ok !== true) throw Object.assign(new Error(result?.reason || 'CASHOUT_ACTION_FAILED'), {
-      code: result?.reason || 'CASHOUT_ACTION_FAILED',
-    });
-    if (result.changed) await new Promise(resolve => setTimeout(resolve, 100));
-  }
-
-  async _initializePanel(frame, slot) {
-    let state;
-    try { state = await this._read(frame, slot); }
-    catch (error) { return unknownPanel(slot, `PANEL_READ_FAILED:${String(error?.message || error).slice(0, 120)}`); }
-    if (!state?.ok) return panelResult(slot, state, 'FAILED', state?.reason || 'BETTING_PANEL_NOT_FOUND');
-    if (state.panelCount !== PANEL_COUNT) return panelResult(slot, state, 'FAILED', 'EXPECTED_TWO_BETTING_PANELS');
     if (state.pendingBetState !== 'CLEAR') {
-      return panelResult(slot, state, 'UNKNOWN', state.pendingBetState === 'PENDING'
-        ? 'ACTIVE_BET_PENDING' : 'BETTING_WINDOW_STATE_UNKNOWN');
+      return panelResult(slot, state, 'CASHOUT_UNAVAILABLE', state.pendingBetState === 'PENDING'
+        ? 'ACTIVE_OR_PENDING_BET' : 'BET_STATE_UNKNOWN');
     }
-    if (Object.values(state.missing || {}).some(Boolean)) {
-      const reason = Object.entries(state.missing).filter(([, missing]) => missing)
-        .map(([name]) => `${name.toUpperCase()}_NOT_FOUND`).join(',');
-      return panelResult(slot, state, 'FAILED', reason || 'CASHOUT_CONTROL_NOT_FOUND');
+    if (Object.values(state.missing || {}).some(Boolean) || state.autoTabSelected !== true
+        || state.inputVisible !== true || state.autoBetEnabled == null
+        || state.autoCashoutEnabled == null || !state.multiplier) {
+      return panelResult(slot, state, 'CASHOUT_UNAVAILABLE', 'MANUAL_AUTO_TAB_AND_CONTROLS_MUST_BE_VISIBLE');
     }
-
-    try {
-      if (!state.autoTabSelected) {
-        await this._act(frame, slot, 'select_auto_tab');
-        state = await this._read(frame, slot); // Re-query after the tab rerender.
-      }
-      if (!state?.ok) throw new Error('PANEL_RERENDER_READ_FAILED');
-      if (state.pendingBetState !== 'CLEAR') throw new Error(state.pendingBetState === 'PENDING'
-        ? 'ACTIVE_BET_PENDING' : 'BETTING_WINDOW_STATE_UNKNOWN');
-      if (state.autoBetEnabled !== false) {
-        if (state.autoBetEnabled !== true) throw new Error('AUTO_BET_STATE_UNKNOWN');
-        await this._act(frame, slot, 'disable_auto_bet');
-        state = await this._read(frame, slot);
-      }
-      if (!state?.ok || state.autoBetEnabled !== false) throw new Error('AUTO_BET_COULD_NOT_BE_VERIFIED_OFF');
-      if (state.pendingBetState !== 'CLEAR') throw new Error(state.pendingBetState === 'PENDING'
-        ? 'ACTIVE_BET_PENDING' : 'BETTING_WINDOW_STATE_UNKNOWN');
-      if (state.autoCashoutEnabled !== true) {
-        if (state.autoCashoutEnabled !== false) throw new Error('AUTO_CASHOUT_STATE_UNKNOWN');
-        await this._act(frame, slot, 'enable_auto_cashout');
-        state = await this._read(frame, slot);
-      }
-      if (!state?.ok || state.autoCashoutEnabled !== true) throw new Error('AUTO_CASHOUT_COULD_NOT_BE_VERIFIED_ON');
-      if (state.pendingBetState !== 'CLEAR') throw new Error(state.pendingBetState === 'PENDING'
-        ? 'ACTIVE_BET_PENDING' : 'BETTING_WINDOW_STATE_UNKNOWN');
-      if (String(state.multiplier).trim() !== CASHOUT_TARGET) {
-        await this._act(frame, slot, 'set_multiplier');
-        state = await this._read(frame, slot);
-      }
-      const exactMultiplier = String(state?.multiplier || '').trim() === CASHOUT_TARGET;
-      const ready = state?.ok && state.autoTabSelected === true
-        && state.autoBetEnabled === false && state.autoCashoutEnabled === true && exactMultiplier;
-      return panelResult(slot, state, ready ? 'READY' : 'FAILED', ready ? null : 'CASHOUT_READBACK_MISMATCH');
-    } catch (error) {
-      try { state = await this._read(frame, slot); } catch { /* Preserve last known readback. */ }
-      const reason = String(error?.code || error?.message || error).slice(0, 160);
-      const status = /ACTIVE_BET_PENDING|BETTING_WINDOW_STATE_UNKNOWN|PENDING/.test(reason) ? 'UNKNOWN' : 'FAILED';
-      return panelResult(slot, state, status, reason);
-    }
+    const valid = state.autoBetEnabled === false && state.autoCashoutEnabled === true
+      && String(state.multiplier).trim() === CASHOUT_TARGET;
+    return panelResult(slot, state, valid ? 'CASHOUT_VERIFIED' : 'CASHOUT_MISMATCH',
+      valid ? null : 'MANUAL_CASHOUT_SETTINGS_DO_NOT_MATCH_2_00X');
   }
 }

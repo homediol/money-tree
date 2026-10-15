@@ -32,8 +32,10 @@ def test_platform_balance_requires_finite_numeric_ui_evidence(tmp_path, monkeypa
         def __init__(self, _settings):
             pass
         async def snapshot(self):
-            return {"ok": True, "balance": balance, "ui_ready": True,
-                    "authentication_state": "AUTHENTICATED"}
+            return {"ok": True, "balance": balance, "balance_currency": "BIF",
+                    "balance_observed_at": datetime.now(timezone.utc).isoformat(),
+                    "provider_identity": "winner.rw", "session_identity": "platform-session-1",
+                    "ui_ready": True, "authentication_state": "AUTHENTICATED"}
         async def close(self):
             pass
     monkeypatch.setattr("app.betting.browser_client.AviatorBrowserClient", Browser)
@@ -87,6 +89,143 @@ def test_restart_never_restores_live_authorization(tmp_path):
     assert modes.recovered_live is True
     assert modes.can_execute_live() is False
     assert repository.load_betting_mode()["mode"] == SHADOW_REALISTIC
+
+
+def test_live_review_persists_currency_and_validates_stop_limit_counts(tmp_path):
+    repository = Repository(tmp_path / "live-config.sqlite3")
+    repository.init()
+    profiles = {
+        "PROFILE_A": {"cashout": 2.0, "minimum_bet": 100, "maximum_bet": 10000,
+                      "maximum_session_loss": 500, "maximum_balance_percentage": 0.25},
+        "PROFILE_B": {"cashout": 2.0, "minimum_bet": 100, "maximum_bet": 50000,
+                      "maximum_session_loss": 1000, "maximum_balance_percentage": 0.5},
+    }
+    app = SimpleNamespace(state=SimpleNamespace(
+        wp=SimpleNamespace(repository=repository),
+        risk=SimpleNamespace(profiles=lambda: profiles),
+        live=SimpleNamespace(production_readiness_check=lambda *_args, **_kwargs: asyncio.sleep(0, result={
+            "ready": False, "state": "BLOCKED", "reasons": ["platform adapter incomplete"], "checks": {},
+        })),
+    ))
+    modes = BettingModeManager(app)
+
+    async def verified_balance():
+        return {"verified": True, "fresh": True, "currency_verified": True,
+                "balance": 528, "currency": "BIF",
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "provider_identity": "winner.rw", "platform_session_identity": "session-1"}
+
+    modes._read_platform_balance = verified_balance
+    common = {
+        "profile": "PROFILE_A", "win_limit_enabled": True, "win_limit": 250,
+        "session_loss_limit_enabled": True, "session_loss_limit": 300,
+        "reconciled_win_limit_enabled": True, "reconciled_win_limit_count": 2,
+        "reconciled_loss_count_limit_enabled": True, "reconciled_loss_count_limit": 3,
+        "execution_panel": 1, "stake_amount": 200, "currency": "BIF",
+    }
+    invalid = asyncio.run(modes.live_review(**{**common, "reconciled_win_limit_count": 0}))
+    assert "enabled_win_count_limit_requires_a_positive_integer" in invalid["blockers"]
+
+    reviewed = asyncio.run(modes.live_review(**common))
+    assert reviewed["currency"] == "BIF"
+    assert reviewed["execution_panel"] == 1
+    assert reviewed["reconciled_win_limit_count"] == 2
+    assert reviewed["reconciled_loss_count_limit"] == 3
+    saved = repository.load_application_state("live_activation_configuration")
+    assert saved["currency"] == "BIF"
+    assert saved["stake_amount"] == 200
+    assert saved["profit_target"] == 250
+    assert saved["loss_limit"] == 300
+    assert saved["win_count_limit"] == 2
+    assert saved["loss_count_limit"] == 3
+    assert saved["execution_panel"] == 1
+
+
+def test_live_configuration_is_never_null_and_draft_does_not_authorize(tmp_path):
+    repository = Repository(tmp_path / "live-draft.sqlite3")
+    repository.init()
+    profiles = {
+        "PROFILE_A": {"cashout": 2.0, "minimum_bet": 100, "maximum_bet": 10000,
+                      "maximum_session_loss": 500, "maximum_balance_percentage": 0.25},
+        "PROFILE_B": {"cashout": 2.0, "minimum_bet": 100, "maximum_bet": 50000,
+                      "maximum_session_loss": 1000, "maximum_balance_percentage": 0.5},
+    }
+    app = SimpleNamespace(state=SimpleNamespace(
+        wp=SimpleNamespace(repository=repository),
+        risk=SimpleNamespace(profiles=lambda: profiles),
+    ))
+    modes = BettingModeManager(app)
+
+    initial = modes.live_configuration()
+    assert initial is not None
+    assert initial["configuration_status"] == "INCOMPLETE"
+    assert initial["persistence_source"] == "DEFAULTS"
+    assert initial["win_count_limit"] == 2
+    assert initial["loss_count_limit"] == 200
+
+    saved = modes.save_live_configuration_draft({
+        "profile": "PROFILE_A", "execution_panel": 1, "stake_amount": 200,
+        "currency": "BIF", "profit_target_enabled": True, "profit_target": 400,
+        "loss_limit_enabled": True, "loss_limit": 400,
+        "win_count_limit_enabled": True, "win_count_limit": 2,
+        "loss_count_limit_enabled": True, "loss_count_limit": 200,
+        "cashout_target": 2.0,
+    })
+
+    assert saved["configuration_status"] == "COMPLETE"
+    assert saved["persistence_source"] == "DRAFT"
+    assert repository.load_application_state("live_activation_configuration") is None
+    assert repository.load_application_state("live_activation_configuration_draft")["execution_panel"] == 1
+    assert modes.live_authorized is False
+    assert modes.mode == SHADOW_REALISTIC
+
+    with pytest.raises(ValueError, match="LIVE_CONFIGURATION_REQUIRES_BIF_WITHOUT_CONVERSION"):
+        modes.save_live_configuration_draft({"currency": "RWF"})
+
+
+def test_new_live_draft_overrides_reviewed_readback_and_invalidates_review(tmp_path):
+    repository = Repository(tmp_path / "live-draft-readback.sqlite3")
+    repository.init()
+    profiles = {
+        "PROFILE_A": {"cashout": 2.0, "minimum_bet": 100, "maximum_bet": 10000,
+                      "maximum_session_loss": 500, "maximum_balance_percentage": 0.25},
+        "PROFILE_B": {"cashout": 2.0, "minimum_bet": 100, "maximum_bet": 50000,
+                      "maximum_session_loss": 1000, "maximum_balance_percentage": 0.5},
+    }
+    app = SimpleNamespace(state=SimpleNamespace(
+        wp=SimpleNamespace(repository=repository),
+        risk=SimpleNamespace(profiles=lambda: profiles),
+    ))
+    modes = BettingModeManager(app)
+    reviewed = {
+        "profile": "PROFILE_A", "execution_panel": 0, "stake_amount": 100,
+        "currency": "BIF", "profit_target_enabled": False, "profit_target": None,
+        "loss_limit_enabled": False, "loss_limit": None,
+        "win_count_limit_enabled": True, "win_count_limit": 2,
+        "loss_count_limit_enabled": True, "loss_count_limit": 200,
+        "cashout_target": 2.0, "reviewed_at": "2030-10-14T10:00:00+00:00",
+        "saved_at": "2030-10-14T10:00:00+00:00",
+    }
+    repository.save_application_state("live_activation_configuration", reviewed,
+                                      reviewed["reviewed_at"])
+    repository.save_application_state("live_activation_configuration_draft", reviewed,
+                                      reviewed["saved_at"])
+    modes._reviews["old-review"] = {"expires_monotonic": 9999999999}
+
+    saved = modes.save_live_configuration_draft({"execution_panel": 1, "stake_amount": 200})
+
+    assert saved["execution_panel"] == 1
+    assert saved["stake_amount"] == 200
+    assert saved["persistence_source"] == "DRAFT"
+    assert saved["reviewed_at"] is None
+    assert repository.load_application_state("live_activation_configuration")["stake_amount"] == 100
+    assert repository.load_application_state("live_activation_configuration_draft")["stake_amount"] == 200
+    assert modes._reviews == {}
+    assert modes.live_authorized is False
+
+    modes.mode = LIVE_REAL
+    with pytest.raises(ValueError, match="LIVE_ACTIVE_CONFIGURATION_IMMUTABLE"):
+        modes.save_live_configuration_draft({"stake_amount": 300})
 
 
 def test_live_manager_rejects_direct_or_forged_start():
@@ -317,5 +456,6 @@ def test_final_gate_excludes_only_the_current_queued_execution_reservation(tmp_p
 
     assert result["checks"]["unresolved_executions"] == "CLEAR"
     assert result["checks"]["duplicate_protection"] == "CURRENT_RESERVATION"
+    assert result["checks"]["rule_to_intent_interface"] == "UNAVAILABLE"
     assert result["allowed"] is False
-    assert "rule_selection_is_not_bound_to_exact_source_and_provider_target_identity" in result["reasons"]
+    assert "RULE_EXECUTION_INTENT_STORE_UNAVAILABLE" in result["reasons"]

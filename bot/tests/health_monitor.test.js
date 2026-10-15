@@ -86,12 +86,12 @@ test('cashout setup status is reported without interrupting round collection hea
   health._metrics.state = 'COLLECTING';
   health._metrics.lastSuccessfulCollection = new Date().toISOString();
 
-  health.setCashoutInitialization({ status: 'FAILED', target: '2.00', auto_bet: 'UNKNOWN',
-    panel_1_cashout: 'READY', panel_2_cashout: 'FAILED', panels: [],
-    updated_at: new Date().toISOString(), error_reason: 'AUTO_CASHOUT_TOGGLE_NOT_FOUND' });
+  health.setCashoutInitialization({ status: 'CASHOUT_MISMATCH', target: '2.00', auto_bet: 'UNKNOWN',
+    panel_1_cashout: 'CASHOUT_VERIFIED', panel_2_cashout: 'CASHOUT_MISMATCH', panels: [],
+    updated_at: new Date().toISOString(), error_reason: 'MANUAL_CASHOUT_SETTINGS_DO_NOT_MATCH_2_00X' });
   const snapshot = health.snapshot();
-  assert.equal(snapshot.cashout_initialization.status, 'FAILED');
-  assert.equal(snapshot.cashout_initialization.panel_2_cashout, 'FAILED');
+  assert.equal(snapshot.cashout_initialization.status, 'CASHOUT_MISMATCH');
+  assert.equal(snapshot.cashout_initialization.panel_2_cashout, 'CASHOUT_MISMATCH');
   assert.equal(snapshot.state, 'COLLECTING');
   assert.equal(snapshot.health, 'HEALTHY');
 });
@@ -100,13 +100,13 @@ test('an older UNKNOWN cashout snapshot cannot replace a newer READY verificatio
   const health = makeHealthMonitor();
   const readyAt = new Date(Date.now() + 1000).toISOString();
   const olderAt = new Date(Date.now() - 1000).toISOString();
-  health.setCashoutInitialization({ status: 'READY', target: '2.00', auto_bet: 'OFF',
-    panel_1_cashout: 'READY', panel_2_cashout: 'READY', panels: [],
+  health.setCashoutInitialization({ status: 'CASHOUT_VERIFIED', target: '2.00', auto_bet: 'OFF',
+    panel_1_cashout: 'CASHOUT_VERIFIED', panel_2_cashout: 'CASHOUT_VERIFIED', panels: [],
     updated_at: readyAt });
-  health.setCashoutInitialization({ status: 'UNKNOWN', target: '2.00', auto_bet: 'UNKNOWN',
-    panel_1_cashout: 'UNKNOWN', panel_2_cashout: 'UNKNOWN', panels: [],
+  health.setCashoutInitialization({ status: 'CASHOUT_UNAVAILABLE', target: '2.00', auto_bet: 'UNKNOWN',
+    panel_1_cashout: 'CASHOUT_UNAVAILABLE', panel_2_cashout: 'CASHOUT_UNAVAILABLE', panels: [],
     updated_at: olderAt, error_reason: 'FRAME_NOT_READY' });
-  assert.equal(health.snapshot().cashout_initialization.status, 'READY');
+  assert.equal(health.snapshot().cashout_initialization.status, 'CASHOUT_VERIFIED');
 });
 
 test('recovered commits without a monotonic start do not become zero-latency samples', () => {

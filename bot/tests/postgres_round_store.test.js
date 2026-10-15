@@ -69,12 +69,12 @@ test('saveRounds returns committed database identity and total row count for cap
       if (sql.includes('INSERT INTO')) return {
         rowCount: 1,
         rows: [{
-          id: 501, round_id: params[0], round_index: params[3],
+          id: 501, round_id: params[0], round_index: params[3], history_epoch: params[5],
           platform_round_id: params[1], platform_round_index: params[2],
-          multiplier: params[5], platform_timestamp: params[7],
-          observed_at: params[8], stored_at: new Date('2026-10-04T10:00:00.050Z'),
-          source: params[15], continuity_verified: params[12], gap_before: params[13],
-          identity_confidence: params[11],
+          multiplier: params[6], platform_timestamp: params[8],
+          observed_at: params[9], stored_at: new Date('2026-10-04T10:00:00.050Z'),
+          source: params[16], continuity_verified: params[13], gap_before: params[14],
+          identity_confidence: params[12],
         }],
       };
       throw new Error(`Unexpected client query: ${sql}`);
@@ -97,6 +97,7 @@ test('saveRounds returns committed database identity and total row count for cap
     db_id: 501,
     round_id: 'live-round-1',
     round_index: 11,
+    history_epoch: 1,
     local_round_index: 11,
     platform_round_id: null,
     platform_round_index: null,

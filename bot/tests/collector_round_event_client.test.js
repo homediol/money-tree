@@ -57,6 +57,51 @@ test('publishes real direct-page identity and timestamp before persistence hando
   });
 });
 
+test('omits stale attached panel evidence so it cannot block durable round delivery', async () => {
+  let request;
+  const staleRound = {
+    ...directRound,
+    game_phase: {
+      phase: 'UNKNOWN', observed_at: '2020-01-01T00:00:00.000Z',
+      evidence: { source: 'AVIATOR_EXPLICIT_BETTING_PHASE_DOM', explicit_window_state: 'UNKNOWN' },
+      panel_observations: [
+        { panel_id: 'PANEL_1', observed_at: '2020-01-01T00:00:00.000Z' },
+        { panel_id: 'PANEL_2', observed_at: '2020-01-01T00:00:00.000Z' },
+      ],
+    },
+  };
+  await publishDirectRoundObservations([staleRound], {
+    fetchImpl: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return { ok: true, status: 200, text: async () => '{"ok":true,"accepted":1}' };
+    },
+  });
+  assert.equal('game_phase' in request.rounds[0], false);
+});
+
+test('retains fresh attached panel evidence for a timely round handoff', async () => {
+  let request;
+  const observedAt = new Date().toISOString();
+  const freshRound = {
+    ...directRound,
+    game_phase: {
+      phase: 'UNKNOWN', observed_at: observedAt,
+      evidence: { source: 'AVIATOR_EXPLICIT_BETTING_PHASE_DOM', explicit_window_state: 'UNKNOWN' },
+      panel_observations: [
+        { panel_id: 'PANEL_1', observed_at: observedAt },
+        { panel_id: 'PANEL_2', observed_at: observedAt },
+      ],
+    },
+  };
+  await publishDirectRoundObservations([freshRound], {
+    fetchImpl: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return { ok: true, status: 200, text: async () => '{"ok":true,"accepted":1}' };
+    },
+  });
+  assert.deepEqual(request.rounds[0].game_phase, freshRound.game_phase);
+});
+
 test('reports backend rejection so collector can log the fallback path', async () => {
   await assert.rejects(
     publishDirectRoundObservations([directRound], {
