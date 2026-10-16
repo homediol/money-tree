@@ -1,0 +1,187 @@
+{
+  "startAt": "2026-10-15T15:23:12.409Z",
+  "finishAt": "2026-10-15T15:23:42.975Z",
+  "mode": "READ_ONLY",
+  "browser": {
+    "contextCount": 1,
+    "pageCount": 1,
+    "pageUrl": "https://aviator-demo.spribegaming.com/",
+    "frameCount": 1,
+    "finalStatusCheck": {
+      "at": "2026-10-15T15:25:50Z",
+      "cdpEndpoint": "127.0.0.1:9223",
+      "attachSucceeded": false,
+      "error": "ECONNREFUSED",
+      "status": "Demo browser not attachable at final check; prior page screenshots and DOM evidence remain saved."
+    },
+    "reachabilityHistory": [
+      {
+        "at": "2026-10-15T15:25:50Z",
+        "attachSucceeded": false,
+        "error": "ECONNREFUSED",
+        "note": "The first Demo Chrome instance had stopped accepting connections."
+      },
+      {
+        "at": "2026-10-15T15:27:18Z",
+        "attachSucceeded": true,
+        "contextCount": 1,
+        "pageCount": 1,
+        "frameCount": 1,
+        "pageUrl": "https://aviator-demo.spribegaming.com/",
+        "title": "Aviator",
+        "readyState": "complete"
+      }
+    ],
+    "currentStatus": "Reopened and confirmed attachable through bot Playwright; isolated Demo Chrome has one context, one page, one frame. Collector browser on port 9222 was not redirected."
+  },
+  "durationMs": 30433,
+  "sampleCount": 41,
+  "targetIntervalMs": 500,
+  "actualAverageIntervalMs": 739.45,
+  "observerToPollLatency": {
+    "samples": 40,
+    "minMs": 32.900146484375,
+    "medianMs": 439.7001953125,
+    "maxMs": 2946.900146484375
+  },
+  "phaseChanges": [
+    {
+      "at": "2026-10-15T15:23:12.894Z",
+      "frameUrl": "https://aviator-demo.spribegaming.com/",
+      "phase": "UNKNOWN",
+      "explicitPhaseLabels": [],
+      "buttons": [
+        {
+          "text": "All Bets",
+          "class": "tab ng-star-inserted active",
+          "visible": true,
+          "disabled": false,
+          "background": "rgb(44, 45, 48)"
+        },
+        {
+          "text": "Bet",
+          "class": "tab ng-star-inserted active",
+          "visible": true,
+          "disabled": false,
+          "background": "rgb(44, 45, 48)"
+        },
+        {
+          "text": "Bet 1.00 USD",
+          "class": "btn btn-success bet ng-star-inserted",
+          "visible": true,
+          "disabled": false,
+          "background": "rgb(40, 169, 9)"
+        },
+        {
+          "text": "Bet",
+          "class": "tab ng-star-inserted active",
+          "visible": true,
+          "disabled": false,
+          "background": "rgb(44, 45, 48)"
+        },
+        {
+          "text": "Bet 1.00 USD",
+          "class": "btn btn-success bet ng-star-inserted",
+          "visible": true,
+          "disabled": false,
+          "background": "rgb(40, 169, 9)"
+        }
+      ],
+      "roundIdAttributes": [],
+      "mutationCount": 0,
+      "observerToPollMs": null,
+      "bodyText": "30,000.00USD All Bets Previous Top 0.00 283/283 Bets Total win USD Player Bet USD X Win USD d***3 100.00 d***3 100.00 d***7 100.00 d***4 100.00 d***4 100.00 d***7 100.00 d***7 100.00 d***2 100.00 d***2 100.00 d***4 100.00 d***4 100.00 d***9 100.00 d***9 100.00 d***5 100.00 d***5 100.00 d***1 100.00 d***5 100.00 d***5 100.00 d***2 100.00 d***2 100.00 d***4 100.00 d***7 100.00 d***4 100.00 d***9 100.00 d***9 100.00 d***2 100.00 d***4 100.00 d***9 100.00 d***7 100.00 d***6 100.00 d***7 100.00 d***2 100.00 Provably Fair Game Powered by 1.29x 1.00x 2.47x 1.09x 1.51x 1.74x 3.03x 16.32x 1.28x 3.69x 10.48x 1.56x 1.00x 2.39x 22.20x 2.74x 1.00x 1.18x 1.06x 1.01x 1.03x 2.63x 1.84x 2.97x 57.17x 14.76x 1.81x 1.65x 2.69x 18.20x 1.00x 2.50x 2.17x 3.50x 1.05x 1.36x 3.20x 1.10x 17.15x 2.00x 10.78x 1.00x FUN MODE 167 Bet Auto 1 2 5 10 Bet 1.00 USD Bet Auto 1 2 5 10 Bet 1.00 USD"
+    }
+  ],
+  "screenshots": [
+    {
+      "at": "2026-10-15T15:23:20.027Z",
+      "file": "../reports/spribe-demo-bot-monitor-20261015T152312Z-canvas-00.png"
+    },
+    {
+      "at": "2026-10-15T15:23:23.803Z",
+      "file": "../reports/spribe-demo-bot-monitor-20261015T152312Z-canvas-01.png"
+    },
+    {
+      "at": "2026-10-15T15:23:28.964Z",
+      "file": "../reports/spribe-demo-bot-monitor-20261015T152312Z-canvas-02.png"
+    },
+    {
+      "at": "2026-10-15T15:23:33.783Z",
+      "file": "../reports/spribe-demo-bot-monitor-20261015T152312Z-canvas-03.png"
+    },
+    {
+      "at": "2026-10-15T15:23:38.613Z",
+      "file": "../reports/spribe-demo-bot-monitor-20261015T152312Z-canvas-04.png"
+    }
+  ],
+  "phaseSignalsObserved": false,
+  "roundIdAttributesObserved": false,
+  "betClicks": 0,
+  "cancelClicks": 0,
+  "cashoutClicks": 0,
+  "settingsChanged": false,
+  "sampledCanvasStates": [
+    {
+      "at": "2026-10-15T15:23:20.027Z",
+      "sampledCanvasState": "ROUND_RUNNING",
+      "canvasText": "1.35x",
+      "evidence": "aircraft in flight; multiplier rendered on game canvas",
+      "screenshot": "../reports/spribe-demo-bot-monitor-20261015T152312Z-canvas-00.png"
+    },
+    {
+      "at": "2026-10-15T15:23:23.803Z",
+      "sampledCanvasState": "ROUND_ENDED",
+      "canvasText": "FLEW AWAY! 1.41x",
+      "evidence": "explicit FLEW AWAY text on game canvas",
+      "screenshot": "../reports/spribe-demo-bot-monitor-20261015T152312Z-canvas-01.png"
+    },
+    {
+      "at": "2026-10-15T15:23:28.964Z",
+      "sampledCanvasState": "INTERMISSION",
+      "canvasText": "UFC / Aviator OFFICIAL PARTNERS transition screen",
+      "evidence": "provider transition splash rendered on game canvas",
+      "screenshot": "../reports/spribe-demo-bot-monitor-20261015T152312Z-canvas-02.png"
+    },
+    {
+      "at": "2026-10-15T15:23:33.783Z",
+      "sampledCanvasState": "ROUND_RUNNING",
+      "canvasText": "1.33x",
+      "evidence": "aircraft in flight; multiplier rendered on game canvas",
+      "screenshot": "../reports/spribe-demo-bot-monitor-20261015T152312Z-canvas-03.png"
+    },
+    {
+      "at": "2026-10-15T15:23:38.613Z",
+      "sampledCanvasState": "ROUND_RUNNING",
+      "canvasText": "2.05x",
+      "evidence": "aircraft in flight; multiplier rendered on game canvas",
+      "screenshot": "../reports/spribe-demo-bot-monitor-20261015T152312Z-canvas-04.png"
+    }
+  ],
+  "phaseCoverage": {
+    "ROUND_RUNNING": "Observed in 3 sampled canvas screenshots.",
+    "ROUND_ENDED": "Observed once via canvas text FLEW AWAY!.",
+    "INTERMISSION": "Observed once via UFC/Aviator transition splash.",
+    "BETTING_OPEN": "UNKNOWN; no explicit betting countdown/deadline evidence in DOM was found.",
+    "BETTING_CLOSED": "UNKNOWN; no explicit deadline or closed-state evidence was found.",
+    "roundIdentity": "No round ID/game ID attributes found in inspected DOM."
+  },
+  "panelObservation": {
+    "samples": 41,
+    "greenBetButtonSelector": "button.btn.btn-success.bet.ng-star-inserted",
+    "verifiedMatchCount": 2,
+    "observedState": "Both visible and enabled; text Bet 1.00 USD; computed background rgb(40, 169, 9).",
+    "stakeAndCurrency": "1.00 USD displayed for each panel.",
+    "cancelOrCashOut": "No visible button with Cancel or Cash Out text was observed.",
+    "modeTabs": "Bet tab active; Auto tab unselected. This does not verify Auto Bet setting.",
+    "autoCashout": "Not verified; settings were not opened or changed.",
+    "reset": "No panel reset transition observed."
+  },
+  "measurementNotes": [
+    "The 5 canvas screenshots sample the visual sequence ROUND_RUNNING, ROUND_ENDED, INTERMISSION, ROUND_RUNNING. Unsampled subphases may have occurred between screenshots.",
+    "The game multiplier and FLEW AWAY label are drawn in the canvas, so no DOM selector for them was observed.",
+    "DOM-only phase labels were absent; the canvas screenshots provide the phase evidence above.",
+    "Polling averaged approximately 739 ms across the 30 second monitoring window; observer-to-poll delay median was approximately 440 ms (40 samples). This is local DOM polling delay, not provider/network latency.",
+    "The earlier 60 second capture's text-only ROUND_RUNNING heuristic matched historical bet-list multipliers. Treat that heuristic as unverified; the sampled canvas evidence in this report is authoritative for the shown moments."
+  ]
+}

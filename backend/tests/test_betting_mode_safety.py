@@ -242,7 +242,7 @@ def test_live_manager_refactor_lock_rejects_fully_confirmed_start():
         "real_funds_can_be_lost": True,
     }, _mode_authorization=LIVE_MODE_AUTHORIZATION))
 
-    assert result["error"] == "real_money_execution_disabled_during_refactoring"
+    assert result["error"] == "real_money_execution_disabled_pending_live_qualification"
     assert controller.live_active is False
 
 

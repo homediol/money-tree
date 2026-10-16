@@ -39,6 +39,78 @@ function parseCurrency(text, hint) {
   return values.size === 1 ? [...values][0] : null;
 }
 
+function switchState(raw) {
+  if (!raw || raw.visible !== true) return 'UNKNOWN';
+  const classes = String(raw.class || '').trim().split(/\s+/).filter(Boolean);
+  if (classes.includes('off')) return 'OFF';
+  if (classes.includes('on')) return 'ON';
+  // SPRIBE Demo's observed app-ui-switcher uses `input-switch off` for OFF
+  // and `input-switch` with an enabled value input for ON.
+  if (classes.length === 1 && classes[0] === 'input-switch'
+      && (raw.input_enabled === true || raw.input_enabled == null)) return 'ON';
+  return 'UNKNOWN';
+}
+
+/** Classify fresh, read-only Auto Bet / Auto Cash Out panel configuration. */
+export function classifyPanelConfigurationObservation(raw = {},
+  { now = Date.now(), maxAgeMs = 15000 } = {}) {
+  const panelId = String(raw.panel_id || 'UNKNOWN');
+  const frameIdentity = String(raw.frame_identity || '').slice(0, 180) || null;
+  const timestamp = raw.observed_at == null ? NaN : Date.parse(raw.observed_at);
+  const ageMs = now - timestamp;
+  const autoBet = switchState(raw.auto_bet);
+  const autoCashout = switchState(raw.auto_cashout);
+  const stake = parseAmount(raw.stake?.value);
+  const cashoutTargetValue = Number(raw.auto_cashout?.input_value);
+  const cashoutTarget = Number.isFinite(cashoutTargetValue) && cashoutTargetValue >= 1.01
+    ? Math.round(cashoutTargetValue * 100) / 100 : null;
+  const currency = parseCurrency(raw.currency_text, raw.currency_hint);
+  const fresh = Number.isFinite(timestamp) && ageMs >= -30000 && ageMs <= maxAgeMs;
+  const identityValid = /^PANEL_[12]$/.test(panelId) && Boolean(frameIdentity);
+  const controlsVisible = raw.panel_visible === true && raw.auto_tab_selected === true
+    && raw.auto_bet?.visible === true && raw.auto_cashout?.visible === true
+    && raw.stake?.visible === true && raw.auto_cashout?.input_visible === true;
+  const evidenceComplete = autoBet !== 'UNKNOWN' && autoCashout !== 'UNKNOWN'
+    && stake !== null && currency !== null && cashoutTarget !== null
+    && raw.stake?.enabled === true && raw.auto_cashout?.input_enabled === true;
+  let reason = 'PANEL_CONFIGURATION_EVIDENCE_INCOMPLETE';
+  if (!identityValid) reason = 'PANEL_OR_FRAME_IDENTITY_UNKNOWN';
+  else if (!fresh) reason = 'STALE_OR_FUTURE_OBSERVATION';
+  else if (raw.panel_visible !== true) reason = 'PANEL_NOT_VISIBLE';
+  else if (raw.auto_tab_selected !== true) reason = 'AUTO_TAB_NOT_SELECTED';
+  else if (!controlsVisible) reason = 'AUTO_CONFIGURATION_CONTROLS_NOT_VISIBLE';
+  else if (!evidenceComplete) reason = 'AUTO_CONFIGURATION_VALUE_OR_SWITCH_UNKNOWN';
+  else reason = 'FRESH_AUTO_CONFIGURATION_READBACK';
+  const verified = identityValid && fresh && controlsVisible && evidenceComplete;
+  const expiresAt = Number.isFinite(timestamp)
+    ? new Date(timestamp + maxAgeMs).toISOString() : null;
+  return {
+    panel_id: panelId,
+    status: verified ? 'VERIFIED' : 'UNKNOWN',
+    auto_bet: verified ? autoBet : 'UNKNOWN',
+    auto_cashout: verified ? autoCashout : 'UNKNOWN',
+    stake,
+    cashout_target: cashoutTarget,
+    currency,
+    requirements_satisfied: verified && autoBet === 'OFF'
+      && autoCashout === 'ON' && cashoutTarget === 2,
+    observed_at: raw.observed_at || null,
+    expires_at: expiresAt,
+    age_ms: Number.isFinite(ageMs) ? ageMs : null,
+    frame_identity: frameIdentity,
+    source: String(raw.source || 'AVIATOR_BETTING_PANEL_CONFIGURATION_OBSERVER'),
+    evidence: {
+      reason,
+      panel_visible: raw.panel_visible === true,
+      auto_tab_selected: raw.auto_tab_selected === true,
+      auto_bet: raw.auto_bet || null,
+      auto_cashout: raw.auto_cashout || null,
+      stake: raw.stake || null,
+      currency_text: String(raw.currency_text || '').slice(0, 180),
+    },
+  };
+}
+
 export function classifyPanelObservation(raw = {}, { now = Date.now(), maxAgeMs = 15000 } = {}) {
   const panelId = String(raw.panel_id || 'UNKNOWN');
   const frameIdentity = String(raw.frame_identity || '').slice(0, 180) || null;

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyPanelObservation, panelObservationTransition } from '../collector/PanelStateDetector.js';
+import { classifyPanelConfigurationObservation, classifyPanelObservation,
+  panelObservationTransition } from '../collector/PanelStateDetector.js';
 
 const base = {
   panel_id: 'PANEL_1', panel_visible: true, button_visible: true, button_enabled: true,
@@ -97,10 +98,13 @@ test('queued to active to available transitions are recorded once and stale even
   const active = classifyPanelObservation({ ...base, ...screenshotStates[2], observed_at: at(20) });
   assert.deepEqual(panelObservationTransition(available, queued), {
     changed: true, duplicate: false, stale: false, frame_reloaded: false,
-    from_state: 'BET_AVAILABLE', to_state: 'BET_QUEUED', observed_at: queued.observed_at,
+    from_state: 'BET_AVAILABLE', to_state: 'BET_QUEUED', current_state: 'BET_QUEUED',
+    observed_at: queued.observed_at,
   });
   assert.equal(panelObservationTransition(queued, active).to_state, 'BET_ACTIVE');
-  assert.equal(panelObservationTransition(active, available).to_state, 'BET_AVAILABLE');
+  const reset = panelObservationTransition(active, available);
+  assert.equal(reset.to_state, 'BET_RESET');
+  assert.equal(reset.current_state, 'BET_AVAILABLE');
   assert.equal(panelObservationTransition(available, { ...available, observed_at: at(1) }).duplicate, true);
   assert.equal(panelObservationTransition(active, { ...available, observed_at: at(-10) }).stale, true);
 });
@@ -113,6 +117,54 @@ test('frame reload resets the previous panel state attribution', () => {
   const transition = panelObservationTransition(before, after);
   assert.equal(transition.frame_reloaded, true);
   assert.equal(transition.from_state, 'UNKNOWN');
+});
+
+test('fresh SPRIBE Auto panel readback verifies independent stake, Auto Bet, and Auto Cash Out values', () => {
+  const observedAt = new Date().toISOString();
+  const raw = {
+    panel_id: 'PANEL_1', panel_visible: true, auto_tab_selected: true,
+    frame_identity: 'https://aviator-demo.spribegaming.com/#demo-frame', observed_at: observedAt,
+    source: 'AVIATOR_BETTING_PANEL_CONFIGURATION_OBSERVER',
+    stake: {selector: '.bet-block input[type="text"]', value: '100.00', visible: true, enabled: true},
+    auto_bet: {selector: '.auto-bet app-ui-switcher .input-switch',
+      class: 'input-switch off', visible: true, input_enabled: null},
+    auto_cashout: {selector: '.cash-out-switcher app-ui-switcher .input-switch',
+      class: 'input-switch', visible: true, input_enabled: true, input_visible: true, input_value: '2.00'},
+    currency_text: 'Bet 100.00 USD Auto bet Auto Cash Out',
+  };
+  const result = classifyPanelConfigurationObservation(raw);
+  assert.deepEqual({status: result.status, auto_bet: result.auto_bet,
+    auto_cashout: result.auto_cashout, stake: result.stake, currency: result.currency,
+    cashout_target: result.cashout_target, requirements_satisfied: result.requirements_satisfied},
+  {status: 'VERIFIED', auto_bet: 'OFF', auto_cashout: 'ON', stake: 100,
+    currency: 'USD', cashout_target: 2, requirements_satisfied: true});
+  assert.equal(result.expires_at, new Date(Date.parse(observedAt) + 15000).toISOString());
+});
+
+test('panel configuration readback fails closed when tab, switch, or freshness evidence is missing', () => {
+  const observedAt = new Date().toISOString();
+  const raw = {
+    panel_id: 'PANEL_2', panel_visible: true, auto_tab_selected: true,
+    frame_identity: 'https://aviator-demo.spribegaming.com/#demo-frame', observed_at: observedAt,
+    stake: {value: '100.00', visible: true, enabled: true},
+    auto_bet: {class: 'input-switch off', visible: true},
+    auto_cashout: {class: 'input-switch', visible: true, input_enabled: true,
+      input_visible: true, input_value: '2.00'},
+    currency_text: 'Bet 100.00 USD',
+  };
+  const stale = classifyPanelConfigurationObservation(raw,
+    {now: Date.parse(observedAt) + 16000});
+  assert.equal(stale.status, 'UNKNOWN');
+  assert.equal(stale.evidence.reason, 'STALE_OR_FUTURE_OBSERVATION');
+  assert.equal(stale.requirements_satisfied, false);
+  const tabHidden = classifyPanelConfigurationObservation({...raw, auto_tab_selected: false});
+  assert.equal(tabHidden.status, 'UNKNOWN');
+  assert.equal(tabHidden.auto_cashout, 'UNKNOWN');
+  assert.equal(tabHidden.evidence.reason, 'AUTO_TAB_NOT_SELECTED');
+  const unknownSwitch = classifyPanelConfigurationObservation({...raw,
+    auto_cashout: {...raw.auto_cashout, class: 'input-switch disabled', input_enabled: false}});
+  assert.equal(unknownSwitch.status, 'UNKNOWN');
+  assert.equal(unknownSwitch.requirements_satisfied, false);
 });
 
 test('UNKNOWN to available is a transition and repeated DOM event is deduplicated', () => {

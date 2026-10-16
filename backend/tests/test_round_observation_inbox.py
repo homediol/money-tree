@@ -213,13 +213,15 @@ def test_inbox_idempotency_conflicts_and_capacity_never_drop_existing_rows(tmp_p
     assert [item["round_id"] for item in inbox.pending_events()] == ["same-round"]
 
 
-def test_pending_observation_ack_does_not_run_rules_engine_before_postgres_commit(tmp_path):
-    class EngineThatMustWaitForCommit:
-        def needs_round_observation(self):
-            raise AssertionError("pending observations must not synchronously evaluate rules")
+def test_direct_observation_reaches_rules_before_sse_and_resume_inbox(tmp_path):
+    class DirectEngine:
+        def __init__(self):
+            self.calls = []
 
-        def observe_round(self, *_args, **_kwargs):
-            raise AssertionError("only committed events may advance a session")
+        def observe_round(self, event, **kwargs):
+            self.calls.append((event, kwargs))
+            return {"decision": "WAIT", "sessions": [], "automatic_execution": "OFF",
+                    "can_bet": False}
 
     async def scenario():
         class FastDurableInbox:
@@ -235,30 +237,46 @@ def test_pending_observation_ack_does_not_run_rules_engine_before_postgres_commi
 
         inbox = FastDurableInbox()
         inbox_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="commit-only-test-inbox")
+        engine_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="direct-rules-test")
         _, row = observation("pending-before-commit", 1.91)
+        row["continuity_verified"] = True
+        row["round_index_source"] = "PLATFORM"
+        row["identity_confidence"] = "HIGH"
+        row["round_identity_type"] = "PLATFORM_ROUND_ID"
+        row["platform_round_id"] = "provider-pending-before-commit"
+        row["collector_observed_at"] = datetime.now(timezone.utc).isoformat()
+        engine = DirectEngine()
 
         async def request_json():
             return {"source": "WINNER_DIRECT_PAGE_HISTORY", "rounds": [row]}
 
         async def publish(_event):
+            assert len(engine.calls) == 1, "Rules Engine must be called before event fanout"
             return None
 
         app = SimpleNamespace(state=SimpleNamespace(
             round_observation_inbox=inbox,
             round_observation_inbox_executor=inbox_executor,
+            rules_engine_observation_executor=engine_executor,
             round_stream_id="stream-test",
             round_distribution=SimpleNamespace(publish=publish),
-            rules_engine=EngineThatMustWaitForCommit(),
+            rules_engine=engine,
         ))
         try:
             response = await asyncio.wait_for(
                 collector_round_observed(SimpleNamespace(app=app, json=request_json)), timeout=3)
             assert response["ok"] is True
-            assert response["rule_evaluation_stage"] == "WAITING_FOR_COMMITTED_POSTGRES_EVENT"
-            assert response["rules_engine_evaluations"] == []
+            assert response["rule_evaluation_stage"] == "DIRECT_OBSERVED_BEFORE_POSTGRESQL"
+            assert len(response["rules_engine_evaluations"]) == 1
+            event, kwargs = engine.calls[0]
+            assert event["event_type"] == "round.observed"
+            assert kwargs["persist"] is False
+            assert kwargs["direct_observation"] is True
+            assert kwargs["deadline_monotonic"] > time.perf_counter()
             assert inbox.snapshot()["backlog_size"] == 1
         finally:
             inbox_executor.shutdown(wait=True, cancel_futures=True)
+            engine_executor.shutdown(wait=True, cancel_futures=True)
 
     asyncio.run(scenario())
 

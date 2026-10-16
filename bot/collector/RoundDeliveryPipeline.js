@@ -31,11 +31,14 @@ export class RoundDeliveryPipeline {
 
   enqueue(rounds, { deliveryMode = 'LIVE' } = {}) {
     const started = performance.now();
+    const collectorObservedAt = new Date().toISOString();
     for (const round of rounds) {
       const id = String(round.round_id);
       if (!this.observationMonotonic.has(id)) this.observationMonotonic.set(id, started);
     }
-    const records = rounds.map(round => ({ ...round, delivery_mode: deliveryMode }));
+    const records = rounds.map(round => ({ ...round,
+      collector_observed_at: round.collector_observed_at || collectorObservedAt,
+      delivery_mode: deliveryMode }));
     let result;
     try { result = this.outbox.appendMany(records); }
     catch (error) {

@@ -10,7 +10,7 @@ import pytest
 
 from app.api.live import balance, readiness_read_only
 from app.database.repository import Repository
-from app.live import LiveActivationManager
+from app.live import LiveActivationManager, live_execution_blocker_matrix
 
 
 def _request(app: FastAPI) -> Request:
@@ -19,6 +19,21 @@ def _request(app: FastAPI) -> Request:
         "headers": [], "query_string": b"", "server": ("test", 80),
         "client": ("test", 1), "scheme": "http", "app": app,
     })
+
+
+def test_live_blocker_matrix_preserves_all_original_blockers_and_live_proof_boundaries():
+    matrix = live_execution_blocker_matrix()
+    allowed = {"RESOLVED_SHARED_CODE", "VERIFIED_IN_DEMO_ONLY",
+               "REQUIRES_WINNER_LIVE_VERIFICATION", "REQUIRES_PROVIDER_AUTHORIZATION",
+               "UNRESOLVED"}
+
+    assert len(matrix) == 17
+    assert len({row["original_blocker"] for row in matrix}) == 17
+    assert all(row["status"] in allowed for row in matrix)
+    assert all(row["root_cause"] and row["fix_implemented"] and row["evidence_source"]
+               and row["test_result"] and row["remaining_requirement"] for row in matrix)
+    assert not any(row["status"] == "VERIFIED_IN_DEMO_ONLY" for row in matrix)
+    assert next(row for row in matrix if row["original_blocker"] == "REAL-MONEY EXECUTION: DISABLED")["status"] == "UNRESOLVED"
 
 
 def test_read_only_live_readiness_passes_only_operator_selected_panel_to_gate():
@@ -102,7 +117,7 @@ def test_readiness_does_not_apply_optional_balance_exposure_policy(tmp_path):
 
     assert result["optional_bankroll_policy"] == "NOT_APPLIED"
     assert "optional_bankroll_policy" not in result["checks"]
-    assert result["checks"]["real_money_execution"] == "DISABLED_FOR_REFACTORING"
+    assert result["checks"]["real_money_execution"] == "DISABLED_PENDING_LIVE_QUALIFICATION"
     assert result["checks"]["execution_integrity"] == "BLOCKED"
     assert result["checks"]["emergency_stop"] == "CLEAR"
     assert result["checks"]["selected_panel"] == "VERIFIED"
@@ -174,6 +189,9 @@ def test_production_readiness_names_unwired_target_and_decision_contracts(tmp_pa
 
     assert result["ready"] is False
     assert result["checks"]["decision_interface"] == "AVAILABLE"
+    assert result["checks"]["software_integration"] == "INCOMPLETE"
+    assert result["checks"]["rules_to_executor_dispatch"] == "UNAVAILABLE"
+    assert "rules_engine_select_not_dispatched_to_betting_executor" in result["reasons"]
     assert result["checks"]["live_execution_authorization"] == "BLOCKED_UNTIL_ACTIVATED"
     assert result["checks"]["target_identity"] == "UNVERIFIED"
     assert result["checks"]["platform_authentication"] == "VERIFIED"

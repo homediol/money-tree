@@ -12,6 +12,20 @@ from pathlib import Path
 from typing import Any
 
 MAX_COLLECTOR_EVENT_ATTEMPTS = 6
+_DEMO_SESSION_VOLATILE_FIELDS = {
+    "context", "decisions", "latest_decision", "pending_selections",
+    "rule_target_observations", "cursor_sequence", "last_round_index",
+    "last_round_id", "latest_game_phase", "latest_panel_observations",
+    "engine_states", "stream_id", "buffer_epoch_id",
+}
+
+
+def _demo_session_storage_payload(session: dict[str, Any]) -> str:
+    # Isolated nonfinancial test sessions persist their configuration and
+    # lifecycle; volatile round/rule state stays out of the live round ledger.
+    payload = {key: value for key, value in session.items()
+               if key not in _DEMO_SESSION_VOLATILE_FIELDS}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 def _is_finite_money(value: Any) -> bool:
@@ -314,6 +328,59 @@ CREATE TABLE IF NOT EXISTS rules_engine_evaluations (
 );
 CREATE INDEX IF NOT EXISTS rules_engine_evaluations_source_idx
   ON rules_engine_evaluations(source_stream_id,source_round_index,evaluated_at);
+CREATE TABLE IF NOT EXISTS demo_stream_meta (
+  singleton SMALLINT PRIMARY KEY CHECK(singleton=1), stream_id TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS demo_rounds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, stream_id TEXT NOT NULL, round_id TEXT NOT NULL UNIQUE,
+  round_index BIGINT NOT NULL UNIQUE, multiplier NUMERIC NOT NULL, observed_at TEXT NOT NULL,
+  stored_at TEXT NOT NULL, platform_round_id TEXT, identity_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+  continuity_status TEXT NOT NULL DEFAULT 'UNKNOWN', payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS demo_round_observations (
+  event_id TEXT PRIMARY KEY, round_id TEXT NOT NULL, observed_at TEXT NOT NULL, payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS demo_rule_sessions (
+  session_id TEXT PRIMARY KEY, environment TEXT NOT NULL CHECK(environment='DEMO'),
+  status TEXT NOT NULL CHECK(status IN ('START','ACTIVE','STOP','RECOVERY','EXPIRED')),
+  enabled_rule_ids TEXT NOT NULL, started_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  stopped_at TEXT, expires_at TEXT NOT NULL, payload TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS demo_one_active_session_idx
+  ON demo_rule_sessions(environment) WHERE status IN ('START','ACTIVE','RECOVERY');
+CREATE TABLE IF NOT EXISTS demo_session_events (
+  event_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, event_type TEXT NOT NULL,
+  recorded_at TEXT NOT NULL, payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS demo_rule_evaluations (
+  evaluation_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, rule_id TEXT NOT NULL,
+  rule_version TEXT NOT NULL, source_stream_id TEXT NOT NULL, source_sequence BIGINT NOT NULL,
+  source_round_id TEXT NOT NULL, source_round_index BIGINT NOT NULL, eligible BOOLEAN,
+  status TEXT NOT NULL, evaluated_at TEXT NOT NULL, payload TEXT NOT NULL,
+  UNIQUE(session_id,rule_id,source_stream_id,source_sequence)
+);
+CREATE TABLE IF NOT EXISTS demo_rule_decisions (
+  decision_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, source_stream_id TEXT NOT NULL,
+  source_sequence BIGINT NOT NULL, source_round_id TEXT NOT NULL, source_round_index BIGINT NOT NULL,
+  target_round_index BIGINT, action TEXT NOT NULL CHECK(action IN ('SELECT','NO_SELECT','BLOCKED')),
+  created_at TEXT NOT NULL, payload TEXT NOT NULL,
+  UNIQUE(session_id,source_stream_id,source_sequence)
+);
+CREATE TABLE IF NOT EXISTS demo_panel_observations (
+  observation_id TEXT PRIMARY KEY, session_id TEXT, panel_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS demo_execution_attempts (
+  attempt_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, decision_id TEXT NOT NULL UNIQUE,
+  target_round_id TEXT, target_round_index BIGINT,
+  state TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS demo_rounds_stream_idx ON demo_rounds(stream_id,id);
+CREATE INDEX IF NOT EXISTS demo_sessions_status_idx ON demo_rule_sessions(status,updated_at DESC);
+CREATE INDEX IF NOT EXISTS demo_evaluations_session_idx ON demo_rule_evaluations(session_id,source_sequence);
+CREATE INDEX IF NOT EXISTS demo_decisions_session_idx ON demo_rule_decisions(session_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS demo_attempts_session_idx ON demo_execution_attempts(session_id,created_at DESC);
 """
 
 
@@ -2425,4 +2492,224 @@ class Repository:
         with self.connect() as conn:
             query = "SELECT payload FROM shadow_ledger ORDER BY id DESC LIMIT ?" if not session_id else "SELECT payload FROM shadow_ledger WHERE session_id=? ORDER BY id DESC LIMIT ?"
             rows = conn.execute(query, (limit,) if not session_id else (session_id, limit)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+    def start_demo_rule_session(self, session: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(session["session_id"])
+        now = str(session["started_at"])
+        encoded_rules = json.dumps(session.get("enabled_rule_ids") or [])
+        payload = _demo_session_storage_payload(session)
+        with self.connect() as conn:
+            conn.execute("INSERT INTO demo_rule_sessions(session_id,environment,status,enabled_rule_ids,started_at,updated_at,stopped_at,expires_at,payload) VALUES(?,?,?,?,?,?,?,?,?)",
+                         (session_id, "DEMO", "START", encoded_rules, now, now, None,
+                          str(session["expires_at"]), payload))
+            for event_type in ("START", "ACTIVE"):
+                event = {"session_id": session_id, "environment": "DEMO", "event_type": event_type,
+                         "recorded_at": now}
+                conn.execute("INSERT INTO demo_session_events(event_id,session_id,event_type,recorded_at,payload) VALUES(?,?,?,?,?)",
+                             (f"{session_id}:{event_type}", session_id, event_type, now,
+                              json.dumps(event, sort_keys=True, separators=(",", ":"))))
+            session["status"] = "ACTIVE"
+            payload = _demo_session_storage_payload(session)
+            conn.execute("UPDATE demo_rule_sessions SET status='ACTIVE',payload=? WHERE session_id=?",
+                         (payload, session_id))
+        return session
+
+    def update_demo_rule_session(self, session: dict[str, Any], event_type: str | None = None,
+                                 evidence: dict[str, Any] | None = None) -> None:
+        session_id = str(session["session_id"])
+        now = str(session.get("updated_at") or datetime.now(timezone.utc).isoformat())
+        with self.connect() as conn:
+            conn.execute("UPDATE demo_rule_sessions SET status=?,updated_at=?,stopped_at=?,expires_at=?,payload=? WHERE session_id=?",
+                         (str(session["status"]), now, session.get("stopped_at"), str(session["expires_at"]),
+                         _demo_session_storage_payload(session), session_id))
+            if event_type:
+                event_id = hashlib.sha256(f"{session_id}\0{event_type}\0{now}".encode()).hexdigest()
+                payload = {"session_id": session_id, "environment": "DEMO", "event_type": event_type,
+                           "recorded_at": now, "evidence": evidence or {}}
+                conn.execute("INSERT INTO demo_session_events(event_id,session_id,event_type,recorded_at,payload) VALUES(?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING",
+                             (event_id, session_id, event_type, now,
+                              json.dumps(payload, sort_keys=True, separators=(",", ":"))))
+
+    def demo_rule_session(self, session_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM demo_rule_sessions WHERE session_id=?", (str(session_id),)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def list_demo_rule_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM demo_rule_sessions ORDER BY started_at DESC LIMIT ?",
+                                (max(1, int(limit)),)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def recover_demo_rule_sessions(self, now: str) -> int:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT session_id,payload FROM demo_rule_sessions WHERE status='ACTIVE'").fetchall()
+            for row in rows:
+                session = json.loads(row["payload"])
+                session.update(status="RECOVERY", updated_at=now,
+                               recovery_reason="BACKEND_RESTART_REQUIRES_EXPLICIT_RECOVERY")
+                conn.execute("UPDATE demo_rule_sessions SET status='RECOVERY',updated_at=?,payload=? WHERE session_id=?",
+                             (now, _demo_session_storage_payload(session), row["session_id"]))
+                event = {"session_id": row["session_id"], "environment": "DEMO", "event_type": "RECOVERY",
+                         "recorded_at": now, "evidence": {"reason": session["recovery_reason"]}}
+                event_id = hashlib.sha256(f"{row['session_id']}\0RECOVERY\0{now}".encode()).hexdigest()
+                conn.execute("INSERT INTO demo_session_events(event_id,session_id,event_type,recorded_at,payload) VALUES(?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING",
+                             (event_id, row["session_id"], "RECOVERY", now,
+                              json.dumps(event, sort_keys=True, separators=(",", ":"))))
+        return len(rows)
+
+    def save_demo_evaluation(self, session: dict[str, Any], evaluations: list[dict[str, Any]],
+                             decision: dict[str, Any], attempt: dict[str, Any] | None = None) -> bool:
+        session_id = str(session["session_id"])
+        source = decision["source_round"]
+        source_stream_id = str(source.get("stream_id") or source.get("streamId") or "")
+        source_sequence = int(source.get("stream_sequence") or source.get("streamSequence") or 0)
+        source_round_id = str(source.get("round_id") or source.get("roundId") or "")
+        source_round_index = int(source.get("round_index") or source.get("roundIndex") or 0)
+        with self.connect() as conn:
+            for evaluation in evaluations:
+                key = f"{session_id}\0{evaluation['rule_id']}\0{source_stream_id}\0{source_sequence}"
+                evaluation_id = hashlib.sha256(key.encode()).hexdigest()
+                conn.execute("""INSERT INTO demo_rule_evaluations(
+                    evaluation_id,session_id,rule_id,rule_version,source_stream_id,source_sequence,
+                    source_round_id,source_round_index,eligible,status,evaluated_at,payload)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id,rule_id,source_stream_id,source_sequence) DO NOTHING""",
+                    (evaluation_id, session_id, str(evaluation["rule_id"]), str(evaluation.get("rule_version") or ""),
+                     source_stream_id, source_sequence, source_round_id,
+                     source_round_index, evaluation.get("eligible"), str(evaluation.get("status") or "UNKNOWN"),
+                     str(decision["created_at"]), json.dumps(evaluation, sort_keys=True, separators=(",", ":"))))
+            decision_result = conn.execute("""INSERT INTO demo_rule_decisions(
+                decision_id,session_id,source_stream_id,source_sequence,source_round_id,source_round_index,
+                target_round_index,action,created_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(session_id,source_stream_id,source_sequence) DO NOTHING RETURNING decision_id""",
+                (str(decision["decision_id"]), session_id, source_stream_id,
+                 source_sequence, source_round_id, source_round_index,
+                 decision.get("target_round_index"), str(decision["action"]), str(decision["created_at"]),
+                 json.dumps(decision, sort_keys=True, separators=(",", ":")))).fetchone()
+            if not decision_result:
+                return False
+            if attempt:
+                conn.execute("""INSERT INTO demo_execution_attempts(
+                    attempt_id,session_id,decision_id,target_round_id,target_round_index,state,reason,
+                    created_at,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(decision_id) DO NOTHING""",
+                    (str(attempt["attempt_id"]), session_id, str(attempt["decision_id"]),
+                     attempt.get("target_round_id"), attempt.get("target_round_index"),
+                     str(attempt["state"]), str(attempt.get("reason") or ""), str(attempt["created_at"]),
+                     str(attempt["updated_at"]), json.dumps(attempt, sort_keys=True, separators=(",", ":"))))
+            conn.execute("UPDATE demo_rule_sessions SET updated_at=?,payload=? WHERE session_id=?",
+                         (str(session["updated_at"]), _demo_session_storage_payload(session), session_id))
+        return True
+
+    def update_demo_execution_attempt(self, attempt: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute("UPDATE demo_execution_attempts SET state=?,reason=?,updated_at=?,payload=? WHERE attempt_id=?",
+                         (str(attempt["state"]), attempt.get("reason"), str(attempt["updated_at"]),
+                          json.dumps(attempt, sort_keys=True, separators=(",", ":")), str(attempt["attempt_id"])))
+
+    def claim_demo_execution_attempt(self, now: str) -> dict[str, Any] | None:
+        """Claim one eligible Demo attempt exactly once before its browser action."""
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT a.attempt_id,a.payload FROM demo_execution_attempts a
+                JOIN demo_rule_sessions s ON s.session_id=a.session_id
+                WHERE a.state='EXECUTION_ELIGIBLE' AND s.environment='DEMO' AND s.status='ACTIVE'
+                ORDER BY a.created_at LIMIT 100""").fetchall()
+            for row in rows:
+                attempt = json.loads(row["payload"])
+                if attempt.get("dispatch_claimed_at"):
+                    continue
+                token = uuid.uuid4().hex
+                attempt.update(dispatch_claim_token=token, dispatch_claimed_at=now,
+                               dispatch_state="CLAIMED", updated_at=now)
+                encoded = json.dumps(attempt, sort_keys=True, separators=(",", ":"))
+                changed = conn.execute("""UPDATE demo_execution_attempts SET updated_at=?,payload=?
+                    WHERE attempt_id=? AND state='EXECUTION_ELIGIBLE' AND payload=?""",
+                    (now, encoded, str(row["attempt_id"]), row["payload"])).rowcount
+                if changed == 1:
+                    return attempt
+        return None
+
+    def complete_demo_execution_attempt(self, attempt: dict[str, Any], token: str) -> bool:
+        """Persist a Demo adapter result only for its one-time claim token."""
+        attempt_id = str(attempt.get("attempt_id") or "")
+        now = str(attempt.get("updated_at") or datetime.now(timezone.utc).isoformat())
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload,state FROM demo_execution_attempts WHERE attempt_id=?",
+                               (attempt_id,)).fetchone()
+            if not row:
+                return False
+            current = json.loads(row["payload"])
+            if (not token or current.get("dispatch_claim_token") != token
+                    or current.get("dispatch_state") != "CLAIMED"):
+                return False
+            if current.get("state") not in {"EXECUTION_ELIGIBLE", "UNKNOWN"}:
+                return False
+            merged = {**current, **attempt, "dispatch_state": "COMPLETED", "updated_at": now}
+            conn.execute("UPDATE demo_execution_attempts SET state=?,reason=?,updated_at=?,payload=? WHERE attempt_id=?",
+                         (str(merged.get("state") or "UNKNOWN"), merged.get("reason"), now,
+                          json.dumps(merged, sort_keys=True, separators=(",", ":")), attempt_id))
+            return True
+
+    def expire_demo_execution_claims(self, before: str) -> int:
+        """Fail closed when the browser owner disappears after a one-time claim."""
+        expired = 0
+        with self.connect() as conn:
+            rows = conn.execute("SELECT attempt_id,payload FROM demo_execution_attempts WHERE state='EXECUTION_ELIGIBLE'").fetchall()
+            for row in rows:
+                attempt = json.loads(row["payload"])
+                claimed_at = str(attempt.get("dispatch_claimed_at") or "")
+                if not claimed_at or claimed_at > before or attempt.get("dispatch_state") != "CLAIMED":
+                    continue
+                attempt.update(state="UNKNOWN", reason="DEMO_ACTION_RESULT_NOT_RECONCILED",
+                               dispatch_state="EXPIRED", updated_at=before,
+                               blockers=["DEMO_ACTION_RESULT_NOT_RECONCILED"])
+                attempt.setdefault("transitions", []).append({"state": "UNKNOWN", "at": before,
+                    "reason": attempt["reason"]})
+                conn.execute("UPDATE demo_execution_attempts SET state='UNKNOWN',reason=?,updated_at=?,payload=? WHERE attempt_id=? AND state='EXECUTION_ELIGIBLE'",
+                             (attempt["reason"], before,
+                              json.dumps(attempt, sort_keys=True, separators=(",", ":")),
+                              str(row["attempt_id"])))
+                expired += 1
+        return expired
+
+    def record_demo_panel_observations(self, session_id: str | None,
+                                       observations: list[dict[str, Any]]) -> None:
+        with self.connect() as conn:
+            for row in observations:
+                panel_id = str(row.get("panel_id") or "")
+                if panel_id not in {"PANEL_1", "PANEL_2"}:
+                    continue
+                observed_at = str(row.get("observed_at") or datetime.now(timezone.utc).isoformat())
+                identity = str(row.get("observation_id") or hashlib.sha256(
+                    f"{session_id}\0{panel_id}\0{observed_at}".encode()).hexdigest())
+                conn.execute("INSERT INTO demo_panel_observations(observation_id,session_id,panel_id,observed_at,state,payload) VALUES(?,?,?,?,?,?) ON CONFLICT(observation_id) DO NOTHING",
+                             (identity, session_id, panel_id, observed_at,
+                              str(row.get("state") or "UNKNOWN"),
+                              json.dumps(row, sort_keys=True, separators=(",", ":"))))
+
+    def demo_session_events(self, session_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM demo_session_events WHERE session_id=? ORDER BY recorded_at DESC LIMIT ?",
+                                (str(session_id), max(1, int(limit)))).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def demo_session_evaluations(self, session_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM demo_rule_evaluations WHERE session_id=? ORDER BY source_sequence DESC,rule_id LIMIT ?",
+                                (str(session_id), max(1, int(limit)))).fetchall()
+        return [json.loads(row["payload"]) for row in reversed(rows)]
+
+    def demo_session_decisions(self, session_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM demo_rule_decisions WHERE session_id=? ORDER BY created_at DESC LIMIT ?",
+                                (str(session_id), max(1, int(limit)))).fetchall()
+        return [json.loads(row["payload"]) for row in reversed(rows)]
+
+    def demo_execution_attempts(self, session_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            if session_id:
+                rows = conn.execute("SELECT payload FROM demo_execution_attempts WHERE session_id=? ORDER BY created_at DESC LIMIT ?",
+                                    (str(session_id), max(1, int(limit)))).fetchall()
+            else:
+                rows = conn.execute("SELECT payload FROM demo_execution_attempts ORDER BY created_at DESC LIMIT ?",
+                                    (max(1, int(limit)),)).fetchall()
         return [json.loads(row["payload"]) for row in rows]

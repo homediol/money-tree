@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -238,6 +239,55 @@ def test_duplicate_observed_commit_and_restart_keep_one_selection_and_provenance
     assert config_version is not None
 
 
+def test_direct_observation_past_100ms_is_invalid_late_and_never_selects():
+    engine, session = new_session("FIVE_RULE_TRACKER", ["SOURCE_H_MULT_2_3"])
+    row = FIXTURE["rounds"][0]
+
+    result = engine.observe_round(
+        observed(row), now=row["receiver_received_at"],
+        deadline_monotonic=time.perf_counter() - 0.001,
+    )
+
+    detail = engine.session(session["session_id"])
+    assert detail["selections"] == []
+    evaluation = detail["evaluations"][-1]
+    assert evaluation["decision"]["action"] == "WAIT"
+    assert evaluation["decision"]["reason"] == "RULES_DEADLINE_EXPIRED"
+    assert evaluation["rule_evaluations"][0]["status"] == "INVALID_LATE"
+    assert result["decision"] == "WAIT"
+
+
+def test_direct_observation_selects_in_memory_then_commit_promotes_without_database_reads():
+    class DatabaseMustNotBeRead:
+        def round_continuity_for_indices(self, *_args, **_kwargs):
+            raise AssertionError("direct rules evaluation must not query PostgreSQL")
+
+    class InboxMustNotBeRead:
+        def has_pending_round_index(self, *_args, **_kwargs):
+            raise AssertionError("direct rules evaluation must not query the SQLite inbox")
+
+    engine, session = new_session("FIVE_RULE_TRACKER", ["SOURCE_H_MULT_2_3"])
+    engine._persistence = DatabaseMustNotBeRead()
+    engine.observation_inbox = InboxMustNotBeRead()
+    row = FIXTURE["rounds"][0]
+
+    direct = engine.observe_round(
+        observed(row), now=row["receiver_received_at"], direct_observation=True,
+        persist=False, deadline_monotonic=time.perf_counter() + 0.1,
+    )
+    assert direct["sessions"][0]["decision"]["action"] == "SELECT"
+    detail = engine.session(session["session_id"])
+    assert len(detail["selections"]) == 1
+    assert detail["evaluations"][-1]["persistence_status"] == "PENDING"
+    assert detail["evaluations"][-1]["target_identity_guard"] == "DIRECT_PAGE_SNAPSHOT_NO_COMPLETED_TARGET"
+
+    promoted = engine.observe_round(committed(row), now=row["database_committed_at"], persist=False)
+    detail = engine.session(session["session_id"])
+    assert len(detail["selections"]) == 1
+    assert detail["evaluations"][-1]["persistence_status"] == "COMMITTED"
+    assert promoted["sessions"][0]["decision"]["action"] == "SELECT"
+
+
 @pytest.mark.parametrize("limit_field,limit_value,expected_reason,expected_wins,expected_losses", [
     ("win_limit_count", 1, "WIN_LIMIT_REACHED", 1, 1),
     ("loss_limit_count", 2, "LOSS_LIMIT_REACHED", 2, 2),
@@ -305,6 +355,65 @@ def test_zero_rule_session_is_no_action_and_one_session_stop_does_not_affect_pee
                           if item["session_id"] == combined["session_id"])
     assert stopped_record["decision"]["action"] == "WAIT"
     assert len(shared.session(combined["session_id"])["selections"]) == 1
+
+
+def test_integrity_paused_session_releases_mode_slot_without_erasing_history():
+    engine, old = new_session("ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"])
+    gap = deepcopy(FIXTURE["rounds"][0])
+    gap["round_index"] += 1
+    engine.observe_round(observed(gap), now=gap["receiver_received_at"])
+
+    preserved = engine.session(old["session_id"])
+    assert preserved["status"] == "PAUSED"
+    assert preserved["stop_reason"] == "ROUND_INDEX_GAP"
+    assert preserved["selection_status"] == "STOPPED"
+    assert preserved["gap_expected_index"] + 1 == preserved["gap_received_index"]
+
+    boundary = source_boundary()
+    replacement = engine.start_session(mode="ALL_RULES_TOGETHER", rule_ids=["SOURCE_H_MULT_2_3"],
+        boundary=boundary, prestart_context=FIXTURE["boundary"]["prestart_context"],
+        options={"window_size": 50})
+    assert replacement["status"] == "RUNNING"
+    assert engine.session(old["session_id"])["stop_reason"] == "ROUND_INDEX_GAP"
+
+
+def test_manually_paused_session_still_owns_mode_slot():
+    engine, session = new_session("ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"])
+    engine.session_action(session["session_id"], "pause")
+
+    with pytest.raises(ValueError, match="SESSION_ALREADY_ACTIVE_FOR_MODE"):
+        engine.start_session(mode="ALL_RULES_TOGETHER", rule_ids=["SOURCE_H_MULT_2_3"],
+            boundary=source_boundary(), prestart_context=FIXTURE["boundary"]["prestart_context"],
+            options={"window_size": 50})
+
+
+def test_explicit_new_session_replaces_active_observation_and_keeps_history():
+    engine, old = new_session("ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"])
+    new = engine.start_session(mode="ALL_RULES_TOGETHER", rule_ids=["SOURCE_H_MULT_2_3"],
+        boundary=source_boundary(), prestart_context=FIXTURE["boundary"]["prestart_context"],
+        options={"window_size": 50}, replace_active_session=True)
+
+    preserved = engine.session(old["session_id"])
+    assert preserved["status"] == "MANUALLY_STOPPED"
+    assert preserved["selection_status"] == "STOPPED"
+    assert preserved["stop_reason"] == "REPLACED_BY_NEW_SESSION"
+    assert preserved["replaced_by_session_id"] == new["session_id"]
+    assert new["replaces_session_ids"] == [old["session_id"]]
+    assert engine.status()["active_session"]["session_id"] == new["session_id"]
+
+
+def test_new_session_replacement_fails_closed_for_unreconciled_execution():
+    engine, old = new_session("ALL_RULES_TOGETHER", ["SOURCE_H_MULT_2_3"])
+    engine.sessions[old["session_id"]]["settlement_integrity"].update({
+        "status": "RECONCILIATION_REQUIRED", "reason": "UNKNOWN_EXECUTION",
+    })
+
+    with pytest.raises(ValueError, match="UNRECONCILED_EXECUTION_REMAINS"):
+        engine.start_session(mode="ALL_RULES_TOGETHER", rule_ids=["SOURCE_H_MULT_2_3"],
+            boundary=source_boundary(), prestart_context=FIXTURE["boundary"]["prestart_context"],
+            options={"window_size": 50}, replace_active_session=True)
+
+    assert engine.session(old["session_id"])["status"] == "RUNNING"
 
 
 def test_auto_next_cannot_create_a_second_active_session_for_same_mode():
@@ -603,6 +712,8 @@ def test_rule_interface_reports_persistence_without_authorizing_live(tmp_path):
 
     assert interface["available"] is True
     assert interface["persistence"] == "DURABLE_REPOSITORY"
+    assert interface["executor_dispatch"] == "BLOCKED_OBSERVE_ONLY"
+    assert interface["executor_dispatch_available"] is False
     assert interface["live_authorized"] is False
     assert engine.execution_authorized() is False
 

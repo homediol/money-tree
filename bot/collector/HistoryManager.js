@@ -12,6 +12,7 @@ import crypto from 'crypto';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT               = path.resolve(__dirname, '..', '..');
 const ROUND_HISTORY_PATH = path.join(ROOT, 'data', 'roundhistory.json');
+export const ROUND_BUFFER_CAPACITY = 5000;
 
 // ── Multiplier helpers ────────────────────────────────────────────────────────
 
@@ -53,13 +54,6 @@ function readJSON(filepath, def) {
     log.warn(`Cannot read ${filepath}: ${err.message}`);
     return def;
   }
-}
-
-function writeJSON(filepath, payload) {
-  fs.mkdirSync(path.dirname(filepath), { recursive: true });
-  const tmp = `${filepath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf-8');
-  fs.renameSync(tmp, filepath);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -106,7 +100,11 @@ export function readRoundHistory(filepath = ROUND_HISTORY_PATH) {
 }
 
 export function writeRoundHistory(records, filepath = ROUND_HISTORY_PATH) {
-  writeJSON(filepath, sortHistoryChronological(records));
+  void records;
+  void filepath;
+  throw Object.assign(new Error('persistent round-history writes are disabled; use the process-local rolling buffer'), {
+    code: 'PERSISTENT_ROUND_HISTORY_DISABLED',
+  });
 }
 
 function sortHistoryChronological(records) {
@@ -194,5 +192,5 @@ export function appendRounds(history, newestFirst, observedAt = null, { gapBefor
     idx++;
   }
 
-  return { history: sortHistoryChronological(history), added };
+  return { history: sortHistoryChronological(history).slice(-ROUND_BUFFER_CAPACITY), added };
 }

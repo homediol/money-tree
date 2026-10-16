@@ -69,6 +69,7 @@ test('round.observed reaches the API before a delayed PostgreSQL write; equal mu
   pipeline.enqueue([round('r1', 1.25, 1), round('r2', 1.25, 2)]);
   void pipeline.start({ recovered: false });
   await until(() => observed.length === 2, 'observed stage was not published');
+  assert.ok(observed.every(row => Number.isFinite(Date.parse(row.collector_observed_at))));
   await new Promise(resolve => setTimeout(resolve, 125));
   assert.equal(databaseCommitted, false);
   assert.equal(outbox.readAll().length, 2);

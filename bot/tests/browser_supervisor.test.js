@@ -1,11 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AviatorPageManager, BrowserSupervisor, getBrowserSupervisor } from '../collector/BrowserManager.js';
+import { AviatorPageManager, BrowserSupervisor, getBrowserSupervisor,
+  validateSpribeDemoUrl } from '../collector/BrowserManager.js';
+import { FrameManager } from '../collector/FrameManager.js';
 import { RecoveryManager } from '../collector/RecoveryManager.js';
 import { Watchdog } from '../collector/Watchdog.js';
 import { State, StateMachine } from '../collector/StateMachine.js';
 import { backoffMs, classifyError, recoveryRetryDelayMs } from '../collector/RetryManager.js';
 import { log } from '../collector/Logger.js';
+
+// These fixtures exercise the isolated, non-financial browser test path.
+process.env.WINNER_NONFINANCIAL_TEST_MODE = 'true';
 
 // Recovery fixtures share the collector logger singleton. Keep unit-test
 // events out of the live collector log used for operational evidence.
@@ -14,6 +19,97 @@ for (const method of ['debug', 'info', 'warn', 'error', 'recovery']) log[method]
 test('legacy and current callers resolve one process-wide supervisor', () => {
   assert.equal(getBrowserSupervisor(false), getBrowserSupervisor(false));
   assert.ok(getBrowserSupervisor(false) instanceof AviatorPageManager);
+});
+
+test('SPRIBE Demo URL validation requires the official Demo origin and operator mode', () => {
+  const accepted = validateSpribeDemoUrl('https://aviator-demo.spribegaming.com/?currency=USD&operator=demo');
+  assert.equal(accepted.origin, 'https://aviator-demo.spribegaming.com');
+  assert.throws(() => validateSpribeDemoUrl('https://winner.rw/en/virtual/crash-games/aviator?operator=demo'),
+    /AVIATOR_DEMO_URL_NOT_ALLOWLISTED/);
+  assert.throws(() => validateSpribeDemoUrl('https://aviator-demo.spribegaming.com/?operator=real'),
+    /AVIATOR_DEMO_URL_NOT_ALLOWLISTED/);
+});
+
+test('SPRIBE Demo main document can serve as the read-only game frame', () => {
+  const manager = new FrameManager();
+  const frame = { isDetached: () => false };
+  const demoPage = { url: () => 'https://aviator-demo.spribegaming.com/?operator=demo', mainFrame: () => frame };
+  const livePage = { url: () => 'https://winner.rw/en/virtual/crash-games/aviator', mainFrame: () => frame };
+  assert.equal(manager._frameIsChild(demoPage, frame), true);
+  assert.equal(manager._frameIsChild(livePage, frame), false);
+});
+
+test('SPRIBE Demo BrowserManager reuses its main document as the game frame', async () => {
+  const previous = process.env.AVIATOR_DEMO_URL;
+  process.env.AVIATOR_DEMO_URL = 'https://aviator-demo.spribegaming.com/?operator=demo';
+  try {
+  const browser = new BrowserSupervisor(true);
+  browser._demoMode = true;
+  const frame = { url: () => 'https://aviator-demo.spribegaming.com/?operator=demo', isDetached: () => false };
+  const page = { url: () => 'https://aviator-demo.spribegaming.com/?operator=demo',
+    mainFrame: () => frame, frames: () => [frame] };
+  browser.getAviatorPage = async () => page;
+  assert.equal(await browser.getAviatorFrame(), frame);
+  } finally {
+    if (previous === undefined) delete process.env.AVIATOR_DEMO_URL;
+    else process.env.AVIATOR_DEMO_URL = previous;
+  }
+});
+
+test('SPRIBE Demo attaches to its existing page without navigating, creating tabs, or persisting session data', async () => {
+  const previous = process.env.AVIATOR_DEMO_URL;
+  process.env.AVIATOR_DEMO_URL = 'https://aviator-demo.spribegaming.com/?currency=USD&operator=demo';
+  try {
+    const browser = new BrowserSupervisor(true);
+    const pageUrl = 'https://aviator-demo.spribegaming.com/?operator=demo';
+    let stateReads = 0;
+    let lockAcquired = 0;
+    const page = {
+      isClosed: () => false,
+      url: () => pageUrl,
+      on() {},
+    };
+    const context = { pages: () => [page], storageState: async () => { stateReads += 1; return {}; } };
+    browser._browser = { isConnected: () => true, contexts: () => [context] };
+    browser._context = context;
+    browser._contextClosed = false;
+    browser._acquireSingletonLock = () => { lockAcquired += 1; };
+    browser._releaseSingletonLock = () => {};
+    browser._targetIdForPage = async () => 'demo-target';
+    browser._persistMetadata = () => {};
+
+    assert.equal(await browser.attachSpribeDemoPage(), page);
+    assert.equal(lockAcquired, 1);
+    assert.equal(browser._aviatorTargetId, 'demo-target');
+    await browser._persistSession();
+    assert.equal(stateReads, 0);
+    assert.deepEqual(context.pages(), [page]);
+  } finally {
+    if (previous === undefined) delete process.env.AVIATOR_DEMO_URL;
+    else process.env.AVIATOR_DEMO_URL = previous;
+  }
+});
+
+test('SPRIBE Demo attach refuses a second Aviator game page in the shared context', async () => {
+  const previous = process.env.AVIATOR_DEMO_URL;
+  process.env.AVIATOR_DEMO_URL = 'https://aviator-demo.spribegaming.com/?currency=USD&operator=demo';
+  try {
+    const browser = new BrowserSupervisor(true);
+    const demoPage = { isClosed: () => false, url: () => 'https://aviator-demo.spribegaming.com/?operator=demo', on() {} };
+    const winnerPage = { isClosed: () => false, url: () => 'https://winner.rw/en/virtual/crash-games/aviator', on() {} };
+    const context = { pages: () => [demoPage, winnerPage] };
+    browser._browser = { isConnected: () => true, contexts: () => [context] };
+    browser._context = context;
+    browser._contextClosed = false;
+    browser._acquireSingletonLock = () => {};
+    browser._releaseSingletonLock = () => {};
+
+    await assert.rejects(browser.attachSpribeDemoPage(), /SPRIBE_AVIATOR_PAGE_COUNT_INVALID:2/);
+    assert.deepEqual(context.pages(), [demoPage, winnerPage]);
+  } finally {
+    if (previous === undefined) delete process.env.AVIATOR_DEMO_URL;
+    else process.env.AVIATOR_DEMO_URL = previous;
+  }
 });
 
 test('history and betting accessors share one Aviator page and never provision another tab', async () => {

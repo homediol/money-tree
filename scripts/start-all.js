@@ -155,6 +155,7 @@ const SERVICES = [
       "receipt_reconciliation_to_rule_session",
       "manual_platform_stake_readback_v2",
       "manual_executor_v2",
+      "collector_panel_configuration_readback_v1",
       "real_money_execution_disabled",
     ],
     restart: true,

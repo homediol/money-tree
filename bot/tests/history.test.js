@@ -10,13 +10,13 @@ import { Collector } from '../collector/Collector.js';
 import { FrameManager } from '../collector/FrameManager.js';
 import { SharedPageCoordinator } from '../collector/SharedPageCoordinator.js';
 import { isAviatorRoute, LoginManager } from '../collector/LoginManager.js';
-import { canContinueReadOnlyCollection, selectMissingLegacyRounds } from '../collector/index.js';
+import { canContinueReadOnlyCollection } from '../collector/index.js';
 import {
   appendRounds, inferNewMultipliers, normalizeMultiplier,
   readRoundHistory, stableRoundId, writeRoundHistory,
 } from '../collector/HistoryManager.js';
 
-test('validates, orders, persists atomically and preserves normalized identity', () => {
+test('legacy history remains readable but new JSON round-history writes are rejected', () => {
   assert.equal(normalizeMultiplier(' 2.45x '), 2.45);
   for (const bad of [0, -1, NaN, Infinity, '', 'oops']) assert.equal(normalizeMultiplier(bad), null);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'winner-history-'));
@@ -29,9 +29,11 @@ test('validates, orders, persists atomically and preserves normalized identity',
   ]));
   const rows = readRoundHistory(file);
   assert.deepEqual(rows.map(r => r.round_id), ['1', '2']);
-  writeRoundHistory(rows, file);
+  const original = fs.readFileSync(file, 'utf8');
+  assert.throws(() => writeRoundHistory(rows, file), error =>
+    error.code === 'PERSISTENT_ROUND_HISTORY_DISABLED');
+  assert.equal(fs.readFileSync(file, 'utf8'), original);
   assert.equal(fs.existsSync(file + '.tmp'), false);
-  assert.deepEqual(readRoundHistory(file), rows);
 });
 
 test('parses snapshots, detects only new rounds and appends chronologically', () => {
@@ -71,18 +73,6 @@ test('startup overlap search covers every offset visible in a 50-round snapshot'
 
   const tooOldForSnapshot = Array.from({ length: 41 }, (_, index) => Number((300 + index + 0.47).toFixed(2)));
   assert.equal(inferNewMultipliers(persistedTail, [...tooOldForSnapshot, ...persistedTail.slice(0, 9)]), null);
-});
-
-test('PostgreSQL startup imports only rounds absent by both ID and index', () => {
-  const persisted = [{ round_id: 'platform-1', round_index: 1 }];
-  const file = [
-    { round_id: 'platform-1', round_index: 1 },
-    { round_id: 'old-hash-1', round_index: 1 },
-    { round_id: 'platform-2', round_index: 2 },
-  ];
-  assert.deepEqual(selectMissingLegacyRounds(file, persisted), {
-    missing: [file[2]], indexConflicts: 1,
-  });
 });
 
 test('read-only collection permits unknown auth but rejects explicit expiry or manual verification', () => {
@@ -569,6 +559,33 @@ test('collector uses Node-side mutation polling for a direct CDP frame', async (
   assert.equal(requestedIdle, 1234);
   assert.deepEqual(result.multipliers, [2.5, 1.1]);
   assert.equal(result.timestamp, '2026-09-27T10:00:00Z');
+});
+
+test('collector exposes fresh panel configuration readback to downstream consumers', async () => {
+  const observedAt = new Date().toISOString();
+  const rawConfiguration = {
+    panel_id: 'PANEL_1', panel_visible: true, auto_tab_selected: true,
+    frame_identity: 'https://aviator-demo.spribegaming.com/#demo-frame', observed_at: observedAt,
+    source: 'AVIATOR_BETTING_PANEL_CONFIGURATION_OBSERVER',
+    stake: {value: '100.00', visible: true, enabled: true},
+    auto_bet: {selector: '.auto-bet app-ui-switcher .input-switch',
+      class: 'input-switch off', visible: true},
+    auto_cashout: {selector: '.cash-out-switcher app-ui-switcher .input-switch',
+      class: 'input-switch', visible: true, input_enabled: true, input_visible: true,
+      input_value: '2.00'},
+    currency_text: 'Bet 100.00 USD Auto bet Auto Cash Out',
+  };
+  const frame = {
+    waitForCollectorMutation: async () => ({multipliers: [], ts: observedAt, gamePhase: {
+      observed_at: observedAt, panel_observations: [],
+      panel_configuration_observations: [rawConfiguration],
+    }}),
+  };
+  const event = await new Collector().waitForMutation(frame, 1000);
+  assert.equal(event.gamePhase.panel_configurations[0].status, 'VERIFIED');
+  assert.equal(event.gamePhase.panel_configurations[0].requirements_satisfied, true);
+  assert.equal(event.gamePhase.panel_configurations[0].stake, 100);
+  assert.equal(event.gamePhase.panel_configurations[0].cashout_target, 2);
 });
 
 test('collector installs an observer from a ready frame', async () => {

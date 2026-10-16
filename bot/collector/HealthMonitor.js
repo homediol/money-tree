@@ -46,6 +46,7 @@ export class HealthMonitor {
       gamePhaseSourceRoundId: null,
       gamePhaseSourceRoundIndex: null,
       panelObservations:   [],
+      panelConfigurationObservations: [],
       lastSuccessfulCollection: null,
       roundCommitSamples: [],
       heartbeatAt:        null,
@@ -77,6 +78,7 @@ export class HealthMonitor {
       browserRestartCount:0,
       loginCount:         0,
       totalRoundsSaved:   0,
+      totalRoundsObserved: 0,
       uptime:             0,
     };
     this._flushTimer = null;
@@ -289,15 +291,19 @@ export class HealthMonitor {
       ? Number(round.round_index) : null;
     this._flush();
   }
-  recordObservedRound(round = null) {
+  recordObservedRound(round = null, count = 1) {
     if (round?.round_id == null) return;
+    this._metrics.totalRoundsObserved += Math.max(0, Number(count) || 0);
     this._metrics.lastObservedRoundId = String(round.round_id);
     this._metrics.lastObservedRoundIndex = Number.isSafeInteger(Number(round.round_index))
       ? Number(round.round_index) : null;
     this._metrics.lastObservedAt = round.observed_at || round.timestamp || new Date().toISOString();
-    // Publish the observation before PostgreSQL persistence can wait on the
-    // scorer's advisory lock. The backend uses this marker to reject a score
-    // if the target has already become visible to the collector.
+    this._metrics.lastRoundId = String(round.round_id);
+    this._metrics.lastRoundIndex = Number.isSafeInteger(Number(round.round_index))
+      ? Number(round.round_index) : null;
+    this._metrics.lastRoundTime = round.timestamp || this._metrics.lastObservedAt;
+    this._metrics.lastSuccessfulCollection = this._metrics.lastObservedAt;
+    this._metrics.totalRoundsSaved = 0;
     this._flush();
   }
   recordRounds(rounds = [], committedAt = null, monotonicSamples = null) {
@@ -392,6 +398,26 @@ export class HealthMonitor {
       .map(panelId => latest.get(panelId)).filter(Boolean);
     this._flush();
   }
+  recordPanelConfigurationObservations(observations = [], sourceRound = null) {
+    if (!Array.isArray(observations)) return;
+    const latest = new Map((this._metrics.panelConfigurationObservations || [])
+      .map(row => [String(row.panel_id || ''), row]));
+    for (const row of observations) {
+      if (!row || !['PANEL_1', 'PANEL_2'].includes(String(row.panel_id || ''))) continue;
+      const observedAt = Date.parse(row.observed_at || '');
+      const existingAt = Date.parse(latest.get(row.panel_id)?.observed_at || '');
+      if (!Number.isFinite(observedAt) || (Number.isFinite(existingAt) && observedAt < existingAt)) continue;
+      latest.set(row.panel_id, {
+        ...row,
+        source_round_id: sourceRound?.round_id == null ? null : String(sourceRound.round_id),
+        source_round_index: Number.isSafeInteger(Number(sourceRound?.round_index))
+          ? Number(sourceRound.round_index) : null,
+      });
+    }
+    this._metrics.panelConfigurationObservations = ['PANEL_1', 'PANEL_2']
+      .map(panelId => latest.get(panelId)).filter(Boolean);
+    this._flush();
+  }
   recordRecovery(action)     { this._metrics.recoveryCount++; this._metrics.lastRecovery = { action, ts: new Date().toISOString() }; }
   recordBrowserRestart()     { this._metrics.browserRestartCount++; }
   recordLogin()              { this._metrics.loginCount++; }
@@ -455,6 +481,14 @@ export class HealthMonitor {
     try {
       if (this._metrics.collectorRunning) this._metrics.heartbeatAt = new Date().toISOString();
       const snap = this.snapshot();
+      // The sidecar is only a process health signal. Do not persist round IDs,
+      // multipliers, timestamps or commit samples as a shadow history.
+      for (const key of ['lastRoundId', 'lastRoundIndex', 'lastRoundTime',
+        'lastObservedRoundId', 'lastObservedRoundIndex', 'lastObservedAt',
+        'lastSuccessfulCollection']) snap[key] = null;
+      snap.roundCommitSamples = [];
+      snap.totalRoundsSaved = 0;
+      snap.totalRoundsObserved = 0;
       fs.mkdirSync(path.dirname(STATUS_PATH), { recursive: true });
       const tmp = STATUS_PATH + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(snap, null, 2), 'utf-8');

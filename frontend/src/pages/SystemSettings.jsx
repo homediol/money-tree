@@ -51,6 +51,6 @@ export default function SystemSettings() {
       <Card title="Backend status"><div className="text-lg font-semibold">{health?.status || 'UNKNOWN'}</div><div className="mt-2 text-sm text-zinc-500">Database: {health?.database?.status || 'UNKNOWN'}</div></Card>
       <Card title="Round history"><div className="text-lg font-semibold">{system?.dataset?.valid_records ?? '—'} rounds</div><div className="mt-2 text-sm text-zinc-500">Source: {system?.dataset?.source || 'UNKNOWN'}</div><div className="mt-1 text-sm text-zinc-500">Latest round index: {system?.dataset?.last_round_index ?? 'UNKNOWN'}</div></Card>
     </section>
-    <Card title="Execution safety"><div className="text-sm text-zinc-300">Real-money execution is disabled during refactoring. Mandatory target, panel, stake, acceptance and settlement checks remain fail-closed in Betting Executor.</div></Card>
+    <Card title="Execution safety"><div className="text-sm text-zinc-300">Real-money execution is disabled pending LIVE qualification. Mandatory target, panel, stake, acceptance and settlement checks remain fail-closed in Betting Executor.</div></Card>
   </div>;
 }

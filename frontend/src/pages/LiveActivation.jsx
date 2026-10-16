@@ -23,6 +23,7 @@ export default function LiveActivation() {
   const [manualSetup, setManualSetup] = useState(null);
   const [balance, setBalance] = useState(null);
   const [modeStatus, setModeStatus] = useState(null);
+  const [liveReadiness, setLiveReadiness] = useState(null);
   const [review, setReview] = useState(null);
   const [confirmation, setConfirmation] = useState('');
   const [realFundsCanBeLost, setRealFundsCanBeLost] = useState(false);
@@ -53,7 +54,8 @@ export default function LiveActivation() {
       : balanceResult.reason?.response?.data?.platform_balance || null);
     if (statusResult.status === 'fulfilled') setModeStatus(statusResult.value.data?.mode || null);
     if (readinessResult.status === 'fulfilled') {
-      setReview((current) => current ? { ...current, readiness: readinessResult.value } : null);
+      setLiveReadiness(readinessResult.value.data || null);
+      setReview((current) => current ? { ...current, readiness: readinessResult.value.data } : null);
     }
   }, []);
 
@@ -93,6 +95,7 @@ export default function LiveActivation() {
         params: { execution_panel: Number(executionPanel) },
       });
       setReview({ ...data, receivedAt: Date.now() });
+      setLiveReadiness(data?.readiness || null);
       setManualSetup(data?.readiness?.manual_setup || manualSetup);
       setBalance(data?.platform_balance || null);
       setMessage('Fresh backend review complete. This review does not change platform controls or authorize execution.');
@@ -141,6 +144,7 @@ export default function LiveActivation() {
   const capabilities = readiness?.checks?.platform_capabilities;
   const authorized = modeStatus?.live_authorized === true;
   const realMoneyEnabled = readiness?.checks?.real_money_execution === 'ENABLED';
+  const blockerMatrix = liveReadiness?.blocker_matrix || readiness?.blocker_matrix || [];
 
   return <section className="space-y-5">
     <header>
@@ -214,6 +218,25 @@ export default function LiveActivation() {
       {readiness && <div className="mt-4 grid gap-x-8 md:grid-cols-2">
         {Object.entries(readiness.checks || {}).filter(([key]) => key !== 'optional_bankroll_policy').map(([key, value]) => <ReviewRow key={key} label={key.replaceAll('_', ' ')} value={String(value)} />)}
       </div>}
+      <section className="mt-5 border-t border-zinc-800 pt-4" aria-labelledby="live-blocker-matrix-title">
+        <h3 id="live-blocker-matrix-title" className="text-sm font-semibold">Original LIVE blocker status</h3>
+        <div className="mt-3 space-y-2">
+          {blockerMatrix.map((item) => <details key={item.original_blocker} className="rounded border border-zinc-800 bg-zinc-950/50 p-3">
+            <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 text-sm">
+              <span className="font-medium text-zinc-200">{item.original_blocker}</span>
+              <span className="rounded border border-amber-500/30 px-2 py-1 text-[10px] font-semibold text-amber-200">{item.status}</span>
+            </summary>
+            <dl className="mt-3 grid gap-2 text-xs md:grid-cols-[150px_1fr]">
+              {[['Root cause', item.root_cause], ['Fix implemented', item.fix_implemented],
+                ['Evidence source', item.evidence_source], ['Test result', item.test_result],
+                ['Remaining requirement', item.remaining_requirement]].map(([label, value]) => <div key={label} className="contents">
+                  <dt className="font-semibold text-zinc-400">{label}</dt><dd className="text-zinc-300">{value}</dd>
+                </div>)}
+            </dl>
+          </details>)}
+          {!blockerMatrix.length && <p className="text-xs text-amber-200">Blocker evidence matrix is unavailable until the backend returns a readiness snapshot.</p>}
+        </div>
+      </section>
       {review && <div className="mt-4 rounded border border-amber-500/30 bg-amber-500/5 p-4">
         <div className="flex items-center gap-2 font-semibold text-amber-100"><ShieldAlert size={17} />{review.live_available ? 'Review passed' : 'LIVE_REAL remains blocked'}</div>
         <p className="mt-1 text-xs text-zinc-400">Review created {review.receivedAt ? new Date(review.receivedAt).toLocaleString() : '—'} · expires in {review.review_expires_in_s ?? '—'} seconds.</p>
@@ -222,7 +245,7 @@ export default function LiveActivation() {
       </div>}
       <div className="mt-4 rounded border border-zinc-800 bg-zinc-950/50 p-4">
         <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={17} className={authorized ? 'text-emerald-300' : 'text-zinc-400'} />Explicit operator authorization</div>
-        <p className="mt-1 text-xs text-zinc-400">Requires an authenticated backend operator, a fresh passing review, the exact confirmation phrase and acknowledgement that funds can be lost. The refactor lock and provider gates currently prevent activation.</p>
+        <p className="mt-1 text-xs text-zinc-400">Requires an authenticated backend operator, a fresh passing review, the exact confirmation phrase and acknowledgement that funds can be lost. The LIVE qualification and provider evidence gates currently prevent activation.</p>
         <label className="mt-3 flex items-start gap-2 text-sm text-rose-200"><input type="checkbox" checked={realFundsCanBeLost} onChange={(event) => setRealFundsCanBeLost(event.target.checked)} />I understand real funds can be lost.</label>
         <label className="mt-3 block text-sm text-zinc-300">Type {activationPhrase}
           <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" className="mt-1 block w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100" />

@@ -9,7 +9,8 @@
 import { log } from './Logger.js';
 import { normalizeMultiplier, snapshotSignature } from './HistoryManager.js';
 import { PAYOUT_SELECTOR } from './FrameManager.js';
-import { classifyPanelObservation, panelObservationTransition } from './PanelStateDetector.js';
+import { classifyPanelConfigurationObservation, classifyPanelObservation,
+  panelObservationTransition } from './PanelStateDetector.js';
 
 const MUTATION_IDLE_MS = Number(process.env.BOT_IDLE_TIMEOUT || 60000);
 // MutationObserver is primary; a low-frequency refresh bounds telemetry age
@@ -103,6 +104,46 @@ async function _installObserver(frame, selector) {
           source: 'AVIATOR_BETTING_PANEL_MUTATION_OBSERVER', frame_identity: frameIdentity,
         };
       });
+      const panelConfigurationObservations = [0, 1].map(slot => {
+        const panel = panels[slot];
+        if (!panel) return {panel_id: `PANEL_${slot + 1}`, panel_visible: false,
+          auto_tab_selected: false, observed_at: now, frame_identity: frameIdentity,
+          source: 'AVIATOR_BETTING_PANEL_CONFIGURATION_OBSERVER'};
+        const activeTab = panel.querySelector('button.tab.active');
+        const autoTabSelected = /^auto$/i.test(textOf(activeTab));
+        const autoBetSwitch = panel.querySelector('.auto-bet app-ui-switcher .input-switch');
+        const autoCashoutSwitch = panel.querySelector('.cash-out-switcher app-ui-switcher .input-switch');
+        const stakeInput = panel.querySelector('.bet-block input[type="text"]');
+        const cashoutInput = panel.querySelector('.cashout-block input[type="text"]');
+        const betButton = panel.querySelector('button.bet');
+        const currencyText = [textOf(panel), textOf(betButton)].filter(Boolean).join(' ');
+        const configurationCurrencies = [...new Set([...currencyText.matchAll(/(?<![A-Z])([A-Z]{3})(?![A-Z])/g)]
+          .map(match => match[1]).filter(code => !['BET', 'OUT'].includes(code)))];
+        const switchObservation = (node, selector, input = null) => ({
+          selector,
+          visible: Boolean(node && visible(node)),
+          class: typeof node?.className === 'string' ? node.className.slice(0, 100) : '',
+          input_enabled: input ? !input.disabled : null,
+          input_visible: Boolean(input && visible(input)),
+          input_value: input?.value || null,
+        });
+        return {
+          panel_id: `PANEL_${slot + 1}`, panel_visible: visible(panel), auto_tab_selected: autoTabSelected,
+          observed_at: now, frame_identity: frameIdentity,
+          source: 'AVIATOR_BETTING_PANEL_CONFIGURATION_OBSERVER',
+          stake: {
+            selector: '.bet-block input[type="text"]',
+            value: stakeInput?.value || null,
+            visible: Boolean(stakeInput && visible(stakeInput)),
+            enabled: Boolean(stakeInput && !stakeInput.disabled),
+          },
+          auto_bet: switchObservation(autoBetSwitch, '.auto-bet app-ui-switcher .input-switch'),
+          auto_cashout: switchObservation(autoCashoutSwitch,
+            '.cash-out-switcher app-ui-switcher .input-switch', cashoutInput),
+          currency_text: currencyText.slice(0, 180),
+          currency_hint: configurationCurrencies.length === 1 ? configurationCurrencies[0] : null,
+        };
+      });
       const phaseSelector = '[class*="betting" i], [class*="bet-status" i], [data-phase], [data-testid*="betting" i], [role="alert"], [aria-live="assertive"]';
       const stageSelector = '[class*="stage" i]';
       const phaseNodes = Array.from(document.querySelectorAll(phaseSelector));
@@ -138,12 +179,15 @@ async function _installObserver(frame, selector) {
               ? 'ROUND_RUNNING' : 'UNKNOWN';
       return {
         phase, round_phase: roundPhase, observed_at: now, panel_observations: panelObservations,
+        panel_configuration_observations: panelConfigurationObservations,
         phase_hints: phaseHints,
         evidence: {
           source: 'AVIATOR_EXPLICIT_BETTING_PHASE_DOM', selector: phaseSelector,
           phase_indicator_visible: phase !== 'UNKNOWN', explicit_window_state: phase,
+          frame_identity: frameIdentity,
           text: phaseText.slice(0, 240),
           round_phase: roundPhase,
+          phase_hints: phaseHints,
           stage_selector: stageSelector,
           stage_hints: phaseHints.filter(item => item.source === 'AVIATOR_STAGE_STATUS_DOM'),
           countdown_seconds: Number.isFinite(countdownSeconds) ? countdownSeconds : null,
@@ -200,6 +244,11 @@ async function _installObserver(frame, selector) {
           button_color: row.button_color, visible_action_labels: row.visible_action_labels.map(label =>
             /^cash\s*out\b/i.test(label) ? 'Cash Out' : label),
           pending_indicator: row.pending_indicator, active_indicator: row.active_indicator,
+        })),
+        panel_configurations: phase.panel_configuration_observations.map(row => ({
+          panel_id: row.panel_id, panel_visible: row.panel_visible,
+          auto_tab_selected: row.auto_tab_selected, stake: row.stake,
+          auto_bet: row.auto_bet, auto_cashout: row.auto_cashout,
         })),
       });
       if (!force && phaseSig === c.lastPhaseSig) return;
@@ -296,7 +345,11 @@ export class Collector {
         }
         return observed;
       }) : [];
+    const panelConfigurations = Array.isArray(gamePhase?.panel_configuration_observations)
+      ? gamePhase.panel_configuration_observations.map(rawPanel =>
+        classifyPanelConfigurationObservation(rawPanel)) : [];
     if (gamePhase && panelObservations.length) gamePhase.panel_observations = panelObservations;
+    if (gamePhase && panelConfigurations.length) gamePhase.panel_configurations = panelConfigurations;
     return {
       multipliers,
       signature: snapshotSignature(multipliers),

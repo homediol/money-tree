@@ -7,6 +7,7 @@ test('publishes read-only phase timing with the owned collector round identity',
   const phase = {
     event_id: 'phase-event-1',
     phase: 'BETTING_OPEN',
+    round_phase: 'ROUND_RUNNING',
     observed_at: '2026-10-09T10:00:00.000Z',
     evidence: {
       source: 'AVIATOR_BETTING_PANEL_READ_ONLY',
@@ -32,6 +33,7 @@ test('publishes read-only phase timing with the owned collector round identity',
   assert.equal(request.body.source_round_id, 'canonical-round-90');
   assert.equal(request.body.source_round_index, 90);
   assert.equal(request.body.phase, 'BETTING_OPEN');
+  assert.equal(request.body.round_phase, 'ROUND_RUNNING');
   assert.equal(request.body.event_id, 'phase-event-1');
   assert.equal(request.body.evidence.button_enabled, true);
 });

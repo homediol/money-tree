@@ -1,0 +1,68 @@
+{
+  "captured_at": "2026-10-15T15:01:38Z",
+  "mode": "READ_ONLY",
+  "status": "BLOCKED_NO_ATTACHABLE_SHARED_BROWSER",
+  "url_origin": "https://aviator-demo.spribegaming.com/",
+  "browser_access": {
+    "cua_state": {"apps": [], "browsers": []},
+    "cua_list_browsers": [],
+    "cua_get_browser_for_demo": "No browser is available",
+    "cdp_9222": "Connection refused at 127.0.0.1:9222/json/list",
+    "new_tab_or_browser_created": false
+  },
+  "runtime_sidecar": {
+    "source": "data/bot/status.json",
+    "mtime_utc": "2026-10-15T15:01:25Z",
+    "age_seconds_at_read": 0.21,
+    "collectorRunning": true,
+    "browserConnected": true,
+    "lastRoundTime": "2026-10-15T15:01:02.271Z",
+    "lastRoundId": "aviator-0fc85d4545c6a7bf1c600687",
+    "lastRoundIndex": 31343,
+    "lastSuccessfulCollection": "2026-10-15T15:01:06.387Z",
+    "gamePhase": "UNKNOWN",
+    "phase_evidence": {
+      "source": "AVIATOR_EXPLICIT_BETTING_PHASE_DOM",
+      "selector_description": "visible game phase text",
+      "phase_indicator_visible": false,
+      "explicit_window_state": "UNKNOWN",
+      "text": "",
+      "countdown_seconds": null,
+      "deadline_at": null
+    },
+    "verification_limit": "Fresh sidecar telemetry only; no browser or DOM was independently attached."
+  },
+  "browser_sidecar": {
+    "source": "data/bot/browser-reliability.json",
+    "updated_at": "2026-10-15T15:01:38.903Z",
+    "reported_state": "HEALTHY",
+    "reported_betting_page_url": "https://winner.rw/en/virtual/crash-games/aviator",
+    "reported_aviator_page_url": "https://winner.rw/en/virtual/crash-games/aviator",
+    "session_state_origins": [
+      "https://winner.rw",
+      "https://aviator-demo.spribegaming.com",
+      "https://aviator-next.spribegaming.com"
+    ],
+    "last_known_urls": {},
+    "verification_limit": "Sidecar metadata reports the shared betting page on Winner Live; it does not establish that a Demo page is open or attachable."
+  },
+  "inspection": {
+    "live_frame_urls": [],
+    "live_dom_selectors": [],
+    "dom_text_attributes_styles": [],
+    "canvas_screenshots": [],
+    "phase_transitions": [],
+    "countdown_observations": [],
+    "live_dom_round_ids": [],
+    "dom_update_latency_ms": null,
+    "panel_state_transitions": [],
+    "reason": "No shared browser attachment is available; navigating the reported shared Winner page or opening another game page would violate the one-page/shared-session constraint."
+  },
+  "actions": {
+    "bet": "NOT_ATTEMPTED",
+    "cancel": "NOT_ATTEMPTED",
+    "cash_out": "NOT_ATTEMPTED",
+    "stake_or_auto_bet_change": "NOT_ATTEMPTED",
+    "real_money_transaction": "NOT_ATTEMPTED"
+  }
+}

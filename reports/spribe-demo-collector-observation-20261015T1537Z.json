@@ -1,0 +1,2691 @@
+{
+  "provider": "SPRIBE_DEMO",
+  "observed_at": "2026-10-15T15:39:14.383Z",
+  "source_page": "https://aviator-demo.spribegaming.com/",
+  "topology": {
+    "browser": 1,
+    "contexts": 1,
+    "pages": 1,
+    "frames": 1,
+    "frame_is_main": true
+  },
+  "selector": ".payouts-block .payout",
+  "baseline_count": 100,
+  "baseline_signature": "3.68|1.30|17.20|1.64|1.14|17.48|4.17|1.84|2.35|26.74|1.81|925.40|4.08|1.40|1.15|8.24|2.13|2.31|1.67|5.28|61.80|1.49|1.29|3.51|1.27|1.00|3.73|1.47|3.98|3.54|1.28|5.39|2.15|1.44|1.52|2.34|1.41|1.29|1.00|2.47|1.09|1.51|1.74|3.03|16.32|1.28|3.69|10.48|1.56|1.00|3.68|1.30|17.20|1.64|1.14|17.48|4.17|1.84|2.35|26.74|1.81|925.40|4.08|1.40|1.15|8.24|2.13|2.31|1.67|5.28|61.80|1.49|1.29|3.51|1.27|1.00|3.73|1.47|3.98|3.54|1.28|5.39|2.15|1.44|1.52|2.34|1.41|1.29|1.00|2.47|1.09|1.51|1.74|3.03|16.32|1.28|3.69|10.48|1.56|1.00",
+  "baseline_latest": [
+    3.68,
+    1.3,
+    17.2,
+    1.64,
+    1.14,
+    17.48,
+    4.17,
+    1.84,
+    2.35,
+    26.74
+  ],
+  "duration_ms": 40239,
+  "sample_count": 85,
+  "samples": [
+    {
+      "received_at": "2026-10-15T15:38:34.216Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:34.088Z",
+      "observer_to_node_ms": 128,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 196",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:34.088Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:34.088Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:35.138Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:35.108Z",
+      "observer_to_node_ms": 30,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 193",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:35.108Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:35.108Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:35.229Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:35.134Z",
+      "observer_to_node_ms": 95,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 192",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:35.134Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:35.134Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:35.311Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:35.150Z",
+      "observer_to_node_ms": 161,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 191",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:35.150Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:35.150Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:35.683Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:35.647Z",
+      "observer_to_node_ms": 36,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 189",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:35.647Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:35.647Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:36.056Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:35.941Z",
+      "observer_to_node_ms": 115,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 187",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:35.941Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:35.941Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:36.447Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:36.369Z",
+      "observer_to_node_ms": 78,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 186",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:36.369Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:36.369Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:36.728Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:36.676Z",
+      "observer_to_node_ms": 52,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 184",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:36.676Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:36.676Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:37.116Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:37.035Z",
+      "observer_to_node_ms": 81,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 180",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:37.035Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:37.035Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:37.546Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:37.455Z",
+      "observer_to_node_ms": 91,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 177",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:37.455Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:37.455Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:37.883Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:37.838Z",
+      "observer_to_node_ms": 45,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 176",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:37.838Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:37.838Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:39.421Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:39.332Z",
+      "observer_to_node_ms": 89,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 175",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.332Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.332Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:39.639Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:39.582Z",
+      "observer_to_node_ms": 57,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 172",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.582Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.582Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:40.054Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:39.654Z",
+      "observer_to_node_ms": 400,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 170",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.654Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.654Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:40.130Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:39.813Z",
+      "observer_to_node_ms": 317,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 169",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.813Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.813Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:40.162Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:39.864Z",
+      "observer_to_node_ms": 298,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 168",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.864Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.864Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:40.253Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:39.978Z",
+      "observer_to_node_ms": 275,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 167",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.978Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:39.978Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:40.414Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:40.313Z",
+      "observer_to_node_ms": 101,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 165",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:40.313Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:40.313Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:40.709Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:40.634Z",
+      "observer_to_node_ms": 75,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 164",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:40.634Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:40.634Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:41.046Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:40.997Z",
+      "observer_to_node_ms": 49,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 160",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:40.997Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:40.997Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:41.399Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:41.311Z",
+      "observer_to_node_ms": 88,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 157",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:41.311Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:41.311Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:41.847Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:41.777Z",
+      "observer_to_node_ms": 70,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 153",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:41.777Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:41.777Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:42.211Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:42.182Z",
+      "observer_to_node_ms": 29,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 152",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:42.182Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:42.182Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:42.463Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:42.429Z",
+      "observer_to_node_ms": 34,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 150",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:42.429Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:42.429Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:42.792Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:42.757Z",
+      "observer_to_node_ms": 35,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 147",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:42.757Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:42.757Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:43.091Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:43.059Z",
+      "observer_to_node_ms": 32,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 146",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:43.059Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:43.059Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:43.598Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:43.567Z",
+      "observer_to_node_ms": 31,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 145",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:43.567Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:43.567Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:44.211Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:44.156Z",
+      "observer_to_node_ms": 55,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 145",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:44.156Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:44.156Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:44.321Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:44.200Z",
+      "observer_to_node_ms": 121,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 143",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:44.200Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:44.200Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:44.621Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:44.591Z",
+      "observer_to_node_ms": 30,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 141",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:44.591Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:44.591Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:46.074Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:46.060Z",
+      "observer_to_node_ms": 14,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 140",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:46.060Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:46.060Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:46.684Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:46.666Z",
+      "observer_to_node_ms": 18,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 138",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:46.666Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:46.666Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:46.808Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:46.710Z",
+      "observer_to_node_ms": 98,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 136",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:46.710Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:46.710Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:46.861Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:46.741Z",
+      "observer_to_node_ms": 120,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 135",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:46.741Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:46.741Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:46.886Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:46.796Z",
+      "observer_to_node_ms": 90,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 132",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:46.796Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:46.796Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:47.231Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:47.216Z",
+      "observer_to_node_ms": 15,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 128",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:47.216Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:47.216Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:47.684Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:47.625Z",
+      "observer_to_node_ms": 59,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 125",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:47.625Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:47.625Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:47.963Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:47.931Z",
+      "observer_to_node_ms": 32,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 123",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:47.931Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:47.931Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:48.550Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:48.522Z",
+      "observer_to_node_ms": 28,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 121",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:48.522Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:48.522Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:48.924Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:48.909Z",
+      "observer_to_node_ms": 15,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 118",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:48.909Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:48.909Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:49.256Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:49.218Z",
+      "observer_to_node_ms": 38,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 116",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:49.218Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:49.218Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:49.527Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:49.515Z",
+      "observer_to_node_ms": 12,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 113",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:49.515Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:49.515Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:51.893Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:51.871Z",
+      "observer_to_node_ms": 22,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 111",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:51.871Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:51.871Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:52.069Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:51.956Z",
+      "observer_to_node_ms": 113,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 110",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:51.956Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:51.956Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:52.163Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:51.999Z",
+      "observer_to_node_ms": 164,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 109",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:51.999Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:51.999Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:52.195Z",
+      "type": "ROUND_OR_MUTATION",
+      "timestamp": "2026-10-15T15:38:52.037Z",
+      "observer_to_node_ms": 158,
+      "multipliers": [
+        7.68,
+        3.68,
+        1.3,
+        17.2,
+        1.64,
+        1.14,
+        17.48,
+        4.17,
+        1.84,
+        2.35
+      ],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 109",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:52.037Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:52.037Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:54.099Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:54.086Z",
+      "observer_to_node_ms": 13,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 109",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:54.086Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:54.086Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:54.999Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:54.962Z",
+      "observer_to_node_ms": 37,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:54.962Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:54.962Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:55.118Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:55.106Z",
+      "observer_to_node_ms": 12,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 1",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:55.106Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:55.106Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:55.532Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:55.488Z",
+      "observer_to_node_ms": 44,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 113",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:55.488Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:55.488Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:55.827Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:55.799Z",
+      "observer_to_node_ms": 28,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 143",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:55.799Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:55.799Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:57.625Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:57.598Z",
+      "observer_to_node_ms": 27,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 156",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:57.598Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:57.598Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:58.303Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:57.687Z",
+      "observer_to_node_ms": 616,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 171",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:57.687Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:57.687Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:58.427Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:57.752Z",
+      "observer_to_node_ms": 675,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 185",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:57.752Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:57.752Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:58.532Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:57.864Z",
+      "observer_to_node_ms": 668,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 192",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:57.864Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:57.864Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:58.583Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:58.031Z",
+      "observer_to_node_ms": 552,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 197",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.031Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.031Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:58.740Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:58.223Z",
+      "observer_to_node_ms": 517,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 207",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.223Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.223Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:58.762Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:58.393Z",
+      "observer_to_node_ms": 369,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 212",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.393Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.393Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:58.776Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:58.489Z",
+      "observer_to_node_ms": 287,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 214",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.489Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.489Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:58.811Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:58.701Z",
+      "observer_to_node_ms": 110,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 222",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.701Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.701Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:58.955Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:58.935Z",
+      "observer_to_node_ms": 20,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 223",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.935Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:58.935Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:38:59.374Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:38:59.315Z",
+      "observer_to_node_ms": 59,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 227",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:59.315Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:38:59.315Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:00.051Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:00.028Z",
+      "observer_to_node_ms": 23,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 228",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:00.028Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:00.028Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:02.291Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:02.244Z",
+      "observer_to_node_ms": 47,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 227",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:02.244Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:02.244Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:02.373Z",
+      "type": "ROUND_OR_MUTATION",
+      "timestamp": "2026-10-15T15:39:02.349Z",
+      "observer_to_node_ms": 24,
+      "multipliers": [
+        1.18,
+        7.68,
+        3.68,
+        1.3,
+        17.2,
+        1.64,
+        1.14,
+        17.48,
+        4.17,
+        1.84
+      ],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 227",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:02.349Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:02.349Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:04.115Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:04.086Z",
+      "observer_to_node_ms": 29,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 227",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:04.086Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:04.086Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:06.032Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:06.026Z",
+      "observer_to_node_ms": 6,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:06.026Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:06.026Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:06.751Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:06.652Z",
+      "observer_to_node_ms": 99,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 102",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:06.652Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:06.652Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:06.987Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:06.898Z",
+      "observer_to_node_ms": 89,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 126",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:06.898Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:06.898Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:07.232Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:07.180Z",
+      "observer_to_node_ms": 52,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 136",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:07.180Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:07.180Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:07.743Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:07.659Z",
+      "observer_to_node_ms": 84,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 150",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:07.659Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:07.659Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:07.881Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:07.826Z",
+      "observer_to_node_ms": 55,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 157",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:07.826Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:07.826Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:08.122Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:08.083Z",
+      "observer_to_node_ms": 39,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 166",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:08.083Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:08.083Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:08.420Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:08.389Z",
+      "observer_to_node_ms": 31,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 171",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:08.389Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:08.389Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:08.707Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:08.677Z",
+      "observer_to_node_ms": 30,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 181",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:08.677Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:08.677Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:09.033Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:09.009Z",
+      "observer_to_node_ms": 24,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 189",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:09.009Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:09.009Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:09.423Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:09.383Z",
+      "observer_to_node_ms": 40,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 194",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:09.383Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:09.383Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:09.752Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:09.727Z",
+      "observer_to_node_ms": 25,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 197",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:09.727Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:09.727Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:10.074Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:10.029Z",
+      "observer_to_node_ms": 45,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 206",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:10.029Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:10.029Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:10.422Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:10.376Z",
+      "observer_to_node_ms": 46,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 208",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:10.376Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:10.376Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:10.821Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:10.800Z",
+      "observer_to_node_ms": 21,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 212",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:10.800Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:10.800Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:11.129Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:11.093Z",
+      "observer_to_node_ms": 36,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 218",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:11.093Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:11.093Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:13.087Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:12.988Z",
+      "observer_to_node_ms": 99,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 215",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:12.988Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:12.988Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:14.099Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:14.086Z",
+      "observer_to_node_ms": 13,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 215",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:14.086Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:14.086Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    },
+    {
+      "received_at": "2026-10-15T15:39:14.289Z",
+      "type": "PHASE_ONLY",
+      "timestamp": "2026-10-15T15:39:14.257Z",
+      "observer_to_node_ms": 32,
+      "multipliers": [],
+      "phase": "UNKNOWN",
+      "betting_window": "UNKNOWN",
+      "countdown_seconds": null,
+      "phase_text": "FUN MODE 214",
+      "panels": [
+        {
+          "panel_id": "PANEL_1",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:14.257Z",
+          "transition": "BET_AVAILABLE"
+        },
+        {
+          "panel_id": "PANEL_2",
+          "state": "BET_AVAILABLE",
+          "button_text": "Bet 100.00 USD",
+          "stake": 100,
+          "currency": "USD",
+          "observed_at": "2026-10-15T15:39:14.257Z",
+          "transition": "BET_AVAILABLE"
+        }
+      ]
+    }
+  ],
+  "no_bets_submitted": true,
+  "no_settings_changed": true,
+  "persistence": "LOCAL_REPORT_ONLY; no Demo events inserted into Winner PostgreSQL"
+}

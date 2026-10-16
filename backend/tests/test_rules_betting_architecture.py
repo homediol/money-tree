@@ -162,8 +162,16 @@ def test_betting_window_requires_explicit_visible_phase_not_just_an_enabled_bet_
 def test_round_phase_and_deadline_require_explicit_visible_frame_evidence():
     assert classify_round_phase() == "UNKNOWN"
     assert classify_round_phase(phase_hints=[{"txt": "Waiting for next round", "visible": True}]) == \
-        "WAITING_FOR_NEXT_ROUND"
-    assert classify_round_phase(status_messages=["Round in progress"]) == "ROUND_IN_PROGRESS"
+        "INTERMISSION"
+    assert classify_round_phase(status_messages=["Round in progress"]) == "ROUND_RUNNING"
+    assert classify_round_phase(phase_hints=[{"cls": "stage-board", "txt": "Flew Away",
+                                             "visible": True}]) == "ROUND_ENDED"
+    assert classify_round_phase(phase_hints=[{"cls": "stage-board", "txt": "UFC / Aviator transition",
+                                             "visible": True}]) == "INTERMISSION"
+    assert classify_round_phase(phase_hints=[{"cls": "stage-board", "txt": "6.25x",
+                                             "visible": True}]) == "ROUND_RUNNING"
+    assert classify_round_phase(betting_window={"state": "BETTING_OPEN"}) == "BETTING_OPEN"
+    assert classify_round_phase(betting_window={"state": "BETTING_CLOSED"}) == "BETTING_CLOSED"
     assert classify_round_phase(phase_hints=[{"txt": "Round completed", "visible": False}]) == "UNKNOWN"
     deadline = observe_betting_deadline(
         status_messages=[{"text": "Betting closes in 4.5 seconds", "visible": True}],
@@ -171,6 +179,12 @@ def test_round_phase_and_deadline_require_explicit_visible_frame_evidence():
     )
     assert deadline["status"] == "VERIFIED"
     assert deadline["deadline_at"] == "2026-10-14T20:00:04.500000+00:00"
+    reached = observe_betting_deadline(
+        status_messages=[{"text": "Betting closes in 0 seconds", "visible": True}],
+        observed_at="2026-10-14T20:00:00+00:00",
+    )
+    assert reached["status"] == "VERIFIED"
+    assert reached["deadline_at"] == "2026-10-14T20:00:00+00:00"
     assert observe_betting_deadline(status_messages=["Betting closes in 500 seconds"])["status"] == "UNKNOWN"
 
 
@@ -207,8 +221,10 @@ def test_rules_dashboard_api_never_reports_ready_without_live_evidence(tmp_path)
 
     assert result["real_money_execution"] == "DISABLED"
     assert result["execution_readiness"]["ready"] is False
-    assert "REAL_MONEY_EXECUTION_DISABLED_DURING_REFACTORING" \
+    assert "REAL_MONEY_EXECUTION_DISABLED_PENDING_LIVE_QUALIFICATION" \
         in result["execution_readiness"]["blockers"]
+    assert len(result["execution_readiness"]["blocker_matrix"]) == 17
+    assert result["execution_readiness"]["ready"] is False
     assert result["shared_selection"] is None
     assert "balance" not in result
 

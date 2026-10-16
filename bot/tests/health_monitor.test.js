@@ -109,6 +109,27 @@ test('an older UNKNOWN cashout snapshot cannot replace a newer READY verificatio
   assert.equal(health.snapshot().cashout_initialization.status, 'CASHOUT_VERIFIED');
 });
 
+test('fresh panel configuration observations persist independently and ignore older reads', () => {
+  const health = makeHealthMonitor();
+  const newer = new Date().toISOString();
+  const older = new Date(Date.now() - 1000).toISOString();
+  const row = (observedAt, panelId = 'PANEL_1') => ({
+    panel_id: panelId, status: 'VERIFIED', auto_bet: 'OFF', auto_cashout: 'ON',
+    stake: 100, currency: 'USD', cashout_target: 2, requirements_satisfied: true,
+    observed_at: observedAt, expires_at: new Date(Date.parse(observedAt) + 15000).toISOString(),
+    frame_identity: 'https://aviator-demo.spribegaming.com/',
+    evidence: {auto_tab_selected: true},
+  });
+  health.recordPanelConfigurationObservations([row(newer), row(newer, 'PANEL_2')],
+    {round_id: 'demo-source', round_index: 5});
+  health.recordPanelConfigurationObservations([row(older), row(older, 'PANEL_2')],
+    {round_id: 'stale-source', round_index: 4});
+  const panels = health.snapshot().panelConfigurationObservations;
+  assert.deepEqual(panels.map(panel => panel.observed_at), [newer, newer]);
+  assert.deepEqual(panels.map(panel => panel.source_round_id), ['demo-source', 'demo-source']);
+  assert.deepEqual(panels.map(panel => panel.requirements_satisfied), [true, true]);
+});
+
 test('recovered commits without a monotonic start do not become zero-latency samples', () => {
   const health = makeHealthMonitor();
   health.recordRounds([{ round_id: 'recovered-round', observed_at: '2026-10-09T21:00:00Z' }],

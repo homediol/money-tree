@@ -108,7 +108,8 @@ def _candidate_session(conn, status: dict) -> tuple[dict, dict, list[dict]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="commit the guarded index repair")
-    args = parser.parse_args()
+    parser.parse_args()
+    parser.error("PERSISTENT_ROUND_HISTORY_REPAIR_DISABLED")
 
     collector_lock = _require_collector_stopped()
     try:

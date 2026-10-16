@@ -13,6 +13,33 @@ MANUAL_SETUP_READBACK_MAX_AGE_SECONDS = 180
 REAL_MONEY_EXECUTION_ENABLED = False
 
 
+def live_execution_blocker_matrix() -> list[dict[str, str]]:
+    """Report original LIVE blockers without treating Demo evidence as LIVE proof."""
+    rows = [
+        ("REAL-MONEY EXECUTION: DISABLED", "UNRESOLVED", "Execution constant is false; low-level bet placement fails closed.", "Execution gate remains disabled.", "app/live.py; app/betting/browser_client.py", "Fail-closed tests; no LIVE transaction test.", "Complete LIVE qualification and provider evidence."),
+        ("real_money_execution_disabled_during_refactoring", "RESOLVED_SHARED_CODE", "The old wording called the stop temporary refactoring work, but qualification is incomplete.", "Renamed the reason to pending LIVE qualification without enabling execution.", "app/live.py; app/services/betting_mode.py; tests/test_betting_mode_safety.py", "Reason and disabled-state regression tests.", "Keep execution disabled until remaining LIVE requirements pass."),
+        ("live placement permission is not enabled in backend configuration", "UNRESOLVED", "Backend placement permission is unset or false by default.", "Configuration gate remains off absent an explicit authorized decision.", "app/live.py production readiness", "Readiness configuration tests; permission unchanged.", "Authorized backend configuration decision after qualification."),
+        ("both auto-cashout panels are not freshly confirmed at 2.00x with Auto Bet OFF", "REQUIRES_WINNER_LIVE_VERIFICATION", "No current Winner LIVE readback for both panels was obtained.", "Platform settings remain operator-owned; stale evidence is rejected.", "Winner LIVE DOM/readback required; active collector owns browser lock.", "No current panel evidence.", "Fresh Winner LIVE panel values and provider acknowledgement."),
+        ("shared Aviator betting window and game phase are UNKNOWN", "REQUIRES_WINNER_LIVE_VERIFICATION", "No reliable current Winner LIVE phase observation was obtained.", "Unknown phase remains fail-closed.", "Winner LIVE DOM/frame required; Demo probe could not acquire collector lock.", "No phase transition test.", "Verify Winner LIVE selectors and phase transitions."),
+        ("target betting deadline has no explicit live countdown evidence", "REQUIRES_WINNER_LIVE_VERIFICATION", "No provider countdown tied to a Winner LIVE target was verified.", "Estimated deadlines are not accepted.", "Winner LIVE DOM/provider evidence required.", "No countdown measurement.", "Verify fresh deadline and target binding."),
+        ("provider transaction adapter is incomplete for required LIVE capabilities", "UNRESOLVED", "Real adapter reports required provider capabilities as unverified and blocks placement.", "No capability or receipt was fabricated.", "app/betting/browser_adapters.py; app/betting/browser_client.py", "Fail-closed adapter tests; no provider transaction test.", "Complete and verify the Winner LIVE transaction contract."),
+        ("platform_capability_unverified:bet_submission", "REQUIRES_PROVIDER_AUTHORIZATION", "Provider submission behavior is not authorized or verified for Winner LIVE.", "Browser placement remains blocked.", "app/betting/browser_adapters.py capability contract.", "No real-money submission attempted.", "Authorized submission and provider acceptance evidence."),
+        ("platform_capability_unverified:target_identity", "REQUIRES_WINNER_LIVE_VERIFICATION", "No provider-issued target round identity is verified before execution.", "Missing identity remains UNKNOWN.", "Winner LIVE DOM/provider evidence required.", "No target identity captured.", "Verify the exact provider target identity."),
+        ("platform_capability_unverified:betting_deadline", "REQUIRES_WINNER_LIVE_VERIFICATION", "No Winner LIVE deadline evidence is verified.", "Deadline gate remains fail-closed.", "Winner LIVE DOM/provider evidence required.", "No deadline captured.", "Verify explicit countdown and expiry behavior."),
+        ("platform_capability_unverified:cashout_acknowledgement", "REQUIRES_PROVIDER_AUTHORIZATION", "Visible control state does not prove provider acknowledgement.", "UI color or local state is not treated as acknowledgement.", "app/betting/browser_adapters.py capability contract.", "No cashout or provider acknowledgement test.", "Authorized provider acknowledgement evidence."),
+        ("platform_capability_unverified:acceptance_receipt", "REQUIRES_PROVIDER_AUTHORIZATION", "No Winner LIVE acceptance receipt contract is verified.", "Submission and panel changes are not acceptance.", "app/betting/browser_adapters.py transaction verification.", "No receipt captured.", "Authentic Winner LIVE acceptance receipt."),
+        ("platform_capability_unverified:settlement_receipt", "REQUIRES_PROVIDER_AUTHORIZATION", "No independent provider settlement receipt is verified.", "Round result or balance movement alone is not settlement.", "app/betting/browser_adapters.py transaction verification.", "No settlement receipt captured.", "Authentic settlement record and reconciliation."),
+        ("platform_capability_unverified:currency_validation", "REQUIRES_WINNER_LIVE_VERIFICATION", "Fresh Winner LIVE account and panel currency are unavailable.", "Unknown or mismatched currency remains blocked.", "Winner LIVE account and panel readback required.", "No current currency evidence.", "Verify account, panel, and accepted stake currency."),
+        ("the next target has no verified provider round identity before execution", "REQUIRES_WINNER_LIVE_VERIFICATION", "Next target is not bound to a verified provider-issued round identity.", "Selection intents remain undispatched without target evidence.", "app/live.py readiness; Winner LIVE provider evidence required.", "Target identity regression tests; no live target captured.", "Verify exact next Winner LIVE round identity."),
+        ("EXPLICIT_LIVE_SESSION_AUTHORIZATION_REQUIRED", "REQUIRES_PROVIDER_AUTHORIZATION", "No explicit authorized Winner LIVE session is active.", "Authorization remains session-scoped and is not restored after restart or login expiry.", "app/live.py authorization checks.", "Authorization rejection tests; no authorization issued.", "Authenticated operator must authorize a qualified LIVE session."),
+        ("an active Rules Engine selection session is required", "UNRESOLVED", "No active selection session was verified for this run.", "Session lifecycle and selection gates remain required; no session was started by this audit.", "app/rules_engine.py; app/live.py selection-session check.", "Existing lifecycle tests; no Demo-round session test.", "Start and verify a session on fresh committed rounds."),
+    ]
+    return [{"original_blocker": original, "status": status, "root_cause": cause,
+             "fix_implemented": fix, "evidence_source": evidence,
+             "test_result": result, "remaining_requirement": remaining}
+            for original, status, cause, fix, evidence, result, remaining in rows]
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -81,8 +108,8 @@ class LiveActivationManager:
         checks: dict[str, Any] = {}
         reasons: list[str] = []
         if not REAL_MONEY_EXECUTION_ENABLED:
-            checks["real_money_execution"] = "DISABLED_FOR_REFACTORING"
-            reasons.append("real_money_execution_disabled_during_refactoring")
+            checks["real_money_execution"] = "DISABLED_PENDING_LIVE_QUALIFICATION"
+            reasons.append("real_money_execution_disabled_pending_live_qualification")
         app = self.app
         if app is None:
             reasons.append("application unavailable")
@@ -376,10 +403,17 @@ class LiveActivationManager:
                             and callable(getattr(rules_engine, "decision_interface_status", None))
                             else {"available": False, "missing_capabilities": ["rules_engine_interface"]})
         decision_interface_ready = interface_status.get("available") is True
-        checks["software_integration"] = "READY" if decision_interface_ready else "INCOMPLETE"
+        executor_dispatch_ready = interface_status.get("executor_dispatch_available") is True
+        checks["software_integration"] = (
+            "READY" if decision_interface_ready and executor_dispatch_ready else "INCOMPLETE")
         checks["decision_interface"] = "AVAILABLE" if decision_interface_ready else "UNAVAILABLE"
+        checks["rules_to_executor_dispatch"] = (
+            "AVAILABLE" if executor_dispatch_ready else
+            str(interface_status.get("executor_dispatch") or "UNAVAILABLE"))
         if not decision_interface_ready:
             reasons.append("durable_shared_select_intent_store_unavailable")
+        if not executor_dispatch_ready:
+            reasons.append("rules_engine_select_not_dispatched_to_betting_executor")
         risk = getattr(app.state, "risk", None)
         checks["emergency_stop"] = ("UNAVAILABLE" if risk is None else
                                      "LATCHED" if risk.emergency_latched else "CLEAR")
@@ -392,6 +426,7 @@ class LiveActivationManager:
                   "optional_bankroll_policy": "NOT_APPLIED",
                   "provider_capabilities": capabilities,
                   "missing_provider_capabilities": missing_platform_capabilities,
+                  "blocker_matrix": live_execution_blocker_matrix(),
                   "checked_at": now()}
         self.last_readiness = result
         return result
@@ -411,8 +446,8 @@ class LiveActivationManager:
             if self.live_active:
                 return {"ok": False, "error": "already_active", "status": self.status()}
             if not REAL_MONEY_EXECUTION_ENABLED:
-                result = {"ok": False, "error": "real_money_execution_disabled_during_refactoring",
-                          "reasons": ["REAL_MONEY_EXECUTION_DISABLED_DURING_REFACTORING"]}
+                result = {"ok": False, "error": "real_money_execution_disabled_pending_live_qualification",
+                          "reasons": ["REAL_MONEY_EXECUTION_DISABLED_PENDING_LIVE_QUALIFICATION"]}
                 await self._audit("activation_blocked", result)
                 return result
             return {"ok": False, "error": "live_executor_not_qualified",
@@ -518,4 +553,5 @@ class LiveActivationManager:
                 "cashout_refresh": self.last_cashout_refresh,
                 "execution_integrity": {"status": "DISABLED" if not REAL_MONEY_EXECUTION_ENABLED
                                         else "NOT_AUTHORIZED",
-                                        "reason": "REAL_MONEY_EXECUTION_DISABLED_DURING_REFACTORING"}}
+                                        "reason": "REAL_MONEY_EXECUTION_DISABLED_PENDING_LIVE_QUALIFICATION"},
+                "blocker_matrix": live_execution_blocker_matrix()}

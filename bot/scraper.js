@@ -7,7 +7,8 @@
  *   - Waits for ".payouts-block .payout" inside that iframe.
  *   - Installs a MutationObserver inside the iframe.
  *   - Saves a new record only when the payout snapshot advances.
- *   - Keeps data/roundhistory.json as chronological round records.
+ *   - Legacy round-history writes are disabled; the shared collector owns the
+ *     process-local rolling buffer.
  *
  * The newest payout in the DOM is assumed to be the first element.
  */
@@ -214,7 +215,10 @@ function sortHistoryChronological(records) {
 }
 
 function writeRoundHistory(records) {
-  writeJSON(ROUND_HISTORY_PATH, sortHistoryChronological(records));
+  void records;
+  throw Object.assign(new Error('persistent round-history writes are disabled'), {
+    code: 'PERSISTENT_ROUND_HISTORY_DISABLED',
+  });
 }
 
 async function getPostgresRoundStore() {
@@ -222,13 +226,6 @@ async function getPostgresRoundStore() {
     postgresStorePromise = (async () => {
       const store = new PostgresRoundStore();
       await store.init();
-
-      const fileHistory = readRoundHistory();
-      if (fileHistory.length > 0) {
-        const { saved } = await store.importRounds(fileHistory);
-        log.info(`Imported ${saved} round(s) from data/roundhistory.json into PostgreSQL`);
-      }
-
       return store;
     })();
   }
@@ -711,6 +708,8 @@ export async function setupMutationObserver(page) {
  * integrations that may call it manually.
  */
 export async function extractAndSave(page) {
+  void page;
+  return { added: 0, total: 0, error: 'PERSISTENT_ROUND_HISTORY_DISABLED' };
   try {
     const result = await extractPayouts(page);
     if (result.error || !result.multipliers.length) {
@@ -773,6 +772,8 @@ export async function extractAndSave(page) {
  * event payload containing all current multipliers as numbers.
  */
 export async function monitorRounds(page, options = {}) {
+  void page; void options;
+  return { status: 'DISABLED', reason: 'LEGACY_COLLECTOR_DISABLED_USE_SHARED_BROWSER_MANAGER' };
   const signal = options.signal || null;
 
   let history = await loadPostgresRoundHistory();
@@ -1013,18 +1014,11 @@ export function cleanHistory() {
   const afterRecords = normalizeHistory(raw);
   const after = afterRecords.length;
 
-  const currentText = JSON.stringify(coerceHistoryArray(raw), null, 2);
-  const nextText = JSON.stringify(afterRecords, null, 2);
-
-  if (currentText !== nextText) {
-    writeRoundHistory(afterRecords);
-  }
-
-  log.info(`History cleaned: ${before} -> ${after} records`);
+  log.info(`Legacy history inspected read-only: ${before} stored entries, ${after} normalized in memory`);
 
   return {
     before,
     after,
-    removed: Math.max(0, before - after),
+    removed: 0,
   };
 }

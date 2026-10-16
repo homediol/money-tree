@@ -14,6 +14,7 @@ import math
 import re
 from pathlib import Path
 from threading import RLock
+from time import perf_counter
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -887,10 +888,13 @@ class RulesEngine:
 
     def start_session(self, *, mode: str, rule_ids: list[str], boundary: Mapping[str, Any],
                       prestart_context: list[Mapping[str, Any]] | None = None,
-                      options: Mapping[str, Any] | None = None, now: str | None = None) -> dict[str, Any]:
+                      options: Mapping[str, Any] | None = None, now: str | None = None,
+                      replace_active_session: bool = False) -> dict[str, Any]:
         now = _now(now)
         if mode not in MODES or not isinstance(rule_ids, list) or len(set(rule_ids)) != len(rule_ids):
             raise ValueError("INVALID_SESSION_CONFIGURATION")
+        if not isinstance(replace_active_session, bool):
+            raise ValueError("INVALID_REPLACE_ACTIVE_SESSION")
         allowed = self._allowed_rules(mode)
         if any(rule_id not in allowed for rule_id in rule_ids):
             raise ValueError("RULE_NOT_ALLOWED_IN_MODE")
@@ -992,12 +996,23 @@ class RulesEngine:
             "auto_next_armed": False, "automatic_execution": "OFF",
         }
         with self._lock:
-            if any(existing.get("mode") == mode
-                   and existing.get("last_stream_id") == start["stream_id"]
-                   and existing.get("status") in {"RUNNING", "PAUSED"}
-                   and existing.get("selection_status") == "ACTIVE"
-                   for existing in self.sessions.values()):
+            conflicts = [existing for existing in self.sessions.values()
+                         if existing.get("mode") == mode
+                         and existing.get("last_stream_id") == start["stream_id"]
+                         and self._blocks_new_mode_session(existing)]
+            if conflicts and not replace_active_session:
                 raise ValueError("SESSION_ALREADY_ACTIVE_FOR_MODE")
+            for existing in conflicts:
+                self._require_session_replaceable(existing)
+            prior_sessions = deepcopy(self.sessions) if conflicts else None
+            for existing in conflicts:
+                existing.update({"status": "MANUALLY_STOPPED", "selection_status": "STOPPED",
+                                 "selection_stop_reason": "REPLACED_BY_NEW_SESSION",
+                                 "stop_reason": "REPLACED_BY_NEW_SESSION", "ended_at": now,
+                                 "auto_next_armed": False,
+                                 "replaced_by_session_id": session_id})
+            if conflicts:
+                session["replaces_session_ids"] = [item["session_id"] for item in conflicts]
             # A manually started run owns the next boundary.  Do not also
             # launch a previously armed automatic continuation for that mode.
             for existing in self.sessions.values():
@@ -1007,7 +1022,14 @@ class RulesEngine:
                     existing["auto_next_armed"] = False
                     existing["auto_next_block_reason"] = "MANUAL_SESSION_STARTED"
             self.sessions[session_id] = session
-            self._persist()
+            try:
+                self._persist()
+            except Exception:
+                if prior_sessions is not None:
+                    self.sessions = prior_sessions
+                else:
+                    self.sessions.pop(session_id, None)
+                raise
         return deepcopy(session)
 
     def _version(self, rule_id: str) -> str:
@@ -1288,8 +1310,18 @@ class RulesEngine:
                 state["rule_state"] = "PLAYING"
 
     def observe_round(self, event: Mapping[str, Any], *, now: str | None = None,
-                      target_already_completed: bool = False) -> dict[str, Any]:
+                      target_already_completed: bool = False,
+                      deadline_monotonic: float | None = None,
+                      direct_observation: bool = False,
+                      persist: bool = True) -> dict[str, Any]:
         """Consume a verified observed or committed event, preserving its two stages."""
+        if deadline_monotonic is not None:
+            try:
+                deadline_monotonic = float(deadline_monotonic)
+            except (TypeError, ValueError, OverflowError):
+                deadline_monotonic = perf_counter() - 0.001
+            if not math.isfinite(deadline_monotonic):
+                deadline_monotonic = perf_counter() - 0.001
         at = _now(now)
         if not isinstance(event, Mapping):
             event = {}
@@ -1340,9 +1372,12 @@ class RulesEngine:
                               "sessions": sessions, "automatic_execution": "OFF", "can_bet": False,
                               "evaluated_at": at}
                 self.last_evaluation, self.last_evaluation_at = evaluation, at
-                self._persist()
+                if persist:
+                    self._persist()
                 return deepcopy(evaluation)
             self._spawn_auto_next_sessions(row, at)
+            deadline_expired = (deadline_monotonic is not None
+                                and perf_counter() >= float(deadline_monotonic))
             record_key = (f"pending:{row['stream_id']}:{row['round_id']}" if observed_stage
                           else f"{row['stream_id']}:{row['stream_sequence']}")
             results: list[dict[str, Any]] = []
@@ -1354,12 +1389,12 @@ class RulesEngine:
                     pending_prior = session.get("event_records", {}).get(pending_key)
                     if committed_prior:
                         if committed_prior.get("source_round") != _reference(row):
-                            session.update({"status": "PAUSED", "stop_reason": "ROUND_IDENTITY_CONFLICT"})
+                            self._pause_session_for_integrity(session, "ROUND_IDENTITY_CONFLICT")
                         results.append(deepcopy(committed_prior))
                         continue
                     if pending_prior:
                         if pending_prior.get("source_round") != _reference(row):
-                            session.update({"status": "PAUSED", "stop_reason": "OBSERVED_COMMIT_IDENTITY_CONFLICT"})
+                            self._pause_session_for_integrity(session, "OBSERVED_COMMIT_IDENTITY_CONFLICT")
                             continue
                         pending_prior["persistence_status"] = "COMMITTED"
                         pending_prior["committed_stream_sequence"] = row["stream_sequence"]
@@ -1379,11 +1414,20 @@ class RulesEngine:
                                     selection["target_persistence_status"] = "COMMITTED"
                         results.append(deepcopy(pending_prior))
                         continue
+                if observed_stage:
+                    # A committed event can win the race during restart/replay.
+                    # The later direct observation is then an acknowledgement,
+                    # never a second evaluation or a backwards cursor move.
+                    committed_match = next((saved for saved in session.get("event_records", {}).values()
+                                            if saved.get("source_round") == _reference(row)
+                                            and saved.get("persistence_status") == "COMMITTED"), None)
+                    if committed_match:
+                        results.append(deepcopy(committed_match))
+                        continue
                 prior = session.get("event_records", {}).get(record_key)
                 if prior:
                     if prior.get("source_round") != _reference(row):
-                        session["status"] = "PAUSED"
-                        session["stop_reason"] = "ROUND_IDENTITY_CONFLICT"
+                        self._pause_session_for_integrity(session, "ROUND_IDENTITY_CONFLICT")
                     results.append(deepcopy(prior))
                     continue
                 if session.get("status") not in {"RUNNING", "PAUSED", "MANUALLY_STOPPED"}:
@@ -1391,15 +1435,17 @@ class RulesEngine:
                 if session["status"] == "PAUSED" and session.get("stop_reason") not in {None, "MANUAL_PAUSE"}:
                     continue
                 if row["stream_id"] != session["last_stream_id"]:
-                    session.update({"status": "PAUSED", "stop_reason": "STREAM_IDENTITY_CHANGED"})
+                    self._pause_session_for_integrity(session, "STREAM_IDENTITY_CHANGED")
                     continue
                 if not observed_stage and row["stream_sequence"] <= session["last_stream_sequence"]:
                     # A replay older than the persisted cursor is a no-op; no retrospective selections.
                     continue
                 if row["round_index"] != session["last_round_index"] + 1:
-                    session.update({"status": "PAUSED", "stop_reason": "ROUND_INDEX_GAP",
-                                    "gap_expected_index": session["last_round_index"] + 1,
-                                    "gap_received_index": row["round_index"]})
+                    self._pause_session_for_integrity(
+                        session, "ROUND_INDEX_GAP",
+                        gap_expected_index=session["last_round_index"] + 1,
+                        gap_received_index=row["round_index"],
+                    )
                     continue
                 observed_at = _parse_time(row.get("observed_at"))
                 started_at = _parse_time(session.get("started_at"))
@@ -1436,7 +1482,8 @@ class RulesEngine:
                 session["context"] = history[-5:]
                 final_window_source = session["observed_rounds"] >= session["window_size"]
                 active = (session["selection_status"] == "ACTIVE" and session["status"] == "RUNNING"
-                          and not final_window_source and not target_already_completed)
+                          and not final_window_source and not target_already_completed
+                          and not deadline_expired)
                 evaluation_rows: list[dict[str, Any]] = []
                 proposals: list[dict[str, Any]] = []
                 for rid in session["rule_ids"]:
@@ -1453,6 +1500,7 @@ class RulesEngine:
                             "EVALUATION_ERROR", "Iri tegeko ntiryabashije gusuzuma amakuru.",
                             {"errorCategory": type(exc).__name__}, before, state, at)
                     proposal["enabled"] = True  # Session snapshot owns participation.
+                    source_eligible = proposal.get("eligible")
                     if target_already_completed and proposal.get("eligible") is True:
                         proposal["eligible"] = None
                         proposal["result"] = None
@@ -1460,6 +1508,16 @@ class RulesEngine:
                         proposal["reason"] = "Target yamaze kuboneka; nta cyemezo cyasubijwe inyuma."
                         proposal["proposal"].update({"eligible": None, "status": "INVALID_LATE",
                                                      "reason": proposal["reason"]})
+                    if deadline_expired:
+                        late_reason = ("Target yamaze kuboneka; nta cyemezo cyasubijwe inyuma."
+                                       if target_already_completed else
+                                       "Rules Engine yagejejweho nyuma y'100 ms; nta cyemezo cyasubijwe inyuma.")
+                        proposal.update({"eligible": None, "result": None,
+                                         "status": "INVALID_LATE",
+                                         "reason": late_reason})
+                        proposal.setdefault("proposal", {}).update({
+                            "eligible": None, "status": "INVALID_LATE", "reason": proposal["reason"],
+                        })
                     if final_window_source and proposal.get("eligible") is not None:
                         proposal["eligible"] = None
                         proposal["result"] = None
@@ -1468,7 +1526,7 @@ class RulesEngine:
                         proposal["proposal"].update({"eligible": None,
                                                      "status": "WINDOW_COMPLETED_NO_TARGET",
                                                      "reason": proposal["reason"]})
-                    if proposal.get("eligible") is False and rid in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}:
+                    if source_eligible is False and rid in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}:
                         # A waiting-state transition is owned by this policy and
                         # depends only on its verified source, not aggregation.
                         session["engines"][rid]["rule_state"] = proposal["state_snapshot"]["after"].get("rule_state")
@@ -1476,15 +1534,25 @@ class RulesEngine:
                     if active:
                         proposals.append(proposal)
                 target_identity_guard = ("TARGET_ALREADY_COMPLETED" if target_already_completed
+                                          else "DIRECT_PAGE_SNAPSHOT_NO_COMPLETED_TARGET" if direct_observation
                                           else "NOT_APPLICABLE")
                 target_guard_unavailable = False
-                if active and any(proposal.get("eligible") is True for proposal in proposals):
+                deadline_expired = (deadline_expired or deadline_monotonic is not None
+                                    and perf_counter() >= float(deadline_monotonic))
+                if active and not deadline_expired and any(proposal.get("eligible") is True for proposal in proposals):
                     if target_already_completed:
                         target_identity_guard = "TARGET_ALREADY_COMPLETED"
                     else:
-                        checker = getattr(self._persistence, "round_continuity_for_indices", None)
-                        observation_checker = getattr(self.observation_inbox,
-                                                      "has_pending_round_index", None)
+                        # The direct path must reach/evaluate the rule engine
+                        # without a PostgreSQL or inbox read. It uses the
+                        # fresh Winner-page snapshot and this batch's round
+                        # boundary as the prompt target guard; committed
+                        # processing retains the full DB checks.
+                        checker = (None if direct_observation else
+                                   getattr(self._persistence, "round_continuity_for_indices", None))
+                        observation_checker = (None if direct_observation else
+                                               getattr(self.observation_inbox,
+                                                       "has_pending_round_index", None))
                         target_index = int(row["round_index"]) + 1
                         try:
                             existing_target = (checker([target_index])
@@ -1518,19 +1586,36 @@ class RulesEngine:
                             proposal.setdefault("proposal", {}).update({
                                 "eligible": None, "status": status, "reason": reason,
                             })
-                if active and session["mode"] in {"FIVE_RULE_TRACKER", "ALL_RULES_TOGETHER"}:
+                deadline_expired = (deadline_expired or deadline_monotonic is not None
+                                    and perf_counter() >= deadline_monotonic)
+                if deadline_expired:
+                    for proposal in evaluation_rows:
+                        late_reason = ("Target yamaze kuboneka; nta cyemezo cyasubijwe inyuma."
+                                       if target_already_completed else
+                                       "Rules Engine yagejejweho nyuma y'100 ms; nta cyemezo cyasubijwe inyuma.")
+                        proposal.update({"eligible": None, "result": None,
+                                         "status": "INVALID_LATE",
+                                         "reason": late_reason})
+                        proposal.setdefault("proposal", {}).update({
+                            "eligible": None, "status": "INVALID_LATE", "reason": proposal["reason"],
+                        })
+                    combined = {"action": "WAIT", "reason": "TARGET_ALREADY_COMPLETED" if target_already_completed
+                                else "RULES_DEADLINE_EXPIRED",
+                                "true_rule_ids": [], "selection_id": None}
+                elif active and session["mode"] in {"FIVE_RULE_TRACKER", "ALL_RULES_TOGETHER"}:
                     combined = self._combine(session, row, proposals, at)
                 elif active and session["mode"] in {"START_CHECK", "LEGACY_SEPARATE_TRACKER"}:
                     combined = self._combine(session, row, proposals, at)
                 else:
                     wait_reason = ("TARGET_ALREADY_COMPLETED" if target_already_completed else
+                                   "RULES_DEADLINE_EXPIRED" if deadline_expired else
                                    "TARGET_IDENTITY_CHECK_UNAVAILABLE" if target_guard_unavailable else
                                    "WINDOW_COMPLETED_NO_TARGET" if final_window_source else
                                    session.get("selection_stop_reason") or "NO_ACTIVE_RULES")
                     combined = {"action": "NO_ACTION" if not session.get("rule_ids") else "WAIT", "reason":
                                 "NO_ENABLED_RULES" if not session.get("rule_ids") else wait_reason,
                                 "true_rule_ids": [], "selection_id": None}
-                if target_guard_unavailable:
+                if target_guard_unavailable and not deadline_expired:
                     combined = {"action": "WAIT", "reason": "TARGET_IDENTITY_CHECK_UNAVAILABLE",
                                 "true_rule_ids": [], "selection_id": None}
                 if session["observed_rounds"] >= session["window_size"]:
@@ -1593,7 +1678,8 @@ class RulesEngine:
                       "evaluated_at": at}
             self.last_evaluation = output
             self.last_evaluation_at = at
-            self._persist()
+            if persist:
+                self._persist()
             return deepcopy(output)
 
     def _spawn_auto_next_sessions(self, current: dict[str, Any], at: str) -> None:
@@ -1606,8 +1692,7 @@ class RulesEngine:
             active_peer = any(item is not previous
                               and item.get("mode") == previous.get("mode")
                               and item.get("last_stream_id") == current["stream_id"]
-                              and item.get("status") in {"RUNNING", "PAUSED"}
-                              and item.get("selection_status") == "ACTIVE"
+                              and self._blocks_new_mode_session(item)
                               for item in self.sessions.values())
             if active_peer:
                 previous["auto_next_armed"] = False
@@ -1845,6 +1930,47 @@ class RulesEngine:
                    for record in (session.get("event_records") or {}).values())
 
     @staticmethod
+    def _blocks_new_mode_session(session: Mapping[str, Any]) -> bool:
+        """Only a session that can still consume events owns its mode slot."""
+        if session.get("selection_status") != "ACTIVE":
+            return False
+        if session.get("status") == "RUNNING":
+            return True
+        return (session.get("status") == "PAUSED"
+                and session.get("stop_reason") in {
+                    None, "MANUAL_PAUSE", "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION",
+                })
+
+    def _require_session_replaceable(self, session: Mapping[str, Any]) -> None:
+        integrity = session.get("settlement_integrity") or session.get("financial_stop") or {}
+        if integrity.get("status") == "RECONCILIATION_REQUIRED":
+            raise ValueError("UNRECONCILED_EXECUTION_REMAINS")
+        unresolved = {"ACCEPTED", "PENDING", "UNKNOWN", "RECONCILIATION_REQUIRED",
+                      "RECONCILIATION_PENDING", "SUBMITTING", "SUBMITTED"}
+        selections = list(session.get("selections") or [])
+        selections.extend(item for rows in (session.get("rule_selections") or {}).values()
+                          for item in rows)
+        if any(str(((item.get("execution_intent") or {}).get("execution_status") or "")).upper()
+               in unresolved for item in selections):
+            raise ValueError("UNRECONCILED_EXECUTION_REMAINS")
+        has_open = getattr(self._persistence, "has_open_rule_session_executions", None)
+        if callable(has_open):
+            try:
+                if has_open(str(session.get("session_id") or "")):
+                    raise ValueError("UNRECONCILED_EXECUTION_REMAINS")
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise ValueError("SESSION_REPLACEMENT_STATUS_UNAVAILABLE") from exc
+
+    @staticmethod
+    def _pause_session_for_integrity(session: dict[str, Any], reason: str, **details: Any) -> None:
+        """Keep a faulted session and its history, while releasing its selection slot."""
+        session.update({"status": "PAUSED", "selection_status": "STOPPED",
+                        "selection_stop_reason": reason, "stop_reason": reason,
+                        "auto_next_armed": False, **details})
+
+    @staticmethod
     def _session_accepts_source_events(session: Mapping[str, Any]) -> bool:
         status = session.get("status")
         if status == "RUNNING":
@@ -1906,6 +2032,8 @@ class RulesEngine:
         integrity = session.get("settlement_integrity") or session.get("financial_stop") or {}
         return {"session_id": session["session_id"], "mode": session["mode"], "status": session["status"],
                 "selection_status": session.get("selection_status"), "started_at": session.get("started_at"),
+                "stream_id": session.get("last_stream_id"),
+                "blocks_new_session": RulesEngine._blocks_new_mode_session(session),
                 "ended_at": session.get("ended_at"), "rule_ids": list(session.get("rule_ids", [])),
                 "configuration_version": session.get("configuration_version"),
                 "observed_rounds": session.get("observed_rounds", 0), "window_size": session.get("window_size"),
@@ -1971,6 +2099,11 @@ class RulesEngine:
             "state": "AVAILABLE" if not missing else "UNAVAILABLE",
             "persistence": "DURABLE_REPOSITORY" if not missing else "UNAVAILABLE",
             "missing_capabilities": missing,
+            # Durable SELECT intent creation is implemented, but the current
+            # compatibility adapter is observe-only. Keep that fact separate
+            # from persistence so readiness cannot call the executor wired.
+            "executor_dispatch": "BLOCKED_OBSERVE_ONLY",
+            "executor_dispatch_available": False,
             "live_authorized": False,
         }
 

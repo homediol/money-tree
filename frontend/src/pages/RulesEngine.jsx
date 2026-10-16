@@ -40,6 +40,7 @@ export default function RulesEngine() {
   const [mode, setMode] = useState('ALL_RULES_TOGETHER');
   const [selectedIds, setSelectedIds] = useState([]);
   const [error, setError] = useState('');
+  const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
   const [busyAction, setBusyAction] = useState('');
   const [presetName, setPresetName] = useState('');
@@ -69,9 +70,9 @@ export default function RulesEngine() {
         const detail = await api.get(`/api/rules-engine/sessions/${encodeURIComponent(selectedSession.session_id)}`);
         setDetailSession(detail.data);
       } else setDetailSession(null);
-      setError('');
+      setStatusError('');
     } catch {
-      setError('Rules Engine status is unavailable.');
+      setStatusError('Rules Engine status is unavailable. Monitoring data may be stale; check the backend and PostgreSQL health.');
     }
   }, []);
 
@@ -91,8 +92,22 @@ export default function RulesEngine() {
   const settlementIntegrity = dashboard?.settlement_integrity || activeSession?.settlement_integrity || {};
   const liveModeActive = executionMode?.mode === 'LIVE_REAL';
   const current = status?.latest_real_round;
+  const modeConflict = sessions.find((session) => {
+    const isBlocking = session.blocks_new_session === true
+      || (session.blocks_new_session == null && session.selection_status === 'ACTIVE'
+        && (session.status === 'RUNNING'
+          || (session.status === 'PAUSED'
+            && [null, undefined, 'MANUAL_PAUSE', 'UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION']
+              .includes(session.stop_reason))));
+    return session.mode === mode && isBlocking
+      && (!current?.stream_id || !session.stream_id || session.stream_id === current.stream_id);
+  }) || (activeSession?.mode === mode && activeSession?.selection_status === 'ACTIVE'
+    ? activeSession : null);
   const collector = status?.collector_status || {};
   const shadowReadiness = status?.shadow_readiness;
+  const hasEnabledSelection = selectedIds.some((id) => availableRules.find((rule) => rule.rule_id === id)?.enabled);
+  const readinessBlockers = shadowReadiness?.ready === false
+    ? (shadowReadiness.blockers?.length ? shadowReadiness.blockers : ['SHADOW_NOT_READY']) : [];
   const collectorState = collector.state || collector.health || collector.status || 'UNKNOWN';
   const latestLabel = current
     ? `${Number(current.multiplier).toFixed(2)}x${current.round_index != null ? ` · #${current.round_index}` : ''}`
@@ -113,14 +128,19 @@ export default function RulesEngine() {
   const withBusy = async (operation, action = 'request') => {
     setBusy(true);
     setBusyAction(action);
+    setError('');
     try {
       await operation();
       await refresh();
     } catch (failure) {
       const detail = failure?.response?.data?.detail;
-      setError(typeof detail === 'string' ? detail
+      setError(detail === 'SESSION_ALREADY_ACTIVE_FOR_MODE'
+        ? 'This mode already has an active session. Refresh the session status and use “Stop current session & start new”.'
+        : typeof detail === 'string' ? detail
         : detail?.reason || detail?.message || failure?.response?.data?.error
-        || 'The Rules Engine request failed.');
+        || (!failure?.response
+          ? 'The API response was unavailable; the session start is not confirmed. Check current session status before retrying.'
+          : 'The Rules Engine request failed.'));
     } finally {
       setBusy(false);
       setBusyAction('');
@@ -168,7 +188,7 @@ export default function RulesEngine() {
       auto_next_check_enabled: autoNext,
     } : { window_size: 50, max_observed_rounds: Number(maxObservedRounds) };
     const response = await api.post('/api/rules-engine/sessions', { mode, rule_ids: participatingRuleIds,
-      options });
+      options, replace_active_session: Boolean(modeConflict) });
     if (response.data?.status === 'RUNNING' && response.data?.session_id) {
       setStatus((previous) => previous ? { ...previous, status: 'RUNNING',
         active_session: response.data } : previous);
@@ -205,6 +225,7 @@ export default function RulesEngine() {
       <p className="mt-2 max-w-3xl text-sm text-zinc-400">Independent rules evaluate verified completed rounds. A shared coordinator writes at most one deduplicated SELECT for each target. This component observes and records decisions only.</p>
     </header>
 
+    {statusError && <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">{statusError}</div>}
     {error && <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">{error}</div>}
 
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
@@ -324,15 +345,24 @@ export default function RulesEngine() {
       </div> : null}
 
       <div className="mt-5 flex flex-wrap gap-2">
-        <Button tone="good" onClick={start} disabled={busy || Boolean(activeSession)
+        <Button tone={modeConflict ? 'danger' : 'good'} onClick={start} disabled={busy
           || shadowReadiness?.ready === false
-          || !selectedIds.some((id) => availableRules.find((rule) => rule.rule_id === id)?.enabled)}>
-          {busyAction === 'start-shadow' ? 'Starting observation session…' : 'Start observation session'}
+          || !hasEnabledSelection}>
+          {busyAction === 'start-shadow' ? 'Starting observation session…'
+            : modeConflict ? 'Stop current session & start new' : 'Start observation session'}
         </Button>
         <input aria-label="Preset name" value={presetName} onChange={(e) => setPresetName(e.target.value)} placeholder="Preset name" className="min-w-36 rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" />
         <Button onClick={savePreset} disabled={busy || !presetName.trim()}>Save preset</Button>
         <span className="self-center text-xs text-zinc-500">Rules Engine observations do not use stake or balance strategy settings.</span>
       </div>
+      {modeConflict && <p className="mt-3 text-sm text-amber-200">
+        This will stop session {modeConflict.session_id} for this mode and start a fresh observation. Its history will be retained.
+      </p>}
+      {readinessBlockers.length > 0 && <p role="status" className="mt-3 text-sm text-amber-200">
+        Observation is blocked: {readinessBlockers.join(', ')}.
+      </p>}
+      {!hasEnabledSelection && registry && <p className="mt-2 text-sm text-zinc-400">Enable and select at least one rule for this mode before starting.</p>}
+      {Boolean(activeSession) && <p className="mt-2 text-sm text-zinc-400">An observation session is already active.</p>}
     </section>
 
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">

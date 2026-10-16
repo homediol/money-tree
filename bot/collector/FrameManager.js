@@ -91,6 +91,13 @@ export class FrameManager extends EventEmitter {
 
   _frameIsChild(page, frame) {
     try {
+      if (frame === page.mainFrame()) {
+        const url = new URL(page.url());
+        return !frame.isDetached()
+          && url.protocol === 'https:'
+          && url.hostname.toLowerCase() === 'aviator-demo.spribegaming.com'
+          && url.searchParams.get('operator')?.toLowerCase() === 'demo';
+      }
       return frame !== page.mainFrame() && !frame.isDetached();
     } catch (error) {
       log.debug(`Frame parent relationship could not be read: ${error.message}`);

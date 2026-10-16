@@ -1,41 +1,21 @@
-2026/10/15-14:45:36.697 c377a Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/MANIFEST-000001
-2026/10/15-14:45:36.722 c377a Recovering log #100
-2026/10/15-14:45:36.729 c377a Level-0 table #103: started
-2026/10/15-14:45:38.829 c377a Level-0 table #103: 711129 bytes OK
-2026/10/15-14:45:40.318 c377a Delete type=0 #100
-2026/10/15-14:48:40.853 c377a Level-0 table #106: started
-2026/10/15-14:48:41.264 c377a Level-0 table #106: 100961 bytes OK
-2026/10/15-14:48:41.739 c377a Delete type=0 #104
-2026/10/15-14:48:47.864 c3783 Level-0 table #108: started
-2026/10/15-14:48:48.223 c3783 Level-0 table #108: 808145 bytes OK
-2026/10/15-14:48:48.680 c3783 Delete type=0 #105
-2026/10/15-14:48:48.682 c3783 Compacting 4@0 + 1@1 files
-2026/10/15-14:48:48.955 c3783 Generated table #109@0: 54 keys, 877667 bytes
-2026/10/15-14:48:48.955 c3783 Compacted 4@0 + 1@1 files => 877667 bytes
-2026/10/15-14:48:49.586 c3783 compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/10/15-14:48:49.587 c3783 Delete type=2 #101
-2026/10/15-14:48:49.588 c3783 Delete type=2 #98
-2026/10/15-14:48:49.588 c3783 Delete type=2 #108
-2026/10/15-14:48:49.588 c3783 Delete type=2 #103
-2026/10/15-14:48:49.588 c3783 Delete type=2 #106
-2026/10/15-14:52:40.748 c3783 Level-0 table #111: started
-2026/10/15-14:52:41.028 c3783 Level-0 table #111: 102068 bytes OK
-2026/10/15-14:52:41.629 c3783 Delete type=0 #107
-2026/10/15-14:54:40.749 c3783 Level-0 table #113: started
-2026/10/15-14:54:40.864 c3783 Level-0 table #113: 101239 bytes OK
-2026/10/15-14:54:40.952 c3783 Delete type=0 #110
-2026/10/15-14:56:40.757 c3783 Level-0 table #115: started
-2026/10/15-14:56:41.187 c3783 Level-0 table #115: 101290 bytes OK
-2026/10/15-14:56:41.576 c3783 Delete type=0 #112
-2026/10/15-14:58:40.748 c3783 Level-0 table #117: started
-2026/10/15-14:58:40.872 c3783 Level-0 table #117: 101404 bytes OK
-2026/10/15-14:58:41.197 c3783 Delete type=0 #114
-2026/10/15-14:58:41.200 c377a Compacting 4@0 + 1@1 files
-2026/10/15-14:58:41.522 c377a Generated table #118@0: 54 keys, 878311 bytes
-2026/10/15-14:58:41.522 c377a Compacted 4@0 + 1@1 files => 878311 bytes
-2026/10/15-14:58:41.565 c377a compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/10/15-14:58:41.579 c377a Delete type=2 #117
-2026/10/15-14:58:41.580 c377a Delete type=2 #111
-2026/10/15-14:58:41.580 c377a Delete type=2 #115
-2026/10/15-14:58:41.580 c377a Delete type=2 #109
-2026/10/15-14:58:41.584 c377a Delete type=2 #113
+2026/10/15-22:08:03.823 125ead Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/MANIFEST-000001
+2026/10/15-22:08:03.837 125ead Recovering log #603
+2026/10/15-22:08:03.838 125ead Level-0 table #606: started
+2026/10/15-22:08:04.827 125ead Level-0 table #606: 102475 bytes OK
+2026/10/15-22:08:04.828 125ead Recovering log #605
+2026/10/15-22:08:04.829 125ead Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Local Storage/leveldb/000605.log 
+2026/10/15-22:08:06.526 125ead Delete type=0 #603
+2026/10/15-22:09:06.585 125eb0 Level-0 table #608: started
+2026/10/15-22:09:09.667 125eb0 Level-0 table #608: 128733 bytes OK
+2026/10/15-22:09:11.758 125eb0 Delete type=0 #605
+2026/10/15-22:09:11.782 125ead Compacting 4@0 + 1@1 files
+2026/10/15-22:09:12.184 125ead Generated table #609@0: 98 keys, 87677 bytes
+2026/10/15-22:09:12.185 125ead Compacted 4@0 + 1@1 files => 87677 bytes
+2026/10/15-22:09:13.291 125ead compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/10/15-22:09:13.293 125ead Delete type=2 #608
+2026/10/15-22:09:13.293 125ead Delete type=2 #604
+2026/10/15-22:09:13.293 125ead Delete type=2 #600
+2026/10/15-22:09:13.293 125ead Delete type=2 #606
+2026/10/15-22:09:13.293 125ead Delete type=2 #602
+2026/10/15-22:11:39.001 125ead Level-0 table #611: started
+2026/10/15-22:11:39.479 125ead Level-0 table #611: 105881 bytes OK

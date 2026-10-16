@@ -5,6 +5,7 @@ import { drainDirectRoundEventOutbox, publishDirectRoundObservations } from '../
 const directRound = {
   round_id: 'aviator-direct-001', multiplier: 2.35,
   timestamp: '2026-10-06T17:00:00.000Z', observed_at: '2026-10-06T17:00:00.000Z',
+  collector_observed_at: new Date().toISOString(),
   platform_round_id: 'winner-round-001', platform_round_index: 41,
   platform_timestamp: '2026-10-06T16:59:59.000Z', round_index: 907,
   continuity_verified: true, gap_before: false,
@@ -31,6 +32,7 @@ test('publishes real direct-page identity and timestamp before persistence hando
     multiplier: request.body.rounds[0].multiplier,
     timestamp: request.body.rounds[0].timestamp,
     observed_at: request.body.rounds[0].observed_at,
+    collector_observed_at: request.body.rounds[0].collector_observed_at,
     platform_round_id: request.body.rounds[0].platform_round_id,
     platform_round_index: request.body.rounds[0].platform_round_index,
     platform_timestamp: request.body.rounds[0].platform_timestamp,
@@ -46,6 +48,7 @@ test('publishes real direct-page identity and timestamp before persistence hando
     multiplier: directRound.multiplier,
     timestamp: directRound.timestamp,
     observed_at: directRound.observed_at,
+    collector_observed_at: directRound.collector_observed_at,
     platform_round_id: directRound.platform_round_id,
     platform_round_index: directRound.platform_round_index,
     platform_timestamp: directRound.platform_timestamp,

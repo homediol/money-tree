@@ -1,0 +1,211 @@
+{
+  "provider": "SPRIBE_DEMO",
+  "observed_at": "2026-10-15T15:36:44.102Z",
+  "browser_count": 1,
+  "context_count": 1,
+  "page_count": 1,
+  "frame_count": 1,
+  "page_url": "https://aviator-demo.spribegaming.com/",
+  "sample_count": 22,
+  "sampling_interval_ms_target": 350,
+  "samples": [
+    {
+      "index": 0,
+      "captured_at": "2026-10-15T15:36:13.807Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/000.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 1,
+      "captured_at": "2026-10-15T15:36:15.390Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/001.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 2,
+      "captured_at": "2026-10-15T15:36:16.475Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/002.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 3,
+      "captured_at": "2026-10-15T15:36:18.323Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/003.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 4,
+      "captured_at": "2026-10-15T15:36:19.377Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/004.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 5,
+      "captured_at": "2026-10-15T15:36:20.267Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/005.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 6,
+      "captured_at": "2026-10-15T15:36:21.447Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/006.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 7,
+      "captured_at": "2026-10-15T15:36:22.649Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/007.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 8,
+      "captured_at": "2026-10-15T15:36:23.530Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/008.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 9,
+      "captured_at": "2026-10-15T15:36:25.107Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/009.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 10,
+      "captured_at": "2026-10-15T15:36:26.041Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/010.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 11,
+      "captured_at": "2026-10-15T15:36:27.122Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/011.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 12,
+      "captured_at": "2026-10-15T15:36:28.110Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/012.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 13,
+      "captured_at": "2026-10-15T15:36:29.883Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/013.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 14,
+      "captured_at": "2026-10-15T15:36:31.485Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/014.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 15,
+      "captured_at": "2026-10-15T15:36:32.599Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/015.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 16,
+      "captured_at": "2026-10-15T15:36:33.712Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/016.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 17,
+      "captured_at": "2026-10-15T15:36:34.951Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/017.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 18,
+      "captured_at": "2026-10-15T15:36:38.054Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/018.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 19,
+      "captured_at": "2026-10-15T15:36:41.170Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/019.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 20,
+      "captured_at": "2026-10-15T15:36:42.202Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/020.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    },
+    {
+      "index": 21,
+      "captured_at": "2026-10-15T15:36:43.221Z",
+      "file": "/tmp/winner-predict-demo-canvas-20261015T1536Z/021.png",
+      "canvas": {
+        "width": 684,
+        "height": 421
+      }
+    }
+  ]
+}

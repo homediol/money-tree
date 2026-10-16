@@ -148,6 +148,9 @@ async def capabilities(request: Request) -> dict:
             "receipt_reconciliation_to_rule_session": receipt_to_rules,
             "manual_platform_stake_readback_v2": manual_setup_readback_v2,
             "manual_executor_v2": manual_executor_v2,
+            # Allows the supervisor to distinguish deployments that expose
+            # fresh, independently validated panel configuration readbacks.
+            "collector_panel_configuration_readback_v1": True,
             "real_money_execution_disabled": REAL_MONEY_EXECUTION_ENABLED is False,
         },
     }

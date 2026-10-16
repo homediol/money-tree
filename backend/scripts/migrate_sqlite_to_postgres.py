@@ -26,8 +26,8 @@ from app.services.data_loader import (  # noqa: E402
 
 
 def migrate(sqlite_path: Path, history_path: Path, database_url: str) -> dict[str, int]:
-    if not sqlite_path.is_file() or not history_path.is_file():
-        raise FileNotFoundError("SQLite database and roundhistory.json are both required")
+    del sqlite_path, history_path, database_url
+    raise RuntimeError("PERSISTENT_ROUND_HISTORY_IMPORT_DISABLED")
     source = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
     source.row_factory = sqlite3.Row
     destination = Repository(BACKEND / "unused-migration.sqlite3", database_url, require_postgres=True)
@@ -107,13 +107,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sqlite", type=Path, default=BACKEND / "winner_predict.sqlite3")
     parser.add_argument("--history", type=Path, default=ROOT / "data" / "roundhistory.json")
-    args = parser.parse_args()
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        parser.error("DATABASE_URL must be set")
-    counts = migrate(args.sqlite, args.history, database_url)
-    for table, count in counts.items():
-        print(f"{table}: {count}")
+    parser.parse_args()
+    parser.error("PERSISTENT_ROUND_HISTORY_IMPORT_DISABLED")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ import { fileURLToPath } from 'url';
 
 import { log, formatError } from './Logger.js';
 import { StateMachine, State } from './StateMachine.js';
-import { getBrowserSupervisor } from './BrowserManager.js';
+import { getBrowserSupervisor, nonfinancialTestModeEnabled } from './BrowserManager.js';
 import { LoginManager }    from './LoginManager.js';
 import { FrameManager }    from './FrameManager.js';
 import { AutoCashoutInitializer } from './AutoCashoutInitializer.js';
@@ -35,7 +35,6 @@ import { RoundDeliveryPipeline } from './RoundDeliveryPipeline.js';
 import { sleep, backoffMs, classifyError, recoveryRetryDelayMs } from './RetryManager.js';
 import { waitForNetwork, probeBackendHealth, probeNetwork } from './NetworkMonitor.js';
 import {
-  readRoundHistory,
   inferNewMultipliers, appendRounds,
   snapshotSignature,
 } from './HistoryManager.js';
@@ -60,22 +59,6 @@ function writeJsonFileAtomic(filePath, payload) {
 function conciseErrorMessage(error, maxLength = 200) {
   const message = String(error?.message || error || 'Unknown error').split(/\r?\n/, 1)[0].trim();
   return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;
-}
-
-export function selectMissingLegacyRounds(fileHistory, persisted) {
-  const persistedIds = new Set(persisted.map(round => String(round.round_id)));
-  const persistedIndices = new Set(persisted.map(round => Number(round.round_index)));
-  const missing = [];
-  let indexConflicts = 0;
-  for (const round of fileHistory) {
-    if (persistedIds.has(String(round.round_id))) continue;
-    if (persistedIndices.has(Number(round.round_index))) {
-      indexConflicts += 1;
-      continue;
-    }
-    missing.push(round);
-  }
-  return { missing, indexConflicts };
 }
 
 export function canContinueReadOnlyCollection(sessionStatus) {
@@ -117,7 +100,11 @@ class AviatorCollector {
     this.frameMgr = new FrameManager({ pageManager: this.browser });
     this.collector= new Collector();
     this.health   = new HealthMonitor();
-    this.roundStore = new PostgresRoundStore({ connectionString: credentials.databaseUrl || null });
+    this.roundStore = new PostgresRoundStore({
+      connectionString: credentials.databaseUrl || null,
+      table: nonfinancialTestModeEnabled() && process.env.AVIATOR_DEMO_URL
+        ? 'demo_aviator_rounds' : undefined,
+    });
     this.roundStore.sessionId = randomUUID();
     this.directEventOutbox = new DurableRoundOutbox({
       filePath: path.join(__dirname, '..', '..', 'data', 'bot', 'round-event-outbox.json'),
@@ -177,7 +164,9 @@ class AviatorCollector {
           const committed = inserted.map(entry => entry.round);
           this.health.recordRounds(committed, result.commitAcknowledgedAt, inserted);
           const byId = new Map(this._history.map(round => [String(round.round_id), round]));
-          for (const round of committed) byId.set(String(round.round_id), { ...byId.get(String(round.round_id)), ...round });
+          for (const round of committed) byId.set(String(round.round_id), {
+            ...byId.get(String(round.round_id)), ...round,
+          });
           this._history = [...byId.values()].sort((a, b) => Number(a.round_index) - Number(b.round_index));
           this._totalAdded += inserted.length;
           await this.recovery.verifyRound(committed.at(-1));
@@ -213,20 +202,21 @@ class AviatorCollector {
 
   _stageDirectRoundObservations(rounds, source) {
     try {
-      const deliveryMode = source === 'live_history' ? 'LIVE' : 'RECOVERED';
+      const deliveryMode = this._configuredDemoMode()
+        ? 'DEMO' : source === 'live_history' ? 'LIVE' : 'RECOVERED';
       const capacity = this.roundDelivery.enqueue(rounds, { deliveryMode });
-      log.info('Direct Winner-page observations durably queued for backend staging', {
+      log.info('Direct Aviator observations durably queued for backend and PostgreSQL handoff', {
         component: 'collector', state: this.sm.current, source, count: rounds.length,
         backlog_size: capacity.backlog_size,
       });
-      this.health.recordObservedRound(rounds.at(-1));
+      this.health.recordObservedRound(rounds.at(-1), rounds.length);
       this.health.setStorage({ ...this.roundStore.storageSnapshot(), round_delivery: this.roundDelivery.snapshot() });
       return true;
     } catch (error) {
-      log.error('Direct Winner-page observations could not be written to the durable event outbox', {
+      log.error('Direct Aviator observations could not be written to the durable outbox', {
         component: 'collector', state: this.sm.current,
         error_category: error?.category || error?.code || 'EVENT_OUTBOX_WRITE_FAILURE', error: conciseErrorMessage(error),
-        recovery_action: 'hold_snapshot_until_outbox_worker_compaction_or_delivery_frees_capacity',
+        recovery_action: 'retain_current_snapshot_until_durable_outbox_has_capacity',
         source, count: rounds.length,
       });
       throw Object.assign(error, { code: error.code || 'EVENT_OUTBOX_WRITE_FAILURE' });
@@ -246,6 +236,7 @@ class AviatorCollector {
     }
     this.health.recordGamePhase(event, sourceIdentity);
     this.health.recordPanelObservations?.(event.panel_observations, sourceIdentity);
+    this.health.recordPanelConfigurationObservations?.(event.panel_configurations, sourceIdentity);
     if (!sourceIdentity.round_id || !Number.isSafeInteger(Number(sourceIdentity.round_index))) return;
     try {
       await publishCollectorGamePhase(event, sourceIdentity);
@@ -261,53 +252,42 @@ class AviatorCollector {
     }
   }
 
+  _configuredDemoMode() {
+    if (!nonfinancialTestModeEnabled()) return false;
+    try {
+      const url = new URL(process.env.AVIATOR_DEMO_URL || '');
+      return url.protocol === 'https:' && url.hostname.toLowerCase() === 'aviator-demo.spribegaming.com'
+        && url.searchParams.get('operator')?.toLowerCase() === 'demo';
+    } catch { return false; }
+  }
+
   async _initRoundStore() {
-    // Claim the PostgreSQL lease before touching the browser so a duplicate
-    // collector start cannot create a second browser or compete for round IDs.
+    // Claim the PostgreSQL session lease before touching the browser, then
+    // restore canonical history and the durable delivery queues.
     await this.roundStore.init({ acquireCollectorLease: true });
     this.historyEpoch = Math.max(1, Number(this.roundStore.historyEpoch || 1));
-
-    if (this.roundStore.pool && !this.roundStore.usingFileFallback) {
-      const fileHistory = this.historyEpoch === 1 ? readRoundHistory() : [];
-      const persisted = await this.roundStore.loadRounds();
-      const { missing, indexConflicts } = selectMissingLegacyRounds(fileHistory, persisted);
-      if (indexConflicts) {
-        log.warn(`Legacy history has ${indexConflicts} conflicting round IDs at persisted indices; PostgreSQL kept its authoritative rows`);
-      }
-      if (missing.length) {
-        const { saved } = await this.roundStore.importRounds(missing);
-        log.info(`Imported ${saved} missing round(s) into ${this.roundStore.backendName()}`);
-      }
-    }
-
-    this._history = await this.roundStore.loadRounds();
+    const canonicalHistory = await this.roundStore.loadRounds();
+    this._history = [...canonicalHistory];
     const queued = this.roundStore.outbox.readAll();
-    if (queued.length) {
-      const ids = new Set(this._history.map(round => String(round.round_id)));
-      this._history = [...this._history, ...queued.filter(round => !ids.has(String(round.round_id)))]
-        .sort((a, b) => Number(a.round_index) - Number(b.round_index));
-    }
+    const queuedIds = new Set(this._history.map(round => String(round.round_id)));
+    this._history = [...this._history, ...queued.filter(round => !queuedIds.has(String(round.round_id)))]
+      .sort((a, b) => Number(a.round_index) - Number(b.round_index));
     const eventQueued = this.directEventOutbox.readAll();
-    if (eventQueued.length) {
-      const ids = new Set(this._history.map(round => String(round.round_id)));
-      this._history = [...this._history, ...eventQueued.filter(round => !ids.has(String(round.round_id)))]
-        .sort((a, b) => Number(a.round_index) - Number(b.round_index));
-    }
+    const restoredIds = new Set(this._history.map(round => String(round.round_id)));
+    this._history = [...this._history, ...eventQueued.filter(round => !restoredIds.has(String(round.round_id)))]
+      .sort((a, b) => Number(a.round_index) - Number(b.round_index));
     this.health.setStorage(this.roundStore.storageSnapshot());
     this.restoredCollectorState = await this.roundStore.loadState();
-    const latestRound = this._history.at(-1) || null;
+    const latestRound = canonicalHistory.at(-1) || null;
     this.health.setPersistedRoundIdentity(latestRound);
-    const restoredStateMatchesHistory = Boolean(this.restoredCollectorState
-      && Number(this.restoredCollectorState.total_history) === this._history.length
+    const matches = Boolean(this.restoredCollectorState
+      && Number(this.restoredCollectorState.total_history) === canonicalHistory.length
       && String(this.restoredCollectorState.last_processed_round_id || '') === String(latestRound?.round_id || ''));
-    if (this._history.length && !restoredStateMatchesHistory) {
-      if (this.restoredCollectorState) {
-        log.warn('Persisted collector continuity state does not match PostgreSQL tail; rebuilding from authoritative rounds');
-      }
-      this.restoredCollectorState = this.roundStore.computeState(this._history);
+    if (this.roundStore.pool && canonicalHistory.length && !matches) {
+      this.restoredCollectorState = this.roundStore.computeState(canonicalHistory);
       await this.roundStore.saveState(this.restoredCollectorState);
     }
-    log.info(`Loaded ${this._history.length} round(s) from ${this.roundStore.backendName()}`);
+    log.info(`Restored ${this._history.length} canonical and queued round record(s) from ${this.roundStore.backendName()}`);
     if (this.restoredCollectorState) {
       log.info(`Restored collector continuity: ${this.restoredCollectorState.contiguous_rounds}/${100}`);
     }
@@ -350,6 +330,11 @@ class AviatorCollector {
     if (Array.isArray(pages) && (!pages.includes(this._page) || !pages.includes(aviatorPage))) {
       throw new Error('SHARED_AVIATOR_PAGE_DETACHED_FROM_BROWSER_CONTEXT');
     }
+    // Demo collection is read-only: it must preserve the operator's existing
+    // panel settings and never run setup/synchronization helpers.
+    if (this._configuredDemoMode()) {
+      return true;
+    }
     // UI setup is best effort and never blocks history collection. It shares
     // the collector's Aviator page and never submits a betting transaction.
     const cashoutObservation = this.cashoutInitializer.initialize(aviatorPage, {
@@ -381,6 +366,9 @@ class AviatorCollector {
   }
 
   async _handleHistoryMaintenance() {
+    // History deletion is an explicit CLI operation. Legacy dashboard pause
+    // and reset requests are retired and cannot alter collector continuity.
+    return;
     const request = readJsonFile(HISTORY_MAINTENANCE_PATH);
     if (!request?.operation_id) return;
     const operationId = String(request.operation_id);
@@ -517,26 +505,9 @@ class AviatorCollector {
       this._storageRetryBusy = true;
       try {
         this.health.setBackend(await probeBackendHealth());
-        const before = this.roundStore.outbox.readAll();
-        const storage = await this.roundStore.retryAndDrain();
+        await this.roundStore.retryAndDrain();
+        const storage = this.roundStore.storageSnapshot();
         this.health.setStorage(storage);
-        if (storage.status !== 'UNAVAILABLE' && this.sm.is(State.STORAGE_UNAVAILABLE)) {
-          this.sm.transition(State.COLLECTING, 'storage-restored');
-        }
-        if (before.length && storage.backlog_size === 0) {
-          const last = before.at(-1);
-          const committedRounds = storage.last_committed_rounds?.length
-            ? storage.last_committed_rounds : [last];
-          if (storage.last_committed_rounds?.length) {
-            this.health.recordRounds(committedRounds, storage.last_commit_acknowledged_at || null);
-          } else {
-            this.health.recordRound(last);
-          }
-          this._history = [...this._history.filter(row => String(row.round_id) !== String(last.round_id)), last]
-            .sort((a, b) => Number(a.round_index) - Number(b.round_index));
-          this._totalAdded += before.length;
-          await this.recovery.verifyRound(last);
-        }
       } catch (error) {
         this.health.setError(formatError(error), 'STORAGE_ERROR', 'retry_outbox');
         this.health.setStorage(this.roundStore.storageSnapshot());
@@ -629,6 +600,7 @@ class AviatorCollector {
     await this.browser.focusGamePage(this._page);
     this.browser._persistMetadata?.();
     await this._page?.bringToFront?.().catch(error => log.debug(`History page could not be focused: ${error.message}`));
+
 
     // ── Step 4: Start watchdog ────────────────────────────────────────────
     this.watchdog.setPage(this._page);
@@ -1025,7 +997,7 @@ class AviatorCollector {
           if (added.length) {
             this._stageDirectRoundObservations(added, 'startup_catchup');
             this._history = history;
-            log.info(`Startup catch-up: ${added.length} overlap-verified round(s) durably queued`);
+            log.info(`Startup catch-up: ${added.length} overlap-verified round(s) buffered in memory`);
           }
         }
       }
@@ -1046,7 +1018,7 @@ class AviatorCollector {
           this._stageDirectRoundObservations(added, 'history_reconnect');
           this._history = history;
           this._unverifiedGapPending = false;
-          log.info(`Catch-up: ${added.length} missed round(s) durably queued for PostgreSQL`);
+          log.info(`Catch-up: ${added.length} round(s) buffered in memory`);
         }
       }
       this._prevSnapshot = initMults;
@@ -1096,7 +1068,7 @@ class AviatorCollector {
         // bounded phase event. A Rules Engine session can start after the
         // shared page is ready; the synchronizer only reads and compares the
         // operator-entered stake, and fails closed on pending/unknown bets.
-        if (this._page && !this._page.isClosed?.()) {
+        if (!this._configuredDemoMode() && this._page && !this._page.isClosed?.()) {
           void this.betAmountSynchronizer.initialize(this._page, { signal: this.signal });
         }
         continue;
@@ -1131,18 +1103,19 @@ class AviatorCollector {
             added.at(-1).game_phase = { ...event.gamePhase,
               event_id: [event.gamePhase.phase, event.gamePhase.observed_at, phaseSource.round_id].join(':') };
           }
-          // Publish the real browser observation before the PostgreSQL write.
-          // The observer must not treat a target as unknown merely because its
-          // row is waiting behind an advisory lock held by score persistence.
+          // Forward fresh browser evidence to the backend's process-local
+          // buffer. No PostgreSQL round-row write or persisted handoff follows.
           this._stageDirectRoundObservations(added, 'live_history');
           this._history = history;
           this._lastSavedSig = currSig;
           if (event.gamePhase) {
             this.health.recordGamePhase(added.at(-1)?.game_phase, added.at(-1));
             this.health.recordPanelObservations?.(added.at(-1)?.game_phase?.panel_observations, added.at(-1));
+            this.health.recordPanelConfigurationObservations?.(
+              added.at(-1)?.game_phase?.panel_configurations, added.at(-1));
           }
           this._unverifiedGapPending = false;
-          log.info('Completed round durably observed; PostgreSQL persistence is running in the background', {
+          log.info('Completed round buffered in process memory; no persistent history write is scheduled', {
             count: added.length, backlog_size: this.directEventOutbox.stats().backlog_size,
           });
         }

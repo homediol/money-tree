@@ -775,8 +775,8 @@ class BettingModeManager:
         checks["execution_integrity"] = "CHECKED"
         from app.live import REAL_MONEY_EXECUTION_ENABLED
         if not REAL_MONEY_EXECUTION_ENABLED:
-            checks["real_money_execution"] = "DISABLED_FOR_REFACTORING"
-            reasons.append("real_money_execution_disabled_during_refactoring")
+            checks["real_money_execution"] = "DISABLED_PENDING_LIVE_QUALIFICATION"
+            reasons.append("real_money_execution_disabled_pending_live_qualification")
 
         repository = getattr(execution_store, "execution_for", None)
         execution_repository = getattr(execution_store, "open_executions", None)

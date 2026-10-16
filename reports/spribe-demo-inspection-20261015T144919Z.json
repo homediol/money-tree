@@ -1,0 +1,67 @@
+{
+  "generated_at": "2026-10-15T14:49:19.934040Z",
+  "mode": "READ_ONLY",
+  "provider": "SPRIBE_DEMO",
+  "status": "BLOCKED_NO_ATTACHED_BROWSER",
+  "configured_origin": "https://aviator-demo.spribegaming.com/",
+  "token_included": false,
+  "runtime": {
+    "cua_browser_visible": false,
+    "collector_process_pids": [],
+    "chromium_process_pids": [],
+    "devtools_9222": "CLOSED",
+    "backend_8000": "CLOSED",
+    "postgres_5432": "CLOSED",
+    "browser_supervisor_lock_owner_pid": 812909,
+    "lock_owner_process_exists": false,
+    "collector_supervisor": {
+      "pid": 444,
+      "running": false,
+      "timestamp": "2026-10-15T13:14:39.508Z"
+    },
+    "collector_status_sidecar": {
+      "state": "AUTH_REQUIRED",
+      "collector_running_field": true,
+      "pid": 812909,
+      "heartbeat_at": "2026-10-15T14:49:18.654Z",
+      "heartbeat_owner_verified": false,
+      "last_round_id": "aviator-17d9931dd5f80788f375d88d",
+      "last_observed_at": "2026-10-15T14:47:33.769Z",
+      "last_successful_collection": "2026-10-15T14:47:37.720Z",
+      "last_commit_acknowledged_at": "2026-10-15T14:47:37.720Z",
+      "persistence_independently_verified": false
+    }
+  },
+  "frames": [],
+  "dom_observations": [],
+  "computed_styles": [],
+  "canvas_screenshots": [],
+  "phase_timeline": [],
+  "countdown_observations": [],
+  "dom_update_latency_ms": [],
+  "round_identifiers": [
+    {
+      "round_id": "aviator-17d9931dd5f80788f375d88d",
+      "source": "collector status sidecar",
+      "observed_at": "2026-10-15T14:47:33.769Z",
+      "verified_from_live_dom": false
+    }
+  ],
+  "panel_observations": [],
+  "actions": {
+    "bet": "NOT_ATTEMPTED",
+    "cancel": "NOT_ATTEMPTED",
+    "cash_out": "NOT_ATTEMPTED",
+    "change_stake": "NOT_ATTEMPTED",
+    "change_auto_bet": "NOT_ATTEMPTED",
+    "real_money_transaction": "NOT_ATTEMPTED"
+  },
+  "limitations": [
+    "No browser was exposed through CUA.",
+    "No Chromium or collector process was present; DevTools port 9222 was closed.",
+    "The collector status sidecar reports a recent heartbeat but its PID is absent; its owner is unverified.",
+    "The collector supervisor reports stopped.",
+    "No frame URLs, DOM, computed styles, canvas screenshots, phase changes, countdowns, or live round IDs could be captured.",
+    "The stale BrowserManager lock was left untouched under READ ONLY mode."
+  ]
+}

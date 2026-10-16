@@ -3,8 +3,12 @@
  */
 
 import { log, formatError } from './Logger.js';
-import { readRoundHistory, writeRoundHistory } from './HistoryManager.js';
 import { DurableRoundOutbox } from './DurableRoundOutbox.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..', '..');
 
 const DEFAULT_TABLE = process.env.ROUND_HISTORY_TABLE || 'aviator_rounds';
 
@@ -56,14 +60,22 @@ function normalizeRound(record, index = 0) {
 }
 
 export class PostgresRoundStore {
-  constructor({ table = DEFAULT_TABLE, connectionString = null } = {}) {
+  constructor({ table = DEFAULT_TABLE, connectionString = null, outboxPath = null } = {}) {
     this.table = table;
     this.tableIdent = quoteIdent(table);
+    this.historyEpochsTable = table === 'demo_aviator_rounds' ? 'demo_history_epochs' : 'history_epochs';
+    this.collectorStateTable = table === 'demo_aviator_rounds' ? 'demo_collector_state' : 'collector_state';
+    this.historyEpochsTableIdent = quoteIdent(this.historyEpochsTable);
+    this.collectorStateTableIdent = quoteIdent(this.collectorStateTable);
     this.connectionString = connectionString;
     this.pool = null;
+    this.persistentRoundHistoryEnabled = false;
     this.collectorLease = null;
     this.usingFileFallback = false;
-    this.outbox = new DurableRoundOutbox();
+    this.outbox = new DurableRoundOutbox({
+      filePath: outboxPath || (table === 'demo_aviator_rounds'
+        ? path.join(ROOT, 'data', 'bot', 'demo-round-outbox.json') : undefined),
+    });
     this.collectorSequenceRebaseOffset = null;
     this.collectorSequenceLastLocalIndex = null;
     this.historyEpoch = 1;
@@ -124,10 +136,10 @@ export class PostgresRoundStore {
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS gap_before BOOLEAN NOT NULL DEFAULT FALSE`);
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS continuity_proof TEXT`);
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS history_epoch BIGINT NOT NULL DEFAULT 1`);
-      await this.pool.query(`CREATE TABLE IF NOT EXISTS history_epochs (
+      await this.pool.query(`CREATE TABLE IF NOT EXISTS ${this.historyEpochsTableIdent} (
         singleton SMALLINT PRIMARY KEY CHECK(singleton=1), epoch BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
-      await this.pool.query(`INSERT INTO history_epochs(singleton,epoch,updated_at) VALUES(1,1,NOW()) ON CONFLICT(singleton) DO NOTHING`);
-      const epochResult = await this.pool.query('SELECT epoch FROM history_epochs WHERE singleton=1');
+      await this.pool.query(`INSERT INTO ${this.historyEpochsTableIdent}(singleton,epoch,updated_at) VALUES(1,1,NOW()) ON CONFLICT(singleton) DO NOTHING`);
+      const epochResult = await this.pool.query(`SELECT epoch FROM ${this.historyEpochsTableIdent} WHERE singleton=1`);
       this.historyEpoch = Math.max(1, Number(epochResult.rows?.[0]?.epoch || 1));
       await this.pool.query(`UPDATE ${this.tableIdent} SET stored_at = COALESCE(stored_at, created_at)`);
       await this.pool.query(`UPDATE ${this.tableIdent} SET local_round_index = COALESCE(local_round_index, round_index)`);
@@ -145,7 +157,7 @@ export class PostgresRoundStore {
       // a second browser/collector against the same round stream.
       if (acquireCollectorLease) await this._acquireCollectorLease();
       await this.pool.query(`
-        CREATE TABLE IF NOT EXISTS collector_state (
+        CREATE TABLE IF NOT EXISTS ${this.collectorStateTableIdent} (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
           collector_state TEXT NOT NULL,
           last_processed_round_id TEXT,
@@ -157,27 +169,33 @@ export class PostgresRoundStore {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `);
+      this.persistentRoundHistoryEnabled = true;
+      this.storageError = null;
+      this.usingFileFallback = false;
       log.info(`PostgreSQL round store ready: table=${this.table}`);
     } catch (err) {
       try { await this.pool?.end?.(); }
       catch (closeError) { log.warn(`PostgreSQL pool close after failed initialization also failed: ${formatError(closeError)}`); }
       this.pool = null;
+      this.persistentRoundHistoryEnabled = false;
       this.storageError = err;
       this.storageRetryAt = Date.now() + Number(process.env.COLLECTOR_STORAGE_RETRY_MS || 5000);
       this.usingFileFallback = false;
       if (err?.code === 'COLLECTOR_ALREADY_ACTIVE') throw err;
       if (acquireCollectorLease) {
-        log.error(`PostgreSQL unavailable; collector will use its bounded durable outbox and retry: ${formatError(err)}`);
-        return;
+        // Without the shared PostgreSQL advisory lease, starting a browser
+        // could create a second collector session. Fail closed.
+        log.error(`PostgreSQL unavailable; collector will not start without its single-owner lease: ${formatError(err)}`);
+        throw err;
       }
       if (this.requirePostgres) throw err;
-      this.usingFileFallback = true;
-      log.warn(`PostgreSQL unavailable; using data/roundhistory.json fallback for explicit non-production mode: ${formatError(err)}`);
+      this.usingFileFallback = false;
+      log.warn(`PostgreSQL unavailable; round history remains process-local: ${formatError(err)}`);
     }
   }
 
   backendName() {
-    return this.usingFileFallback ? 'data/roundhistory.json' : 'PostgreSQL';
+    return this.persistentRoundHistoryEnabled && this.pool ? 'PostgreSQL' : 'UNAVAILABLE';
   }
 
   async executionRecoveryStatus() {
@@ -232,10 +250,6 @@ export class PostgresRoundStore {
   }
 
   async loadRounds() {
-    if (this.usingFileFallback) {
-      return readRoundHistory();
-    }
-
     if (!this.pool) return [];
     const result = await this.pool.query(`
       SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index, history_epoch, multiplier::float8 AS multiplier,
@@ -403,6 +417,8 @@ export class PostgresRoundStore {
   storageSnapshot() {
     const queue = this.outbox.stats();
     return { ...queue, status: this.pool ? 'AVAILABLE' : 'UNAVAILABLE',
+      round_history_storage: this.persistentRoundHistoryEnabled && this.pool ? 'POSTGRESQL' : 'PENDING',
+      persistent_round_history_enabled: this.persistentRoundHistoryEnabled && Boolean(this.pool),
       last_commit_acknowledged_at: this.lastCommitAcknowledgedAt,
       last_committed_rounds: this.lastCommittedRounds,
       last_error: this.storageError ? formatError(this.storageError) : null,
@@ -428,7 +444,7 @@ export class PostgresRoundStore {
       let totalPersistedRows = Number(maxResult.rows[0]?.total_history || 0);
       const stateResult = await client.query(`SELECT collector_state,last_processed_round_id,
           last_round_timestamp,contiguous_rounds,total_history,warmup_status,collector_session_id
-        FROM collector_state WHERE singleton=1`);
+        FROM ${this.collectorStateTableIdent} WHERE singleton=1`);
       const storedState = stateResult.rows[0] || null;
       let collectorState = storedState ? {
         collector_state: storedState.collector_state,
@@ -610,7 +626,7 @@ export class PostgresRoundStore {
         }
         collectorState.total_history = totalPersistedRows;
         collectorState.warmup_status = collectorState.contiguous_rounds >= 100 ? 'READY' : 'WARMING_UP';
-        await client.query(`INSERT INTO collector_state(singleton,collector_state,last_processed_round_id,
+        await client.query(`INSERT INTO ${this.collectorStateTableIdent}(singleton,collector_state,last_processed_round_id,
             last_round_timestamp,contiguous_rounds,total_history,warmup_status,collector_session_id,updated_at)
           VALUES(1,$1,$2,$3,$4,$5,$6,$7,NOW())
           ON CONFLICT(singleton) DO UPDATE SET collector_state=EXCLUDED.collector_state,
@@ -674,7 +690,7 @@ export class PostgresRoundStore {
   async saveState(state) {
     if (this.usingFileFallback || !this.pool) return;
     await this.pool.query(`
-      INSERT INTO collector_state(singleton, collector_state, last_processed_round_id,
+      INSERT INTO ${this.collectorStateTableIdent}(singleton, collector_state, last_processed_round_id,
         last_round_timestamp, contiguous_rounds, total_history, warmup_status,
         collector_session_id, updated_at)
       VALUES (1,$1,$2,$3,$4,$5,$6,$7,NOW())
@@ -693,7 +709,7 @@ export class PostgresRoundStore {
 
   async loadState() {
     if (this.usingFileFallback || !this.pool) return null;
-    const result = await this.pool.query('SELECT * FROM collector_state WHERE singleton = 1');
+    const result = await this.pool.query(`SELECT * FROM ${this.collectorStateTableIdent} WHERE singleton = 1`);
     return result.rows[0] || null;
   }
 }

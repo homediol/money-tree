@@ -305,6 +305,10 @@ async function runWithWatchdog(page) {
 // ═════════════════════════════════════════════════════════════════════
 
 async function main() {
+  log.error('Legacy bot/runner.js is disabled; use the shared bot/roundhistory-collector.js BrowserManager.');
+  process.exitCode = 1;
+  return;
+
   // ── Step 1 — Load configuration ─────────────────────────────────
   const { phone, password, headless } = loadCredentials();
 

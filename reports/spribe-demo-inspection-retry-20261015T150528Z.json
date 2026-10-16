@@ -1,0 +1,45 @@
+{
+  "captured_at": "2026-10-15T15:05:28Z",
+  "mode": "READ_ONLY",
+  "status": "DEMO_BROWSER_LAUNCHED_BUT_NOT_INSPECTABLE_BY_CUA",
+  "url_origin": "https://aviator-demo.spribegaming.com/",
+  "authorization": "User explicitly supplied the Demo URL and authorized opening a browser to it.",
+  "browser": {
+    "cuA_state_before_launch": {"apps": [], "browsers": []},
+    "cua_iab_creation": "Browser is not available: iab",
+    "cua_chrome_creation": "Browser is not available: chrome",
+    "local_chrome_executable": "/bin/google-chrome",
+    "launch_attempt": "Started Chrome with an isolated temporary profile and the user-supplied Demo URL.",
+    "launch_process_still_running": true,
+    "cua_state_after_launch": {"apps": [], "browsers": []},
+    "cua_attach_to_launched_browser": "No browser is available",
+    "page_load_verified": false,
+    "collector_browser_shared": false
+  },
+  "existing_shared_browser_sidecar": {
+    "source": "data/bot/browser-reliability.json",
+    "reported_state": "HEALTHY",
+    "reported_betting_page_url": "https://winner.rw/en/virtual/crash-games/aviator",
+    "assessment": "Existing collector-associated page was reported as Winner Live. It was not navigated or modified."
+  },
+  "inspection": {
+    "frame_urls": [],
+    "dom_selectors": [],
+    "dom_text_attributes_styles": [],
+    "canvas_screenshots": [],
+    "phase_transitions": [],
+    "countdown_observations": [],
+    "round_ids_from_live_dom": [],
+    "dom_update_latency_ms": null,
+    "panel_state_transitions": [],
+    "reason": "CUA does not expose or attach to the launched Chrome window, so no DOM or screenshot inspection was possible."
+  },
+  "actions": {
+    "bet": "NOT_ATTEMPTED",
+    "cancel": "NOT_ATTEMPTED",
+    "cash_out": "NOT_ATTEMPTED",
+    "stake_or_auto_bet_change": "NOT_ATTEMPTED",
+    "real_money_transaction": "NOT_ATTEMPTED"
+  },
+  "credential_handling": "The full query string and Demo token are omitted from this report."
+}

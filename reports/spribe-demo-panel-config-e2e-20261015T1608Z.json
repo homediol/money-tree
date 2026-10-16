@@ -1,0 +1,209 @@
+{
+  "provider": "SPRIBE_DEMO",
+  "observed_at": "2026-10-15T16:08:27.912Z",
+  "topology": {
+    "browser": 1,
+    "contexts": 1,
+    "pages": 1,
+    "frames": 1,
+    "frame_is_main": true
+  },
+  "collector_selector": ".payouts-block .payout",
+  "baseline_rounds": 120,
+  "phase": "UNKNOWN",
+  "betting_window": "UNKNOWN",
+  "countdown_seconds": null,
+  "panel_observations": [
+    {
+      "panel_id": "PANEL_1",
+      "slot": 0,
+      "state": "BET_AVAILABLE",
+      "button_text": "Bet 100.00 USD",
+      "displayed_stake": 100,
+      "currency": "USD",
+      "cashout_amount": null,
+      "observed_at": "2026-10-15T16:08:27.821Z",
+      "source": "AVIATOR_BETTING_PANEL_MUTATION_OBSERVER",
+      "evidence": {
+        "reason": "BET_ACTION_VISIBLE_ENABLED",
+        "panel_visible": true,
+        "button_visible": true,
+        "button_enabled": true,
+        "main_label": "Bet",
+        "secondary_text": "100.00 USD",
+        "aria_label": null,
+        "title": null,
+        "button_attributes": {
+          "class": "btn btn-success bet ng-star-inserted"
+        },
+        "panel_attributes": {},
+        "button_color": "rgb(40, 169, 9)",
+        "recognized_color": "GREEN",
+        "visible_action_labels": [
+          "Bet 100.00 USD"
+        ],
+        "pending_indicator": false,
+        "active_indicator": false
+      },
+      "confidence": 0.98,
+      "frame_identity": "https://aviator-demo.spribegaming.com/#1792077998443",
+      "pending_bet_state": "CLEAR",
+      "transition": {
+        "changed": true,
+        "duplicate": false,
+        "stale": false,
+        "frame_reloaded": false,
+        "from_state": null,
+        "to_state": "BET_AVAILABLE",
+        "current_state": "BET_AVAILABLE",
+        "observed_at": "2026-10-15T16:08:27.821Z"
+      },
+      "transition_timestamp": "2026-10-15T16:08:27.821Z",
+      "source_round_id": null,
+      "source_round_index": null
+    },
+    {
+      "panel_id": "PANEL_2",
+      "slot": 1,
+      "state": "BET_AVAILABLE",
+      "button_text": "Bet 100.00 USD",
+      "displayed_stake": 100,
+      "currency": "USD",
+      "cashout_amount": null,
+      "observed_at": "2026-10-15T16:08:27.821Z",
+      "source": "AVIATOR_BETTING_PANEL_MUTATION_OBSERVER",
+      "evidence": {
+        "reason": "BET_ACTION_VISIBLE_ENABLED",
+        "panel_visible": true,
+        "button_visible": true,
+        "button_enabled": true,
+        "main_label": "Bet",
+        "secondary_text": "100.00 USD",
+        "aria_label": null,
+        "title": null,
+        "button_attributes": {
+          "class": "btn btn-success bet ng-star-inserted"
+        },
+        "panel_attributes": {},
+        "button_color": "rgb(40, 169, 9)",
+        "recognized_color": "GREEN",
+        "visible_action_labels": [
+          "Bet 100.00 USD"
+        ],
+        "pending_indicator": false,
+        "active_indicator": false
+      },
+      "confidence": 0.98,
+      "frame_identity": "https://aviator-demo.spribegaming.com/#1792077998443",
+      "pending_bet_state": "CLEAR",
+      "transition": {
+        "changed": true,
+        "duplicate": false,
+        "stale": false,
+        "frame_reloaded": false,
+        "from_state": null,
+        "to_state": "BET_AVAILABLE",
+        "current_state": "BET_AVAILABLE",
+        "observed_at": "2026-10-15T16:08:27.821Z"
+      },
+      "transition_timestamp": "2026-10-15T16:08:27.821Z",
+      "source_round_id": null,
+      "source_round_index": null
+    }
+  ],
+  "panel_configurations": [
+    {
+      "panel_id": "PANEL_1",
+      "status": "VERIFIED",
+      "auto_bet": "OFF",
+      "auto_cashout": "ON",
+      "stake": 100,
+      "cashout_target": 2,
+      "currency": "USD",
+      "requirements_satisfied": true,
+      "observed_at": "2026-10-15T16:08:27.821Z",
+      "expires_at": "2026-10-15T16:08:42.821Z",
+      "age_ms": 78,
+      "frame_identity": "https://aviator-demo.spribegaming.com/#1792077998443",
+      "source": "AVIATOR_BETTING_PANEL_CONFIGURATION_OBSERVER",
+      "evidence": {
+        "reason": "FRESH_AUTO_CONFIGURATION_READBACK",
+        "panel_visible": true,
+        "auto_tab_selected": true,
+        "auto_bet": {
+          "selector": ".auto-bet app-ui-switcher .input-switch",
+          "visible": true,
+          "class": "input-switch off",
+          "input_enabled": null,
+          "input_visible": false,
+          "input_value": null
+        },
+        "auto_cashout": {
+          "selector": ".cash-out-switcher app-ui-switcher .input-switch",
+          "visible": true,
+          "class": "input-switch",
+          "input_enabled": true,
+          "input_visible": true,
+          "input_value": "2.00"
+        },
+        "stake": {
+          "selector": ".bet-block input[type=\"text\"]",
+          "value": "100.00",
+          "visible": true,
+          "enabled": true
+        },
+        "currency_text": "Bet Auto 1 2 5 10 Bet 100.00 USDAuto bet Auto Cash Out Bet 100.00 USD"
+      },
+      "source_round_id": null,
+      "source_round_index": null
+    },
+    {
+      "panel_id": "PANEL_2",
+      "status": "VERIFIED",
+      "auto_bet": "OFF",
+      "auto_cashout": "ON",
+      "stake": 100,
+      "cashout_target": 2,
+      "currency": "USD",
+      "requirements_satisfied": true,
+      "observed_at": "2026-10-15T16:08:27.821Z",
+      "expires_at": "2026-10-15T16:08:42.821Z",
+      "age_ms": 79,
+      "frame_identity": "https://aviator-demo.spribegaming.com/#1792077998443",
+      "source": "AVIATOR_BETTING_PANEL_CONFIGURATION_OBSERVER",
+      "evidence": {
+        "reason": "FRESH_AUTO_CONFIGURATION_READBACK",
+        "panel_visible": true,
+        "auto_tab_selected": true,
+        "auto_bet": {
+          "selector": ".auto-bet app-ui-switcher .input-switch",
+          "visible": true,
+          "class": "input-switch off",
+          "input_enabled": null,
+          "input_visible": false,
+          "input_value": null
+        },
+        "auto_cashout": {
+          "selector": ".cash-out-switcher app-ui-switcher .input-switch",
+          "visible": true,
+          "class": "input-switch",
+          "input_enabled": true,
+          "input_visible": true,
+          "input_value": "2.00"
+        },
+        "stake": {
+          "selector": ".bet-block input[type=\"text\"]",
+          "value": "100.00",
+          "visible": true,
+          "enabled": true
+        },
+        "currency_text": "Bet Auto 1 2 5 10 Bet 100.00 USDAuto bet Auto Cash Out Bet 100.00 USD"
+      },
+      "source_round_id": null,
+      "source_round_index": null
+    }
+  ],
+  "no_settings_changed": true,
+  "no_bet_submitted": true,
+  "persistence": "IN_MEMORY_HEALTHMONITOR_ONLY; no Winner status or PostgreSQL writes"
+}

@@ -8,27 +8,52 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { chromium } from 'playwright-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { chromium } from 'playwright';
 import { log } from './Logger.js';
 import { isAcknowledgedAuthRoute, isAviatorRoute, isExpiredAuthRoute } from './LoginManager.js';
 import { SharedPageCoordinator } from './SharedPageCoordinator.js';
 
-chromium.use(StealthPlugin());
-
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const ROOT       = path.resolve(__dirname, '..', '..');
-const PROFILE_DIR = path.join(ROOT, 'data', 'bot', 'chrome-profile-new-email');
-const GOOGLE_SNAPSHOT_DIR = path.join(ROOT, 'data', 'bot', 'chrome-google-fallback');
-const SUPERVISOR_LOCK = path.join(ROOT, 'data', 'bot', 'browser-supervisor.lock');
-const RELIABILITY_PATH = path.join(ROOT, 'data', 'bot', 'browser-reliability.json');
-const DIAGNOSTICS_PATH = path.join(ROOT, 'data', 'bot', 'browser-diagnostics.jsonl');
+const RUNTIME_DIR = process.env.BOT_RUNTIME_DIR || path.join(ROOT, 'data', 'bot');
+const PROFILE_DIR = process.env.BOT_PROFILE_DIR || path.join(RUNTIME_DIR, 'chrome-profile-new-email');
+const GOOGLE_SNAPSHOT_DIR = path.join(RUNTIME_DIR, 'chrome-google-fallback');
+const SUPERVISOR_LOCK = path.join(RUNTIME_DIR, 'browser-supervisor.lock');
+const RELIABILITY_PATH = path.join(RUNTIME_DIR, 'browser-reliability.json');
+const DIAGNOSTICS_PATH = path.join(RUNTIME_DIR, 'browser-diagnostics.jsonl');
 const GOOGLE_USER_DATA_DIR = process.env.BOT_GOOGLE_USER_DATA_DIR || path.join(os.homedir(), '.config', 'google-chrome');
 const DEFAULT_CDP_PORT = process.env.BOT_CDP_PORT || '9222';
 
+export function nonfinancialTestModeEnabled() {
+  return process.env.WINNER_NONFINANCIAL_TEST_MODE === 'true';
+}
+
+export function validateSpribeDemoUrl(raw = process.env.AVIATOR_DEMO_URL) {
+  if (!nonfinancialTestModeEnabled()) throw new Error('NONFINANCIAL_TEST_MODE_REQUIRED');
+  if (typeof raw !== 'string' || !raw.trim()) throw new Error('AVIATOR_DEMO_URL_REQUIRED');
+  let url;
+  try { url = new URL(raw); }
+  catch { throw new Error('AVIATOR_DEMO_URL_INVALID'); }
+  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'aviator-demo.spribegaming.com'
+      || url.searchParams.get('operator')?.toLowerCase() !== 'demo') {
+    throw new Error('AVIATOR_DEMO_URL_NOT_ALLOWLISTED');
+  }
+  return url;
+}
+
+function isConfiguredDemoPage(rawUrl) {
+  if (!nonfinancialTestModeEnabled() || !process.env.AVIATOR_DEMO_URL) return false;
+  try {
+    const expected = validateSpribeDemoUrl();
+    const actual = new URL(rawUrl);
+    return actual.protocol === 'https:' && actual.origin === expected.origin
+      && actual.searchParams.get('operator')?.toLowerCase() === 'demo';
+  } catch { return false; }
+}
+
 function isAviatorPage(page) {
   try {
-    return isAviatorRoute(page.url());
+    return isAviatorRoute(page.url()) || isConfiguredDemoPage(page.url());
   } catch (error) {
     log.debug(`Aviator page URL check failed: ${error.message}`);
     return false;
@@ -106,7 +131,6 @@ function buildLaunchOptions() {
     executablePath,
     args: [
       `--remote-debugging-port=${DEFAULT_CDP_PORT}`,
-      '--disable-blink-features=AutomationControlled',
       '--disable-breakpad',
       '--disable-crash-reporter',
       '--disable-crashpad',
@@ -256,6 +280,7 @@ export class AviatorPageManager {
     this._historyPage = null;
     this._ownsBrowser = false;
     this._profileDir = PROFILE_DIR;
+    this._demoMode = nonfinancialTestModeEnabled() && Boolean(process.env.AVIATOR_DEMO_URL);
     this._profileName = null;
     this.restartCount = 0;
     this._lockOwned = false;
@@ -281,7 +306,7 @@ export class AviatorPageManager {
     this._recoveryCount = 0;
     this._recoveryPromise = null;
     this._contextClosed = false;
-    const savedSessionPath = path.join(ROOT, 'data', 'bot', 'browser-session-state.json');
+    const savedSessionPath = path.join(RUNTIME_DIR, 'browser-session-state.json');
     try {
       fs.chmodSync(savedSessionPath, 0o600);
       const saved = JSON.parse(fs.readFileSync(savedSessionPath, 'utf8'));
@@ -380,7 +405,8 @@ export class AviatorPageManager {
       this._persistMetadata();
     });
     page.on?.('pageerror', error => {
-      this._event('page_error', { role, error: String(error?.message || error || 'page error') });
+      this._event('page_error', { role, error: this._demoMode
+        ? 'SPRIBE_DEMO_PAGE_ERROR' : String(error?.message || error || 'page error') });
     });
   }
 
@@ -403,7 +429,7 @@ export class AviatorPageManager {
   }
 
   async _persistSession(page = this._historyPage || this._page) {
-    if (!this._context) return;
+    if (!this._context || this._demoMode) return;
     try {
       const storageState = await this._context.storageState();
       const sessionStorage = page && !page.isClosed()
@@ -427,7 +453,7 @@ export class AviatorPageManager {
         },
         collector_checkpoint: this._health?.snapshot?.().lastRoundId || null,
       };
-      const target = path.join(ROOT, 'data', 'bot', 'browser-session-state.json');
+      const target = path.join(RUNTIME_DIR, 'browser-session-state.json');
       const temp = target + '.' + process.pid + '.tmp';
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(temp, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
@@ -562,8 +588,6 @@ export class AviatorPageManager {
       health = this._health?.snapshot?.() || health;
     }
     const browserPid = profileOwnerPid(this._profileDir);
-    const lastRound = health.lastRoundTime || null;
-    const lastSuccessfulCollection = health.lastSuccessfulCollection || null;
     const state = loginRouteVisible ? 'AUTH_REQUIRED' : this._circuitBreaker.state === 'OPEN' ? 'RECOVERY_COOLDOWN' : !this.isAlive() ? 'DISCONNECTED'
       : !aviatorOpen ? 'DEGRADED'
         : health.health === 'HEALTHY' && health.state === 'COLLECTING' && health.loggedIn === true
@@ -596,10 +620,9 @@ export class AviatorPageManager {
         evidence: loginRouteVisible ? { page: loginRoutePage.toLowerCase() } : null },
       collector: {
         running: Boolean(health.collectorRunning), state: health.state || 'UNKNOWN',
-        last_round_id: health.lastRoundId || null, last_round_timestamp: lastRound,
-        last_observed_round_id: health.lastObservedRoundId || null,
-        last_observed_at: health.lastObservedAt || null,
-        last_successful_collection: lastSuccessfulCollection, heartbeat_at: health.heartbeatAt || null,
+        last_round_id: null, last_round_timestamp: null,
+        last_observed_round_id: null, last_observed_at: null,
+        last_successful_collection: null, heartbeat_at: health.heartbeatAt || null,
         iframe_attached: Boolean(health.gameReadiness?.frameAttached ?? health.frameConnected),
         game_readiness: health.gameReadiness || { frameAttached: false, contentLoaded: false, payoutsReady: false },
         recovery: health.recovery || null, last_error: health.lastError || null,
@@ -941,6 +964,47 @@ export class AviatorPageManager {
     this._trackPage(page, 'shared_aviator');
   }
 
+  /** Attach read-only to the already-open SPRIBE Demo tab; never create or navigate a tab. */
+  async attachSpribeDemoPage() {
+    validateSpribeDemoUrl();
+    this._demoMode = true;
+    this._acquireSingletonLock();
+    try {
+      if (!this.hasContext() && !await this._connectExisting()) {
+        throw new Error('SPRIBE_DEMO_EXISTING_BROWSER_UNAVAILABLE');
+      }
+      const contexts = this._browser?.contexts?.() || [];
+      if (contexts.length !== 1 || contexts[0] !== this._context) {
+        throw new Error(`SPRIBE_DEMO_CONTEXT_COUNT_INVALID:${contexts.length}`);
+      }
+      const pages = this._context.pages().filter(page => !page.isClosed());
+      const demoPages = pages.filter(page => isConfiguredDemoPage(page.url()));
+      if (demoPages.length !== 1) throw new Error(`SPRIBE_DEMO_PAGE_MATCH_COUNT_INVALID:${demoPages.length}`);
+      const page = demoPages[0];
+      const aviatorPages = pages.filter(isAviatorPage);
+      if (aviatorPages.length !== 1 || aviatorPages[0] !== page) {
+        throw new Error(`SPRIBE_AVIATOR_PAGE_COUNT_INVALID:${aviatorPages.length}`);
+      }
+      const pageCountBefore = pages.length;
+      this._adoptAviatorPage(page);
+      this._aviatorTargetId = await this._targetIdForPage(page);
+      this._historyTargetId = this._aviatorTargetId;
+      this._bettingTargetId = this._aviatorTargetId;
+      if (this._context.pages().filter(item => !item.isClosed()).length !== pageCountBefore) {
+        throw new Error('SPRIBE_DEMO_PAGE_COUNT_CHANGED_DURING_ATTACH');
+      }
+      this._demoTopology = { browser_count: 1, context_count: contexts.length,
+        page_count: pageCountBefore, aviator_page_count: aviatorPages.length,
+        demo_page_count: demoPages.length };
+      this._persistMetadata();
+      return page;
+    } catch (error) {
+      if (this._context && !this._ownsBrowser) await this._close();
+      this._releaseSingletonLock();
+      throw error;
+    }
+  }
+
   async getAviatorPage() {
     if (!this.hasContext()) await this.launch();
     if (!this.hasContext()) throw new Error('SHARED_AVIATOR_BROWSER_CONTEXT_UNAVAILABLE');
@@ -951,6 +1015,7 @@ export class AviatorPageManager {
         throw new Error(`SHARED_AVIATOR_CONTEXT_COUNT_INVALID:${contexts.length}`);
       }
       const pages = this._context.pages().filter(page => !page.isClosed());
+      if (this._demoMode) return this.attachSpribeDemoPage();
       const candidates = pages.filter(isAviatorPage);
       let page = null;
       if (candidates.length > 1) {
@@ -1013,9 +1078,124 @@ export class AviatorPageManager {
     const gameFrames = allFrames.filter(frame => /aviator-next/i.test(frame.url?.() || ''));
     const outerFrames = allFrames.filter(frame => /aviaport\.spribegaming\.com/i.test(frame.url?.() || ''));
     const frames = gameFrames.length ? gameFrames : outerFrames;
+    if (!frames.length && this._demoMode && isConfiguredDemoPage(page.url())) {
+      const mainFrame = page.mainFrame?.();
+      if (!mainFrame || mainFrame.isDetached?.() || !isConfiguredDemoPage(mainFrame.url?.())) {
+        throw new Error('SPRIBE_DEMO_MAIN_FRAME_NOT_READY');
+      }
+      this._activeGameFrame = mainFrame;
+      return mainFrame;
+    }
     if (frames.length !== 1) throw new Error(frames.length ? 'MULTIPLE_ACTIVE_AVIATOR_FRAMES' : 'SHARED_GAME_FRAME_NOT_READY');
     this._activeGameFrame = frames[0];
     return this._activeGameFrame;
+  }
+
+  /**
+   * Submit one Demo-only bet through the existing shared Aviator frame.
+   * A click is possible only with fresh countdown, provider target identity,
+   * selected-panel and frame evidence. A green button alone never qualifies.
+   */
+  async executeDemoBet(attempt) {
+    const fail = reason => ({ state: 'UNKNOWN', reason,
+      real_money_action_submitted: false, ui_acknowledgement: null });
+    if (!this._demoMode || attempt?.environment !== 'DEMO'
+        || attempt?.real_money_action_submitted !== false) return fail('DEMO_ENVIRONMENT_NOT_VERIFIED');
+    const windowEvidence = attempt?.betting_window || {};
+    const phaseAge = Date.now() - Date.parse(windowEvidence.observed_at || '');
+    const phaseText = String(windowEvidence.phase_text || '');
+    const deadlineMs = Date.parse(windowEvidence.deadline_at || '');
+    const countdown = Number(windowEvidence.countdown_seconds);
+    const targetId = String(attempt?.target_round_id || '').trim();
+    if (windowEvidence.status !== 'VERIFIED' || windowEvidence.phase !== 'BETTING_OPEN'
+        || windowEvidence.source !== 'AVIATOR_EXPLICIT_BETTING_PHASE_DOM'
+        || windowEvidence.phase_indicator_visible !== true
+        || windowEvidence.explicit_window_state !== 'BETTING_OPEN'
+        || !/\b(?:betting|bets?)(?:\s+window)?\s+(?:closes|ends)\s+in\s+\d+(?:\.\d+)?\s*(?:s|sec|seconds?)\b/i.test(phaseText)
+        || !Number.isFinite(countdown) || countdown <= 0
+        || !Number.isFinite(deadlineMs) || deadlineMs <= Date.now()
+        || !Number.isFinite(phaseAge) || phaseAge < -250 || phaseAge > 3000) {
+      return fail('DEMO_BETTING_WINDOW_COUNTDOWN_UNVERIFIED');
+    }
+    if (attempt.target_identity_status !== 'VERIFIED' || !targetId
+        || !/^[a-z0-9_-]{4,256}$/i.test(targetId)) return fail('DEMO_TARGET_PROVIDER_IDENTITY_UNAVAILABLE');
+    const panelId = String(attempt?.panel_evidence?.panel_id || '');
+    const panelTime = Date.parse(attempt?.panel_evidence?.observed_at || '');
+    const panelAge = Date.now() - panelTime;
+    if (!['PANEL_1', 'PANEL_2'].includes(panelId)
+        || attempt.panel_evidence.state !== 'BET_AVAILABLE'
+        || !Number.isFinite(panelAge) || panelAge < -250 || panelAge > 5000) {
+      return fail('DEMO_SELECTED_PANEL_NOT_FRESHLY_BET_AVAILABLE');
+    }
+    const config = attempt?.panel_configuration_evidence || {};
+    const configTime = Date.parse(config.observed_at || '');
+    const configAge = Date.now() - configTime;
+    if (config.panel_id !== panelId || config.status !== 'VERIFIED'
+        || config.requirements_satisfied !== true || config.auto_bet !== 'OFF'
+        || config.auto_cashout !== 'ON' || Number(config.cashout_target) !== 2
+        || !(Number(config.stake) > 0) || !/^[A-Z]{3}$/.test(String(config.currency || ''))
+        || !Number.isFinite(configAge) || configAge < -250 || configAge > 15000) {
+      return fail('DEMO_PANEL_CONFIGURATION_UNVERIFIED');
+    }
+
+    let page;
+    let frame;
+    try {
+      page = await this.getAviatorPage();
+      if (!isConfiguredDemoPage(page.url())) return fail('DEMO_PAGE_ORIGIN_NOT_VERIFIED');
+      const pages = this._context?.pages?.().filter(item => !item.isClosed()) || [];
+      if (pages.length !== 1 || pages[0] !== page) return fail('SHARED_AVIATOR_PAGE_TOPOLOGY_INVALID');
+      frame = await this.getAviatorFrame();
+      const frameIdentity = await frame.evaluate(() =>
+        `${location.origin}${location.pathname}#${Math.trunc(performance.timeOrigin)}`.slice(0, 180));
+      if (!frameIdentity || frameIdentity !== attempt.panel_evidence.frame_identity
+          || frameIdentity !== windowEvidence.frame_identity
+          || frameIdentity !== config.frame_identity) return fail('DEMO_FRAME_EVIDENCE_MISMATCH');
+      if ((deadlineMs - Date.now()) / 1000 > countdown + 3) return fail('DEMO_COUNTDOWN_DEADLINE_MISMATCH');
+
+      // These two selectors are the exact selectors recorded in the existing
+      // SPRIBE Demo runtime report. The adapter rechecks their current nodes
+      // before acting and never falls back to a guessed selector.
+      const panelSelector = 'app-bet-control.bet-control.double-bet';
+      const betSelector = 'button.btn.btn-success.bet.ng-star-inserted';
+      const panels = frame.locator(panelSelector);
+      const count = await panels.count();
+      if (count !== 2) return fail('DEMO_VERIFIED_PANEL_SELECTOR_COUNT_CHANGED');
+      const panel = panels.nth(panelId === 'PANEL_1' ? 0 : 1);
+      const button = panel.locator(betSelector);
+      if (await button.count() !== 1 || !await button.isVisible() || !await button.isEnabled()) {
+        return fail('DEMO_BET_BUTTON_NOT_UNIQUELY_VISIBLE_AND_ENABLED');
+      }
+      const label = String(await button.innerText()).replace(/\s+/g, ' ').trim();
+      if (!/^bet\b/i.test(label)) return fail('DEMO_BET_BUTTON_LABEL_CHANGED');
+      if (Date.now() >= deadlineMs) return fail('DEMO_BETTING_DEADLINE_REACHED');
+
+      // Exactly one click. Any timeout or ambiguous response is UNKNOWN and
+      // will never be retried automatically for this decision.
+      await button.click({ timeout: 1500 });
+      const observedAt = new Date().toISOString();
+      await page.waitForTimeout(500).catch(() => {});
+      const acknowledgement = await panel.evaluate(node => {
+        const visible = element => Boolean(element && (element.offsetWidth || element.offsetHeight)
+          && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none');
+        const labels = Array.from(node.querySelectorAll('button, [role="button"], .btn'))
+          .filter(visible).map(element => String(element.innerText || element.textContent || '')
+            .replace(/\s+/g, ' ').trim()).filter(Boolean);
+        const action = labels.find(text => /^(cancel|cash\s*out)\b/i.test(text));
+        return { labels, action: action || null };
+      }).catch(() => null);
+      const action = String(acknowledgement?.action || '').toLowerCase();
+      const state = action.startsWith('cancel') ? 'BET_QUEUED'
+        : action.startsWith('cash') ? 'BET_ACTIVE' : 'UNKNOWN';
+      return { state, reason: state === 'UNKNOWN' ? 'DEMO_CLICK_RESULT_AMBIGUOUS' : 'DEMO_PANEL_STATE_OBSERVED',
+        real_money_action_submitted: false,
+        ui_acknowledgement: { state: state === 'BET_QUEUED' ? 'BET_QUEUED'
+          : state === 'BET_ACTIVE' ? 'BET_ACTIVE' : 'UNKNOWN', observed_at,
+          evidence: { selector: betSelector, panel_selector: panelSelector, panel_id: panelId,
+            button_text_before_click: label, visible_action_labels_after_click: acknowledgement?.labels || [] } } };
+    } catch (error) {
+      return fail(`DEMO_EXECUTION_UNKNOWN:${String(error?.message || error).slice(0, 180)}`);
+    }
   }
 
   async getBrowserStatus() {

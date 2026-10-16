@@ -1,6 +1,16 @@
 const DEFAULT_ROUND_EVENT_URL = 'http://127.0.0.1:8000/api/collector/round-observed';
 const DEFAULT_BACKEND_EVENT_TIMEOUT_MS = 15_000;
 
+function demoEnvironment() {
+  if (process.env.WINNER_NONFINANCIAL_TEST_MODE !== 'true' || !process.env.AVIATOR_DEMO_URL) return null;
+  try {
+    const url = new URL(process.env.AVIATOR_DEMO_URL);
+    if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'aviator-demo.spribegaming.com'
+        || url.searchParams.get('operator')?.toLowerCase() !== 'demo') return null;
+    return { environment: 'DEMO', demo_origin: url.origin };
+  } catch { return null; }
+}
+
 // Panel and betting-window evidence is useful only while it is fresh. It is
 // also sent as a separate, live game-phase observation. A delayed durable
 // round retry must not let stale UI evidence reject the whole round batch.
@@ -21,6 +31,7 @@ function freshGamePhase(round, now = Date.now()) {
 function directRound(round, { httpStartedAt = null } = {}) {
   const id = String(round.round_id);
   const gamePhase = freshGamePhase(round);
+  const demo = demoEnvironment();
   return {
     event_id: `aviator-round:${id}`,
     observation_id: String(round.observation_id || id),
@@ -28,6 +39,7 @@ function directRound(round, { httpStartedAt = null } = {}) {
     multiplier: Number(round.multiplier),
     timestamp: round.timestamp ?? null,
     observed_at: String(round.observed_at || round.timestamp || ''),
+    collector_observed_at: round.collector_observed_at || round.local_appended_at || null,
     platform_round_id: round.platform_round_id ?? null,
     platform_round_index: round.platform_round_index ?? null,
     platform_timestamp: round.platform_timestamp ?? null,
@@ -37,7 +49,8 @@ function directRound(round, { httpStartedAt = null } = {}) {
     identity_confidence: round.identity_confidence ?? 'UNKNOWN',
     round_identity_type: round.round_identity_type ?? 'UNKNOWN',
     round_index_source: round.round_index_source ?? 'UNKNOWN',
-    delivery_mode: round.delivery_mode || 'LIVE',
+    delivery_mode: demo ? 'DEMO' : round.delivery_mode || 'LIVE',
+    ...(demo || {}),
     local_appended_at: round.local_appended_at ?? null,
     collector_http_started_at: httpStartedAt,
     commit_acknowledged_at: round.commit_acknowledged_at ?? null,
@@ -54,7 +67,8 @@ function directRound(round, { httpStartedAt = null } = {}) {
  * Backend failure is surfaced to the caller; it must not stop collection.
  */
 export async function publishDirectRoundObservations(rounds, {
-  url = process.env.COLLECTOR_BACKEND_ROUND_OBSERVED_URL || DEFAULT_ROUND_EVENT_URL,
+  url = process.env.COLLECTOR_BACKEND_ROUND_OBSERVED_URL ||
+    (demoEnvironment() ? 'http://127.0.0.1:8000/api/collector/demo-round-observed' : DEFAULT_ROUND_EVENT_URL),
   apiKey = process.env.API_KEY,
   timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || DEFAULT_BACKEND_EVENT_TIMEOUT_MS,
   fetchImpl = globalThis.fetch,
@@ -80,7 +94,11 @@ export async function publishDirectRoundObservations(rounds, {
     const response = await fetchImpl(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ source: 'WINNER_DIRECT_PAGE_HISTORY', rounds: rounds.map(round => directRound(round, { httpStartedAt })) }),
+      body: JSON.stringify({
+        source: demoEnvironment() ? 'SPRIBE_DEMO_DIRECT_PAGE_HISTORY' : 'WINNER_DIRECT_PAGE_HISTORY',
+        ...(demoEnvironment() || {}),
+        rounds: rounds.map(round => directRound(round, { httpStartedAt })),
+      }),
       signal: controller.signal,
     });
     const responseText = await response.text();
@@ -132,7 +150,7 @@ export async function publishDirectRoundObservations(rounds, {
   }
 }
 
-/** Send a bounded batch from the collector's local event outbox and remove it only after acknowledgement. */
+/** Send a bounded process-local batch and remove it only after API acknowledgement. */
 export async function drainDirectRoundEventOutbox(outbox, options = {}) {
   const batch = outbox.readAll().slice(0, Math.max(1, Number(options.batchSize) || 100));
   if (!batch.length) return { ok: true, accepted: 0, status: 'EMPTY' };
@@ -143,7 +161,9 @@ export async function drainDirectRoundEventOutbox(outbox, options = {}) {
 
 /** Submit committed-stage handoff only after the reused PostgreSQL pool acknowledged COMMIT. */
 export async function publishCommittedRoundEvents(rounds, {
-  url = process.env.COLLECTOR_BACKEND_ROUND_PERSISTED_URL || 'http://127.0.0.1:8000/api/collector/round-persisted',
+  url = process.env.COLLECTOR_BACKEND_ROUND_PERSISTED_URL ||
+    (demoEnvironment() ? 'http://127.0.0.1:8000/api/collector/demo-round-persisted'
+      : 'http://127.0.0.1:8000/api/collector/round-persisted'),
   apiKey = process.env.API_KEY,
   timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || DEFAULT_BACKEND_EVENT_TIMEOUT_MS,
   fetchImpl = globalThis.fetch,
@@ -162,7 +182,8 @@ export async function publishCommittedRoundEvents(rounds, {
     const response = await fetchImpl(url, {
       method: 'POST', headers,
       body: JSON.stringify({
-        source: 'WINNER_CANONICAL_POSTGRESQL_COMMIT',
+        source: demoEnvironment() ? 'SPRIBE_DEMO_POSTGRESQL_COMMIT' : 'WINNER_CANONICAL_POSTGRESQL_COMMIT',
+        ...(demoEnvironment() || {}),
         commit_acknowledged_at: rounds[0]?.commit_acknowledged_at ?? null,
         rounds: rounds.map(round => directRound(round)),
       }),
@@ -224,7 +245,8 @@ export async function publishCollectorGamePhase(phase, sourceIdentity, {
     const response = await fetchImpl(url, {
       method: 'POST', headers,
       body: JSON.stringify({
-        source: 'OWNED_AVIATOR_GAME_FRAME_READ_ONLY',
+        source: demoEnvironment() ? 'SPRIBE_DEMO_GAME_FRAME_READ_ONLY' : 'OWNED_AVIATOR_GAME_FRAME_READ_ONLY',
+        ...(demoEnvironment() || {}),
         event_id: String(phase.event_id || [phase.phase, phase.observed_at, sourceIdentity.round_id].join(':')),
         source_round_id: String(sourceIdentity.round_id),
         source_round_index: Number(sourceIdentity.round_index),

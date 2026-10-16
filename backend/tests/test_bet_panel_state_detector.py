@@ -98,7 +98,8 @@ def test_transitions_deduplicate_events_reject_stale_rows_and_handle_frame_reloa
     returned_to_bet = panel_observation_transition(active, available)
     assert (queued_transition["from_state"], queued_transition["to_state"]) == ("BET_AVAILABLE", "BET_QUEUED")
     assert (active_transition["from_state"], active_transition["to_state"]) == ("BET_QUEUED", "BET_ACTIVE")
-    assert (returned_to_bet["from_state"], returned_to_bet["to_state"]) == ("BET_ACTIVE", "BET_AVAILABLE")
+    assert (returned_to_bet["from_state"], returned_to_bet["to_state"], returned_to_bet["current_state"]) == (
+        "BET_ACTIVE", "BET_RESET", "BET_AVAILABLE")
     reloaded = {**available, "frame_identity": "https://aviator-next.spribegaming.com/reloaded"}
     reload_transition = panel_observation_transition(available, reloaded)
     assert reload_transition["frame_reloaded"] is True

@@ -555,6 +555,8 @@ async def lifespan(app: FastAPI):
     app.state.lifecycle = lifecycle
     inbox_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="round-observation-inbox")
     app.state.round_observation_inbox_executor = inbox_executor
+    rules_observation_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="direct-rules-observation")
+    app.state.rules_engine_observation_executor = rules_observation_executor
     orchestrator = None
     app.state.ready = False
     shutdown_reason = "graceful_lifespan_exit"
@@ -662,6 +664,7 @@ async def lifespan(app: FastAPI):
         if orchestrator is not None:
             await orchestrator.shutdown()
         inbox_executor.shutdown(wait=True, cancel_futures=True)
+        rules_observation_executor.shutdown(wait=True, cancel_futures=True)
         lock.release()
         log.info("backend graceful shutdown complete pid=%s", os.getpid())
 
@@ -987,8 +990,10 @@ def _validate_direct_collector_observations(body: dict) -> list[dict]:
             raise ValueError("round_index_source must be PLATFORM, LOCAL_SEQUENCE, or UNKNOWN")
         local_appended_at = raw.get("local_appended_at")
         collector_http_started_at = raw.get("collector_http_started_at")
+        collector_observed_at = raw.get("collector_observed_at")
         for field_name, field_value in (("local_appended_at", local_appended_at),
-                                        ("collector_http_started_at", collector_http_started_at)):
+                                        ("collector_http_started_at", collector_http_started_at),
+                                        ("collector_observed_at", collector_observed_at)):
             if field_value is not None and _utc_timestamp(field_value) is None:
                 raise ValueError(f"{field_name} must be an ISO timestamp or null")
         observations.append({
@@ -1011,6 +1016,7 @@ def _validate_direct_collector_observations(body: dict) -> list[dict]:
             "delivery_mode": delivery_mode,
             "local_appended_at": local_appended_at,
             "collector_http_started_at": collector_http_started_at,
+            "collector_observed_at": collector_observed_at,
             "commit_acknowledged_at": raw.get("commit_acknowledged_at"),
             "observation_to_commit_ms": (float(raw["observation_to_commit_ms"])
                 if isinstance(raw.get("observation_to_commit_ms"), (int, float))
@@ -1022,7 +1028,7 @@ def _validate_direct_collector_observations(body: dict) -> list[dict]:
 
 @app.post("/api/collector/round-observed", tags=["collector"])
 async def collector_round_observed(request: Request):
-    """Fan out a pending stage after collector durability, then persist API resume state."""
+    """Evaluate fresh direct observations before history and PostgreSQL work."""
     inbox = getattr(request.app.state, "round_observation_inbox", None)
     stream_id = getattr(request.app.state, "round_stream_id", None)
     if inbox is None or not stream_id:
@@ -1039,6 +1045,7 @@ async def collector_round_observed(request: Request):
         events = []
         for observation in observations:
             event = observed_round_event(observation, stream_id)
+            event["collector_source"] = body.get("source")
             event["api_received_at"] = received_at
             event["api_receipt_to_sse_publication_ms"] = None
             events.append(event)
@@ -1059,8 +1066,67 @@ async def collector_round_observed(request: Request):
     publication_ms = 0.0
     try:
         # The collector's fsynced outbox is the durable source at this point.
-        # Fan out before API-side SQLite writes, which only support reconnect
-        # catch-up and must never delay a currently connected SSE client.
+        # Rule evaluation runs before event fanout and the API resume inbox. It
+        # consumes only the direct, verified pending event, with a strict
+        # collector-to-engine deadline; PostgreSQL commit later promotes it.
+        engine = getattr(request.app.state, "rules_engine", None)
+        rule_evaluations = []
+        batch_round_indices = {int(item["round_index"]) for item in observations}
+        for observation, event in zip(observations, events, strict=True):
+            collector_seen = _utc_timestamp(observation.get("collector_observed_at"))
+            now_utc = datetime.now(timezone.utc)
+            age_ms = ((now_utc - collector_seen).total_seconds() * 1000.0
+                      if collector_seen is not None else None)
+            event["collector_to_api_age_ms"] = round(age_ms, 3) if age_ms is not None else None
+            deadline_monotonic = (time.perf_counter() + max(0.0, 100.0 - max(0.0, age_ms)) / 1000.0
+                                  if age_ms is not None and 0.0 <= age_ms <= 100.0
+                                  else time.perf_counter() - 0.001)
+            target_in_same_batch = int(observation["round_index"]) + 1 in batch_round_indices
+            if engine is not None:
+                engine_submitted = time.perf_counter()
+                try:
+                    def evaluate_direct():
+                        entered_at = time.perf_counter()
+                        evaluation = engine.observe_round(
+                            event, persist=False,
+                            target_already_completed=target_in_same_batch,
+                            direct_observation=True,
+                            deadline_monotonic=deadline_monotonic)
+                        return evaluation, entered_at
+
+                    executor = getattr(request.app.state, "rules_engine_observation_executor", None)
+                    if executor is None:
+                        result, engine_entered = await asyncio.to_thread(evaluate_direct)
+                    else:
+                        loop = asyncio.get_running_loop()
+                        result, engine_entered = await loop.run_in_executor(executor, evaluate_direct)
+                    collector_to_engine_ms = (None if age_ms is None or age_ms < 0 else
+                        max(0.0, age_ms) + (engine_entered - engine_submitted) * 1000.0)
+                    result["collector_to_rules_engine_ms"] = (
+                        round(collector_to_engine_ms, 3) if collector_to_engine_ms is not None else None)
+                    result["latency_measurement_method"] = "COLLECTOR_ISO_TIMESTAMP_PLUS_SERVER_MONOTONIC_QUEUE_DELAY"
+                    result["deadline_ms"] = 100
+                    result["evaluation_stage"] = "DIRECT_OBSERVED_BEFORE_POSTGRESQL"
+                    result["source_round_id"] = observation["round_id"]
+                    rule_evaluations.append(result)
+                    statuses = [rule.get("status") for session in result.get("sessions", [])
+                                for rule in session.get("rule_evaluations", [])]
+                    latency_late = collector_to_engine_ms is None or collector_to_engine_ms > 100.0
+                    decision_late = (latency_late or target_in_same_batch
+                                     or "INVALID_LATE" in statuses
+                                     or result.get("reason") == "RULES_DEADLINE_EXPIRED")
+                    result["collector_to_rules_engine_status"] = "INVALID_LATE" if latency_late else "REACHED"
+                    result["rule_decision_status"] = "INVALID_LATE" if decision_late else "EVALUATED"
+                    log.info("[RULES_ENGINE] direct observation reached engine round_id=%s latency_ms=%s deadline_ms=100 latency_status=%s decision_status=%s",
+                             observation["round_id"],
+                             f"{collector_to_engine_ms:.3f}" if collector_to_engine_ms is not None else "UNAVAILABLE",
+                             result["collector_to_rules_engine_status"], result["rule_decision_status"])
+                except Exception:
+                    log.exception("[RULES_ENGINE] direct round observation evaluation failed round_id=%s",
+                                  observation["round_id"])
+                    return JSONResponse(status_code=503, content={
+                        "ok": False, "error": "direct_rules_evaluation_unavailable",
+                    })
         for event in events:
             event["published_at"] = datetime.now(timezone.utc).isoformat()
             event["api_receipt_to_sse_publication_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
@@ -1090,20 +1156,20 @@ async def collector_round_observed(request: Request):
             "ok": False, "error": "round_observation_inbox_write_failed",
         })
     inbox_append_ms = (time.perf_counter() - append_started) * 1000.0
-    # Observed events are not committed round results. Do not run session rule
-    # evaluation here: a backlog batch can take longer than the collector's
-    # acknowledgement deadline, which then prevents the collector from moving
-    # on to its PostgreSQL persistence stage. RulesEngine consumes only the
-    # ordered round.persisted stream after the canonical PG write succeeds.
-    log.info("[COLLECTOR_EVENTS] round.observed published and resume state durable count=%s new=%s backlog=%s api_to_sse_ms=%.3f inbox_append_ms=%.3f",
-             len(observations), len(accepted["events"]), accepted["backlog_size"], publication_ms, inbox_append_ms)
-    return {"ok": True, "status": "OBSERVED_PUBLISHED_PENDING_POSTGRESQL",
+    log.info("[COLLECTOR_EVENTS] direct rules evaluated before PostgreSQL count=%s backlog=%s api_to_sse_ms=%.3f rules_and_fanout_ms=%.3f inbox_append_ms=%.3f",
+             len(observations), accepted["backlog_size"], publication_ms,
+             (time.perf_counter() - started) * 1000.0 - inbox_append_ms, inbox_append_ms)
+    rules_stage = ("DIRECT_OBSERVED_BEFORE_POSTGRESQL" if engine is not None
+                   else "RULES_ENGINE_UNAVAILABLE")
+    return {"ok": True,
+            "status": ("OBSERVED_RULES_EVALUATED_PENDING_POSTGRESQL" if engine is not None
+                       else "OBSERVED_PUBLISHED_PENDING_POSTGRESQL"),
             "accepted": len(observations), "new_events": len(accepted["events"]),
             "duplicate_committed": accepted["duplicates"], "api_received_at": received_at,
             "api_published_at": published_at,
             "api_receipt_to_sse_publication_ms": publication_ms,
-            "rule_evaluation_stage": "WAITING_FOR_COMMITTED_POSTGRES_EVENT",
-            "rules_engine_evaluations": [],
+            "rule_evaluation_stage": rules_stage,
+            "rules_engine_evaluations": rule_evaluations,
             "events": [{"event_id": event["event_id"], "observation_id": event["observation_id"]}
                        for event in accepted["events"]]}
 

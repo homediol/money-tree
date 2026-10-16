@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from app.live import live_execution_blocker_matrix
 
 router = APIRouter(prefix="/api/rules-engine", tags=["rules engine"])
 SHADOW_BOUNDARY_MAX_AGE_SECONDS = 120
@@ -446,7 +447,7 @@ def dashboard(request: Request):
                   or {"status": "CLEAR", "reason": None, "reconciled_bets": 0})
     settlement = {key: settlement.get(key) for key in
                   ("status", "reason", "reconciled_bets", "updated_at")}
-    blockers = ["REAL_MONEY_EXECUTION_DISABLED_DURING_REFACTORING",
+    blockers = ["REAL_MONEY_EXECUTION_DISABLED_PENDING_LIVE_QUALIFICATION",
                 "EXPLICIT_OPERATOR_AUTHORIZATION_REQUIRED"]
     if settlement.get("status") == "RECONCILIATION_REQUIRED":
         blockers.append("RULE_SESSION_TRANSACTION_RECONCILIATION_REQUIRED")
@@ -474,7 +475,8 @@ def dashboard(request: Request):
         "session": active or None,
         "settlement_integrity": settlement,
         "execution_readiness": {"status": "BLOCKED", "ready": False,
-                                "blockers": list(dict.fromkeys(blockers))},
+                                "blockers": list(dict.fromkeys(blockers)),
+                                "blocker_matrix": live_execution_blocker_matrix()},
         "shadow_result_summary": {
             "wins": (detail or {}).get("total_wins", 0),
             "losses": (detail or {}).get("total_losses", 0),
@@ -547,8 +549,12 @@ async def start_session(request: Request):
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("invalid_session_configuration")
+        replace_active_session = body.get("replace_active_session", False)
+        if not isinstance(replace_active_session, bool):
+            raise ValueError("invalid_replace_active_session")
         session = _engine(request).start_session(mode=body.get("mode"), rule_ids=body.get("rule_ids"),
-            boundary=boundary, prestart_context=context, options=body.get("options"))
+            boundary=boundary, prestart_context=context, options=body.get("options"),
+            replace_active_session=replace_active_session)
         return session
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

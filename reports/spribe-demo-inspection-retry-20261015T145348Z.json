@@ -1,0 +1,68 @@
+{
+  "captured_at": "2026-10-15T14:53:48Z",
+  "mode": "READ_ONLY",
+  "status": "PARTIAL_COLLECTOR_FRESH_BUT_BROWSER_UNATTACHABLE",
+  "url_origin": "https://aviator-demo.spribegaming.com/",
+  "browser": {
+    "cua_state": {"apps": [], "browsers": []},
+    "cua_list_browsers": [],
+    "visible_process_inventory": "No Chrome/Chromium/collector process visible in this execution namespace; full ps output contained only the diagnostic process.",
+    "devtools_9222": "Connection refused at 127.0.0.1:9222/json/list",
+    "socket_inventory": "ss could not inspect netlink sockets: Operation not permitted",
+    "attachable_shared_browser": false,
+    "new_browser_or_tab_created": false
+  },
+  "collector_evidence": {
+    "source": "data/bot/status.json",
+    "file_mtime_utc": "2026-10-15T14:53:48Z",
+    "file_age_seconds_at_read": 0.09,
+    "collectorRunning": true,
+    "browserConnected": true,
+    "lastRoundTime": "2026-10-15T14:53:38.492Z",
+    "lastRoundId": "aviator-2e4679ecff54492f93ebfeb7",
+    "lastRoundIndex": 31328,
+    "lastSuccessfulCollection": "2026-10-15T14:53:42.606Z",
+    "latest_commit_sample": {
+      "round_id": "aviator-2e4679ecff54492f93ebfeb7",
+      "observed_at": "2026-10-15T14:53:38.492Z",
+      "committed_at": "2026-10-15T14:53:42.606Z",
+      "latency_ms": 3599.77,
+      "measurement_clock": "COLLECTOR_MONOTONIC"
+    },
+    "verification_limit": "Fresh sidecar telemetry reports collection and a commit sample, but the process owner, browser target, and durable database commit were not independently attached or verified."
+  },
+  "supervision_evidence": {
+    "collector_supervisor": {"pid": 444, "running": false, "reason": "code=75 signal=none", "timestamp": "2026-10-15T13:14:39.508Z", "supervisor_pid": 285},
+    "browser_supervisor_lock": {"pid": 812909, "started_at": "2026-10-15T13:01:15.822Z", "pid_visible_in_proc": false},
+    "assessment": "Supervisor/lock metadata conflicts with the fresh status sidecar; no lock was modified."
+  },
+  "phase_evidence": {
+    "reported_phase": "UNKNOWN",
+    "reported_source": "AVIATOR_EXPLICIT_BETTING_PHASE_DOM",
+    "reported_selector_description": "visible game phase text",
+    "phase_indicator_visible": false,
+    "explicit_window_state": "UNKNOWN",
+    "text": "",
+    "countdown_seconds": null,
+    "deadline_at": null,
+    "verification": "Sidecar metadata only; not independently observed in the live DOM."
+  },
+  "live_dom_inspection": {
+    "frame_urls": [],
+    "selectors_verified": [],
+    "dom_text_attributes_styles": [],
+    "canvas_screenshots": [],
+    "phase_transition_timeline": [],
+    "panel_state_transitions": [],
+    "round_ids_observed_in_live_dom": [],
+    "dom_update_latency_ms": null,
+    "collection_commit_latency_is_not_dom_latency": true
+  },
+  "rules_and_execution": {
+    "rules_engine_results_observed": false,
+    "shadow_realistic_execution_results_observed": false,
+    "live_real_enabled": false,
+    "bets_cancel_cashout_or_settings_actions": "NOT_ATTEMPTED"
+  },
+  "overall_limit": "The live page, iframe, selectors, visual states, phase transitions, and panel transitions remain unverified in this retry because no shared browser is exposed to CUA and the local DevTools endpoint refuses connections."
+}
