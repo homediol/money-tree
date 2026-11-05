@@ -28,6 +28,15 @@ export class HealthMonitor {
       authenticationReason: 'SESSION_NOT_VERIFIED',
       authRequired:       false,
       authRequiredReason: null,
+      sessionWatchdog: {
+        status: 'INACTIVE', monitor_tab_status: 'NOT_STARTED', reason_code: 'NOT_CHECKED',
+        last_successful_check_at: null, last_successful_activity_at: null,
+        estimated_remaining_seconds: null, next_scheduled_maintenance_at: null,
+        last_successful_maintenance_at: null, last_successful_refresh_at: null,
+        last_verified_no_click_at: null,
+        logout_countdown_seconds: null,
+        recovery_attempts: 0, collector_connected: false,
+      },
       state:              'STARTING',
       activityState:      'STARTING',
       gameReadiness:      { frameAttached: false, contentLoaded: false, payoutsReady: false, reason: 'NOT_CHECKED' },
@@ -35,6 +44,10 @@ export class HealthMonitor {
       lastRoundTime:      null,
       lastRoundId:        null,
       lastRoundIndex:     null,
+      lastDetectedRoundId: null,
+      lastDetectedAt: null,
+      lastDetectedStatus: 'UNKNOWN',
+      lastDetectedReason: null,
       lastObservedRoundId: null,
       lastObservedRoundIndex: null,
       lastObservedAt:     null,
@@ -78,7 +91,10 @@ export class HealthMonitor {
       uptime:             0,
     };
     this._flushTimer = null;
+    this._deferredFlushTimer = null;
     this._lastFlushErrorAt = 0;
+    this._flushBatchDepth = 0;
+    this._flushPending = false;
   }
 
   start() {
@@ -88,7 +104,24 @@ export class HealthMonitor {
 
   stop() {
     if (this._flushTimer) { clearInterval(this._flushTimer); this._flushTimer = null; }
+    if (this._deferredFlushTimer) {
+      clearTimeout(this._deferredFlushTimer);
+      this._deferredFlushTimer = null;
+    }
     this._flush();
+  }
+
+  batch(callback) {
+    this._flushBatchDepth += 1;
+    try {
+      return callback();
+    } finally {
+      this._flushBatchDepth -= 1;
+      if (this._flushBatchDepth === 0 && this._flushPending) {
+        this._flushPending = false;
+        this._flush();
+      }
+    }
   }
 
   // ── Setters ───────────────────────────────────────────────────────────────
@@ -255,15 +288,33 @@ export class HealthMonitor {
   setStorage(value) {
     this._metrics.storage = { ...this._metrics.storage, ...(value || {}) };
     this._metrics.state = this._effectiveState();
-    this._flush();
+    this._scheduleFlush();
   }
   setGameReadiness(value = {}) {
     this._metrics.gameReadiness = { ...this._metrics.gameReadiness, ...value };
     this._metrics.frameConnected = this._metrics.gameReadiness.frameAttached === true;
-    this._flush();
+    this._scheduleFlush();
   }
   setRecovery(stage, { attempt = 0, nextRetryAt = null, reasonCode = null, evidence = null } = {}) {
     this._metrics.recovery = { stage: stage || null, attempt, nextRetryAt, reasonCode, evidence };
+    this._flush();
+  }
+  setSessionWatchdog(value = {}) {
+    const allowedStatuses = new Set(['AUTHENTICATED', 'ACTIVE', 'INACTIVE', 'WARNING',
+      'EXPIRING', 'RECOVERING', 'EXPIRED', 'DISCONNECTED']);
+    const allowedMonitorStates = new Set(['NOT_STARTED', 'OPEN', 'CLOSED', 'DISABLED', 'UNAVAILABLE']);
+    const next = { ...this._metrics.sessionWatchdog, ...value };
+    if (!allowedStatuses.has(next.status)) next.status = 'WARNING';
+    if (!allowedMonitorStates.has(next.monitor_tab_status)) next.monitor_tab_status = 'UNAVAILABLE';
+    for (const field of ['estimated_remaining_seconds', 'logout_countdown_seconds']) {
+      const number = Number(next[field]);
+      next[field] = next[field] !== null && next[field] !== undefined
+        && Number.isFinite(number) && number >= 0 ? Math.floor(number) : null;
+    }
+    next.recovery_attempts = Number.isFinite(Number(next.recovery_attempts))
+      ? Math.max(0, Math.floor(Number(next.recovery_attempts))) : 0;
+    next.collector_connected = next.collector_connected === true;
+    this._metrics.sessionWatchdog = next;
     this._flush();
   }
   setError(error, category = 'UNKNOWN', recoveryAction = null) {
@@ -285,10 +336,19 @@ export class HealthMonitor {
     this._metrics.lastObservedRoundIndex = Number.isSafeInteger(Number(round.round_index))
       ? Number(round.round_index) : null;
     this._metrics.lastObservedAt = round.observed_at || round.timestamp || new Date().toISOString();
-    // Publish the observation before PostgreSQL persistence can wait on the
-    // scorer's advisory lock. The backend uses this marker to reject a score
-    // if the target has already become visible to the collector.
-    this._flush();
+    // The fsynced round outbox is already committed before this status update.
+    // Coalesce the large diagnostic snapshot so it cannot delay the urgent
+    // backend request; the backend also checks its own durable observation
+    // inbox before accepting a target decision.
+    this._scheduleFlush();
+  }
+  recordRoundDetection({ round_id = null, detected_at = null, status = 'DETECTED', reason = null } = {},
+    { flush = true } = {}) {
+    this._metrics.lastDetectedRoundId = round_id == null ? null : String(round_id);
+    this._metrics.lastDetectedAt = typeof detected_at === 'string' ? detected_at : null;
+    this._metrics.lastDetectedStatus = String(status || 'UNKNOWN');
+    this._metrics.lastDetectedReason = reason == null ? null : String(reason).slice(0, 200);
+    if (flush) this._flush();
   }
   recordRounds(rounds = [], committedAt = null, monotonicSamples = null) {
     const batch = Array.isArray(rounds) ? rounds.filter(Boolean) : [];
@@ -386,6 +446,37 @@ export class HealthMonitor {
     else if (!this._metrics.frameConnected) health = 'DISCONNECTED';
     else if (collectorStale) health = 'STALE';
     else if (this._metrics.state === 'COLLECTING') health = 'HEALTHY';
+    const sourceUnavailable = this._metrics.authRequired || this._metrics.siteStatus === 'UNAVAILABLE'
+      || this._metrics.browserConnected === false || this._metrics.pageConnected === false
+      || this._metrics.frameConnected === false;
+    const sourceUnknown = this._metrics.authenticationState !== 'AUTHENTICATED'
+      || this._metrics.browserConnected !== true || this._metrics.pageConnected !== true
+      || this._metrics.frameConnected !== true;
+    const roundSourceStatus = sourceUnavailable ? 'SOURCE_UNAVAILABLE'
+      : sourceUnknown ? 'UNKNOWN' : 'AVAILABLE';
+    const delivery = this._metrics.storage?.round_delivery || {};
+    const lastDeliveryFailure = delivery.last_failure || null;
+    const backlogSize = Number(delivery.backlog_size || this._metrics.storage?.backlog_size || 0);
+    const successfulAt = this._metrics.lastSuccessfulCollection
+      ? Date.parse(this._metrics.lastSuccessfulCollection) : NaN;
+    const recentSuccessfulCollection = Number.isFinite(successfulAt)
+      && Date.now() - successfulAt <= STALE_AFTER_MS;
+    let roundCollectionStatus = 'UNKNOWN';
+    if (!this._metrics.collectorRunning) roundCollectionStatus = 'STOPPED';
+    else if (roundSourceStatus === 'SOURCE_UNAVAILABLE') roundCollectionStatus = 'SOURCE_UNAVAILABLE';
+    else if (this._metrics.storage?.status === 'UNAVAILABLE' || lastDeliveryFailure?.stage === 'persistence') {
+      roundCollectionStatus = 'PERSISTENCE_FAILED';
+    } else if (this._metrics.lastDetectedStatus === 'INVALID') roundCollectionStatus = 'ROUND_DETECTED_INVALID';
+    else if (this._metrics.lastDetectedStatus === 'DETECTED') roundCollectionStatus = 'ROUND_DETECTED';
+    else if (roundSourceStatus === 'UNKNOWN') roundCollectionStatus = 'UNKNOWN';
+    else if (backlogSize > 0 || (this._metrics.lastObservedRoundId
+        && this._metrics.lastRoundId !== this._metrics.lastObservedRoundId)) {
+      roundCollectionStatus = 'ROUND_PENDING_PERSISTENCE';
+    } else if (recentSuccessfulCollection && this._metrics.state === 'COLLECTING') {
+      roundCollectionStatus = 'HEALTHY_CAUGHT_UP';
+    } else if (this._metrics.lastObserverInstalledAt && this._metrics.state === 'COLLECTING') {
+      roundCollectionStatus = 'NO_NEW_ROUND_YET';
+    }
     const reportedState = health === 'AUTH_REQUIRED' ? 'AUTH_REQUIRED'
       : health === 'OFFLINE' ? 'OFFLINE'
         : health === 'SITE_UNAVAILABLE' ? 'SITE_UNAVAILABLE'
@@ -398,6 +489,8 @@ export class HealthMonitor {
       ...this._metrics,
       state: reportedState,
       health,
+      roundSourceStatus,
+      roundCollectionStatus,
       staleAfterMs: STALE_AFTER_MS,
       uptime: Math.floor((Date.now() - this._startTime) / 1000),
     };
@@ -418,18 +511,45 @@ export class HealthMonitor {
   // ── Persistence ───────────────────────────────────────────────────────────
 
   _flush() {
+    if (this._deferredFlushTimer) {
+      clearTimeout(this._deferredFlushTimer);
+      this._deferredFlushTimer = null;
+    }
+    if (this._flushBatchDepth > 0) {
+      this._flushPending = true;
+      return;
+    }
     try {
       if (this._metrics.collectorRunning) this._metrics.heartbeatAt = new Date().toISOString();
-      const snap = this.snapshot();
-      fs.mkdirSync(path.dirname(STATUS_PATH), { recursive: true });
-      const tmp = STATUS_PATH + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(snap, null, 2), 'utf-8');
-      fs.renameSync(tmp, STATUS_PATH);
+      this._writeSnapshot(this.snapshot());
     } catch (error) {
       if (Date.now() - this._lastFlushErrorAt > 60000) {
         this._lastFlushErrorAt = Date.now();
         log.error(`Collector heartbeat write failed: ${error?.message || error}`);
       }
     }
+  }
+
+  _scheduleFlush() {
+    if (this._flushBatchDepth > 0) {
+      this._flushPending = true;
+      return;
+    }
+    if (this._deferredFlushTimer) return;
+    // Round delivery already has an fsynced durable outbox. Coalesce status
+    // file writes so JSON formatting and filesystem latency never sit between
+    // extraction and the urgent backend request.
+    this._deferredFlushTimer = setTimeout(() => {
+      this._deferredFlushTimer = null;
+      this._flush();
+    }, 100);
+    this._deferredFlushTimer.unref?.();
+  }
+
+  _writeSnapshot(snap) {
+    fs.mkdirSync(path.dirname(STATUS_PATH), { recursive: true });
+    const tmp = STATUS_PATH + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(snap, null, 2), 'utf-8');
+    fs.renameSync(tmp, STATUS_PATH);
   }
 }

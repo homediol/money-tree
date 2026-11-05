@@ -37,8 +37,11 @@ function roundStore({ saveRounds, loadRoundsByIds }) {
 test('round.observed reaches the API before a delayed PostgreSQL write; equal multipliers remain separate', async t => {
   const outbox = await fixture(t);
   const observed = [];
+  let collectorTimingSent = [];
   const persisted = [];
   let databaseCommitted = false;
+  let canonicalReads = 0;
+  const historyProbes = [];
   let releaseCommit;
   const dbWait = new Promise(resolve => { releaseCommit = resolve; });
   const store = roundStore({
@@ -49,14 +52,25 @@ test('round.observed reaches the API before a delayed PostgreSQL write; equal mu
       return { storage_status: 'AVAILABLE', saved: rows.length, insertedRounds: rows,
         commitAcknowledgedAt: new Date().toISOString() };
     },
-    async loadRoundsByIds(ids) { return ids.map(id => round(id, 1.25, Number(id.slice(1)))); },
+    async loadRoundsByIds(ids) {
+      canonicalReads += 1;
+      return ids.map(id => round(id, 1.25, Number(id.slice(1))));
+    },
   });
   const pipeline = new RoundDeliveryPipeline({ outbox, roundStore: store,
-    publishObserved: async events => {
+    probeRoundHistory: async id => {
+      historyProbes.push(id);
+      return { available: true, status: 'CONFIRMED', checked_at: new Date().toISOString() };
+    },
+    publishObserved: async (events, { collectorTiming = [] } = {}) => {
       observed.push(...events);
+      collectorTimingSent.push(...collectorTiming);
       assert.equal(databaseCommitted, false);
       return { accepted: events.length, api_published_at: new Date().toISOString(),
-        collector_to_api_one_way_estimate_ms: 2.5 };
+        collector_api_roundtrip_ms: 2.5, durable_inbox_append_ms: 1.25,
+        priority_timings_ms: events.map(event => ({ round_id: event.round_id,
+          api_request_to_rules_engine_receive_ms: 3, rules_engine_evaluation_ms: 4,
+          rules_complete_to_other_consumer_enqueue_ms: 0.5 })) };
     },
     publishPersisted: async events => {
       persisted.push(...events);
@@ -66,7 +80,21 @@ test('round.observed reaches the API before a delayed PostgreSQL write; equal mu
     },
   });
   t.after(() => pipeline.stop());
-  pipeline.enqueue([round('r1', 1.25, 1), round('r2', 1.25, 2)]);
+  const mutationObservedAt = new Date(Date.now() - 100).toISOString();
+  const extractionStartedAt = new Date(Date.now() - 20).toISOString();
+  const extractedAt = new Date(Date.now() - 10).toISOString();
+  const receivedAt = new Date().toISOString();
+  const receiveMonotonic = performance.now();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const validationCompletedAt = new Date().toISOString();
+  const validationMonotonic = performance.now();
+  pipeline.enqueue([round('r1', 1.25, 1), round('r2', 1.25, 2)], { timingsByRoundId: { r2: {
+    mutationObservedAt, extractionStartedAt, extractedAt,
+    pageMutationToExtractionMs: 9.5, pageExtractionMs: 1.25,
+    nodeReceivedAt: receivedAt, nodeReceivedMonotonicMs: receiveMonotonic,
+    normalizedAt: receivedAt, validationCompletedAt,
+    validationMonotonicMs: validationMonotonic,
+  } } });
   void pipeline.start({ recovered: false });
   await until(() => observed.length === 2, 'observed stage was not published');
   await new Promise(resolve => setTimeout(resolve, 125));
@@ -75,15 +103,62 @@ test('round.observed reaches the API before a delayed PostgreSQL write; equal mu
   releaseCommit();
   await until(() => persisted.length === 2 && outbox.readAll().length === 0,
     'committed stage was not handed off and removed');
+  await until(() => pipeline.snapshot().last_round_timing?.round_history_api_visibility === 'CONFIRMED',
+    'Round History API visibility was not measured');
   assert.equal(persisted[0].round_id, 'r1');
   assert.equal(persisted[1].round_id, 'r2');
   assert.equal(persisted[0].multiplier, persisted[1].multiplier);
+  assert.equal(canonicalReads, 0, 'newly inserted rows use their canonical INSERT RETURNING result');
   const latency = pipeline.snapshot().latency_ms;
   assert.equal(latency.observation_to_durable_append_ms.samples, 1);
-  assert.equal(latency.local_append_to_api_receipt_estimate_ms.p95_ms, 2.5);
+  assert.equal(latency.local_append_to_api_receipt_estimate_ms, undefined,
+    'collector-to-backend one-way latency is not guessed from unrelated process spans');
+  assert.equal(latency.page_mutation_to_multiplier_extraction_ms.samples, 1,
+    'one DOM observation is attributed only to the newest recovered row');
+  assert.equal(latency.page_extraction_ms.samples, 1);
+  assert.ok(latency.node_receive_to_validation_ms.p99_ms >= 1);
+  assert.equal(latency.validation_to_api_dispatch_ms.samples, 1);
+  assert.equal(latency.api_request_to_rules_engine_receive_ms.samples, 2);
+  assert.equal(latency.rules_engine_evaluation_ms.samples, 2);
+  assert.equal(latency.rules_complete_to_other_consumer_enqueue_ms.samples, 2);
+  assert.equal(latency.api_durable_inbox_append_ms.p99_ms, 1.25);
+  assert.equal(latency.collector_http_roundtrip_to_api_ack_ms.samples, 2,
+    'the observed-stage worker dispatches one priority round per API request');
+  assert.equal(collectorTimingSent.length, 2);
+  assert.equal(collectorTimingSent.find(item => item.round_id === 'r1').page_extraction_ms, null);
+  assert.equal(collectorTimingSent[0].page_to_node_receive_ms, null);
+  assert.ok(latency.durable_append_to_api_receipt_ms.p99_ms >= 0);
   assert.ok(latency.observation_to_postgres_commit_ms.p95_ms >= 125);
+  assert.deepEqual(historyProbes, ['r2']);
+  assert.equal(pipeline.snapshot().last_round_timing.round_history_api_visibility, 'CONFIRMED');
+  assert.ok(pipeline.snapshot().last_round_timing.timestamps.database_commit_acknowledged_at);
+  assert.ok(pipeline.snapshot().last_round_timing.timestamps.round_history_api_visible_at);
+  assert.equal(latency.database_commit_to_history_api_visible_ms.samples, 1);
   t.diagnostic(`isolated delayed-store latency ${JSON.stringify(latency)}`);
   await pipeline.stop();
+});
+
+test('duplicate round identity is canonically read and validated after an idempotent insert conflict', async t => {
+  const outbox = await fixture(t);
+  const reads = [];
+  const persisted = [];
+  const pipeline = new RoundDeliveryPipeline({ outbox,
+    roundStore: roundStore({
+      async saveRounds() { return { storage_status: 'AVAILABLE', saved: 0, insertedRounds: [],
+        commitAcknowledgedAt: new Date().toISOString() }; },
+      async loadRoundsByIds(ids) { reads.push([...ids]); return ids.map(id => round(id, 1.8, 4)); },
+    }),
+    publishObserved: async events => ({ accepted: events.length }),
+    publishPersisted: async events => { persisted.push(...events); return { accepted: events.length,
+      events: events.map(event => ({ observation_id: event.observation_id, committed_sequence: 1 })) }; },
+  });
+  t.after(() => pipeline.stop());
+  pipeline.enqueue([round('duplicate-round', 1.8, 4)]);
+  void pipeline.start({ recovered: false });
+  await until(() => outbox.readAll().length === 0, 'duplicate canonical row was not handed off');
+
+  assert.deepEqual(reads, [['duplicate-round']]);
+  assert.equal(persisted.length, 1);
 });
 
 test('recovered commit without a monotonic start keeps commit latency unavailable', async t => {

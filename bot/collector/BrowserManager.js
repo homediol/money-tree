@@ -8,13 +8,10 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { chromium } from 'playwright-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { chromium } from 'playwright';
 import { log } from './Logger.js';
-import { isAcknowledgedAuthRoute, isAviatorRoute, isExpiredAuthRoute } from './LoginManager.js';
+import { AVIATOR_URL, isAcknowledgedAuthRoute, isAviatorRoute, isExpiredAuthRoute, isLogoutPopupRoute } from './LoginManager.js';
 import { SharedPageCoordinator } from './SharedPageCoordinator.js';
-
-chromium.use(StealthPlugin());
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const ROOT       = path.resolve(__dirname, '..', '..');
@@ -25,6 +22,7 @@ const RELIABILITY_PATH = path.join(ROOT, 'data', 'bot', 'browser-reliability.jso
 const DIAGNOSTICS_PATH = path.join(ROOT, 'data', 'bot', 'browser-diagnostics.jsonl');
 const GOOGLE_USER_DATA_DIR = process.env.BOT_GOOGLE_USER_DATA_DIR || path.join(os.homedir(), '.config', 'google-chrome');
 const DEFAULT_CDP_PORT = process.env.BOT_CDP_PORT || '9222';
+const SESSION_MONITOR_URL = 'https://winner.rw/en/user/logout/popup';
 
 function isAviatorPage(page) {
   try {
@@ -91,7 +89,7 @@ function cdpEndpointCandidates(profileDir = PROFILE_DIR) {
   return [...new Set(candidates)];
 }
 
-function buildLaunchOptions() {
+export function buildLaunchOptions() {
   const playwrightExecutable = chromium.executablePath?.();
   const systemExecutables = [
     process.env.BOT_BROWSER_EXECUTABLE,
@@ -105,6 +103,7 @@ function buildLaunchOptions() {
   return {
     executablePath,
     args: [
+      '--disable-extensions',
       `--remote-debugging-port=${DEFAULT_CDP_PORT}`,
       '--disable-blink-features=AutomationControlled',
       '--disable-breakpad',
@@ -252,6 +251,11 @@ export class AviatorPageManager {
     this._browser  = null;
     this._page     = null;
     this._aviatorPage = null;
+    this._sessionMonitorPage = null;
+    this._sessionMonitorPagePromise = null;
+    this._sessionMonitorPages = new WeakSet();
+    this._monitorPageOpenInFlight = false;
+    this._pendingSessionMonitorPage = null;
     this._activeGameFrame = null;
     this._historyPage = null;
     this._ownsBrowser = false;
@@ -281,6 +285,7 @@ export class AviatorPageManager {
     this._recoveryCount = 0;
     this._recoveryPromise = null;
     this._contextClosed = false;
+    this._managedPageTrackingContext = null;
     const savedSessionPath = path.join(ROOT, 'data', 'bot', 'browser-session-state.json');
     try {
       fs.chmodSync(savedSessionPath, 0o600);
@@ -381,6 +386,57 @@ export class AviatorPageManager {
     });
     page.on?.('pageerror', error => {
       this._event('page_error', { role, error: String(error?.message || error || 'page error') });
+    });
+  }
+
+  _trackSessionMonitorPage(page) {
+    if (!page) return null;
+    if (this._pendingSessionMonitorPage === page) this._pendingSessionMonitorPage = null;
+    this._sessionMonitorPage = page;
+    if (this._sessionMonitorPages.has(page)) return page;
+    this._sessionMonitorPages.add(page);
+    this._trackPage(page, 'session_monitor');
+    page.on?.('close', () => {
+      if (this._sessionMonitorPage === page) this._sessionMonitorPage = null;
+    });
+    page.on?.('crash', () => {
+      if (this._sessionMonitorPage === page) this._sessionMonitorPage = null;
+      log.warn('BrowserManager: Winner session monitor tab crashed');
+    });
+    return page;
+  }
+
+  _watchManagedPageLimit() {
+    const context = this._context;
+    if (!this._ownsBrowser || !context || this._managedPageTrackingContext === context) return;
+    this._managedPageTrackingContext = context;
+    context.on?.('page', page => {
+      if (this._monitorPageOpenInFlight
+          && (!this._sessionMonitorPage || this._sessionMonitorPage.isClosed?.())) {
+        this._pendingSessionMonitorPage = page;
+        return;
+      }
+      const enforceLimit = () => {
+        if (!this._ownsBrowser || this._context !== context || page.isClosed?.()
+            || page === this._pendingSessionMonitorPage) return;
+        let keepPage = this._aviatorPage && !this._aviatorPage.isClosed?.() ? this._aviatorPage : null;
+        if (!keepPage) {
+          try { keepPage = context.pages().find(candidate => !candidate.isClosed?.() && isAviatorPage(candidate)); }
+          catch (error) {
+            log.debug(`Managed tab limit check skipped while context is closing: ${error.message}`);
+            return;
+          }
+        }
+        if (keepPage) void this._cleanupManagedStarterPages(keepPage).catch(error => {
+          log.warn(`BrowserManager: extra managed tabs could not be cleaned up: ${error.message}`);
+        });
+      };
+      page.once?.('domcontentloaded', () => {
+        const timer = setTimeout(enforceLimit, 500);
+        timer.unref?.();
+      });
+      const timer = setTimeout(enforceLimit, 1500);
+      timer.unref?.();
     });
   }
 
@@ -865,6 +921,7 @@ export class AviatorPageManager {
     this._historyPage = this._aviatorPage;
     this._bettingPage = this._aviatorPage;
     this._ownsBrowser = true;
+    this._watchManagedPageLimit();
     this.restartCount += 1;
     this._browserStartedAt = Date.now();
     this._event('browser_launched', { restart_count: this.restartCount });
@@ -941,6 +998,70 @@ export class AviatorPageManager {
     this._trackPage(page, 'shared_aviator');
   }
 
+  /**
+   * Open the Winner logout countdown route in the collector's existing
+   * authenticated context. The watchdog monitors only this route and restores
+   * the game tab to the foreground after setup.
+   */
+  async getSessionMonitorPage(mainPage = null) {
+    if (!this.hasContext()) throw new Error('WINNER_SESSION_MONITOR_CONTEXT_UNAVAILABLE');
+    if (this._sessionMonitorPage && !this._sessionMonitorPage.isClosed?.()) return this._sessionMonitorPage;
+    if (this._sessionMonitorPagePromise) return this._sessionMonitorPagePromise;
+    const restoredMonitor = this._context.pages().find(page =>
+      !page.isClosed?.() && isLogoutPopupRoute(page.url?.() || ''));
+    if (restoredMonitor) return this._trackSessionMonitorPage(restoredMonitor);
+
+    this._monitorPageOpenInFlight = true;
+    this._sessionMonitorPagePromise = (async () => {
+      let page = null;
+      try {
+        page = await this._context.newPage();
+        this._trackSessionMonitorPage(page);
+        await page.goto(SESSION_MONITOR_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        this._event('session_monitor_tab_opened', { route: '/en/user/logout/popup' });
+        if (mainPage && !mainPage.isClosed?.()) {
+          await mainPage.bringToFront?.().catch(error => {
+            log.debug(`Aviator tab focus could not be restored after session monitor setup: ${error.message}`);
+          });
+        }
+        this._persistMetadata();
+        return page;
+      } catch (error) {
+        this._sessionMonitorPage = null;
+        await page?.close?.().catch(closeError => log.debug(
+          `Failed session monitor tab could not be closed: ${closeError.message}`,
+        ));
+        this._event('session_monitor_tab_failed', { reason: String(error?.message || error).slice(0, 160) });
+        throw error;
+      } finally {
+        this._monitorPageOpenInFlight = false;
+        this._pendingSessionMonitorPage = null;
+        const aviatorPage = this._aviatorPage;
+        if (this._ownsBrowser && aviatorPage && !aviatorPage.isClosed?.()) {
+          await this._cleanupManagedStarterPages(aviatorPage).catch(cleanupError => {
+            log.warn(`BrowserManager: tabs could not be normalized after monitor setup: ${cleanupError.message}`);
+          });
+        }
+      }
+    })();
+    try { return await this._sessionMonitorPagePromise; }
+    finally { this._sessionMonitorPagePromise = null; }
+  }
+
+  async closeSessionMonitorPage() {
+    const page = this._sessionMonitorPage;
+    this._sessionMonitorPage = null;
+    if (!page || page.isClosed?.()) return;
+    try { await page.close(); }
+    catch (error) { log.debug(`Session monitor tab could not be closed: ${error.message}`); }
+  }
+
+  isSessionMonitorPage(page) {
+    return Boolean(page && (page === this._sessionMonitorPage
+      || this._sessionMonitorPages.has(page)
+      || isLogoutPopupRoute(page.url?.() || '')));
+  }
+
   async getAviatorPage() {
     if (!this.hasContext()) await this.launch();
     if (!this.hasContext()) throw new Error('SHARED_AVIATOR_BROWSER_CONTEXT_UNAVAILABLE');
@@ -950,7 +1071,7 @@ export class AviatorPageManager {
       if (Array.isArray(contexts) && (contexts.length !== 1 || contexts[0] !== this._context)) {
         throw new Error(`SHARED_AVIATOR_CONTEXT_COUNT_INVALID:${contexts.length}`);
       }
-      const pages = this._context.pages().filter(page => !page.isClosed());
+      const pages = this._context.pages().filter(page => !page.isClosed() && !this.isSessionMonitorPage(page));
       const candidates = pages.filter(isAviatorPage);
       let page = null;
       if (candidates.length > 1) {
@@ -988,12 +1109,12 @@ export class AviatorPageManager {
       this._historyTargetId = this._aviatorTargetId;
       this._bettingTargetId = this._aviatorTargetId;
       await this._restoreSessionStorage(page);
-      if (this._ownsBrowser && /^about:blank/i.test(page.url()) && this._lastKnownUrls?.aviator) {
+      if (this._ownsBrowser && /^about:blank/i.test(page.url())) {
         try {
-          const target = new URL(this._lastKnownUrls.aviator);
-          if (target.hostname === 'winner.rw' && /aviator|crash-games/i.test(target.pathname)) {
-            await page.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 20000 });
-          }
+          // Persisted browser metadata can outlive Winner route changes. Always
+          // restore the one canonical Aviator route instead of replaying a
+          // stale Winner alias.
+          await page.goto(AVIATOR_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
         } catch (error) {
           this._event('last_known_url_restore_failed', { role: 'aviator', error: String(error?.message || error) });
         }
@@ -1057,26 +1178,27 @@ export class AviatorPageManager {
   }
 
   /**
-   * A persistent collector profile can restore old Winner and chrome://newtab
-   * pages. Winner's sportsbook shell exposes the untranslated document title
-   * "MetaBrandTitle", leaving that broken-looking tab beside the real Aviator
-   * page. These are safe to close only when this manager owns the dedicated
-   * bot browser; attached user browsers are never modified.
+   * Keep the owned bot profile to the Aviator collector and logout monitor
+   * tabs. Attached user browsers are never modified.
    */
   async _cleanupManagedStarterPages(keepPage) {
-    if (!this._ownsBrowser || !this._context) return;
-    for (const page of this._context.pages()) {
-      if (page === keepPage || page.isClosed()) continue;
-      if (page === this._bettingPage) continue;
-      const url = page.url().toLowerCase();
-      const staleWinnerShell = url.includes('winner.rw') && !isAviatorPage(page);
-      const disposableBlank = url === 'about:blank' || url.startsWith('chrome://newtab');
-      if (!staleWinnerShell && !disposableBlank) continue;
+    if (!this._ownsBrowser || !this._context || !keepPage || keepPage.isClosed?.()) return;
+    const pages = this._context.pages().filter(page => !page.isClosed());
+    const monitorEnabled = process.env.SESSION_MONITOR_TAB_ENABLED !== 'false';
+    const monitorPage = monitorEnabled
+      ? (pages.includes(this._sessionMonitorPage) ? this._sessionMonitorPage
+        : pages.includes(this._pendingSessionMonitorPage) ? this._pendingSessionMonitorPage
+          : pages.find(page => page !== keepPage && isLogoutPopupRoute(page.url?.() || '')) || null)
+      : null;
+    this._sessionMonitorPage = monitorPage ? this._trackSessionMonitorPage(monitorPage) : null;
+    for (const page of pages) {
+      if (page === keepPage || page === monitorPage) continue;
+      const url = this._safeUrl(page.url?.()).toLowerCase();
       try {
         await page.close();
-        log.info(`BrowserManager: closed stale managed tab: ${url}`);
+        log.info(`BrowserManager: closed extra managed tab: ${url || 'unknown'}`);
       } catch (err) {
-        log.warn(`BrowserManager: could not close stale managed tab ${url}: ${err.message}`);
+        log.warn(`BrowserManager: could not close extra managed tab ${url || 'unknown'}: ${err.message}`);
       }
     }
     if (this._page && this._page !== keepPage && this._page.isClosed()) {
@@ -1101,6 +1223,7 @@ export class AviatorPageManager {
   /** Close everything cleanly. */
   async _close() {
     this.stopHeartbeat();
+    await this.closeSessionMonitorPage();
     if (this._context) {
       if (this._ownsBrowser) {
         try { await this._context.close(); }
@@ -1123,6 +1246,10 @@ export class AviatorPageManager {
     this._aviatorTargetId = null;
     this._historyTargetId = null;
     this._bettingTargetId = null;
+    this._sessionMonitorPagePromise = null;
+    this._managedPageTrackingContext = null;
+    this._monitorPageOpenInFlight = false;
+    this._pendingSessionMonitorPage = null;
     this._ownsBrowser = false;
     this._contextClosed = false;
   }

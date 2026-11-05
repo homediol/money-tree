@@ -17,10 +17,17 @@ Rule Aggregator
         ↓
 Decision Interface
         ↓
-Risk Management
+Existing Betting Executor
         ↓
-Execution Interface
+Execution Result and Reconciliation
 ```
+
+The former Risk Management subsystem has been removed from the active
+application, API, and dashboard. The operator emergency stop is an independent
+operational latch. Fixed simulated stake is configured in the Rules Engine;
+cashout remains fixed at 2.00x. LIVE_REAL still requires explicit operator
+authorization and verified platform, target, deadline, acceptance, and
+settlement evidence.
 
 The registry contains the source project's Start Check policy, separate legacy
 tracker, five independent research rules, and accepted combined user policy.
@@ -51,10 +58,14 @@ requires PostgreSQL (`REQUIRE_POSTGRES=true`). The legacy JSON round file is
 read only for a one-time history import. Do not commit database credentials,
 API keys, or browser-session data.
 
-For a remotely reachable dashboard, set a random `API_KEY` and restrict
-`CORS_ORIGINS` to the dashboard origins. Enter the same API key in the
-dashboard's Settings page. `PUBLIC_READ_ONLY=true` allows unauthenticated
-dashboard reads while keeping write actions protected.
+For remote use, set a random `API_KEY` and restrict `CORS_ORIGINS` to trusted
+dashboard origins. Remote dashboard access requires that owner key. A dashboard
+opened on localhost uses a short-lived HttpOnly session without exposing the key
+to frontend code; sensitive LIVE authorization still requires the owner bearer
+key. The legacy `PUBLIC_ACCESS` and `PUBLIC_READ_ONLY` settings no longer open
+private routes. The only anonymous integration reads are the committed-round
+endpoints `GET /api/v1/rounds/latest` and `GET /api/v1/rounds`; see the
+[public API guide](docs/public-api.md).
 
 ## Dashboard
 
@@ -65,11 +76,22 @@ dashboard reads while keeping write actions protected.
 - **Bet Results:** execution, balance, and reconciliation records.
 - **Operations & Recovery:** backend, collector, browser, and recovery status.
 - **Settings:** API access and backend/history status.
+- **Rules Signal API:** live health and BET signal monitoring, API checks,
+  owner-managed scoped keys, and in-app integration documentation.
+
+The Rules Signal API consumer surface is rooted at `/api/v1`. External consumer
+keys are read-only and scoped; an internal publisher key can only write
+authoritative signal events. Generate and rotate keys from the owner-only
+Rules Signal API page. PostgreSQL stores only key hashes. The publisher must
+call `POST /api/v1/publisher/heartbeat` to appear connected; a disconnected
+publisher status is retained until a real heartbeat or valid signal arrives.
+The Python API distributes Node Rules Engine results and never places bets.
 
 Useful endpoints include `/health`, `/api/history/status`,
-`/api/rules-engine/status`, `/api/rules-engine/evaluate`, `/api/risk/status`,
-and `/ws/live`. The decision submission endpoint fails closed while the Rules
-Engine cannot authorize execution; real-money execution remains off.
+`/api/rules-engine/status`, `/api/rules-engine/evaluate`, `/api/live/status`,
+and `/ws/live`. The decision submission endpoint forwards only a matching,
+unexpired target-bound selection through the existing executor; LIVE_REAL
+remains blocked unless each independent authorization and platform check passes.
 
 See [the Rules Engine migration and operating notes](docs/rules-engine-migration.md)
 for the source rule manifest, mode differences, configuration, persistence,
@@ -96,7 +118,9 @@ cd frontend
 npm run build
 ```
 
-PostgreSQL owns canonical history, settings, audit records, risk state, and
-financial execution records. The prediction-only legacy tables are retained
+PostgreSQL owns canonical history, settings, audit records, the operational
+emergency-stop latch, and financial execution records. There are no Risk
+Management-specific tables; old generic application-state snapshots and
+historical execution profile values remain for compatibility and audit. The prediction-only legacy tables are retained
 in a reversible PostgreSQL schema archive; real rounds and financial records
 remain in their active tables.

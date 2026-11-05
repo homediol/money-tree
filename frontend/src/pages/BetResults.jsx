@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Card from '../components/Card.jsx';
 import { getBalanceLedger, getExecutionDetail, getResultExecutions, getSessionMetrics } from '../services/api.js';
 
@@ -11,10 +11,19 @@ export default function BetResults() {
   const [ledger, setLedger] = useState([]);
   const [metrics, setMetrics] = useState(null);
   const [detail, setDetail] = useState(null);
+  const refreshInFlight = useRef(false);
 
   async function refresh() {
-    const [xs, ls, ms] = await Promise.all([getResultExecutions(), getBalanceLedger(), getSessionMetrics()]);
-    setExecutions(xs); setLedger(ls); setMetrics(ms[0] || null);
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    try {
+      const [xs, ls, ms] = await Promise.all([getResultExecutions(), getBalanceLedger(), getSessionMetrics()]);
+      setExecutions(xs); setLedger(ls); setMetrics(ms[0] || null);
+    } catch {
+      // Retain the last verified display while the backend is temporarily slow.
+    } finally {
+      refreshInFlight.current = false;
+    }
   }
   useEffect(() => { refresh(); const id = setInterval(refresh, 5000); return () => clearInterval(id); }, []);
 
@@ -24,7 +33,6 @@ export default function BetResults() {
     ['Goal', metrics?.goal_balance ?? '—'], ['P/L', metrics?.profit ?? '—'], ['Bets', metrics?.total_bets ?? '—'],
     ['Wins', metrics?.wins ?? '—'], ['Losses', metrics?.losses ?? '—'], ['Unknown', metrics?.unknown ?? '—'],
     ['Win Rate', metrics?.win_rate == null ? '—' : `${(metrics.win_rate * 100).toFixed(1)}%`],
-    ['Drawdown', metrics?.drawdown ?? '—'], ['Consecutive Losses', metrics?.consecutive_losses ?? '—'],
     ['Session', metrics?.state || 'NO VERIFIED DATA'],
   ];
   return <div className="space-y-5">

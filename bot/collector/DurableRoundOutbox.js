@@ -185,10 +185,7 @@ export class DurableRoundOutbox {
             pid: process.pid, hostname: os.hostname(), process_start: processStartIdentity(process.pid),
             token, created_at: new Date().toISOString(),
           }));
-          fs.fsyncSync(fd);
         } finally { fs.closeSync(fd); }
-        this._fsyncDirectoryBestEffort(lockPath);
-        this._fsyncDirectoryBestEffort(path.dirname(this.filePath));
         return () => {
           try {
             const owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8'));
@@ -319,7 +316,8 @@ export class DurableRoundOutbox {
     try {
       let offset = 0;
       while (offset < encoded.length) offset += fs.writeSync(fd, encoded, offset, encoded.length - offset);
-      fs.fsyncSync(fd);
+      if (typeof fs.fdatasyncSync === 'function') fs.fdatasyncSync(fd);
+      else fs.fsyncSync(fd);
     }
     finally { fs.closeSync(fd); }
     if (!existed) {
@@ -514,12 +512,13 @@ export class DurableRoundOutbox {
   }
 
   markObservedHandoff(roundIds, publishedAt = new Date().toISOString(), receipt = {}) {
-    return this.updateRecords(roundIds, record => ({
-      ...record, observed_handoff_at: publishedAt,
-      collector_to_api_one_way_estimate_ms: receipt.collector_to_api_one_way_estimate_ms ?? null,
-      collector_api_roundtrip_ms: receipt.collector_api_roundtrip_ms ?? null,
-      observed_attempts: 0, observed_next_attempt_at: null, observed_last_error: null,
-    }));
+    return this.updateRecords(roundIds, record => {
+      const updated = { ...record };
+      delete updated.collector_to_api_one_way_estimate_ms;
+      return { ...updated, observed_handoff_at: publishedAt,
+        collector_api_roundtrip_ms: receipt.collector_api_roundtrip_ms ?? null,
+        observed_attempts: 0, observed_next_attempt_at: null, observed_last_error: null };
+    });
   }
 
   markPersistenceFailure(roundIds, error, attempts, nextAttemptAt) {
@@ -607,6 +606,31 @@ export class DurableRoundOutbox {
         persisted_handoff_at: new Date().toISOString(),
         committed_sequence: event?.committed_sequence ?? record.committed_sequence ?? null,
       };
+    });
+  }
+
+  acknowledgePersistedAndRemove(roundIds, committedEvents) {
+    if (!this.eventOutbox) {
+      this.markPersistedHandoff(roundIds, committedEvents);
+      return this.removePersisted(roundIds);
+    }
+    const selected = new Set((roundIds || []).map(String));
+    const acknowledged = new Set();
+    for (const event of committedEvents || []) {
+      const identity = String(event?.observation_id || event?.round_id || '');
+      if (identity) acknowledged.add(identity);
+      if (event?.round_id) acknowledged.add(String(event.round_id));
+    }
+    if (!selected.size || !acknowledged.size) return this.stats();
+    return this._withEventJournalLock(() => {
+      const remaining = this._eventRecords.filter(record => {
+        if (!selected.has(String(record.round_id))
+            || record.persistence_status !== 'COMMITTED') return true;
+        const identity = String(record.observation_id || record.round_id);
+        return !acknowledged.has(identity) && !acknowledged.has(String(record.round_id));
+      });
+      if (remaining.length !== this._eventRecords.length) this._writeEventSnapshot(remaining);
+      return this._eventStatsUnlocked();
     });
   }
 

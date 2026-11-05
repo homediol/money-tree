@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { drainDirectRoundEventOutbox, publishDirectRoundObservations } from '../collector/CollectorRoundEventClient.js';
+import { drainDirectRoundEventOutbox, probeRoundHistoryVisibility,
+  publishDirectRoundObservations } from '../collector/CollectorRoundEventClient.js';
 
 const directRound = {
   round_id: 'aviator-direct-001', multiplier: 2.35,
@@ -12,8 +13,14 @@ const directRound = {
 
 test('publishes real direct-page identity and timestamp before persistence handoff', async () => {
   let request;
+  const collectorTiming = [{ round_id: directRound.round_id,
+    page_mutation_to_extraction_ms: 1.25, page_extraction_ms: 0.75,
+    node_receive_to_validation_ms: 0.5, validation_to_api_dispatch_ms: 2.0,
+    page_to_node_receive_ms: null,
+    page_to_node_receive_unavailable_reason: 'SEPARATE_MONOTONIC_CLOCK_DOMAINS' }];
   const result = await publishDirectRoundObservations([directRound], {
     url: 'http://backend.test/api/collector/round-observed', apiKey: 'test-api-key',
+    collectorTiming,
     fetchImpl: async (url, options) => {
       request = { url, options, body: JSON.parse(options.body) };
       return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, accepted: 1 }) };
@@ -24,6 +31,7 @@ test('publishes real direct-page identity and timestamp before persistence hando
   assert.equal(request.url, 'http://backend.test/api/collector/round-observed');
   assert.equal(request.options.headers.authorization, 'Bearer test-api-key');
   assert.equal(request.body.source, 'WINNER_DIRECT_PAGE_HISTORY');
+  assert.deepEqual(request.body.collector_timing, collectorTiming);
   assert.deepEqual({
     round_id: request.body.rounds[0].round_id,
     observation_id: request.body.rounds[0].observation_id,
@@ -96,4 +104,30 @@ test('observed-stage acknowledgement does not complete the durable round outbox'
   });
   assert.equal(receipt.accepted, 1);
   assert.equal(outbox.rows.length, 1);
+});
+
+test('Round History visibility probe confirms the committed identity through the existing API', async () => {
+  let requestedUrl;
+  const result = await probeRoundHistoryVisibility('aviator-direct-001', {
+    url: 'http://backend.test/api/history?limit=100',
+    fetchImpl: async (url, options) => {
+      requestedUrl = url;
+      assert.equal(options.method, 'GET');
+      return { ok: true, status: 200,
+        text: async () => JSON.stringify({ rounds: [{ round_id: 'aviator-direct-001' }] }) };
+    },
+  });
+
+  assert.equal(requestedUrl, 'http://backend.test/api/history?limit=100');
+  assert.equal(result.available, true);
+  assert.equal(result.status, 'CONFIRMED');
+  assert.ok(result.checked_at);
+});
+
+test('Round History visibility probe preserves UNKNOWN when the round is absent', async () => {
+  const result = await probeRoundHistoryVisibility('missing-round', {
+    fetchImpl: async () => ({ ok: true, status: 200, text: async () => '{"rounds":[]}' }),
+  });
+  assert.equal(result.available, false);
+  assert.equal(result.status, 'ROUND_NOT_IN_RESPONSE');
 });

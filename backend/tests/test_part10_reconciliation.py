@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -22,7 +22,7 @@ def setup(tmp_path):
 
 def execution(**changes):
     row = {"execution_id": "x1", "decision_id": "d1", "target_round_id": "101",
-           "profile": "PROFILE_A", "bet_amount": 100, "cashout_target": 2.0,
+           "profile": "FIXED", "bet_amount": 100, "cashout_target": 2.0,
            "status": "BET_PLACED", "lifecycle_state": "PLACED", "simulated": False,
            "created_at": now(), "updated_at": now(), "placed_at": now(),
            "resolved_at": None, "result_multiplier": None, "balance_before": 1000,
@@ -75,7 +75,7 @@ def test_platform_balance_mismatch_stays_unknown_and_pauses(setup):
     assert result["outcome"] == "UNKNOWN"
     assert result["balance"]["balance_status"] == "MISMATCH"
     assert result["balance"]["internal_expected_balance"] == 1100
-    assert result["risk_action"] == "PAUSE"
+    assert result["post_result_action"] == "PAUSE"
     saved = repo.execution_by_id("x1")
     assert saved["profit_loss"] is None
 
@@ -132,7 +132,7 @@ def test_multiplier_without_receipts_never_creates_win_or_loss(setup, multiplier
                                              "platform_observed_balance": 900}))
     assert result["status"] == "RECONCILIATION_PENDING"
     assert result["outcome"] == "UNKNOWN"
-    assert result["risk_action"] == "PAUSE"
+    assert result["post_result_action"] == "PAUSE"
     assert repo.list_reconciliations() == []
     assert repo.execution_by_id("x1")["profit_loss"] is None
 
@@ -206,11 +206,11 @@ def test_simulated_session_keeps_reconciled_terminal_status(tmp_path):
 
     async def scenario():
         await manager.start_session(SessionStartRequest(
-            action="start", mode="SIMULATION", profile="PROFILE_A",
+            action="start", mode="SIMULATION",
             starting_balance=1000, goal_balance=2000))
         await manager.submit_decision(DecisionIntent(
-            decision_id="sim-terminal", round_id="101", profile="PROFILE_A",
-            cashout=2.0, bet_amount=100))
+            decision_id="sim-terminal", round_id="101", cashout=2.0, bet_amount=100,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=30)))
         for _ in range(50):
             saved = repo.execution_for("sim-terminal", "101")
             if saved and saved["status"] == "RECONCILED":

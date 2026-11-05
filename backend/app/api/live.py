@@ -144,12 +144,6 @@ async def refresh_cashout(request: Request):
         await client.close()
 
 
-@router.get("/risk")
-async def risk_status(request: Request):
-    betting = request.app.state.betting
-    return {"ok": True, "status": request.app.state.risk.status(betting.status())}
-
-
 @router.post("/start")
 async def start(request: Request, body: dict):
     return {"ok": False, "error": "backend_mode_switch_required",
@@ -176,8 +170,20 @@ async def stop(request: Request):
 
 @router.post("/emergency-stop")
 async def emergency_stop(request: Request):
-    await request.app.state.risk.emergency_stop()
+    await request.app.state.emergency_stop.trigger()
     return {"ok": True, "status": await request.app.state.betting_mode.force_safe("emergency_stop")}
+
+
+@router.post("/emergency-stop/reset")
+async def reset_emergency_stop(request: Request):
+    modes = request.app.state.betting_mode
+    if modes.mode == "LIVE_REAL" or modes.live_authorized:
+        raise HTTPException(status_code=409, detail={
+            "reason": "DISARM_LIVE_BEFORE_RESETTING_EMERGENCY_STOP",
+        })
+    await request.app.state.emergency_stop.reset()
+    return {"ok": True, "emergency_stop": request.app.state.emergency_stop.status(),
+            "status": modes.status()}
 
 
 @router.get("/status")

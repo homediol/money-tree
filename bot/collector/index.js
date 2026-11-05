@@ -135,7 +135,7 @@ class AviatorCollector {
       browserManager:this.browser,
       loginManager:  this.loginMgr,
       health:        this.health,
-      onUnhealthy:   (reason, page) => this._onWatchdogAlert(reason, page),
+      onUnhealthy:   (reason, page, details) => this._onWatchdogAlert(reason, page, details),
     });
     this.restoredCollectorState = null;
     this._storageTimer = null;
@@ -193,12 +193,21 @@ class AviatorCollector {
 
     // Watchdog recovery signal — set when watchdog fires, cleared after recovery
     this._watchdogReason = null;
+    this._watchdogSessionRecovery = null;
+    this._watchdogManualVerificationPage = null;
   }
 
-  _stageDirectRoundObservations(rounds, source) {
+  _stageDirectRoundObservations(rounds, source, sourceTiming = null) {
     try {
       const deliveryMode = source === 'live_history' ? 'LIVE' : 'RECOVERED';
-      const capacity = this.roundDelivery.enqueue(rounds, { deliveryMode });
+      const timingsByRoundId = {};
+      // A single changed history row is attributable to this DOM mutation.
+      // When history reconnect reveals several rounds at once, timing is only
+      // attributed to the newest row; the older discoveries remain unknown.
+      if (sourceTiming && rounds.length) {
+        timingsByRoundId[String(rounds.at(-1).round_id)] = sourceTiming;
+      }
+      const capacity = this.roundDelivery.enqueue(rounds, { deliveryMode, timingsByRoundId });
       log.info('Direct Winner-page observations durably queued for backend staging', {
         component: 'collector', state: this.sm.current, source, count: rounds.length,
         backlog_size: capacity.backlog_size,
@@ -295,9 +304,11 @@ class AviatorCollector {
     }
   }
 
-  async _onWatchdogAlert(reason, page) {
+  async _onWatchdogAlert(reason, page, details = {}) {
     // Signal the main loop to recover on its next iteration
     this._watchdogReason = reason;
+    if (details.sessionRecovery) this._watchdogSessionRecovery = details.sessionRecovery;
+    if (details.recoveryPage) this._watchdogManualVerificationPage = details.recoveryPage;
     const category = reason.startsWith('AUTH_REQUIRED:') ? 'AUTH_REQUIRED'
       : reason.startsWith('PAGE_CRASHED:') ? 'PAGE_CRASH'
         : reason.startsWith('NETWORK:') ? 'NETWORK_UNAVAILABLE' : 'PAGE_RECOVER';
@@ -752,10 +763,56 @@ class AviatorCollector {
     let manualLoginPrompted = false;
     while (!this.signal?.aborted) {
       if (this._page && !this._page.isClosed?.()) {
-        const session = typeof this.loginMgr.inspectSession === 'function'
+        let session = typeof this.loginMgr.inspectSession === 'function'
           ? await this.loginMgr.inspectSession(this._page)
           : { status: await this.loginMgr.isLoggedIn(this._page) ? 'AUTHENTICATED'
             : await this.loginMgr.isExplicitlyLoggedOut?.(this._page) ? 'EXPIRED' : 'UNKNOWN' };
+        if (this._watchdogSessionRecovery === 'MANUAL_VERIFICATION') {
+          const monitorPage = this.watchdog.getSessionMonitorPage?.();
+          const monitorSession = monitorPage && typeof this.loginMgr.inspectSession === 'function'
+            ? await this.loginMgr.inspectSession(monitorPage).catch(() => ({ status: 'UNKNOWN' }))
+            : { status: 'UNKNOWN' };
+          if (session.status === 'MANUAL_VERIFICATION') {
+            this._watchdogManualVerificationPage = 'MAIN';
+          } else if (monitorSession.status === 'MANUAL_VERIFICATION') {
+            this._watchdogManualVerificationPage = 'MONITOR';
+          }
+          const verificationPage = this._watchdogManualVerificationPage || 'MONITOR';
+          const verificationSession = verificationPage === 'MAIN' ? session : monitorSession;
+          if (verificationSession.status === 'MANUAL_VERIFICATION') {
+            session = verificationSession;
+          } else if (verificationPage === 'MONITOR' && monitorSession.status === 'EXPIRED') {
+            this._watchdogSessionRecovery = 'RELOGIN';
+            session = monitorSession;
+          } else if (session.status === 'AUTHENTICATED'
+              && (verificationPage === 'MAIN' || ['AUTHENTICATED', 'EXPIRING'].includes(monitorSession.status))) {
+            this._watchdogSessionRecovery = null;
+            this._watchdogManualVerificationPage = null;
+            await this.watchdog.refreshSessionMonitorAfterLogin?.(this._page).catch(error => {
+              log.warn(`Session monitor refresh after operator verification failed: ${formatError(error)}`);
+            });
+          } else {
+            session = { status: 'MANUAL_VERIFICATION', reasonCode: 'HUMAN_VERIFICATION_REQUIRED' };
+          }
+        } else if (this._watchdogSessionRecovery === 'RELOGIN') {
+          if (session.status === 'MANUAL_VERIFICATION') {
+            this._watchdogSessionRecovery = 'MANUAL_VERIFICATION';
+            this._watchdogManualVerificationPage = 'MAIN';
+          } else if (session.status === 'AUTHENTICATED' && manualLoginPrompted) {
+            // The automatic path already sent the page to Winner's login form;
+            // an authenticated session here therefore came from operator login.
+            this._watchdogSessionRecovery = null;
+            this._watchdogManualVerificationPage = null;
+            await this.watchdog.refreshSessionMonitorAfterLogin?.(this._page).catch(error => {
+              log.warn(`Session monitor refresh after operator login failed: ${formatError(error)}`);
+            });
+          } else {
+            session = {
+              status: 'EXPIRED', reasonCode: 'WATCHDOG_VERIFIED_SESSION_EXPIRY',
+              evidence: { source: 'logout-popup-countdown' },
+            };
+          }
+        }
         if (session.status === 'AUTHENTICATED') {
           this.health.setLoggedIn(true);
           this.health.setAuthRequired(null);
@@ -797,7 +854,12 @@ class AviatorCollector {
             this.health.setRecovery?.('CHECKING_SESSION', { attempt: loginAttempt + 1, reasonCode: session.reasonCode, evidence: session.evidence });
             if (!this.sm.is(State.CHECKING_SESSION)) this.sm.transition(State.CHECKING_SESSION, session.reasonCode || 'verified-session-expiry');
             try {
-              await this.loginMgr.ensureLoggedIn(this._page, this.signal);
+              await this.loginMgr.ensureLoggedIn(this._page, this.signal, { forceLogin: true });
+              this._watchdogSessionRecovery = null;
+              this._watchdogManualVerificationPage = null;
+              await this.watchdog.refreshSessionMonitorAfterLogin?.(this._page).catch(error => {
+                log.warn(`Session monitor refresh after automatic login failed: ${formatError(error)}`);
+              });
               this.health.setLoggedIn(true);
               this.health.recordLogin();
               nextRouteAttemptAt = 0;
@@ -817,7 +879,7 @@ class AviatorCollector {
             }
           } else if (!manualLoginPrompted) {
             manualLoginPrompted = true;
-            try { await this.loginMgr.ensureLoggedIn(this._page, this.signal); }
+            try { await this.loginMgr.ensureLoggedIn(this._page, this.signal, { forceLogin: true }); }
             catch (error) {
               this.health.setAuthRequired(error?.message || reason || 'Complete login or verification in the collector browser');
               this.health.setError(formatError(error), error?.code || 'AUTH_REQUIRED', 'wait_for_manual_login');
@@ -1041,8 +1103,10 @@ class AviatorCollector {
 
       // Save new rounds
       if (currSig !== this._lastSavedSig) {
+        const validationStartedMonotonicMs = Number(event.nodeReceivedMonotonicMs);
         const { history, added } = appendRounds(this._history, inferred, event.timestamp || new Date().toISOString(),
           { gapBefore: this._unverifiedGapPending });
+        const validationMonotonicMs = performance.now();
         if (added.length > 0) {
           if (event.gamePhase && added.length) {
             const phaseSource = added.at(-1);
@@ -1052,7 +1116,19 @@ class AviatorCollector {
           // Publish the real browser observation before the PostgreSQL write.
           // The observer must not treat a target as unknown merely because its
           // row is waiting behind an advisory lock held by score persistence.
-          this._stageDirectRoundObservations(added, 'live_history');
+          this._stageDirectRoundObservations(added, 'live_history', {
+            mutationObservedAt: event.mutationObservedAt,
+            extractionStartedAt: event.extractionStartedAt,
+            extractedAt: event.extractedAt,
+            nodeReceivedAt: event.nodeReceivedAt,
+            normalizedAt: event.normalizedAt,
+            validationCompletedAt: new Date().toISOString(),
+            pageMutationToExtractionMs: event.pageMutationToExtractionMs,
+            pageExtractionMs: event.pageExtractionMs,
+            nodeReceivedMonotonicMs: Number.isFinite(validationStartedMonotonicMs)
+              ? validationStartedMonotonicMs : null,
+            validationMonotonicMs,
+          });
           this._history = history;
           this._lastSavedSig = currSig;
           if (event.gamePhase) this.health.recordGamePhase(added.at(-1)?.game_phase, added.at(-1));

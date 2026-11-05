@@ -396,6 +396,8 @@ class HistoryCollectorManager:
         return sorted(result, key=lambda row: row["round_index"])
 
     def stats(self) -> dict:
+        if self.repository is not None:
+            return self.repository.round_history_stats()
         values = [r["multiplier"] for r in self.rows()]
         return {
             "total": len(values),

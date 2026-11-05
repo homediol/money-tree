@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 
 import { BrowserSupervisor } from '../collector/BrowserManager.js';
-import { Collector } from '../collector/Collector.js';
+import { Collector, _installObserver } from '../collector/Collector.js';
 import { FrameManager } from '../collector/FrameManager.js';
 import { SharedPageCoordinator } from '../collector/SharedPageCoordinator.js';
 import { isAviatorRoute, LoginManager } from '../collector/LoginManager.js';
@@ -276,6 +276,38 @@ test('logout popup route cannot be mistaken for an authenticated session', async
   assert.equal(await manager.isLoggedIn(page), false);
 });
 
+test('verified Winner logout countdown is reported as expiring without dismissing the popup', async () => {
+  let clicks = 0;
+  const page = {
+    isClosed: () => false,
+    url: () => 'https://winner.rw/en/user/logout/popup',
+    locator: selector => ({
+      first: () => ({ isVisible: async () => false }),
+      innerText: async () => selector === 'body' ? 'Log out? 0:20 YES NO' : '',
+      click: async () => { clicks += 1; },
+    }),
+  };
+  const manager = new LoginManager({ phone: 'test', password: 'test' });
+  const session = await manager.inspectSession(page);
+  assert.equal(session.status, 'EXPIRING');
+  assert.equal(session.reasonCode, 'LOGOUT_COUNTDOWN_VISIBLE');
+  assert.equal(session.evidence.countdown_seconds, 20);
+  assert.equal(clicks, 0);
+});
+
+test('automatic login recovery leaves a verified logout countdown for the operator', async () => {
+  let navigationAttempts = 0;
+  const page = {
+    isClosed: () => false,
+    url: () => 'https://winner.rw/en/user/logout/popup',
+    locator: () => ({ innerText: async () => 'Log out? 0:20 YES NO' }),
+    goto: async () => { navigationAttempts += 1; },
+  };
+  const manager = new LoginManager({ phone: 'test', password: 'test' });
+  await assert.rejects(manager.ensureLoggedIn(page), error => error.code === 'AUTH_REQUIRED');
+  assert.equal(navigationAttempts, 0);
+});
+
 test('Aviator UI launch follows Crash Games search and Play Game in the same tab', async () => {
   const actions = [];
   let attached = false;
@@ -321,6 +353,8 @@ test('Aviator UI launch follows Crash Games search and Play Game in the same tab
 test('login return URL containing Aviator is not treated as a game route', async () => {
   assert.equal(isAviatorRoute('https://winner.rw/en/authentication/login?returnUrl=%2Fen%2Fvirtual%2Fcrash-games%2Faviator'), false);
   assert.equal(isAviatorRoute('https://winner.rw/en/virtual/crash-games/aviator?campaign=live'), true);
+  assert.equal(isAviatorRoute('https://winner.rw/en/games/aviator'), false,
+    'the retired Winner URL must not be accepted as the collector game route');
   assert.equal(isAviatorRoute('https://aviator.spribegaming.com/game'), false);
 
   let navigationAttempts = 0;
@@ -570,4 +604,113 @@ test('collector installs an observer from a ready frame', async () => {
   const result = await new Collector().install(frame);
   assert.deepEqual(result.multipliers, [1.2, 2.5]);
   assert.equal(result.signature, '1.20|2.50');
+});
+
+test('payout observer filters unrelated mutations and reuses cached phase context', async () => {
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    MutationObserver: globalThis.MutationObserver,
+    setInterval: globalThis.setInterval,
+  };
+  const notifications = [];
+  const observerCallbacks = [];
+  let payoutListReads = 0;
+  let providerMarkerReads = 0;
+  const payout = {
+    nodeType: 1,
+    textContent: '1.50x',
+    closest: selector => selector === '.payouts-block .payout' ? payout
+      : selector === '.payouts-block' ? payoutBlock : null,
+    matches: selector => selector === '.payouts-block .payout',
+  };
+  const payoutBlock = {
+    parentElement: {},
+    contains: element => element === payout,
+  };
+  const button = {
+    disabled: false,
+    className: 'btn-success bet',
+    textContent: 'Bet',
+    offsetWidth: 1,
+    offsetHeight: 1,
+    classList: { contains: name => name === 'active' ? true : false },
+    getAttribute: () => null,
+  };
+  const input = { offsetWidth: 1, offsetHeight: 1 };
+  const betTab = {
+    textContent: 'Bet',
+    classList: { contains: name => name === 'active' },
+  };
+  const betBlock = {
+    querySelector: selector => selector === '.btn-success.bet' ? button
+      : selector.startsWith('input') ? input : null,
+    querySelectorAll: selector => selector === '.tab' ? [betTab] : [],
+    contains: () => false,
+  };
+  const unrelated = { nodeType: 1, closest: () => null, contains: () => false };
+  globalThis.window = {
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+    __collectorNotify: payload => notifications.push(JSON.parse(payload)),
+  };
+  globalThis.document = {
+    body: {},
+    querySelector: selector => selector === '.payouts-block .payout' ? payout
+      : selector === '.payouts-block' ? payoutBlock
+        : selector === '.bet-block' ? betBlock : null,
+    querySelectorAll: selector => {
+      if (selector === '.payouts-block .payout') { payoutListReads += 1; return [payout]; }
+      if (selector.startsWith('[data-aviator-phase]')) { providerMarkerReads += 1; return []; }
+      return [];
+    },
+  };
+  globalThis.MutationObserver = class {
+    constructor(callback) { observerCallbacks.push(callback); }
+    observe() {}
+    disconnect() {}
+  };
+  globalThis.setInterval = () => 1;
+  try {
+    const frame = {
+      collectorBindingName: '__collectorNotify',
+      maxQueuedEvents: 1,
+      evaluate: (pageFunction, args) => pageFunction(args),
+    };
+    const installed = await _installObserver(frame, '.payouts-block .payout');
+    assert.equal(installed.ok, true);
+    assert.equal(payoutListReads, 2);
+    assert.equal(providerMarkerReads, 1);
+
+    payout.textContent = '2.50x';
+    observerCallbacks[0]([
+      { type: 'childList', target: unrelated, addedNodes: [], removedNodes: [] },
+      { type: 'characterData', target: { nodeType: 3, parentElement: payout } },
+    ]);
+
+    assert.equal(payoutListReads, 2, 'a text update uses the cached payout node instead of rescanning');
+    assert.equal(providerMarkerReads, 1, 'payout extraction does not repeat the game-phase DOM scan');
+    assert.equal(notifications.filter(event => !event.phaseOnly).length, 1);
+    assert.equal(notifications.find(event => !event.phaseOnly).multipliers[0], 2.5);
+    assert.equal(notifications.find(event => !event.phaseOnly).gamePhase.phase, 'UNKNOWN');
+
+    // Exercise the bounded in-frame compatibility path after the pushed
+    // transport is disabled. Overflow becomes an explicit recovery signal.
+    globalThis.window.__aviatorCollector.notificationBindingName = null;
+    payout.textContent = '3.00x';
+    observerCallbacks[0]([{ type: 'characterData', target: { nodeType: 3, parentElement: payout } }]);
+    payout.textContent = '4.00x';
+    observerCallbacks[0]([{ type: 'characterData', target: { nodeType: 3, parentElement: payout } }]);
+    assert.equal(globalThis.window.__aviatorCollector.queue.length, 1);
+    assert.equal(globalThis.window.__aviatorCollector.queueOverflow, true);
+    const collector = new Collector();
+    assert.equal((await collector.waitForMutation(frame, 100)).multipliers[0], 3);
+    assert.deepEqual(await collector.waitForMutation(frame, 100), {
+      error: 'collector_page_event_queue_overflow',
+    });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete globalThis[key];
+      else globalThis[key] = value;
+    }
+  }
 });

@@ -1,12 +1,48 @@
-2026/10/14-19:43:21.657 5739 Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Session Storage/MANIFEST-000001
-2026/10/14-19:43:21.659 5739 Recovering log #4
-2026/10/14-19:43:21.719 5739 Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Session Storage/000004.log 
-2026/10/14-20:54:17.052 573e Level-0 table #8: started
-2026/10/14-20:54:17.348 573e Level-0 table #8: 9847 bytes OK
-2026/10/14-20:54:17.617 573e Delete type=0 #4
-2026/10/14-21:34:59.015 573e Level-0 table #10: started
-2026/10/14-21:34:59.624 573e Level-0 table #10: 9582 bytes OK
-2026/10/14-21:35:00.070 573e Delete type=0 #7
-2026/10/14-22:14:48.920 5739 Level-0 table #12: started
-2026/10/14-22:14:49.332 5739 Level-0 table #12: 9615 bytes OK
-2026/10/14-22:14:49.943 5739 Delete type=0 #9
+2026/11/04-16:52:07.876 18ccd Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Session Storage/MANIFEST-000001
+2026/11/04-16:52:07.878 18ccd Recovering log #73
+2026/11/04-16:52:08.000 18ccd Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Session Storage/000073.log 
+2026/11/04-16:56:32.473 18ccd Level-0 table #77: started
+2026/11/04-16:56:32.769 18ccd Level-0 table #77: 13893 bytes OK
+2026/11/04-16:56:32.853 18ccd Delete type=0 #73
+2026/11/04-17:05:20.493 18ccd Level-0 table #79: started
+2026/11/04-17:05:20.692 18ccd Level-0 table #79: 11636 bytes OK
+2026/11/04-17:05:20.896 18ccd Delete type=0 #76
+2026/11/04-17:13:40.170 18ccd Level-0 table #81: started
+2026/11/04-17:13:40.411 18ccd Level-0 table #81: 11990 bytes OK
+2026/11/04-17:13:40.541 18ccd Delete type=0 #78
+2026/11/04-17:13:40.543 18ccd Compacting 4@0 + 1@1 files
+2026/11/04-17:13:40.787 18ccd Generated table #82@0: 6597 keys, 292347 bytes
+2026/11/04-17:13:40.787 18ccd Compacted 4@0 + 1@1 files => 292347 bytes
+2026/11/04-17:13:40.979 18ccd compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/11/04-17:13:41.089 18ccd Delete type=2 #79
+2026/11/04-17:13:41.090 18ccd Delete type=2 #74
+2026/11/04-17:13:41.090 18ccd Delete type=2 #72
+2026/11/04-17:13:41.090 18ccd Delete type=2 #77
+2026/11/04-17:13:41.090 18ccd Delete type=2 #81
+2026/11/04-17:22:26.674 18ccf Level-0 table #84: started
+2026/11/04-17:22:26.853 18ccf Level-0 table #84: 11671 bytes OK
+2026/11/04-17:22:27.134 18ccf Delete type=0 #80
+2026/11/04-17:31:14.578 18ccd Level-0 table #86: started
+2026/11/04-17:31:14.830 18ccd Level-0 table #86: 11504 bytes OK
+2026/11/04-17:31:15.142 18ccd Delete type=0 #83
+2026/11/04-17:39:59.222 18ccd Level-0 table #88: started
+2026/11/04-17:39:59.340 18ccd Level-0 table #88: 11547 bytes OK
+2026/11/04-17:39:59.829 18ccd Delete type=0 #85
+2026/11/04-17:48:47.160 18ccf Level-0 table #90: started
+2026/11/04-17:48:47.324 18ccf Level-0 table #90: 11675 bytes OK
+2026/11/04-17:48:47.754 18ccf Delete type=0 #87
+2026/11/04-17:48:47.754 18ccf Compacting 4@0 + 1@1 files
+2026/11/04-17:48:47.979 18ccf Generated table #91@0: 7438 keys, 317297 bytes
+2026/11/04-17:48:47.979 18ccf Compacted 4@0 + 1@1 files => 317297 bytes
+2026/11/04-17:48:48.367 18ccf compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/11/04-17:48:48.368 18ccf Delete type=2 #82
+2026/11/04-17:48:48.369 18ccf Delete type=2 #90
+2026/11/04-17:48:48.369 18ccf Delete type=2 #88
+2026/11/04-17:48:48.369 18ccf Delete type=2 #84
+2026/11/04-17:48:48.369 18ccf Delete type=2 #86
+2026/11/04-17:57:38.648 18ccd Level-0 table #93: started
+2026/11/04-17:57:38.885 18ccd Level-0 table #93: 11575 bytes OK
+2026/11/04-17:57:38.992 18ccd Delete type=0 #89
+2026/11/04-18:06:20.458 18ccd Level-0 table #95: started
+2026/11/04-18:06:20.554 18ccd Level-0 table #95: 11502 bytes OK
+2026/11/04-18:06:20.649 18ccd Delete type=0 #92

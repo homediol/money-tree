@@ -1,38 +1,38 @@
 {
-  "updated_at": "2026-10-14T20:18:34.072Z",
-  "state": "NAVIGATING_AVIATOR",
+  "updated_at": "2026-11-04T16:13:08.111Z",
+  "state": "HEALTHY",
   "browser": {
     "connected": true,
-    "pid": 22220,
-    "uptime_seconds": 9320,
-    "memory_rss_mb": 269,
-    "restart_count": 154,
+    "pid": 101515,
+    "uptime_seconds": 4870,
+    "memory_rss_mb": 386,
+    "restart_count": 203,
     "cpu_percent": null
   },
   "context": {
     "alive": true,
-    "page_count": 1
+    "page_count": 2
   },
   "aviator_page": {
     "alive": true,
     "role": "SHARED_AVIATOR",
-    "url": "https://winner.rw/sportsbook/upcoming",
+    "url": "https://winner.rw/en/virtual/crash-games/aviator",
     "login_route_visible": false,
     "login_route_acknowledged": false
   },
   "history_page": {
     "alive": true,
     "shared": true,
-    "url": "https://winner.rw/sportsbook/upcoming"
+    "url": "https://winner.rw/en/virtual/crash-games/aviator"
   },
   "betting_page": {
     "state": "SHARED_PAGE",
     "shared": true,
-    "url": "https://winner.rw/sportsbook/upcoming",
+    "url": "https://winner.rw/en/virtual/crash-games/aviator",
     "login_route_visible": false,
     "login_route_acknowledged": false
   },
-  "session": "UNKNOWN",
+  "session": "AUTHENTICATED",
   "network": {
     "status": "ONLINE",
     "reason_code": null,
@@ -40,12 +40,12 @@
     "evidence": [
       {
         "host": "winner.rw",
-        "address": "172.64.147.106",
+        "address": "104.18.40.150",
         "result": "TCP_REACHABLE"
       },
       {
         "host": "aviator-next.spribegaming.com",
-        "address": "3.175.179.113",
+        "address": "3.175.179.42",
         "result": "TCP_REACHABLE"
       },
       {
@@ -54,75 +54,72 @@
         "result": "TCP_REACHABLE"
       }
     ],
-    "checked_at": "2026-10-14T20:18:22.188Z",
+    "checked_at": "2026-11-04T16:13:04.079Z",
     "freshness": "CURRENT"
   },
   "authentication": {
-    "status": "UNKNOWN",
+    "status": "AUTHENTICATED",
     "reason": null,
     "evidence": null
   },
   "collector": {
     "running": true,
-    "state": "NAVIGATING_AVIATOR",
-    "last_round_id": "aviator-1b73b1f18b31bbc68e2405f8",
-    "last_round_timestamp": "2026-10-14T20:17:18.712Z",
-    "last_observed_round_id": "aviator-1b73b1f18b31bbc68e2405f8",
-    "last_observed_at": "2026-10-14T20:17:18.712Z",
-    "last_successful_collection": "2026-10-14T20:17:21.130Z",
-    "heartbeat_at": "2026-10-14T20:18:33.644Z",
-    "iframe_attached": false,
+    "state": "COLLECTING",
+    "last_round_id": "aviator-dc5cee026f14b0e7e61b7c95",
+    "last_round_timestamp": "2026-11-04T16:12:58.222Z",
+    "last_observed_round_id": "aviator-dc5cee026f14b0e7e61b7c95",
+    "last_observed_at": "2026-11-04T16:12:58.222Z",
+    "last_successful_collection": "2026-11-04T16:13:00.014Z",
+    "heartbeat_at": "2026-11-04T16:13:07.547Z",
+    "iframe_attached": true,
     "game_readiness": {
-      "frameAttached": false,
-      "contentLoaded": false,
-      "payoutsReady": false,
-      "reason": "GAME_FRAME_NOT_FOUND"
+      "frameAttached": true,
+      "contentLoaded": true,
+      "payoutsReady": true,
+      "reason": "SHARED_GAME_FRAME_PAYOUT_SELECTOR_PRESENT"
     },
     "recovery": {
-      "stage": "AUTH_REQUIRED",
+      "stage": null,
       "attempt": 0,
       "nextRetryAt": null,
-      "reasonCode": "LOGIN_ROUTE_VISIBLE",
-      "evidence": {
-        "page": "aviator",
-        "route": "https://winner.rw/en/user/logout/popup",
-        "source": "periodic-route-watchdog"
-      }
+      "reasonCode": null,
+      "evidence": null
     },
     "last_error": {
-      "message": "AUTH_REQUIRED: login route visible on Aviator page",
-      "category": "AUTH_REQUIRED",
+      "message": "History page closed",
+      "category": "PAGE_RECOVER",
       "recovery_action": "recovery_pending",
-      "at": "2026-10-14T20:17:22.921Z"
+      "at": "2026-11-04T15:07:06.347Z"
     }
   },
   "backend": {
-    "pid": 83026,
-    "ppid": 83015,
-    "started_at": "2026-10-14T19:45:18.790843+00:00",
-    "restart_count": 155,
-    "unexpected_restart_count": 63,
-    "uptime_seconds": 1995,
-    "memory_rss_mb": 335,
+    "pid": 101250,
+    "ppid": 101242,
+    "started_at": "2026-11-04T14:49:48.231028+00:00",
+    "restart_count": 219,
+    "unexpected_restart_count": 141,
+    "uptime_seconds": 4999,
+    "memory_rss_mb": 210,
     "cpu_percent": null,
     "running": true,
     "last_exit": null
   },
   "last_disconnect": {
-    "at": "2026-10-14T16:02:25.756Z",
+    "at": "2026-11-03T17:09:18.999Z",
     "reason": "managed browser disconnected"
   },
   "last_browser_event": {
-    "event": "heartbeat_probe_failed",
-    "at": "2026-10-14T20:18:25.853Z",
-    "error": "page responsiveness probe timed out"
+    "event": "session_persist_failed",
+    "at": "2026-11-04T16:13:08.109Z",
+    "error": "browserContext.storageState: SecurityError: Failed to read the 'localStorage' property from 'Window': Access is denied for this document.\n    at eval (eval at evaluate (:302:30), <anonymous>:423:21)\n    at eval (eval at evaluate (:302:30), <anonymous>:424:7)\n    at eval (<anonymous>)\n    at UtilityScript.evaluate (<anonymous>:302:30)\n    at UtilityScript.<anonymous> (<anonymous>:1:44)\nCall log:\n\u001b[2m  - navigating to \"https://livechat-servtech-rwanda.connexone.co.uk\", waiting until \"load\"\u001b[22m\n\u001b[2m  - navigating to \"https://www.facebook.com\", waiting until \"load\"\u001b[22m\n"
   },
   "last_recovery": {
-    "state": "RECOVERING",
-    "at": "2026-10-14T20:17:26.168Z",
-    "reason": "frame.evaluate: Frame was detached\n    at _waitForMutation (/home/diolo/winner predict/bot/collector/Collector.js:138:16)\n    at Collector.waitForMutation (/home/diolo/winner predict/bot/collector/Collector.js:170:23)\n    at AviatorCollector._collectOnce (/home/diolo/winner predict/bot/collector/index.js:996:42)\n    at async AviatorCollector._collectionLoop (/home/diolo/winner predict/bot/collector/index.js:644:9)\n    at async AviatorCollector.run (/home/diolo/winner predict/bot/collector/index.js:565:5)\n    at async startCollector (/home/diolo/winner predict/bot/collector/index.js:1090:7)"
+    "state": "HEALTHY",
+    "at": "2026-11-04T15:07:35.678Z",
+    "verified_round_id": "aviator-5f5223322d49cdf82a430ed1",
+    "verified_round_timestamp": "2026-11-04T15:07:32.531Z"
   },
-  "recovery_count": 772,
+  "recovery_count": 2290,
   "circuit_breaker": {
     "state": "CLOSED",
     "failures_10m": 0,
@@ -130,7 +127,7 @@
   },
   "diagnostics": {
     "page_responsive": true,
-    "page_count": 1,
-    "node_memory_rss_mb": 219
+    "page_count": 2,
+    "node_memory_rss_mb": 446
   }
 }

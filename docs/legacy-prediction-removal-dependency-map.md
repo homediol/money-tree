@@ -1,6 +1,6 @@
 # Legacy prediction removal dependency map
 
-Audit snapshot: 2026-10-13, before removal. This map distinguishes retired prediction code from shared history, browser, betting, risk, and execution infrastructure.
+Historical audit snapshot: 2026-10-13, before this Risk Management removal. References below describe the architecture at that time and are not the current active architecture. Current runtime no longer includes the Risk Engine, Risk Manager, profiles, approval API, or loss-limit gates.
 
 Pre-cleanup verification: PostgreSQL `winner_predict.public` had 27,505 `aviator_rounds` (indexes 434–27,966; latest stored timestamp 2026-10-11 18:17:49 UTC). Ordered round identity/multiplier/timestamp/continuity checksum: `8829302a32ec62dd077aaf3f5d2ed8846464c903d0fcd49fb5bc288bc1a3715e`. No foreign keys into or out of the prediction-only table candidates were found. Betting mode was `SHADOW_REALISTIC`; 9 balance ledger entries were present and 0 execution/event/reconciliation records. The side SQLite file had 13,213 `rounds`, passed `integrity_check`, and was backed up separately.
 

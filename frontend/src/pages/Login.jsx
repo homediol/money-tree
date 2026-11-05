@@ -47,7 +47,7 @@ export default function Login() {
           <div className="text-center">
             <h1 className="text-2xl font-black text-white tracking-tight">Winner Predict</h1>
             <p className="mt-0.5 text-xs font-semibold uppercase tracking-[0.2em] text-cyan">
-              Risk Console
+              Aviator Console
             </p>
           </div>
         </div>

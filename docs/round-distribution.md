@@ -1,6 +1,6 @@
 # External live round distribution
 
-Winner Predict's active collector remains the only browser/page owner. For each completed round it fsyncs a local JSONL outbox record, posts `round.observed` to the API for immediate authenticated SSE fanout, and persists to PostgreSQL on a background worker. After PostgreSQL confirms the row, it hands off `round.persisted`. External projects use read-only tokens and never receive login/session material or betting controls.
+Winner Predict's active collector remains the only browser/page owner. For each completed round it fsyncs a local JSONL outbox record, posts `round.observed` to the API for immediate authenticated SSE fanout, and persists to PostgreSQL on a background worker. After PostgreSQL confirms the row, it hands off `round.persisted`. Anonymous integrations can read committed rounds only; pending observations, streams, signal data, and all betting/control operations remain protected. External projects never receive login/session material or betting controls.
 
 The active backend is FastAPI on port 8000. The collector and API are separate processes connected by authenticated HTTP POSTs to `/api/collector/round-observed` and `/api/collector/round-persisted`; an in-process event emitter is not used across that boundary. The POST handlers require the configured service `API_KEY`. The first handler appends to a local SQLite inbox using WAL and `synchronous=FULL`, then publishes to SSE without waiting for PostgreSQL. PostgreSQL history and committed replay remain authoritative.
 
@@ -24,7 +24,7 @@ The collector lock runner enforces the existing single collector/browser owner. 
 
 ## Create and revoke project tokens
 
-Set a strong `API_KEY` for operator-only token management. The management endpoints require that key even when the dashboard is configured for public read access. The generated project token is shown once; PostgreSQL stores only its SHA-256 hash.
+Set a strong `API_KEY` for operator-only token management. The management endpoints always require that key; the legacy public dashboard flags are ignored. The generated project token is shown once; PostgreSQL stores only its SHA-256 hash.
 
 ```sh
 curl -X POST 'https://<winner-predict-host>/api/v1/projects/<project-id>/tokens' \
@@ -36,22 +36,34 @@ curl -X DELETE 'https://<winner-predict-host>/api/v1/projects/<project-id>/token
   -H 'Authorization: Bearer <operator-API_KEY>'
 ```
 
-Store the returned `token` in the consumer's secret manager. Never put it in a URL. Revocation closes active SSE connections and prevents future REST requests. External APIs require `Authorization: Bearer <project-token>`; their tokens grant reads only.
+Store the returned `token` in the consumer's secret manager. Never put it in a URL. Revocation closes active SSE connections and prevents future REST requests. The public committed-round REST endpoints below do not require a token. Pending observations, collector diagnostics, stream/SSE reads, and other scoped external APIs require `Authorization: Bearer <project-token>`; consumer tokens grant reads only.
 
 Browser origins are denied unless explicitly listed in `ROUND_STREAM_ALLOWED_ORIGINS`, for example the JSON value `["https://consumer.example"]`. That list only controls browser origins; it is not authentication. Server-to-server consumers may omit `Origin`. Remote plain HTTP requests receive `426 https_required_for_external_access`; expose the service externally only behind HTTPS/WSS-capable TLS termination configured to forward the HTTPS scheme. This code change does not open a firewall or publish the service.
 
 ## Read committed rounds
 
-All endpoints below are read-only and require a project token.
+The latest committed round and committed history are public read-only API routes. They require no owner API key or consumer token. Remote callers must use HTTPS, browser origins must be configured, and requests are limited to 120 per minute per source IP.
 
 ```http
 GET /api/v1/rounds/latest
-GET /api/v1/rounds?after_sequence=123&stream_id=<stream-id>&limit=500
-GET /api/v1/collector/status
-GET /api/v1/rounds/stream
+GET /api/v1/rounds?after_sequence=123&stream_id=<stream-id>&limit=100
+GET /api/v1/rounds?search=round-id&min_multiplier=1.2&max_multiplier=5&limit=100
+GET /api/v1/rounds?order=desc&limit=100
+GET /api/v1/rounds?order=desc&before_sequence=123&stream_id=<stream-id>&limit=100
 ```
 
-`limit` is clamped to 1–500. Pages are ordered by the durable `stream_sequence`; `next_cursor` is the last returned sequence, and `has_more` indicates another page. Always resume with both `stream_id` and `next_cursor`. A cursor from a different stream, before retention, or ahead of the stream returns HTTP 409 with `error: resync_required`, a reason, the current retention boundaries, and `resync_after_sequence`. Do not advance past that response without deliberately resynchronizing.
+The list supports an ID substring search, inclusive multiplier bounds, and sequence sorting in either direction. Ascending pages use `after_sequence`; descending pages use `before_sequence`. When a page has more results, pass its `next_cursor` back using the matching cursor parameter and the returned `stream_id`. Cursor resynchronization uses HTTP 409. `limit` must be 1–500; invalid query parameters return HTTP 422. Anonymous responses set `project_id` to `null`; a valid existing consumer token may be sent optionally to retain the associated project identifier.
+
+The remaining external round endpoints are still token-protected:
+
+```http
+GET /api/v1/collector/status
+GET /api/v1/rounds/stream
+GET /api/v1/rounds/pending
+GET /api/v1/rounds/clock
+```
+
+Ascending pages are ordered by durable `stream_sequence`; `next_cursor` is the last returned sequence. Descending pages return newest first and use the last returned sequence as the next `before_sequence`. A cursor from a different stream, before retention, or ahead of the stream returns HTTP 409 with `error: resync_required`, a reason, the current retention boundaries, and `resync_after_sequence`. Do not advance past that response without deliberately resynchronizing.
 
 Committed events are retained up to `ROUND_STREAM_RETENTION` rows (default 100,000; bounded to 1,000–1,000,000). Old committed events are pruned in stream order; a client older than the retained boundary must resync. The stream ID is created with the PostgreSQL distribution metadata and remains stable across normal restarts. Recreating that metadata starts a new stream ID and invalidates old cursors. `stream_sequence` uses PostgreSQL's durable identity generator and increases across streams; it can have gaps after transaction rollbacks and retention pruning. Recreating the event table also recreates that generator. Clients use `next_cursor`, not an assumption that every integer exists.
 
@@ -115,6 +127,12 @@ The background collector worker reuses its PostgreSQL pool, persists parameteriz
 Committed history (`/rounds`, `/rounds/latest`) remains PostgreSQL-only. Pending observations use a separate cursor: `GET /api/v1/rounds/pending?after_sequence=<pending-cursor>` or the `pending_after_sequence` stream query. Reconnect with both the committed `Last-Event-ID: <stream-id>:<committed-sequence>` and the pending cursor. Pending events never advance the committed cursor. Delivery is at least once; consumers deduplicate by `observation_id` and update one logical round record as it moves from PENDING to COMMITTED. Never use multiplier equality as identity: equal consecutive multipliers are separate rounds.
 
 After backend downtime, pending replay sets `delivery_mode: "RECOVERED"`. Collector records restored from its local outbox are also marked `RECOVERED`; they must not be treated as new prospective decisions. The API inbox retains committed tombstones for bounded duplicate suppression. If a pending row was already pruned from the API inbox after commit, it is available through committed PostgreSQL REST history.
+
+## Built-in Shadow signal publishing
+
+The built-in Rules Engine evaluates the verified observation, but its `SELECT` is published as a BET signal only after the matching `round.persisted` event is confirmed with `durability: "COMMITTED"` and `continuity_status: "VERIFIED"`. A recovered event cannot create a new selection; it can retry publishing a saved selection only while a fresh provider phase confirms the exact target is still open and not started. The bridge uses the same server-side validator and signal distribution hub as `POST /api/v1/signals`; no publisher credential is exposed to the frontend. External publishers still need the separate `signals:write` credential.
+
+Each signal stores the session, committed source round, provider-verified immediate target round, matched rules, and originating `decision_id`. PostgreSQL's unique `(session_id, target_round_id)` constraint makes retries and restarts idempotent. The signal is persisted before realtime fanout. Its `settlement_status` stays `PENDING` until the built-in Shadow selection is settled against that exact target and the corresponding committed round event confirms its result; the signal response then includes the committed multiplier, result, and persistence evidence. `GET /api/rules-engine/status` reports the latest bridge state and counters.
 
 `round_id` can be collector-generated. `identity_source` is `PLATFORM_ROUND_ID`, `PLATFORM_ROUND_INDEX`, `COLLECTOR_OBSERVATION_HASH`, `LOCAL_SEQUENCE`, or `UNKNOWN`; a missing platform identity remains null and is never relabeled as a platform ID. Unknown continuity and gaps remain distinct: `continuity_status` is `VERIFIED`, `GAP_BEFORE`, or `UNVERIFIED`.
 

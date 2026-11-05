@@ -9,6 +9,7 @@ from starlette.requests import Request
 from app.api.live import readiness_read_only
 from app.database.repository import Repository
 from app.live import LiveActivationManager
+from app.services.decision_dispatcher import DecisionDispatcher
 
 
 def _request(app: FastAPI) -> Request:
@@ -42,7 +43,7 @@ def test_read_only_live_readiness_passes_fresh_balance_to_gate():
     assert result["observation"] == observation
 
 
-def test_production_readiness_names_unwired_target_and_decision_contracts(tmp_path):
+def test_production_readiness_distinguishes_submission_api_from_pending_selection(tmp_path):
     repository = Repository(tmp_path / "live-readiness.sqlite3")
     repository.init()
     observation = {
@@ -72,6 +73,9 @@ def test_production_readiness_names_unwired_target_and_decision_contracts(tmp_pa
         def execution_authorized(self):
             return False
 
+        def execution_selection(self, _decision_id):
+            return None
+
     history = SimpleNamespace(status=lambda: {
         "running": True, "status": "HEALTHY", "latest": {"round_id": "source-1"},
     })
@@ -81,23 +85,27 @@ def test_production_readiness_names_unwired_target_and_decision_contracts(tmp_pa
         betting=SimpleNamespace(
             settings=SimpleNamespace(allow_real_placement=True),
             status=lambda: {"automatic_enabled": False, "browser_status": "NOT_CONNECTED"},
+            submit_decision=lambda _intent: None,
         ),
         history_collector=history,
-        risk=SimpleNamespace(emergency_latched=False),
+        emergency_stop=SimpleNamespace(latched=False),
         reconciliation=object(),
         orchestrator=object(),
         rules_engine=Rules(),
     )
+    app = SimpleNamespace(state=state)
+    state.decision_dispatcher = DecisionDispatcher(app)
 
-    result = asyncio.run(LiveActivationManager(SimpleNamespace(state=state))
-                         .production_readiness_check(observation))
+    result = asyncio.run(LiveActivationManager(app).production_readiness_check(observation))
 
     assert result["ready"] is False
-    assert result["checks"]["decision_interface"] == "UNAVAILABLE"
+    assert result["checks"]["decision_interface"] == "READY"
+    assert result["checks"]["decision_dispatcher"] == "READY"
     assert result["checks"]["target_identity"] == "UNVERIFIED"
     assert result["checks"]["platform_authentication"] == "VERIFIED"
     assert result["checks"]["auto_cashout"] == "CONFIGURED_UNACKNOWLEDGED"
     assert result["checks"]["platform_execution"] == "UNVERIFIED"
     assert result["ready"] is False
-    assert "rule selections are not connected to target-bound, risk-approved execution intents" in result["reasons"]
-    assert "the next target has no verified provider round identity before execution" in result["reasons"]
+    assert "rule-selection lookup or executor decision submission is unavailable" not in result["reasons"]
+    assert "eligible rule selections are not forwarded to the betting executor" not in result["reasons"]
+    assert "provider target round identity is missing, stale, or mismatched with the latest committed source" in result["reasons"]

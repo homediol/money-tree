@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Mapping
 
@@ -46,21 +47,71 @@ def detect_insufficient_balance(messages: Any) -> dict[str, Any]:
 
 def classify_betting_window(evidence: Mapping[str, Any] | None,
                             panel: int | None = None) -> str:
-    """Classify the betting window from the owned Aviator controls only."""
+    """Classify only fresh provider phase and deadline evidence.
+
+    A visible, enabled Bet button is presentation state. It does not identify
+    the provider phase, round, or betting deadline.
+    """
     if not isinstance(evidence, Mapping):
         return "UNKNOWN"
-    panel_index = evidence.get("panel_index")
-    if (evidence.get("source") != "AVIATOR_BETTING_PANEL_READ_ONLY"
-            or evidence.get("selector") != ".btn-success.bet"
-            or type(panel_index) is not int or panel_index < 0
-            or (panel is not None and panel_index != panel)
-            or evidence.get("button_visible") is not True
-            or evidence.get("stake_input_visible") is not True
-            or evidence.get("bet_tab_active") is not True):
+    if (evidence.get("source") != "AVIATOR_GAME_PHASE_READ_ONLY"
+            or not isinstance(evidence.get("provider_round_id"), str)
+            or not evidence.get("provider_round_id")
+            or not isinstance(evidence.get("canonical_target_round_id"), str)
+            or not evidence.get("canonical_target_round_id")
+            or evidence.get("target_identity_verified") is not True
+            or evidence.get("target_started") is not False):
         return "UNKNOWN"
-    if evidence.get("button_enabled") is True:
+    phase = str(evidence.get("phase_state") or evidence.get("phase") or "").upper()
+    if phase not in {"BETTING_OPEN", "BETTING_CLOSED"}:
+        return "UNKNOWN"
+    proof = evidence.get("target_identity_proof")
+    try:
+        source_index = int(evidence.get("source_round_index"))
+        target_index = int(evidence.get("target_round_index"))
+    except (TypeError, ValueError, OverflowError):
+        return "UNKNOWN"
+    if (not evidence.get("source_round_id") or source_index < 1
+            or target_index != source_index + 1
+            or not isinstance(proof, Mapping)
+            or proof.get("provider_round_id") != evidence.get("provider_round_id")
+            or proof.get("target_round_id") != evidence.get("canonical_target_round_id")
+            or proof.get("target_not_started") is not True
+            or proof.get("proof_method") != "platform_target_id_before_start"):
+        return "UNKNOWN"
+    provider_evidence = evidence.get("evidence")
+    if (not isinstance(provider_evidence, Mapping)
+            or provider_evidence.get("source") != "AVIATOR_GAME_PHASE_READ_ONLY"
+            or provider_evidence.get("provider_phase_source") != "EXPLICIT_PROVIDER_DATA_ATTRIBUTES"
+            or provider_evidence.get("provider_phase_selector") != (
+                "[data-aviator-phase][data-provider-round-id][data-canonical-target-round-id][data-betting-deadline]"
+            )
+            or provider_evidence.get("selector") != ".bet-block .btn-success.bet"
+            or provider_evidence.get("stake_input_visible") is not True
+            or provider_evidence.get("bet_tab_active") is not True):
+        return "UNKNOWN"
+    if phase == "BETTING_OPEN" and not (
+        provider_evidence.get("button_visible") is True
+        and provider_evidence.get("button_enabled") is True
+    ):
+        return "UNKNOWN"
+    try:
+        observed_at = datetime.fromisoformat(
+            str(evidence.get("observed_at") or "").replace("Z", "+00:00"))
+        deadline = datetime.fromisoformat(
+            str(evidence.get("betting_deadline") or "").replace("Z", "+00:00"))
+        if observed_at.tzinfo is None or deadline.tzinfo is None:
+            return "UNKNOWN"
+        now = datetime.now(timezone.utc)
+        age = (now - observed_at.astimezone(timezone.utc)).total_seconds()
+        remaining = (deadline.astimezone(timezone.utc) - now).total_seconds()
+        if age < 0 or age > 5:
+            return "UNKNOWN"
+    except (TypeError, ValueError, OverflowError):
+        return "UNKNOWN"
+    if phase == "BETTING_OPEN" and remaining > 0:
         return "BETTING_OPEN"
-    if evidence.get("button_enabled") is False:
+    if phase == "BETTING_CLOSED" or remaining <= 0:
         return "BETTING_CLOSED"
     return "UNKNOWN"
 

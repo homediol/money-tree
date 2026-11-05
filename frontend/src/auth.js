@@ -1,5 +1,5 @@
-// Runtime API credential storage. Authentication is enforced by FastAPI when
-// API_KEY is configured; no usernames or passwords are shipped in the bundle.
+// Runtime owner credential storage for private APIs. Public committed-round
+// reads need no token; remote private routes fail closed when API_KEY is absent.
 
 const TOKEN_KEY = 'winner_predict_api_token';
 export const API_UNAUTHORIZED_EVENT = 'winner:api-unauthorized';
@@ -37,11 +37,18 @@ export function getSession() {
   return isAuthenticated() ? { authenticated: true } : null;
 }
 
+export function getWebSocketAuthProtocols(token = getApiToken()) {
+  if (!token) return [];
+  const bytes = new TextEncoder().encode(token);
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  const encoded = btoa(binary).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  return [`auth.${encoded}`];
+}
+
 export function getWebSocketUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const base = import.meta.env.VITE_WS_URL || `${protocol}//${window.location.host}/ws/live`;
-  const token = getApiToken();
-  return token ? `${base}${base.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : base;
+  return import.meta.env?.VITE_WS_URL || `${protocol}//${window.location.host}/ws/live`;
 }
 
 export function isAuthenticated() {

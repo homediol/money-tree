@@ -11,6 +11,7 @@ from starlette.requests import Request
 from app.database.repository import Repository
 from app.api import betting_mode as betting_mode_api
 from app.api.live import start as live_start
+from app.betting.browser_adapters import RealBrowserBackend
 from app.betting.schemas import DecisionIntent
 from app.live import LiveActivationManager
 from app.services.betting_mode import (
@@ -21,10 +22,17 @@ from app.services.betting_mode import (
 )
 
 
-@pytest.mark.parametrize("balance,verified", [(1006.0, True), (0.0, True),
+def test_real_backend_keeps_currency_validation_generic_and_fail_closed():
+    capabilities = RealBrowserBackend.__new__(RealBrowserBackend).verified_capabilities()
+
+    assert capabilities["currency_validation"] is False
+    assert "currency_rwf" not in capabilities
+
+
+@pytest.mark.parametrize("balance,balance_verified", [(1006.0, True), (0.0, True),
     (None, False), ("1006", False), (True, False), (-1.0, False),
     (float("nan"), False), (float("inf"), False)])
-def test_platform_balance_requires_finite_numeric_ui_evidence(tmp_path, monkeypatch, balance, verified):
+def test_session_verification_is_independent_of_balance_amount(tmp_path, monkeypatch, balance, balance_verified):
     repository = Repository(tmp_path / "modes.sqlite3")
     repository.init()
     observations = []
@@ -44,8 +52,10 @@ def test_platform_balance_requires_finite_numeric_ui_evidence(tmp_path, monkeypa
     ))
     modes = BettingModeManager(app)
     result = asyncio.run(modes._read_platform_balance())
-    assert result["verified"] is verified
-    assert result["balance"] == balance if verified else result["balance"] is None
+    assert result["verified"] is True
+    assert result["session_verified"] is True
+    assert result["balance_verified"] is balance_verified
+    assert result["balance"] == balance if balance_verified else result["balance"] is None
     assert observations == [result]
 
 
@@ -67,6 +77,8 @@ def test_balance_is_not_verified_when_authenticated_account_evidence_is_missing(
     result = asyncio.run(BettingModeManager(app)._read_platform_balance())
 
     assert result["verified"] is False
+    assert result["session_verified"] is False
+    assert result["balance_verified"] is False
     assert result["balance"] is None
     assert result["displayed_amount"] == 1006.0
     assert result["authentication_state"] == "UNKNOWN"
@@ -177,6 +189,7 @@ def test_modes_are_mutually_exclusive_and_emergency_safe(tmp_path):
     live = LiveActivationManager()
     state = SimpleNamespace(
         wp=SimpleNamespace(repository=repository),
+        emergency_stop=SimpleNamespace(latched=False, status=lambda: {"latched": False}),
         live=live,
         betting=SimpleNamespace(session=None),
     )
@@ -207,10 +220,10 @@ def _live_gate_fixture():
         open_executions=lambda: [],
         latest_round_marker=lambda: (100, "round-100"),
     )
-    risk = SimpleNamespace(emergency_latched=False)
+    emergency_stop = SimpleNamespace(latched=False)
     state = SimpleNamespace(
         wp=SimpleNamespace(repository=repository),
-        risk=risk,
+        emergency_stop=emergency_stop,
         betting=SimpleNamespace(
             settings=SimpleNamespace(allow_real_placement=True),
             status=lambda: {},
@@ -231,10 +244,9 @@ def _live_gate_fixture():
     decision = {
         "decision_id": "live-d1", "target_round_id": "101", "source_round_id": "100",
         "target_round_index": 101,
-        "profile": "PROFILE_A", "status": "READY_FOR_EXECUTION",
+        "status": "READY_FOR_EXECUTION", "bet_amount": 100,
+        "cashout_target": 2.0,
         "expires_at": (now + timedelta(seconds=30)).isoformat(),
-        "risk_evaluation": {"status": "APPROVED", "approved": True,
-                             "approved_bet": 100, "approved_bet_amount": 100},
     }
     return controller, state, status, decision
 
@@ -253,6 +265,16 @@ def test_live_gate_blocks_expired_and_wrong_round_decisions():
     assert "target round does not match the next canonical history index" in wrong_round["reasons"]
 
 
+def test_live_gate_does_not_require_balance_or_adjust_fixed_stake():
+    controller, _state, status, decision = _live_gate_fixture()
+    status["current_balance"] = None
+    status.pop("last_balance_observed_at")
+
+    result = controller.can_execute_live_bet(decision, status)
+
+    assert not any("balance" in reason.lower() for reason in result["reasons"])
+
+
 def test_live_gate_blocks_duplicate_and_emergency_stop():
     controller, state, status, decision = _live_gate_fixture()
     state.wp.repository.execution_for = lambda *_args: {"execution_id": "already-placed"}
@@ -261,7 +283,7 @@ def test_live_gate_blocks_duplicate_and_emergency_stop():
     assert "DUPLICATE_BLOCKED" in duplicate["reasons"]
 
     state.wp.repository.execution_for = lambda *_args: None
-    state.risk.emergency_latched = True
+    state.emergency_stop.latched = True
     emergency = controller.can_execute_live_bet(decision, status)
     assert emergency["allowed"] is False
     assert "emergency stop is active" in emergency["reasons"]
@@ -271,7 +293,8 @@ def test_final_gate_excludes_only_the_current_queued_execution_reservation(tmp_p
     repository = Repository(tmp_path / "current-execution.sqlite3")
     repository.init()
     stamp = datetime.now(timezone.utc).isoformat()
-    intent = DecisionIntent(decision_id="d-current", round_id="target-current", cashout=2.0)
+    intent = DecisionIntent(decision_id="d-current", round_id="target-current", cashout=2.0,
+                            expires_at=datetime.now(timezone.utc) + timedelta(seconds=30))
     assert repository.create_execution({
         "execution_id": "current-execution", "decision_id": intent.decision_id,
         "target_round_id": intent.round_id, "profile": "PROFILE_A",
@@ -280,11 +303,7 @@ def test_final_gate_excludes_only_the_current_queued_execution_reservation(tmp_p
         "balance_before": 1000, "lifecycle_state": "QUEUED",
     })
 
-    class Risk:
-        emergency_latched = False
-
-        def validate_execution(self, _decision, _status):
-            return []
+    emergency_stop = SimpleNamespace(latched=False)
 
     class Rules:
         last_evaluation = {"result": True, "true_rule_ids": ["RULE_A"]}
@@ -296,13 +315,14 @@ def test_final_gate_excludes_only_the_current_queued_execution_reservation(tmp_p
             return False
 
     app = SimpleNamespace(state=SimpleNamespace(
-        wp=SimpleNamespace(repository=repository), risk=Risk(), rules_engine=Rules(),
+        wp=SimpleNamespace(repository=repository), emergency_stop=emergency_stop,
+        rules_engine=Rules(),
         betting=SimpleNamespace(
             settings=SimpleNamespace(allow_real_placement=True),
             status=lambda: {
                 "mode": "REAL", "automatic_enabled": True,
                 "current_balance": 1000, "last_balance_observed_at": stamp,
-                "current_bet": None, "profile": "PROFILE_A",
+                "current_bet": None,
                 "session_configuration": {"mode": "AUTOMATIC"},
             },
             backend=SimpleNamespace(verified_capabilities=lambda: {}),
@@ -318,4 +338,37 @@ def test_final_gate_excludes_only_the_current_queued_execution_reservation(tmp_p
     assert result["checks"]["unresolved_executions"] == "CLEAR"
     assert result["checks"]["duplicate_protection"] == "CURRENT_RESERVATION"
     assert result["allowed"] is False
-    assert "rule_selection_is_not_bound_to_exact_source_and_provider_target_identity" in result["reasons"]
+    assert "provider round identity, source binding, or betting deadline is missing, stale, or mismatched" in result["reasons"]
+
+
+def test_live_final_gate_reports_no_balance_prerequisite(tmp_path):
+    repository = Repository(tmp_path / "no-balance-gate.sqlite3")
+    repository.init()
+    now = datetime.now(timezone.utc)
+
+    class Rules:
+        last_evaluation = {"result": False, "true_rule_ids": []}
+
+        def status(self):
+            return {"rules_enabled": 0}
+
+        def execution_authorized(self):
+            return False
+
+    app = SimpleNamespace(state=SimpleNamespace(
+        wp=SimpleNamespace(repository=repository),
+        emergency_stop=SimpleNamespace(latched=False), rules_engine=Rules(),
+        betting=SimpleNamespace(
+            settings=SimpleNamespace(allow_real_placement=False),
+            status=lambda: {"mode": "REAL", "automatic_enabled": True,
+                            "current_balance": None, "last_balance_observed_at": None},
+            backend=SimpleNamespace(verified_capabilities=lambda: {}),
+        ),
+    ))
+    modes = BettingModeManager(app)
+    intent = DecisionIntent(decision_id="no-balance", round_id="round-1",
+                            expires_at=now + timedelta(seconds=30))
+    result = asyncio.run(modes.final_execution_gate(intent))
+
+    assert result["checks"]["balance_gate"] == "REMOVED_FIXED_STAKE_ONLY"
+    assert not any("balance" in reason.lower() for reason in result["reasons"])

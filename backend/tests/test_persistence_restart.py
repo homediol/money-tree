@@ -25,18 +25,15 @@ def _rounds(count: int = 150) -> list[dict]:
     ]
 
 
-def test_history_risk_and_execution_state_survive_three_restarts(tmp_path):
+def test_history_execution_and_legacy_emergency_latch_survive_three_restarts(tmp_path):
     db_path = tmp_path / "restart.sqlite3"
     repository = _repo(db_path)
     rounds = _rounds(150)
     repository.upsert_rounds(rounds)
     first_state = repository.rebuild_collector_state(
         required_rounds=100, collector_session_id="session-a")
-    repository.save_application_state("risk_runtime", {
-        "selected_profile": "PROFILE_B",
-        "emergency_latched": True,
-        "last_evaluation": {"risk_status": "BLOCKED"},
-    }, "2026-09-26T12:30:00+00:00")
+    repository.save_application_state("risk_runtime", {"emergency_latched": True},
+                                      "2026-09-26T12:30:00+00:00")
     execution = {
         "execution_id": "exec-1",
         "decision_id": "decision-1",
@@ -67,8 +64,11 @@ def test_history_risk_and_execution_state_survive_three_restarts(tmp_path):
 
         assert state["total_history"] == 150
         assert len(restarted.load_rounds()) == 150
-        assert restarted.load_application_state("risk_runtime")["selected_profile"] == "PROFILE_B"
         assert restarted.load_application_state("risk_runtime")["emergency_latched"] is True
+        from app.services.emergency_stop import EmergencyStop
+        stop = EmergencyStop(restarted)
+        assert stop.latched is True
+        assert restarted.load_application_state("operational_safety")["emergency_stop"] is True
         assert recovered_execution["execution_id"] == "exec-1"
         assert restarted.create_execution({**execution, "execution_id": f"exec-restart-{restart}"}) is False
         assert reconciled in {0, 1}

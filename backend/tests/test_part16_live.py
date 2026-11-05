@@ -48,7 +48,7 @@ def test_production_readiness_blocks_unverified_platform_execution():
         history_collector=SimpleNamespace(status=lambda: {
             "running": True, "status": "HEALTHY", "latest": {"round_id": "101"},
         }),
-        risk=SimpleNamespace(emergency_latched=False),
+        emergency_stop=SimpleNamespace(latched=False),
         orchestrator=object(),
     )
     controller = LiveActivationManager(SimpleNamespace(state=state))
@@ -83,7 +83,7 @@ def test_idle_readiness_uses_fresh_background_ui_balance(tmp_path):
         wp=SimpleNamespace(repository=repository), betting=betting,
         history_collector=history, system_health=health,
         reconciliation=object(),
-        risk=SimpleNamespace(emergency_latched=False), orchestrator=object(),
+        emergency_stop=SimpleNamespace(latched=False), orchestrator=object(),
     )
     result = asyncio.run(LiveActivationManager(SimpleNamespace(state=state)).production_readiness_check())
     assert result["checks"]["betting_page"] == "HEALTHY"
@@ -96,7 +96,7 @@ def test_live_execution_requires_configured_rules_engine():
     repository = SimpleNamespace(execution_for=lambda *_args: None)
     state = SimpleNamespace(
         wp=SimpleNamespace(repository=repository),
-        risk=SimpleNamespace(emergency_latched=False),
+        emergency_stop=SimpleNamespace(latched=False),
         betting=SimpleNamespace(status=lambda: {
             "mode": "REAL", "automatic_enabled": True,
         }),

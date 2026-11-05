@@ -17,8 +17,11 @@ const express = require("express");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 
 const app = express();
+// Honor forwarded HTTPS only from a local reverse proxy that terminates TLS.
+app.set("trust proxy", "loopback");
 const PORT = process.env.PORT || 3000;
 
 // ── Configuration ───────────────────────────────────────────────────────────
@@ -35,7 +38,43 @@ if (fs.existsSync(LOCK_FILE)) {
 }
 
 // ── Middleware ───────────────────────────────────────────────────────────────
-app.use(express.json());
+app.use(express.json({ limit: "64kb" }));
+
+// This legacy controller is not started by npm start, but keep its bot
+// controls private if it is launched directly.
+app.use("/bot", (req, res, next) => {
+  const remote = String(req.socket.remoteAddress || "").toLowerCase();
+  const host = String(req.hostname || "").toLowerCase();
+  const loopbackPeer = remote === "127.0.0.1" || remote === "::1" || remote.endsWith(":ffff:127.0.0.1");
+  const loopbackHost = host === "127.0.0.1" || host === "::1" || host === "localhost";
+  const local = loopbackPeer && loopbackHost;
+  if (!req.secure && !local) {
+    return res.status(426).json({ ok: false, error: "https_required_for_external_access" });
+  }
+
+  const apiKey = process.env.API_KEY;
+  if (apiKey && apiKey.length < 16) {
+    return res.status(503).json({ ok: false, error: "api_key_configuration_invalid" });
+  }
+  if (!apiKey) {
+    if (!local) {
+      return res.status(503).json({ ok: false, error: "api_key_not_configured" });
+    }
+    return next();
+  }
+  const authorization = String(req.headers.authorization || "");
+  const expected = `Bearer ${apiKey}`;
+  const suppliedBuffer = Buffer.from(authorization);
+  const expectedBuffer = Buffer.from(expected);
+  if (suppliedBuffer.length !== expectedBuffer.length
+      || !crypto.timingSafeEqual(suppliedBuffer, expectedBuffer)) {
+    return res.status(401)
+      .set("WWW-Authenticate", "Bearer")
+      .json({ ok: false, error: "authentication_required" });
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, "public")));
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -200,4 +239,3 @@ app.listen(PORT, () => {
   console.log("  POST /bot/stop");
   console.log("  GET  /bot/status");
 });
-

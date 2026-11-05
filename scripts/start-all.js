@@ -7,7 +7,7 @@
  *  1. backend/bot_api.py             — existing bot control API (port 5001)
  *  2. round history collector       — single owned collector/browser
  *  3. backend/main.py                — Winner Predict FastAPI API (port 8000)
- *  4. frontend (vite dev)            — React dashboard (port 5173)
+ *  4. frontend (vite dev)            — React dashboard (port 5174)
  *
  * Usage: npm start, or npm run backend for only the port-8000 API.
  */
@@ -147,11 +147,21 @@ const SERVICES = [
       "/api/history/status",
       "/api/rules-engine/status",
       "/api/rules-engine/ui-setup",
-      "/api/risk/status",
+      // Signal consumers and the Rules Engine integration must be loaded by
+      // the supervised FastAPI worker before it passes compatibility checks.
+      "/api/v1/signals/latest",
+      // The action-only consumer contract must also exist on the active
+      // worker; otherwise a healthy but stale process returns FastAPI 404.
+      "/api/v1/signals/latest/action",
+      // Browser signal consumers authenticate through a short-lived ticket;
+      // a worker without this POST route cannot pass the live WebSocket test.
+      "/api/v1/ws/ticket",
+      "/api/v1/publisher/heartbeat",
+      "/api/v1/console/access",
     ],
     requiredCapabilities: [
       "receipt_reconciliation_to_rule_session",
-      "rule_financial_stop_recovery",
+      "rule_execution_reconciliation_recovery",
     ],
     restart: true,
     // Restart only after the managed API child exits. launch() rechecks the
@@ -164,7 +174,7 @@ const SERVICES = [
     args:    ["run", "dev"],
     cwd:     FRONTEND,
     color:   "\x1b[32m",   // green
-    port:    5173,
+    port:    5174,
     restart: true,
   },
 ];
@@ -471,8 +481,9 @@ function launch(svc, restarting = false) {
           const requiredApiPaths = svc.requiredApiPaths || (svc.requiredApiPath ? [svc.requiredApiPath] : []);
           if (requiredApiPaths.length) {
             health = await probeJson(svc.port, svc.healthPath);
+            const unauthenticatedApiPaths = new Set(svc.requiredUnauthenticatedApiPaths || []);
             const capabilities = await Promise.all(requiredApiPaths.map(async (apiPath) => ({
-              apiPath, response: await probeJson(svc.port, apiPath, process.env.API_KEY
+              apiPath, response: await probeJson(svc.port, apiPath, !unauthenticatedApiPaths.has(apiPath) && process.env.API_KEY
                 ? { Authorization: `Bearer ${process.env.API_KEY}` } : {}),
             })));
             const capabilitiesProbe = capabilities.find(({ apiPath }) => apiPath === "/api/backend/capabilities");
@@ -485,6 +496,8 @@ function launch(svc, restarting = false) {
             // is inconclusive and must never terminate a healthy backend.
             const missingRoute = capabilities.find(({ apiPath, response }) =>
               response?.status === 404
+              || (unauthenticatedApiPaths.has(apiPath)
+                  && response && [401, 403, 503].includes(response.status))
               || (apiPath.includes("ROUND_100_REPORT") && response?.status === 422));
             const incompatible = missingRoute || (missingCapability
               ? { ...capabilitiesProbe, missingCapability }
@@ -570,16 +583,18 @@ function launch(svc, restarting = false) {
             });
             return;
           }
+          const uptimeSeconds = Math.round((Date.now() - state.startedAt) / 1000);
+          if (uptimeSeconds > 60) state.restartAttempts = 0;
           if (svc.name === "backend") {
             recordBackend("supervisor_exit", {pid: child.pid, reason, unexpected: true,
               exit_code: exitCode, signal: exitSignal,
-              uptime_seconds: Math.round((Date.now() - state.startedAt) / 1000)});
-            console.error(`${label(svc)} ${timestamp()} stopped unexpectedly (${reason}); backend restart disabled`);
-            process.exitCode = 1;
-            return;
+              uptime_seconds: uptimeSeconds,
+              restart_attempt: state.restartAttempts + 1});
           }
-          if (Date.now() - state.startedAt > 60000) state.restartAttempts = 0;
           console.error(`${label(svc)} ${timestamp()} stopped unexpectedly (${reason})`);
+          // Backend startup depends on PostgreSQL. Keep the failure recorded,
+          // then retry with bounded exponential backoff so it recovers after
+          // a transient database outage without hiding the original cause.
           scheduleRestart(svc);
         };
         child.once("error", (error) => stopped(`spawn error: ${error.message}`));

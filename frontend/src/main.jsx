@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { ErrorBoundary } from 'react-error-boundary';
 import { Toaster } from 'sonner';
-import { Activity, Bot, History, ListChecks, ReceiptText, Settings, ShieldCheck } from 'lucide-react';
+import { Activity, Bot, Code2, History, ListChecks, ReceiptText, Settings, ShieldCheck } from 'lucide-react';
 import './styles/index.css';
 import RulesEngine from './pages/RulesEngine.jsx';
 import LiveHistory from './pages/LiveHistory.jsx';
@@ -12,6 +12,7 @@ import BetResults from './pages/BetResults.jsx';
 import SystemSettings from './pages/SystemSettings.jsx';
 import LiveActivation from './pages/LiveActivation.jsx';
 import Recovery from './pages/Recovery.jsx';
+import RulesSignalApi from './pages/RulesSignalApi.jsx';
 import SystemHealth from './components/SystemHealth.jsx';
 import AppErrorFallback from './components/AppErrorFallback.jsx';
 import ApiAccessGate from './components/ApiAccessGate.jsx';
@@ -23,6 +24,7 @@ const nav = [
   { to: '/results', label: 'Bet Results', icon: ReceiptText },
   { to: '/operations', label: 'Operations & Recovery', icon: ShieldCheck },
   { to: '/settings', label: 'Settings', icon: Settings },
+  { to: '/rules-signal-api', label: 'Rules Signal API', icon: Code2 },
 ];
 
 function Shell() {
@@ -62,6 +64,7 @@ function Shell() {
           <Route path="/results" element={<BetResults />} />
           <Route path="/operations" element={<div className="space-y-8"><section><h1 className="mb-4 text-2xl font-bold">Live activation safety</h1><LiveActivation /></section><section><h2 className="mb-4 text-2xl font-bold">Recovery</h2><Recovery /></section></div>} />
           <Route path="/settings" element={<SystemSettings />} />
+          <Route path="/rules-signal-api" element={<RulesSignalApi />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>

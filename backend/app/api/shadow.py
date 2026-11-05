@@ -13,7 +13,9 @@ def shadow(request: Request): return request.app.state.shadow
 async def start(request: Request):
     body = await request.json()
     result = await request.app.state.betting_mode.switch_shadow(
-        profile=body.get("profile", "PROFILE_A"), goal_balance=body.get("goal_balance"))
+        goal_balance=body.get("goal_balance"),
+        starting_balance=body.get("starting_balance"),
+        configuration=body.get("configuration"))
     if not result.get("ok"):
         return JSONResponse(status_code=409, content=result)
     return result

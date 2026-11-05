@@ -55,7 +55,7 @@ def _boundary():
     }
 
 
-def _request(repository, engine):
+def _request(repository, engine, payload=None):
     def history_status(*, persist=False):
         assert persist is False
         return {
@@ -89,8 +89,8 @@ def _request(repository, engine):
         }
 
     async def body():
-        return {"mode": "ALL_RULES_TOGETHER", "rule_ids": ["RECENT_5_H_GE_4"],
-                "options": {"fixed_stake_rwf": 100}}
+        return payload or {"mode": "ALL_RULES_TOGETHER", "rule_ids": ["RECENT_5_H_GE_4"],
+                           "options": {"fixed_stake_rwf": 100}}
 
     state = SimpleNamespace(
         wp=SimpleNamespace(repository=repository),
@@ -134,6 +134,37 @@ def test_shadow_start_succeeds_when_optional_platform_balance_read_fails():
     assert session["status"] == "RUNNING"
     assert session["automatic_execution"] == "OFF"
     assert engine.status()["active_session"]["session_id"] == session["session_id"]
+
+
+def test_shadow_start_route_replaces_explicit_integrity_stopped_session():
+    engine = RulesEngine()
+    engine.configure("RECENT_5_H_GE_4", enabled=True)
+    boundary = _boundary()
+    old = engine.start_session(
+        mode="ALL_RULES_TOGETHER", rule_ids=["RECENT_5_H_GE_4"],
+        boundary=boundary, options={"fixed_stake_rwf": 100},
+    )
+    engine.sessions[old["session_id"]].update({"status": "PAUSED", "stop_reason": "ROUND_INDEX_GAP"})
+    request = _request(_Repository(boundary), engine, {
+        "mode": "ALL_RULES_TOGETHER", "rule_ids": ["RECENT_5_H_GE_4"],
+        "replace_session_id": old["session_id"], "options": {"fixed_stake_rwf": 100},
+    })
+    original_to_thread = asyncio.to_thread
+
+    async def inline_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    asyncio.to_thread = inline_to_thread
+    try:
+        new = asyncio.run(api.start_session(request))
+    finally:
+        asyncio.to_thread = original_to_thread
+
+    assert new["status"] == "RUNNING"
+    assert new["replaced_session_id"] == old["session_id"]
+    assert engine.session(old["session_id"])["status"] == "MANUALLY_STOPPED"
+    assert new["automatic_execution"] == "OFF"
+    assert engine.status()["active_session"]["session_id"] == new["session_id"]
 
 
 def test_fresh_verified_frame_is_not_downgraded_by_unknown_cached_state():
@@ -197,6 +228,72 @@ def test_stopping_gap_paused_session_preserves_integrity_reason():
     assert summary["integrity_stop_reason"] == "ROUND_INDEX_GAP"
 
 
+def test_start_can_replace_only_an_explicitly_confirmed_integrity_paused_session():
+    engine = RulesEngine()
+    engine.configure("RECENT_5_H_GE_4", enabled=True)
+    original_boundary = _boundary()
+    old = engine.start_session(
+        mode="ALL_RULES_TOGETHER", rule_ids=["RECENT_5_H_GE_4"],
+        boundary=original_boundary, options={"fixed_stake_rwf": 100},
+    )
+    prior = engine.sessions[old["session_id"]]
+    prior.update({"status": "PAUSED", "stop_reason": "ROUND_INDEX_GAP"})
+    next_boundary = {**original_boundary, "stream_sequence": 11,
+                     "round_id": "round-11", "round_index": 11}
+
+    try:
+        engine.start_session(
+            mode="ALL_RULES_TOGETHER", rule_ids=["RECENT_5_H_GE_4"],
+            boundary=next_boundary, options={"fixed_stake_rwf": 100},
+        )
+    except ValueError as exc:
+        assert str(exc) == "SESSION_ALREADY_ACTIVE_FOR_MODE"
+    else:
+        raise AssertionError("an integrity-stopped session must require explicit replacement")
+
+    new = engine.start_session(
+        mode="ALL_RULES_TOGETHER", rule_ids=["RECENT_5_H_GE_4"],
+        boundary=next_boundary, options={"fixed_stake_rwf": 100},
+        replace_session_id=old["session_id"],
+    )
+    archived = engine.session(old["session_id"])
+
+    assert new["status"] == "RUNNING"
+    assert new["replaced_session_id"] == old["session_id"]
+    assert archived["status"] == "MANUALLY_STOPPED"
+    assert archived["selection_status"] == "STOPPED"
+    assert archived["integrity_stop_reason"] == "ROUND_INDEX_GAP"
+    assert archived["stop_history"][-1]["reason"] == "REPLACED_AFTER_INTEGRITY_STOP"
+    assert engine.status()["active_session"]["session_id"] == new["session_id"]
+
+
+def test_integrity_paused_session_preserves_pending_shadow_outcomes_on_replacement():
+    engine = RulesEngine()
+    engine.configure("RECENT_5_H_GE_4", enabled=True)
+    original_boundary = _boundary()
+    old = engine.start_session(
+        mode="ALL_RULES_TOGETHER", rule_ids=["RECENT_5_H_GE_4"],
+        boundary=original_boundary, options={"fixed_stake_rwf": 100},
+    )
+    prior = engine.sessions[old["session_id"]]
+    prior.update({"status": "PAUSED", "stop_reason": "ROUND_INDEX_GAP"})
+    prior["selections"].append({"status": "PENDING"})
+    next_boundary = {**original_boundary, "stream_sequence": 11,
+                     "round_id": "round-11", "round_index": 11}
+
+    new = engine.start_session(
+        mode="ALL_RULES_TOGETHER", rule_ids=["RECENT_5_H_GE_4"],
+        boundary=next_boundary, options={"fixed_stake_rwf": 100},
+        replace_session_id=old["session_id"],
+    )
+
+    archived = engine.session(old["session_id"])
+    assert new["status"] == "RUNNING"
+    assert archived["status"] == "MANUALLY_STOPPED"
+    assert archived["selections"][0]["status"] == "PENDING"
+    assert archived["stop_history"][-1]["details"]["preserved_pending_shadow_outcomes"] == 1
+
+
 def test_gap_paused_old_session_does_not_pin_new_shadow_stream_cursor():
     engine = RulesEngine()
     engine.configure("RECENT_5_H_GE_4", enabled=True)
@@ -251,7 +348,7 @@ def test_persisted_target_identity_blocks_a_late_true_rule_selection():
     assert result["decision"] == "WAIT"
     assert detail["selections"] == []
     assert detail["evaluations"][-1]["target_identity_guard"] == "TARGET_ALREADY_COMPLETED"
-    assert detail["evaluations"][-1]["rule_evaluations"][0]["status"] == "INVALID_LATE"
+    assert detail["evaluations"][-1]["rule_evaluations"][0]["status"] == "TARGET_ALREADY_COMPLETED"
     assert detail["decisions"][-1]["action"] == "NO_SELECT"
 
 
@@ -283,7 +380,7 @@ def test_pending_collector_target_blocks_a_late_true_rule_selection():
     assert result["decision"] == "WAIT"
     assert detail["selections"] == []
     assert detail["evaluations"][-1]["target_identity_guard"] == "TARGET_ALREADY_OBSERVED"
-    assert detail["evaluations"][-1]["rule_evaluations"][0]["status"] == "INVALID_LATE"
+    assert detail["evaluations"][-1]["rule_evaluations"][0]["status"] == "TARGET_ALREADY_COMPLETED"
     assert detail["decisions"][-1]["action"] == "NO_SELECT"
 
 

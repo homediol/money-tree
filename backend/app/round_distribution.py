@@ -41,6 +41,8 @@ class RoundDistributionHub:
         self._subscribers: dict[str, Subscriber] = {}
         self._requests: dict[str, deque[float]] = defaultdict(deque)
         self._latencies: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=2000))
+        self._slowest: dict[str, dict[str, Any]] = {}
+        self._latest_stage: dict[str, dict[str, Any]] = {}
         self._measured: dict[str, set[str]] = defaultdict(set)
         self._measured_order: dict[str, deque[str]] = defaultdict(deque)
         self._committed_event_ids: set[str] = set()
@@ -214,6 +216,26 @@ class RoundDistributionHub:
         if math.isfinite(value) and value >= 0:
             self._latencies[stage].append(value)
 
+    def record_priority_latency(self, stage: str, event_id: str, value_ms: float) -> None:
+        """Record one backend-local monotonic Rules Engine delivery span."""
+        if not stage or not event_id:
+            return
+        try:
+            value = float(value_ms)
+        except (TypeError, ValueError, OverflowError):
+            return
+        self._record_once(str(stage), str(event_id), value)
+        if math.isfinite(value) and value >= 0:
+            self._latest_stage[str(stage)] = {
+                "correlation_id": str(event_id).split(":", 1)[0],
+                "latency_ms": round(value, 3),
+                "sampled_at": datetime.now(timezone.utc).isoformat(),
+            }
+        prior = self._slowest.get(str(stage))
+        if math.isfinite(value) and value >= 0 and (prior is None or value > float(prior.get("latency_ms") or 0)):
+            self._slowest[str(stage)] = {"correlation_id": str(event_id).split(":", 1)[0],
+                                         "latency_ms": round(value, 3)}
+
     @staticmethod
     def _timestamp_ms(value: Any) -> float | None:
         if not value:
@@ -257,10 +279,12 @@ class RoundDistributionHub:
     def _summary(values: deque[float]) -> dict[str, Any]:
         ordered = sorted(values)
         if not ordered:
-            return {"samples": 0, "p50_ms": None, "p95_ms": None, "max_ms": None}
+            return {"samples": 0, "p50_ms": None, "p95_ms": None, "p99_ms": None, "max_ms": None}
         def percentile(p: float) -> float:
             return round(ordered[min(len(ordered) - 1, max(0, math.ceil(p * len(ordered)) - 1))], 2)
-        return {"samples": len(ordered), "p50_ms": percentile(0.50), "p95_ms": percentile(0.95),
+        return {"samples": len(ordered), "average_ms": round(sum(ordered) / len(ordered), 2),
+                "p50_ms": percentile(0.50), "p95_ms": percentile(0.95),
+                "p99_ms": percentile(0.99),
                 "max_ms": round(ordered[-1], 2)}
 
     async def metrics(self) -> dict[str, Any]:
@@ -273,6 +297,8 @@ class RoundDistributionHub:
                 "client_disconnects": self._disconnects,
                 "shutdown": self._shutdown,
                 "latency_ms": {key: self._summary(value) for key, value in self._latencies.items()},
+                "slowest_samples": dict(self._slowest),
+                "latest_samples": dict(self._latest_stage),
                 "delivery_lag_ms": self._summary(self._delivery_lag_ms),
                 "reconnect_backlog_events": {
                     "samples": len(self._reconnect_backlogs),

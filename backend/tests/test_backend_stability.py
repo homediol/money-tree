@@ -73,6 +73,15 @@ def test_node_collector_status_does_not_call_a_fresh_heartbeat_a_fresh_feed():
     assert status["network_status"] == "ONLINE"
 
 
+def test_node_collector_status_exposes_session_watchdog_without_fabricating_expiry():
+    watchdog = {
+        "status": "EXPIRING", "reason_code": "LOGOUT_COUNTDOWN_VISIBLE",
+        "logout_countdown_seconds": 20, "estimated_remaining_seconds": None,
+    }
+    status = _node_collector_snapshot({"sessionWatchdog": watchdog}, {})
+    assert status["session_watchdog"] == watchdog
+
+
 def test_unverifiable_collector_process_is_not_reported_stopped(tmp_path, monkeypatch):
     monkeypatch.setenv("COLLECTOR_HEARTBEAT_STALE_SECONDS", "60")
     collector = HistoryCollectorManager(tmp_path / "roundhistory.json")

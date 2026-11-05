@@ -143,6 +143,25 @@ test('event outbox refuses removal until PostgreSQL commit and persisted-event a
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('persisted API acknowledgement removes a committed outbox row in one durable rewrite', () => {
+  const { directory, outbox } = eventFixture();
+  try {
+    outbox.appendMany([{ round_id: 'ack-once', observation_id: 'ack-once',
+      round_index: 2, multiplier: 2.2 }]);
+    outbox.markDatabaseCommittedMany([{
+      round_id: 'ack-once', round: { round_id: 'ack-once', round_index: 2, multiplier: 2.2 },
+      commitAcknowledgedAt: new Date().toISOString(),
+    }]);
+    outbox.acknowledgePersistedAndRemove(['ack-once'], []);
+    assert.equal(outbox.readAll().length, 1, 'missing server receipt retains the source event');
+
+    outbox.acknowledgePersistedAndRemove(['ack-once'], [{
+      observation_id: 'ack-once', round_id: 'ack-once', committed_sequence: 2,
+    }]);
+    assert.equal(outbox.readAll().length, 0, 'authoritative server receipt permits removal');
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('event outbox reclaims a dead writer lock after a crash', () => {
   const { directory, filePath, outbox } = eventFixture();
   try {

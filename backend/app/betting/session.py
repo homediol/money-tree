@@ -7,7 +7,7 @@ Design rules enforced here:
   ``simulated: true`` and the session state is SIMULATION.
 - When the browser cannot be reached the session reports
   NOT_CONNECTED / WAITING_FOR_BROWSER — it never fabricates a placement.
-- Real placement is opt-in and only consumes final risk-approved instructions.
+- Real placement is opt-in and only consumes eligible, target-bound instructions.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from app.betting.browser_adapters import (
 )
 from app.betting.browser_client import AviatorBrowserClient, BrowserUnreachable
 from app.betting.config import BettingSettings
-from app.betting.profiles import PROFILES, BettingProfile, get_profile
+from app.betting.execution_defaults import FIXED_CASHOUT
 from app.betting.schemas import DecisionIntent, ModeName, SessionStartRequest
 from app.betting.states import (
     DecisionRejectReason,
@@ -119,7 +119,6 @@ class BettingSession:
         self.request = request
         self.session_id = session_id
         self.mode = Mode(request.mode)
-        self.profile = get_profile(request.profile)
         self.label = request.label or ""
         self.broadcaster = broadcaster
         self.repository = repository
@@ -148,12 +147,6 @@ class BettingSession:
         self._latest_crash: Optional[float] = None
         self.starting_balance: Optional[float] = request.starting_balance
         self.goal_balance: Optional[float] = request.goal_balance
-        self.session_loss_limit_enabled = (request.session_loss_limit_enabled
-                                           if request.session_loss_limit_enabled is not None else True)
-        self.session_loss_limit = (request.session_loss_limit
-                                   if self.session_loss_limit_enabled else None)
-        if self.session_loss_limit_enabled and self.session_loss_limit is None:
-            self.session_loss_limit = self.profile.max_loss_bif
         self.win_limit_enabled = (request.win_limit_enabled
                                   if request.win_limit_enabled is not None
                                   else self.goal_balance is not None)
@@ -164,13 +157,10 @@ class BettingSession:
         self.last_result: Optional[dict] = None
         self.wins = 0
         self.losses = 0
-        self.consecutive_losses = 0
         self.consecutive_wins = 0
         self.unknowns = 0
         self.total_stake = 0.0
         self.total_payout = 0.0
-        self.peak_balance = self.starting_balance
-        self.drawdown = 0.0
 
         # Bookkeeping.
         self.ledger: list[dict] = []
@@ -372,8 +362,8 @@ class BettingSession:
         self.last_balance = snap.get("balance")
         self.last_balance_observed_at = _now() if self.last_balance is not None else None
         self.last_balance_text = snap.get("balance_text") or ""
-        if self.last_balance is None:
-            self.request_stop("balance_unverified")
+        if self.mode == Mode.REAL and snap.get("authentication_state") != "AUTHENTICATED":
+            self.request_stop("authentication_unverified")
             return
         self.last_ui_ready = bool(snap.get("ui_ready"))
         if snap.get("payouts_head"):
@@ -504,12 +494,10 @@ class BettingSession:
         self.current_bet = None
         if item["won"]:
             self.wins += 1
-            self.consecutive_losses = 0
             self.consecutive_wins += 1
             self.total_payout += item["amount_bif"] * item["target_multiplier"]
         else:
             self.losses += 1
-            self.consecutive_losses += 1
             self.consecutive_wins = 0
         self.resolved_count += 1
         self.cumulative_pnl = round(self.cumulative_pnl + item["pnl_bif"], 2)
@@ -517,8 +505,6 @@ class BettingSession:
         observed = item.get("balance_after", self.last_balance)
         if observed is not None:
             self.last_balance = observed
-            self.peak_balance = max(self.peak_balance or observed, observed)
-            self.drawdown = max(0.0, (self.peak_balance or observed) - observed)
         self._emit_ledger(target, "resolved")
         self._event("bet_result", result=target)
         # Reconciliation commits the terminal execution status atomically with
@@ -557,13 +543,6 @@ class BettingSession:
                         balance=self.last_balance,
                         goal_balance=self.goal_balance)
             return True
-        if (self.session_loss_limit_enabled and self.session_loss_limit is not None
-                and self.starting_balance is not None and self.last_balance is not None
-                and self.starting_balance - self.last_balance >= self.session_loss_limit):
-            self.request_stop("LOSS_LIMIT_REACHED")
-            self._event("loss_limit_reached", balance=self.last_balance,
-                        session_loss_limit=self.session_loss_limit)
-            return True
         return False
 
     def _auto_stop_check(self) -> bool:
@@ -576,10 +555,6 @@ class BettingSession:
         if (req.target_profit_bif is not None
                 and self.cumulative_pnl >= req.target_profit_bif):
             self.request_stop("target_profit")
-            return True
-        if (req.max_loss_bif is not None
-                and self.cumulative_pnl <= -req.max_loss_bif):
-            self.request_stop("max_loss")
             return True
         return False
 
@@ -605,10 +580,12 @@ class BettingSession:
                 raise DuplicateDecision(intent.decision_id)
             entry = _mk_entry(intent, mode=self.mode.value,
                               simulated=self.mode == Mode.SIMULATION)
+            entry["amount_currency"] = intent.amount_currency
+            entry["provider_round_id"] = intent.provider_round_id
             now = datetime.now(timezone.utc).isoformat()
             execution = {
                 "execution_id": entry["entry_id"], "decision_id": intent.decision_id,
-                "target_round_id": intent.round_id, "profile": intent.profile,
+                "target_round_id": intent.round_id,
                 "bet_amount": intent.effective_amount(), "cashout_target": intent.cashout,
                 "status": "VALIDATING", "simulated": self.mode == Mode.SIMULATION,
                 "created_at": now, "updated_at": now, "placed_at": None,
@@ -617,6 +594,8 @@ class BettingSession:
                 "profit_loss": None, "error": None,
                 "session_id": self.session_id, "lifecycle_state": "QUEUED",
                 "requested_bet_amount": intent.effective_amount(),
+                "requested_bet_currency": intent.amount_currency,
+                "provider_round_id": intent.provider_round_id,
                 "requested_cashout": intent.cashout,
             "placement_confirmed": False,
             "cashout_requested": False,
@@ -683,7 +662,6 @@ class BettingSession:
         payload = self.status()
         payload.update({"unknown": self.unknowns, "consecutive_wins": self.consecutive_wins,
                         "total_stake": self.total_stake, "total_payout": self.total_payout,
-                        "peak_balance": self.peak_balance, "drawdown": self.drawdown,
                         "win_rate": self.wins / (self.wins + self.losses)
                         if self.wins + self.losses else None})
         self.repository.save_session_metrics(self.session_id,
@@ -716,12 +694,17 @@ class BettingSession:
         if intent.is_expired():
             return (DecisionRejectReason.EXPIRED_DECISION.value,
                     "decision has expired")
-        if intent.profile != self.profile.key:
-            return (DecisionRejectReason.PROFILE_MISMATCH.value,
-                    "decision profile does not match active session")
-        if round(float(intent.cashout), 2) != round(self.profile.base_target, 2):
+        if round(float(intent.cashout), 2) != FIXED_CASHOUT:
             return (DecisionRejectReason.CASHOUT_MISMATCH.value,
-                    f"cashout must equal {self.profile.base_target:.2f}x for {self.profile.key}")
+                    f"cashout must equal {FIXED_CASHOUT:.2f}x")
+        if self.mode == Mode.REAL:
+            account_currency = self.last_snapshot.get("balance_currency")
+            if intent.amount_currency not in {"BIF", "RWF"}:
+                return ("stake_currency_unverified",
+                        "decision must carry the Rules Engine configured stake currency")
+            if not account_currency or intent.amount_currency != account_currency:
+                return ("stake_currency_mismatch",
+                        "configured stake currency does not match the observed platform account currency")
         if self.current_bet is not None:
             return (DecisionRejectReason.BET_ALREADY_ACTIVE.value,
                     "another bet is still active")
@@ -730,13 +713,6 @@ class BettingSession:
     async def _exec_sim_decision(self, intent: DecisionIntent, entry: dict) -> None:
         backend: SimulationBackend = self.backend  # type: ignore[assignment]
         amount = intent.effective_amount()
-        balance = backend.current_balance()
-        if amount > balance:
-            entry.update(status=OutcomeStatus.REJECTED.value,
-                         reason=DecisionRejectReason.INSUFFICIENT_BALANCE.value,
-                         note=f"sim balance {balance:.0f}BIF < stake {amount}BIF")
-            self.rejected_count += 1
-            return
         try:
             outcome = await backend.place(
                 amount_bif=amount,
@@ -757,27 +733,12 @@ class BettingSession:
 
     async def _exec_real_decision(self, intent: DecisionIntent, entry: dict) -> None:
         amount = intent.effective_amount()
-        profile = self.profile
-        if amount > profile.max_loss_bif:
-            await self._pause_live_after_failure("stake_exceeds_profile_limit")
-            entry.update(status=OutcomeStatus.REJECTED.value,
-                         reason=DecisionRejectReason.INTERNAL_ERROR.value,
-                         note="stake exceeds profile max_loss_bif")
-            self.rejected_count += 1
-            return
-        if self.last_balance is None:
-            await self._pause_live_after_failure("real_balance_unverified")
-            entry.update(status=OutcomeStatus.REJECTED.value,
+        if self.last_snapshot.get("authentication_state") != "AUTHENTICATED":
+            await self._pause_live_after_failure("authentication_unverified")
+            entry.update(status=OutcomeStatus.DEFERRED.value,
                          reason=DecisionRejectReason.UI_NOT_READY.value,
-                         note="game balance unknown — cannot verify funds")
-            self.rejected_count += 1
-            return
-        if self.last_balance < amount:
-            await self._pause_live_after_failure("real_balance_insufficient")
-            entry.update(status=OutcomeStatus.REJECTED.value,
-                         reason=DecisionRejectReason.INSUFFICIENT_BALANCE.value,
-                         note=f"game balance {self.last_balance:.0f}BIF < stake {amount}BIF")
-            self.rejected_count += 1
+                         note="authenticated Aviator session is not verified")
+            self.deferred_count += 1
             return
         if not self.last_ui_ready:
             await self._pause_live_after_failure("betting_ui_not_ready")
@@ -839,13 +800,10 @@ class BettingSession:
             "ledger_size": len(self.ledger),
             "wins": self.wins,
             "losses": self.losses,
-            "consecutive_losses": self.consecutive_losses,
             "consecutive_wins": self.consecutive_wins,
             "unknown": self.unknowns,
             "total_stake": self.total_stake,
             "total_payout": self.total_payout,
-            "peak_balance": self.peak_balance,
-            "drawdown": self.drawdown,
             "win_rate": self.wins / (self.wins + self.losses) if self.wins + self.losses else None,
         }
 
@@ -861,9 +819,7 @@ class BettingSession:
             "state": self.state.value,
             "mode": self.mode.value,
             "simulated": self.mode == Mode.SIMULATION,
-            "profile": self.profile.key,
-            "profile_label": self.profile.label,
-            "cashout": self.profile.base_target,
+            "cashout": FIXED_CASHOUT,
             "enabled": self.state.is_active,
             "automatic_enabled": self.state.is_active,
             "label": self.label,
@@ -878,17 +834,11 @@ class BettingSession:
             "starting_balance": self.starting_balance,
             "goal_balance": self.goal_balance,
             "win_limit_enabled": self.win_limit_enabled,
-            "session_loss_limit_enabled": self.session_loss_limit_enabled,
-            "session_loss_limit": self.session_loss_limit,
-            "session_configuration": {
-                "win_limit_enabled": self.win_limit_enabled,
-                "win_limit": self.win_limit,
-                "limits": {
-                    "session_loss_enabled": self.session_loss_limit_enabled,
-                    "session_loss": self.session_loss_limit,
-                },
-            },
+            "session_configuration": {"win_limit_enabled": self.win_limit_enabled,
+                                      "win_limit": self.win_limit},
             "last_balance_text": self.last_balance_text,
+            "authentication_state": self.last_snapshot.get("authentication_state"),
+            "session_identity": self.last_snapshot.get("session_identity"),
             "last_ui_ready": self.last_ui_ready,
             "latest_crash": self._latest_crash,
             "running_pnl_bif": self.cumulative_pnl,
@@ -901,14 +851,12 @@ class BettingSession:
             "total_bets": self.placed_count,
             "wins": self.wins,
             "losses": self.losses,
-            "consecutive_losses": self.consecutive_losses,
             "resolved_decisions": self.resolved_count,
             "placed_count": self.placed_count,
             "deferred_count": self.deferred_count,
             "rejected_count": self.rejected_count,
             "goals": {
                 "target_profit_bif": self.request.target_profit_bif,
-                "max_loss_bif": self.request.max_loss_bif,
                 "max_rounds": self.request.max_rounds,
             },
             "backend": backend_desc,
@@ -963,8 +911,6 @@ class BettingManager:
             if self.session is not None and self.session.state.is_active:
                 raise SessionAlreadyActive(self.session.session_id,
                                            self.session.state.value)
-            # profile validity check (schemas already restrict to literals)
-            get_profile(request.profile)
             self.session_seq += 1
             session = BettingSession(
                 settings=self.settings,
@@ -1024,10 +970,10 @@ class BettingManager:
                 "simulated": False, "session": None,
                 "backend": {"managed": False}, "browser_status": "NOT_CONNECTED",
                 "starting_balance": None, "current_balance": None,
-                "goal_balance": None, "profit": 0.0, "profile": None,
+                "goal_balance": None, "profit": 0.0,
                 "cashout": None, "current_round": None, "current_bet": None,
                 "last_result": None, "total_bets": 0, "wins": 0,
-                "losses": 0, "consecutive_losses": 0, "ledger_size": 0,
+                "losses": 0, "ledger_size": 0,
             }
         out = self.session.status()
         out["session"] = {"id": out["session_id"]}

@@ -77,6 +77,7 @@ backend/artifacts/
 # =========================
 data/bot/chrome-profile/
 data/bot/chrome-profile-*/
+data/bot/collector-extension-pairing.json
 browser_profiles/
 Cache/
 Cache_Data/

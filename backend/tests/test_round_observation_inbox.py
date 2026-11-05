@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +11,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 from starlette.requests import ClientDisconnect
 
+import main as main_app
 from app.api import round_distribution as round_api
 from app.round_distribution import RoundDistributionHub
 from app.round_observation_inbox import (
@@ -83,6 +82,88 @@ def test_inbox_restarts_with_pending_rows_and_keeps_pending_cursor_separate(tmp_
     assert restarted.snapshot()["backlog_size"] == 1
 
 
+def test_verified_observed_rule_work_replays_in_order_until_durably_processed(tmp_path):
+    path = tmp_path / "rules-replay.sqlite3"
+    inbox = RoundObservationInbox(path)
+    pairs = [observation(f"verified-{index}") for index in range(3)]
+    unverified_event, unverified_row = observation("unverified")
+    for event, row in pairs:
+        event["continuity_status"] = "VERIFIED"
+        row["continuity_verified"] = True
+    inbox.append([event for event, _ in [*pairs, (unverified_event, unverified_row)]],
+                 [row for _, row in [*pairs, (unverified_event, unverified_row)]],
+                 received_at=datetime.now(timezone.utc).isoformat())
+
+    restarted = RoundObservationInbox(path)
+    page = restarted.pending_rule_events_page(limit=2)
+    assert [event["round_id"] for event in page["events"]] == ["verified-0", "verified-1"]
+    assert page["has_more"] is True
+    next_page = restarted.pending_rule_events_page(after_sequence=page["next_cursor"], limit=2)
+    assert [event["round_id"] for event in next_page["events"]] == ["verified-2"]
+    assert next_page["has_more"] is False
+    assert restarted.mark_rules_processed("verified-0") is True
+    assert restarted.mark_rules_processed("verified-0") is False
+    remaining = restarted.pending_rule_events_page(limit=10)
+    assert [event["round_id"] for event in remaining["events"]] == ["verified-1", "verified-2"]
+
+
+def test_round_worker_marks_observed_event_only_after_success(tmp_path, monkeypatch):
+    async def scenario():
+        inbox = RoundObservationInbox(tmp_path / "worker-replay.sqlite3")
+        event, row = observation("retry-me")
+        event["continuity_status"] = "VERIFIED"
+        row["continuity_verified"] = True
+        inbox.append([event], [row], received_at=datetime.now(timezone.utc).isoformat())
+
+        async def inline_inbox(_app, function, *args, **kwargs):
+            kwargs.pop("priority", None)
+            return function(*args, **kwargs)
+
+        failed_once = asyncio.Event()
+        attempts = 0
+
+        async def process(_app, _stage, _event, *_args):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                failed_once.set()
+                raise RuntimeError("simulated interrupted decision")
+            return True, {"session-1"}
+
+        class Engine:
+            def persist_current_snapshot(self, *, session_ids=None):
+                assert session_ids == {"session-1"}
+                return {"snapshot_serialization_ms": 1.0, "database_persistence_ms": 2.0}
+
+        monkeypatch.setattr(main_app, "run_round_observation_inbox", inline_inbox)
+        monkeypatch.setattr(main_app, "_process_round_event", process)
+        app = SimpleNamespace(state=SimpleNamespace(
+            round_observation_inbox=inbox, rules_engine=Engine(), round_distribution=None,
+            round_event_retry_attempts={}, round_event_queued_ids=set()))
+        assert main_app._enqueue_round_events(app, "observed", [event]) is True
+        queue = app.state.round_event_queue
+        worker = app.state.round_event_processor_task
+        try:
+            await asyncio.wait_for(failed_once.wait(), timeout=1)
+            assert [item["round_id"] for item in
+                    inbox.pending_rule_events_page()["events"]] == ["retry-me"]
+            await asyncio.wait_for(queue.join(), timeout=2)
+            assert attempts == 2
+            persistence_queue = app.state.rules_state_persistence_queue
+            await asyncio.wait_for(persistence_queue.join(), timeout=2)
+            assert inbox.pending_rule_events_page()["events"] == []
+        finally:
+            worker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await worker
+            persistence_worker = app.state.rules_state_persistence_task
+            persistence_worker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await persistence_worker
+
+    asyncio.run(scenario())
+
+
 def test_append_acknowledgement_uses_committed_counts_without_second_snapshot(tmp_path):
     inbox = RoundObservationInbox(tmp_path / "fast-ack.sqlite3")
     event, row = observation("fast-ack")
@@ -109,6 +190,31 @@ def test_pending_round_index_lookup_tracks_observed_target_until_commit(tmp_path
 
     inbox.mark_committed("pending-target", 13)
     assert inbox.has_pending_round_index(13) is False
+
+
+def test_commit_and_rules_acknowledgements_batch_atomically_and_recover_by_stage(tmp_path):
+    inbox = RoundObservationInbox(tmp_path / "batched-rule-ack.sqlite3")
+    first_event, first_row = observation("batch-ack-1")
+    second_event, second_row = observation("batch-ack-2")
+    for event, row in ((first_event, first_row), (second_event, second_row)):
+        event["round_index"] = row["round_index"]
+        event["continuity_status"] = "VERIFIED"
+        row["continuity_verified"] = True
+    inbox.append([first_event, second_event], [first_row, second_row],
+                 received_at=datetime.now(timezone.utc).isoformat())
+    committed = {**first_event, "event_type": "round.persisted", "durability": "COMMITTED",
+                 "stream_sequence": int(first_event["round_index"])}
+    inbox.mark_committed_many([("batch-ack-1", first_event["round_index"], committed)])
+
+    assert inbox.pending_rule_events_page()["events"] == [second_event]
+    assert inbox.pending_committed_rule_events_page()["events"] == [
+        {**committed, "delivery_mode": "RECOVERED"}]
+    assert inbox.mark_rules_processed_many([
+        ("observed", "batch-ack-2"), ("committed", "batch-ack-1")]) == 2
+
+    restarted = RoundObservationInbox(inbox.path)
+    assert restarted.pending_rule_events_page()["events"] == []
+    assert restarted.pending_committed_rule_events_page()["events"] == []
 
 
 def test_collector_disconnect_is_a_concise_retryable_response(caplog):
@@ -139,60 +245,69 @@ def test_mark_staged_many_is_idempotent_and_preserves_pending_rows(tmp_path):
     assert inbox.snapshot()["backlog_size"] == 2
 
 
-def test_observed_publication_uses_dedicated_inbox_executor(tmp_path, monkeypatch):
+def test_rules_priority_decision_is_acknowledged_after_durable_inbox_and_fanout(tmp_path, monkeypatch):
     async def scenario():
-        async def unavailable_default_pool(*_args, **_kwargs):
-            raise AssertionError("observation publication used the shared default worker pool")
+        order = []
 
-        monkeypatch.setattr(asyncio, "to_thread", unavailable_default_pool)
-        inbox_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-inbox")
-        inbox = RoundObservationInbox(tmp_path / "isolated-inbox.sqlite3")
-        append_started = threading.Event()
-        release_append = threading.Event()
-        original_append = inbox.append
+        class DurableInbox:
+            def append(self, events, _observations, *, received_at):
+                assert received_at
+                order.append("durable_inbox")
+                return {"events": events, "duplicates": 0, "backlog_size": len(events)}
 
-        def slow_append(*args, **kwargs):
-            append_started.set()
-            if not release_append.wait(timeout=3):
-                raise TimeoutError("test append was not released")
-            return original_append(*args, **kwargs)
-
-        inbox.append = slow_append
-        event, row = observation("fast-observed", 1.9)
         published = []
-        published_signal = asyncio.Event()
 
-        async def publish(item):
+        async def publish_event(item):
             published.append(item)
-            published_signal.set()
+            order.append("other_fanout")
 
+        class RulesEngine:
+            def observe_round(self, *_args, **_kwargs):
+                order.append("rules_engine")
+                return {"decision": "WAIT", "reason": "TEST", "true_rule_ids": [], "sessions": []}
+
+        class Hub:
+            record_priority_latency = lambda *_args: None
+
+            async def publish(self, item):
+                await publish_event(item)
+
+        event, row = observation("fast-observed", 1.9)
         async def request_json():
+            row.update({"continuity_verified": True,
+                        "round_identity_type": "COLLECTOR_OBSERVATION_HASH",
+                        "round_index_source": "LOCAL_SEQUENCE"})
             return {"source": "WINNER_DIRECT_PAGE_HISTORY", "rounds": [row]}
 
+        async def inline_to_thread(function, /, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        async def inline_inbox(_app, function, *args, priority=False, **kwargs):
+            return function(*args, **kwargs)
+
+        monkeypatch.setattr(main_app.asyncio, "to_thread", inline_to_thread)
+        monkeypatch.setattr(main_app, "run_round_observation_inbox", inline_inbox)
+        def completed_decision_waiter(_app, stage, item):
+            future = asyncio.get_running_loop().create_future()
+            future.set_result({"decision_ready": True, "stage": stage})
+            return main_app._round_event_key(stage, item), future
+
+        monkeypatch.setattr(main_app, "_round_event_completion_future", completed_decision_waiter)
         app = SimpleNamespace(state=SimpleNamespace(
-            round_observation_inbox=inbox,
-            round_observation_inbox_executor=inbox_executor,
+            round_observation_inbox=DurableInbox(),
             round_stream_id="stream-test",
-            round_distribution=SimpleNamespace(publish=publish),
+            round_distribution=Hub(),
+            rules_engine=RulesEngine(),
         ))
         request = SimpleNamespace(app=app, json=request_json)
-        route_task = asyncio.create_task(collector_round_observed(request))
-        started = time.perf_counter()
-        try:
-            await asyncio.wait_for(published_signal.wait(), timeout=0.5)
-            delivery_ms = (time.perf_counter() - started) * 1000.0
-            assert append_started.is_set()
-            assert not route_task.done(), "route should await API resume durability after SSE publication"
-            assert delivery_ms < 500.0
-        finally:
-            release_append.set()
-            inbox_executor.shutdown(wait=True, cancel_futures=True)
-        response = await asyncio.wait_for(route_task, timeout=2.0)
+        response = await collector_round_observed(request)
         assert response["ok"] is True
-        assert delivery_ms < 500.0
+        assert order == ["durable_inbox", "other_fanout"]
         assert len(published) == 1
-        assert inbox.snapshot()["backlog_size"] == 1
-        print(f"observation reached SSE queue in {delivery_ms:.2f} ms before delayed API resume append")
+        assert response["rule_evaluation_stage"] == "DECISION_READY_BEFORE_COLLECTOR_ACK"
+        assert response["rules_engine_evaluations"] == [
+            {"round_id": "fast-observed", "status": "DECISION_READY"}]
+        assert app.state.round_event_queue.qsize() == 1
 
     asyncio.run(scenario())
 
@@ -213,52 +328,72 @@ def test_inbox_idempotency_conflicts_and_capacity_never_drop_existing_rows(tmp_p
     assert [item["round_id"] for item in inbox.pending_events()] == ["same-round"]
 
 
-def test_pending_observation_ack_does_not_run_rules_engine_before_postgres_commit(tmp_path):
-    class EngineThatMustWaitForCommit:
-        def needs_round_observation(self):
-            raise AssertionError("pending observations must not synchronously evaluate rules")
-
-        def observe_round(self, *_args, **_kwargs):
-            raise AssertionError("only committed events may advance a session")
-
+def test_verified_pending_round_is_queued_only_after_durable_inbox_append(tmp_path, monkeypatch):
     async def scenario():
+        order = []
+
         class FastDurableInbox:
             def __init__(self):
                 self.count = 0
 
             def append(self, events, _observations, *, received_at):
                 self.count += len(events)
+                order.append("inbox_durable")
                 return {"events": events, "duplicates": 0, "backlog_size": self.count}
 
-            def snapshot(self):
-                return {"backlog_size": self.count}
+        class Fanout:
+            def record_priority_latency(self, *_args):
+                return None
+
+            async def publish(self, event):
+                order.append(f"fanout:{event['round_id']}")
 
         inbox = FastDurableInbox()
-        inbox_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="commit-only-test-inbox")
-        _, row = observation("pending-before-commit", 1.91)
+        first_event, first_row = observation("priority-round-1", 1.91)
+        second_event, second_row = observation("priority-round-2", 2.04)
+        for event, row, round_index in ((first_event, first_row, 10), (second_event, second_row, 11)):
+            row.update({"continuity_verified": True, "round_index": round_index,
+                        "round_index_source": "LOCAL_SEQUENCE",
+                        "round_identity_type": "COLLECTOR_OBSERVATION_HASH",
+                        "identity_confidence": "OVERLAP_VERIFIED_ORDER_ONLY"})
 
         async def request_json():
-            return {"source": "WINNER_DIRECT_PAGE_HISTORY", "rounds": [row]}
+            return {"source": "WINNER_DIRECT_PAGE_HISTORY", "rounds": [first_row, second_row]}
 
-        async def publish(_event):
-            return None
+        async def inline_to_thread(function, /, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        async def inline_inbox(_app, function, *args, priority=False, **kwargs):
+            return function(*args, **kwargs)
+
+        monkeypatch.setattr(main_app.asyncio, "to_thread", inline_to_thread)
+        monkeypatch.setattr(main_app, "run_round_observation_inbox", inline_inbox)
+        def completed_decision_waiter(_app, stage, item):
+            future = asyncio.get_running_loop().create_future()
+            future.set_result({"decision_ready": True, "stage": stage})
+            return main_app._round_event_key(stage, item), future
+
+        monkeypatch.setattr(main_app, "_round_event_completion_future", completed_decision_waiter)
 
         app = SimpleNamespace(state=SimpleNamespace(
             round_observation_inbox=inbox,
-            round_observation_inbox_executor=inbox_executor,
             round_stream_id="stream-test",
-            round_distribution=SimpleNamespace(publish=publish),
-            rules_engine=EngineThatMustWaitForCommit(),
+            round_distribution=Fanout(),
+            rules_engine=SimpleNamespace(),
+            shadow=SimpleNamespace(reconcile_round=lambda *_args: pytest.fail("SHADOW must not block priority rules")),
+            history_collector=SimpleNamespace(rows=lambda: pytest.fail("history refresh must not block priority rules")),
         ))
-        try:
-            response = await asyncio.wait_for(
-                collector_round_observed(SimpleNamespace(app=app, json=request_json)), timeout=3)
-            assert response["ok"] is True
-            assert response["rule_evaluation_stage"] == "WAITING_FOR_COMMITTED_POSTGRES_EVENT"
-            assert response["rules_engine_evaluations"] == []
-            assert inbox.snapshot()["backlog_size"] == 1
-        finally:
-            inbox_executor.shutdown(wait=True, cancel_futures=True)
+        response = await collector_round_observed(SimpleNamespace(app=app, json=request_json))
+        assert response["ok"] is True
+        assert response["rule_evaluation_stage"] == "DECISION_READY_BEFORE_COLLECTOR_ACK"
+        assert [item["round_id"] for item in response["rules_engine_evaluations"]] == [
+            "priority-round-1", "priority-round-2"]
+        assert [item["status"] for item in response["rules_engine_evaluations"]] == [
+            "DECISION_READY", "DECISION_READY"]
+        assert [item["round_id"] for item in response["priority_timings_ms"]] == [
+            "priority-round-1", "priority-round-2"]
+        assert order == ["inbox_durable", "fanout:priority-round-1", "fanout:priority-round-2"]
+        assert app.state.round_event_queue.qsize() == 2
 
     asyncio.run(scenario())
 
@@ -337,6 +472,19 @@ def test_hub_slow_client_isolated_and_sse_flushes_before_replay_query(monkeypatc
         assert '"pending_next_cursor":1' in replay_chunk
         await response.body_iterator.aclose()
         assert (await stream_hub.metrics())["connected_clients"] == 0
+    asyncio.run(scenario())
+
+
+def test_rules_priority_latency_metrics_deduplicate_event_samples_and_report_p99():
+    async def scenario():
+        hub = RoundDistributionHub()
+        hub.record_priority_latency("rules_engine_evaluation_ms", "round-1", 2.0)
+        hub.record_priority_latency("rules_engine_evaluation_ms", "round-1", 200.0)
+        hub.record_priority_latency("rules_engine_evaluation_ms", "round-2", 3.0)
+        summary = (await hub.metrics())["latency_ms"]["rules_engine_evaluation_ms"]
+        assert summary == {"samples": 2, "average_ms": 2.5, "p50_ms": 2.0, "p95_ms": 3.0,
+                           "p99_ms": 3.0, "max_ms": 3.0}
+
     asyncio.run(scenario())
 
 
@@ -543,9 +691,20 @@ def test_sse_heartbeat_does_not_query_postgres(monkeypatch):
         response = await round_api.subscribe_round_stream(fake_request)
         try:
             assert await anext(response.body_iterator) == ": connected\n\n"
-            assert "event: stream.ready" in await anext(response.body_iterator)
-            assert "event: stream.replay_complete" in await anext(response.body_iterator)
-            heartbeat = await anext(response.body_iterator)
+
+            async def next_stream_event(event_name):
+                for _ in range(20):
+                    chunk = await anext(response.body_iterator)
+                    if f"event: {event_name}" in chunk:
+                        return chunk
+                    # The protocol permits heartbeat frames while the replay
+                    # boundary is still being prepared.
+                    assert "event: heartbeat" in chunk
+                raise AssertionError(f"event: {event_name} was not emitted")
+
+            await next_stream_event("stream.ready")
+            await next_stream_event("stream.replay_complete")
+            heartbeat = await next_stream_event("heartbeat")
             assert "event: heartbeat" in heartbeat
             assert '"latest_sequence":0' in heartbeat
             # One snapshot is required to establish the replay boundary. No
@@ -660,9 +819,26 @@ def test_external_round_api_rejects_unauthenticated_requests_without_leaking_tok
 def test_collector_status_payload_returns_the_full_status_document(tmp_path, monkeypatch):
     collector_status = {
         "collectorRunning": True,
+        "roundSourceStatus": "AVAILABLE",
+        "roundCollectionStatus": "HEALTHY_CAUGHT_UP",
         "loggedIn": True,
         "heartbeatAt": datetime.now(timezone.utc).isoformat(),
         "lastSuccessfulCollection": datetime.now(timezone.utc).isoformat(),
+        "lastObservedRoundId": "observed-round-3",
+        "lastObservedRoundIndex": 3,
+        "lastObservedAt": datetime.now(timezone.utc).isoformat(),
+        "lastDetectedRoundId": "observed-round-3",
+        "lastDetectedAt": datetime.now(timezone.utc).isoformat(),
+        "lastDetectedStatus": "VALIDATED",
+        "lastDetectedReason": "ROUND_OVERLAP_VALIDATED",
+        "roundCommitSamples": [
+            {"round_id": "round-1", "latency_ms": 10.0},
+            {"round_id": "round-2", "latency_ms": 20.0},
+            {"round_id": "round-3", "latency_ms": 100.0},
+        ],
+        "storage": {"round_delivery": {"last_round_timing": {
+            "round_history_api_visibility": "NOT_MEASURED",
+        }}},
         "browserConnected": True,
         "pageConnected": True,
         "frameConnected": True,
@@ -705,3 +881,9 @@ def test_collector_status_payload_returns_the_full_status_document(tmp_path, mon
     assert payload["collector_status"] == "HEALTHY"
     assert payload["stream"]["stream_id"] == "stream-test"
     assert payload["outbox"]["api_pending_observations"] == 2
+    assert payload["metrics"]["latency_ms"]["observation_to_commit_ms"]["p99_ms"] == 100.0
+    assert payload["collector"]["lastObservedRoundId"] == "observed-round-3"
+    assert payload["collector"]["roundSourceStatus"] == "AVAILABLE"
+    assert payload["collector"]["roundCollectionStatus"] == "HEALTHY_CAUGHT_UP"
+    assert payload["collector"]["lastDetectedStatus"] == "VALIDATED"
+    assert payload["collector"]["last_round_timing"]["round_history_api_visibility"] == "NOT_MEASURED"

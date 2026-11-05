@@ -39,16 +39,18 @@ class ComponentHealth:
 
 class SystemHealth:
     COMPONENTS = (
-        "browser", "history", "database", "rules_engine", "risk",
+        "browser", "history", "database", "rules_engine", "emergency_stop",
         "executor", "reconciliation", "api",
     )
 
     def __init__(self, *, broadcaster: Callable[[dict], Awaitable[None]] | None = None,
-                 betting_manager=None, history_collector=None, repository=None):
+                 betting_manager=None, history_collector=None, repository=None,
+                 emergency_stop=None):
         self.broadcaster = broadcaster
         self.betting_manager = betting_manager
         self.history_collector = history_collector
         self.repository = repository
+        self.emergency_stop = emergency_stop
         self.started_at = time.time()
         self.state = "STARTING"
         self.reason = "health checks have not completed"
@@ -73,21 +75,26 @@ class SystemHealth:
 
     def browser_observation(self) -> dict[str, Any]:
         observation = dict(self._browser_observation or {})
-        balance = observation.get("balance")
         try:
             age = time.time() - datetime.fromisoformat(observation["observed_at"]).timestamp()
         except (KeyError, TypeError, ValueError):
             age = None
-        valid_balance = (isinstance(balance, (int, float)) and not isinstance(balance, bool)
-                         and math.isfinite(balance) and balance >= 0)
         fresh = age is not None and 0 <= age <= 20
+        balance = observation.get("balance")
+        numeric_balance = (isinstance(balance, (int, float)) and not isinstance(balance, bool)
+                           and math.isfinite(balance) and balance >= 0)
+        balance_verified = bool(observation.get("balance_verified", observation.get("verified"))
+                                and numeric_balance and fresh)
         observation.update(age_s=age, fresh=fresh,
-                           verified=bool(observation.get("verified") and valid_balance and fresh))
-        if not observation["verified"]:
+                           verified=bool(observation.get("session_verified", observation.get("verified"))
+                                         and fresh),
+                           balance_verified=balance_verified)
+        if not balance_verified:
             observation["balance"] = None
+        if not observation["verified"]:
             observation["error"] = observation.get("error") or (
-                "browser balance observation stale" if age is not None and not fresh
-                else "execution browser idle; no verified UI balance")
+                "browser session observation stale" if age is not None and not fresh
+                else "execution browser idle; authenticated session is unverified")
         return observation
 
     async def emit(self, payload: dict) -> None:
@@ -199,7 +206,7 @@ class SystemHealth:
                 mode = bs.get("mode")
                 browser_ok = mode == "SIMULATION" or (
                     bs.get("browser_status") in {"CONNECTED", "READY"} and bool(bs.get("last_ui_ready"))
-                    and bs.get("current_balance") is not None
+                    and bs.get("authentication_state") == "AUTHENTICATED"
                 )
                 observation = self.browser_observation()
                 # A preflight UI read may establish browser health while idle.
@@ -212,16 +219,18 @@ class SystemHealth:
                                    and not bs.get("last_error"))
                 browser_reason = None if browser_ok else (
                     (observation.get("error") or "betting panel is not UI-ready") if browser_waiting
-                    else bs.get("last_error") or "browser not connected and UI-ready with verified balance"
+                    else bs.get("last_error") or "browser not connected and UI-ready"
                 )
                 browser_metadata = {"mode": mode, "browser_status": bs.get("browser_status"),
                                     "ui_ready": bs.get("last_ui_ready"),
                                     "balance": bs.get("current_balance"),
-                                    "balance_verified": browser_ok and mode != "SIMULATION"}
+                                    "session_verified": browser_ok and mode != "SIMULATION",
+                                    "balance_verified": False}
                 if use_observation:
                     browser_metadata.update({key: observation.get(key) for key in (
                         "browser_status", "ui_ready", "balance", "balance_text", "observed_at", "source")})
-                    browser_metadata["balance_verified"] = observation.get("verified", False)
+                    browser_metadata["session_verified"] = observation.get("verified", False)
+                    browser_metadata["balance_verified"] = observation.get("balance_verified", False)
                 self.heartbeat("browser", ok=browser_ok,
                                waiting=browser_waiting, error=browser_reason,
                                metadata=browser_metadata, stale_after_s=20)
@@ -238,9 +247,12 @@ class SystemHealth:
                 if not recon_ok:
                     reasons.append("reconciliation unresolved")
                 self.heartbeat("executor", ok=True, metadata={"state": bs.get("state")}, stale_after_s=30)
-                self.heartbeat("risk", ok=not bool(bs.get("emergency_stop")),
-                               error="risk emergency stop latched" if bs.get("emergency_stop") else None,
+                stop_latched = bool(getattr(self.emergency_stop, "latched", False))
+                self.heartbeat("emergency_stop", ok=not stop_latched,
+                               error="emergency stop latched" if stop_latched else None,
                                stale_after_s=30)
+                if stop_latched:
+                    reasons.append("emergency stop latched")
             except Exception as exc:
                 self.heartbeat("executor", ok=False, error=str(exc))
                 reasons.append("executor status unavailable")
@@ -268,7 +280,7 @@ class SystemHealth:
 
     def can_bet_now(self, *, mode: str | None = None) -> dict[str, Any]:
         mode = mode or (self.betting_manager.status().get("mode") if self.betting_manager else "REAL")
-        required = ["database", "history", "reconciliation"]
+        required = ["database", "history", "reconciliation", "emergency_stop"]
         if mode != "SIMULATION":
             required.append("browser")
         blocked = []
@@ -276,7 +288,7 @@ class SystemHealth:
             c = self._components[name]
             if (name == "browser" and (c.metadata or {}).get("source") == "existing_cdp_page_read_only"
                     and not self.browser_observation().get("verified")):
-                blocked.append("browser:" + self.browser_observation().get("error", "balance unverified"))
+                blocked.append("browser:" + self.browser_observation().get("error", "session unverified"))
                 continue
             if c.last_success is None or c.state != "HEALTHY":
                 blocked.append(f"{name}:{c.last_error or c.state.lower()}")

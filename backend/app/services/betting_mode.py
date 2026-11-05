@@ -8,7 +8,6 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from app.betting.profiles import get_profile
 
 
 SHADOW_REALISTIC = "SHADOW_REALISTIC"
@@ -48,8 +47,6 @@ class BettingModeManager:
         row = {"mode": self.mode, "updated_at": _now(), "reason": reason,
                "live_authorized": self.live_authorized,
                "operator_identity": self.operator_identity,
-               "selected_profile": getattr(getattr(self.app.state, "risk", None),
-                                            "selected_profile", "PROFILE_A"),
                **extra}
         self.repository.save_betting_mode(self.mode, row)
         if hasattr(self.repository, "save_application_state"):
@@ -75,6 +72,7 @@ class BettingModeManager:
             "live_authorized": self.live_authorized and bool(live and live.live_active),
             "operator_identity": self.operator_identity if self.live_authorized else None,
             "transitioning": self.transitioning,
+            "emergency_stop": self.app.state.emergency_stop.status(),
             "shadow_running": bool(shadow and shadow.mode == "SHADOW" and self.shadow_ready),
             "shadow": shadow.status() if shadow else None,
             "live": live.status() if live else None,
@@ -93,7 +91,7 @@ class BettingModeManager:
             return {"mode": "SHADOW", "state": "STOPPED", "automatic_enabled": False,
                     "current_balance": None, "browser_status": "SHADOW",
                     "last_ui_ready": True, "current_bet": None,
-                    "emergency_stop": bool(self.app.state.risk.emergency_latched)}
+                    "emergency_stop": bool(self.app.state.emergency_stop.latched)}
         return self.app.state.betting.status()
 
     async def _read_platform_balance(self) -> dict[str, Any]:
@@ -123,8 +121,9 @@ class BettingModeManager:
             numeric_balance = (isinstance(balance, (int, float)) and not isinstance(balance, bool)
                                and math.isfinite(balance) and balance >= 0)
             authentication_state = str((payload or {}).get("authentication_state") or "UNKNOWN")
-            verified = bool(payload and payload.get("ok") and numeric_balance
-                            and authentication_state == "AUTHENTICATED")
+            session_verified = bool(payload and payload.get("ok") and payload.get("ui_ready") is True
+                                    and authentication_state == "AUTHENTICATED")
+            balance_verified = session_verified and numeric_balance
             live_status = getattr(getattr(self.app.state, "live", None), "status", lambda: {})()
             live_session = (live_status or {}).get("session") or {}
             rules_status = getattr(getattr(self.app.state, "rules_engine", None), "status", lambda: {})()
@@ -148,8 +147,10 @@ class BettingModeManager:
                     "failures": inspected.get("failures", []),
                 })
             observation = {
-                "verified": verified,
-                "balance": balance if verified else None,
+                "verified": session_verified,
+                "session_verified": session_verified,
+                "balance_verified": balance_verified,
+                "balance": balance if balance_verified else None,
                 "displayed_amount": balance if numeric_balance else None,
                 "currency": payload.get("balance_currency") if isinstance(payload, dict) else None,
                 "currency_verified": bool(payload and payload.get("balance_currency")),
@@ -178,9 +179,11 @@ class BettingModeManager:
                     "betting_window": (payload or {}).get("betting_window") or {"state": "UNKNOWN"},
                     "observed_at": (payload or {}).get("balance_observed_at") or _now(),
                 },
-                "error": None if verified else (payload or {}).get("error") or
+                "provider_phase": dict(getattr(
+                    self.app.state, "latest_provider_phase_observation", None) or {}),
+                "error": None if session_verified else (payload or {}).get("error") or
                     ("authenticated_account_not_verified" if authentication_state != "AUTHENTICATED"
-                     else "UI balance unavailable or invalid"),
+                     else "Aviator page is not UI-ready"),
             }
             if hasattr(self.repository, "record_platform_balance_observation"):
                 saved = self.repository.record_platform_balance_observation(observation)
@@ -195,64 +198,47 @@ class BettingModeManager:
                     "session_identity": None, "application_session_id": None,
                     "authentication_state": "UNKNOWN",
                     "cashout_configuration": inspect_cashout_configuration(None),
+                    "provider_phase": dict(getattr(
+                        self.app.state, "latest_provider_phase_observation", None) or {}),
                     "error": str(exc)}
         finally:
             await client.close()
 
-    def _profile_review(self, profile_key: str) -> dict[str, Any]:
-        betting_profile = get_profile(profile_key)
-        risk_profiles = self.app.state.risk.profiles()
-        risk_profile = risk_profiles.get(betting_profile.key, {})
-        return {
-            "profile": betting_profile.key,
-            "profile_name": risk_profile.get("name", betting_profile.label),
-            "cashout_target": float(risk_profile.get("cashout", betting_profile.base_target)),
-            "default_stake": int(betting_profile.default_amount_bif),
-            "minimum_bet": risk_profile.get("minimum_bet", betting_profile.min_amount_bif),
-            "maximum_bet": risk_profile.get("maximum_bet", betting_profile.max_amount_bif),
-            "session_loss_limit": risk_profile.get("maximum_session_loss", betting_profile.max_loss_bif),
-            "maximum_balance_percentage": risk_profile.get("maximum_balance_percentage"),
-            "maximum_consecutive_losses": risk_profile.get("maximum_consecutive_losses"),
-        }
-
-    async def live_review(self, *, profile: str, win_limit_enabled: bool | None,
-                          win_limit: float | None, session_loss_limit_enabled: bool | None,
-                          session_loss_limit: float | None,
-                          execution_panel: int | None = None,
-                          stake_amount: int | None = None,
+    async def live_review(self, *, win_limit_enabled: bool | None,
+                          win_limit: float | None, execution_panel: int | None = None,
                           currency: str | None = None) -> dict:
-        profile_data = self._profile_review(profile)
+        setup = self.app.state.rules_engine.ui_setup_configuration()
+        stake_amount = setup.get("requested_stake") if setup.get("status") == "CONFIGURED" else None
+        configured_panel = setup.get("execution_panel") if setup.get("status") == "CONFIGURED" else None
+        if execution_panel is None:
+            execution_panel = configured_panel
         platform = await self._read_platform_balance()
         blocks = []
-        if profile_data["cashout_target"] != 2.0:
-            blocks.append("LIVE profile cashout must equal the required 2.00x")
         if type(execution_panel) is not int or execution_panel not in (0, 1):
-            blocks.append("choose_a_live_execution_panel")
-        if type(stake_amount) is not int or stake_amount <= 0:
-            blocks.append("choose_a_positive_live_stake")
-        elif not profile_data["minimum_bet"] <= stake_amount <= profile_data["maximum_bet"]:
-            blocks.append("live_stake_outside_profile_limits")
+            blocks.append("select_one_execution_panel_in_rules_configuration")
+        if stake_amount is None:
+            blocks.append("fixed_simulated_stake_not_configured_in_rules_engine")
+        elif (isinstance(stake_amount, bool) or not isinstance(stake_amount, (int, float))
+              or not math.isfinite(float(stake_amount)) or int(stake_amount) != stake_amount
+              or stake_amount <= 0):
+            blocks.append("fixed_simulated_stake_is_invalid")
+        elif execution_panel != configured_panel:
+            blocks.append("execution_panel_does_not_match_rules_configuration")
         if not isinstance(currency, str) or not currency:
             blocks.append("choose_live_account_currency")
         elif currency != platform.get("currency"):
             blocks.append("live_stake_currency_does_not_match_verified_account")
         if win_limit_enabled is None:
             blocks.append("choose_whether_to_enable_a_win_limit")
-        if session_loss_limit_enabled is None:
-            blocks.append("choose_whether_to_enable_a_loss_limit")
         win_amount = float(win_limit) if win_limit is not None else None
-        loss_amount = float(session_loss_limit) if session_loss_limit is not None else None
         if win_limit_enabled and (win_amount is None or not math.isfinite(win_amount) or win_amount <= 0):
             blocks.append("enabled_win_limit_requires_a_positive_profit_amount")
             win_amount = None
-        if session_loss_limit_enabled and (loss_amount is None or not math.isfinite(loss_amount) or loss_amount <= 0):
-            blocks.append("enabled_loss_limit_requires_a_positive_amount")
-            loss_amount = None
         goal = (float(platform["balance"]) + win_amount
-                if platform["verified"] and win_limit_enabled and win_amount is not None
+                if platform.get("balance_verified") and win_limit_enabled and win_amount is not None
                 and math.isfinite(win_amount) and win_amount > 0 else None)
-        if not platform["verified"]:
-            blocks.append(f"real_platform_balance_unverified:{platform.get('error') or 'UNKNOWN'}")
+        if win_limit_enabled and not platform.get("balance_verified"):
+            blocks.append("win_limit_requires_a_verified_starting_balance")
         try:
             from app.core.config import get_settings
             api_key_configured = bool(get_settings().api_key)
@@ -265,17 +251,16 @@ class BettingModeManager:
             "execution_panel": execution_panel,
             "stake_amount": stake_amount,
             "currency": currency,
+            "cashout_target": 2.0,
         })
         blocks.extend(readiness.get("reasons", []))
         review_id = secrets.token_urlsafe(32)
         row = {
             "review_id": review_id, "created_monotonic": time.monotonic(),
             "expires_monotonic": time.monotonic() + 120,
-            "platform_balance": platform, "profile": profile_data,
+            "platform_balance": platform, "stake_configuration": setup,
             "goal_balance": goal, "win_limit_enabled": bool(win_limit_enabled),
             "win_limit": win_amount if win_limit_enabled else None,
-            "session_loss_limit_enabled": bool(session_loss_limit_enabled),
-            "session_loss_limit": loss_amount if session_loss_limit_enabled else None,
             "readiness": readiness,
             "execution_panel": execution_panel,
             "stake_amount": stake_amount,
@@ -288,13 +273,8 @@ class BettingModeManager:
                 self._reviews.pop(key, None)
         return {
             "ok": True, "mode": self.mode, "live_available": not blocks,
-            "platform_balance": platform, "profile": profile_data,
-            "cashout_target": profile_data["cashout_target"],
-                "approved_bet_limits": {"minimum": profile_data["minimum_bet"],
-                                    "maximum": profile_data["maximum_bet"],
-                                    "default_stake": profile_data["default_stake"]},
-            "session_loss_limit": row["session_loss_limit"],
-            "session_loss_limit_enabled": row["session_loss_limit_enabled"],
+            "platform_balance": platform, "stake_configuration": setup,
+            "cashout_target": 2.0,
             "win_limit": row["win_limit"],
             "win_limit_enabled": row["win_limit_enabled"],
             "goal_balance": goal, "readiness": readiness,
@@ -331,7 +311,7 @@ class BettingModeManager:
             except asyncio.TimeoutError:
                 session.request_stop("mode_switch_timeout")
 
-    async def switch_shadow(self, *, profile: str = "PROFILE_A", goal_balance: float | None = None,
+    async def switch_shadow(self, *, goal_balance: float | None = None,
                             starting_balance: float | None = None,
                             configuration: dict[str, Any] | None = None) -> dict:
         if not isinstance(configuration, dict) or str(configuration.get("mode", "")).upper() not in {"MANUAL", "AUTOMATIC"}:
@@ -370,35 +350,20 @@ class BettingModeManager:
                 if shadow.mode in {"SHADOW", "PAUSED"}:
                     await shadow.stop("mode_switch")
                 platform = await self._read_platform_balance()
-                if not platform["verified"]:
-                    self.mode = SHADOW_REALISTIC
-                    self.shadow_ready = False
-                    self.reason = f"read-only platform balance unavailable: {platform.get('error') or 'UNKNOWN'}"
-                    self._persist(self.reason)
-                    await self._broadcast()
-                    return {"ok": False, "error": "platform_balance_unverified",
-                            "reasons": [self.reason], "status": self.status()}
-                if starting_balance is not None and not math.isclose(
-                        float(starting_balance), float(platform["balance"]), rel_tol=0, abs_tol=0.01):
-                    self.reason = "entered starting balance does not match the verified platform balance"
-                    self._persist(self.reason)
-                    await self._broadcast()
-                    return {"ok": False, "error": "starting_balance_mismatch",
-                            "reasons": [self.reason], "status": self.status(),
-                            "platform_balance": platform}
-                if goal_balance is not None and float(goal_balance) <= float(platform["balance"]):
+                ledger_start = (float(starting_balance) if starting_balance is not None else
+                                float(platform["balance"]) if platform.get("balance_verified") else 0.0)
+                if goal_balance is not None and float(goal_balance) <= ledger_start:
                     return {"ok": False, "error": "invalid_goal",
-                            "reasons": ["goal must exceed the verified starting balance"],
+                            "reasons": ["goal must exceed the configured simulation starting balance"],
                             "platform_balance": platform}
-                await self.app.state.risk.on_session_start(profile)
-                await shadow.start(profile=profile, starting_balance=float(platform["balance"]),
+                await shadow.start(starting_balance=ledger_start,
                                    goal_balance=goal_balance, health=self.app.state.system_health,
                                    configuration=configuration)
                 self.mode = SHADOW_REALISTIC
                 self.live_authorized = False
                 self.shadow_ready = True
-                self.reason = "shadow realistic session active; platform balance was read-only"
-                self._persist(self.reason, starting_balance=platform["balance"], profile=profile,
+                self.reason = "shadow realistic session active"
+                self._persist(self.reason, starting_balance=ledger_start,
                               goal_balance=(shadow.session or {}).get("goal_balance"),
                               session_configuration=(shadow.session or {}).get("config"))
                 await self._broadcast()
@@ -446,16 +411,8 @@ class BettingModeManager:
             if payload.get("real_funds_can_be_lost") is not True:
                 return {"ok": False, "error": "real_funds_at_risk_confirmation_required",
                         "reasons": ["operator_must_explicitly_confirm_real_funds_can_be_lost"]}
-            profile = str(payload.get("profile") or "").upper()
-            if profile != review["profile"]["profile"]:
-                return {"ok": False, "error": "live_review_mismatch", "reasons": ["profile_changed_after_review"]}
             expected_values = {
-                "real_platform_balance": review["platform_balance"].get("balance"),
-                "cashout_target": review["profile"]["cashout_target"],
-                "minimum_bet": review["profile"]["minimum_bet"],
-                "maximum_bet": review["profile"]["maximum_bet"],
-                "session_loss_limit_enabled": review["session_loss_limit_enabled"],
-                "session_loss_limit": review["session_loss_limit"],
+                "cashout_target": 2.0,
                 "win_limit_enabled": review["win_limit_enabled"],
                 "win_limit": review["win_limit"],
                 "goal_balance": review["goal_balance"],
@@ -467,27 +424,26 @@ class BettingModeManager:
                 if payload.get(key) != expected:
                     return {"ok": False, "error": "live_review_mismatch",
                             "reasons": [f"{key}_does_not_match_backend_review"]}
-            if not review["platform_balance"].get("verified"):
-                return {"ok": False, "error": "platform_balance_unverified",
-                        "reasons": ["real_platform_balance_unverified"]}
             if (review["win_limit_enabled"] and
-                    (review["goal_balance"] is None or review["goal_balance"] <= review["platform_balance"]["balance"])):
+                    (review["goal_balance"] is None or
+                     review["platform_balance"].get("balance") is None or
+                     review["goal_balance"] <= review["platform_balance"]["balance"])):
                 return {"ok": False, "error": "goal_required",
                         "reasons": ["goal_must_exceed_real_platform_balance"]}
             # Run all production checks before stopping an existing safe shadow
             # session; a rejected LIVE request must leave Shadow intact.
             platform_now = await self._read_platform_balance()
-            if not platform_now.get("verified"):
-                return {"ok": False, "error": "platform_balance_unverified",
-                        "reasons": [f"real_platform_balance_unverified:{platform_now.get('error') or 'UNKNOWN'}"]}
             reviewed_balance = review["platform_balance"].get("balance")
-            if abs(float(platform_now["balance"]) - float(reviewed_balance)) > 0.01:
+            if (review["win_limit_enabled"] and platform_now.get("balance_verified")
+                    and reviewed_balance is not None
+                    and abs(float(platform_now["balance"]) - float(reviewed_balance)) > 0.01):
                 return {"ok": False, "error": "live_review_stale",
                         "reasons": ["real_platform_balance_changed_after_review"]}
             readiness = await self.app.state.live.production_readiness_check(platform_now, {
                 "execution_panel": review["execution_panel"],
                 "stake_amount": review["stake_amount"],
                 "currency": review["currency"],
+                "cashout_target": 2.0,
             })
             if not readiness["ready"]:
                 return {"ok": False, "error": "live_activation_blocked",
@@ -504,15 +460,13 @@ class BettingModeManager:
             try:
                 if shadow.mode in {"SHADOW", "PAUSED"}:
                     await shadow.stop("mode_switch_to_live")
-                await self.app.state.risk.on_session_start(profile)
                 self.live_authorized = True
                 self.app.state.live.explicit_live_authorization = True
                 result = await self.app.state.live.start({
-                    **payload, "profile": profile, "starting_balance": expected_values["real_platform_balance"],
+                    **payload, "starting_balance": (reviewed_balance
+                        if review["platform_balance"].get("balance_verified") else None),
                     "operator_identity": operator_identity,
                     "goal_balance": expected_values["goal_balance"],
-                    "session_loss_limit_enabled": expected_values["session_loss_limit_enabled"],
-                    "session_loss_limit": expected_values["session_loss_limit"],
                     "win_limit_enabled": expected_values["win_limit_enabled"],
                     "win_limit": expected_values["win_limit"],
                     "execution_panel": expected_values["execution_panel"],
@@ -528,7 +482,7 @@ class BettingModeManager:
                 self.operator_identity = operator_identity
                 self.shadow_ready = False
                 self.reason = "explicit live authorization active"
-                self._persist(self.reason, profile=profile, review_id=review_id,
+                self._persist(self.reason, review_id=review_id,
                               operator_identity=operator_identity)
                 await self._broadcast()
                 return {"ok": True, "status": self.status()}
@@ -586,7 +540,7 @@ class BettingModeManager:
         reasons = []
         if not self.live_authorized or not self.app.state.live.live_active:
             reasons.append("live_authorization_lost")
-        if self.app.state.risk.emergency_latched:
+        if self.app.state.emergency_stop.latched:
             reasons.append("emergency_stop")
         can_bet = self.app.state.system_health.can_bet_now(mode="REAL")
         if not can_bet.get("allowed"):
@@ -599,9 +553,6 @@ class BettingModeManager:
         status = self.app.state.betting.status()
         if status.get("state") in {"ERROR", "NOT_CONNECTED", "WAITING_FOR_BROWSER"}:
             reasons.append(f"browser_session_{str(status.get('state')).lower()}")
-        if (status.get("state") == "CONNECTED" and status.get("current_balance") is None
-                and status.get("automatic_enabled")):
-            reasons.append("real_balance_unverified")
         try:
             if any(row.get("status") in {"UNKNOWN", "RECONCILIATION_PENDING"}
                    or row.get("balance_status") == "MISMATCH"
@@ -621,7 +572,6 @@ class BettingModeManager:
         rules_status = rules.status() if rules is not None else {}
         last_evaluation = getattr(rules, "last_evaluation", None) if rules is not None else None
         betting = getattr(self.app.state, "betting", None)
-        risk = getattr(self.app.state, "risk", None)
         checks: dict[str, str] = {}
         reasons = []
         if self.can_execute_live():
@@ -629,11 +579,12 @@ class BettingModeManager:
         else:
             checks["operator_authorization"] = "BLOCKED"
             reasons.append("mode_is_not_authorized_live_real")
-        if risk is not None and not risk.emergency_latched:
+        emergency_stop = getattr(self.app.state, "emergency_stop", None)
+        if emergency_stop is not None and not emergency_stop.latched:
             checks["emergency_stop"] = "CLEAR"
         else:
-            checks["emergency_stop"] = "LATCHED" if risk is not None else "UNAVAILABLE"
-            reasons.append("emergency_stop_active_or_risk_manager_unavailable")
+            checks["emergency_stop"] = "LATCHED" if emergency_stop is not None else "UNAVAILABLE"
+            reasons.append("emergency_stop_active_or_unavailable")
         if int(rules_status.get("rules_enabled") or 0) >= 1:
             checks["enabled_rules"] = "AVAILABLE"
         else:
@@ -664,49 +615,44 @@ class BettingModeManager:
         else:
             checks["real_session"] = "INACTIVE"
             reasons.append("live_real_session_not_active")
-        balance = status.get("current_balance")
-        if isinstance(balance, (int, float)) and not isinstance(balance, bool) and math.isfinite(balance) and balance >= 0:
-            checks["balance"] = "OBSERVED"
-            stamp = status.get("last_balance_observed_at")
-            try:
-                age = (datetime.now(timezone.utc) - datetime.fromisoformat(
-                    str(stamp).replace("Z", "+00:00"))).total_seconds()
-                if age < 0 or age > 20:
-                    raise ValueError("stale balance")
-            except (TypeError, ValueError):
-                checks["balance_freshness"] = "STALE_OR_MISSING"
-                reasons.append("real_balance_observation_stale_or_missing")
-            else:
-                checks["balance_freshness"] = "FRESH"
-        else:
-            checks["balance"] = "UNVERIFIED"
-            checks["balance_freshness"] = "UNAVAILABLE"
-            reasons.append("real_available_balance_unverified")
+        checks["balance_gate"] = "REMOVED_FIXED_STAKE_ONLY"
 
-        # DecisionIntent currently carries only a target round ID. The rules
-        # ledger carries a prospective stream/index reference. No verified
-        # provider ID bridges these two contracts, so execution must stay shut.
-        checks["source_target_binding"] = "UNAVAILABLE"
-        reasons.append("rule_selection_is_not_bound_to_exact_source_and_provider_target_identity")
-        checks["risk_approval"] = "UNAVAILABLE"
-        if risk is not None:
-            try:
-                if hasattr(intent, "as_dict"):
-                    candidate = intent.as_dict()
-                elif isinstance(intent, dict):
-                    candidate = dict(intent)
-                else:
-                    candidate = {}
-                risk_reasons = risk.validate_execution(candidate, status)
-                if not risk_reasons:
-                    checks["risk_approval"] = "APPROVED"
-                else:
-                    reasons.extend(f"risk:{reason}" for reason in risk_reasons)
-            except Exception as exc:
-                reasons.append(f"risk_validation_failed:{type(exc).__name__}")
+        phase = getattr(self.app.state, "latest_provider_phase_observation", None) or {}
+        from app.betting.platform_state import classify_betting_window
+        phase_state = classify_betting_window(phase)
+        target_round_id = getattr(intent, "round_id", None) if not isinstance(intent, dict) else intent.get("round_id")
+        provider_round_id = getattr(intent, "provider_round_id", None) if not isinstance(intent, dict) else intent.get("provider_round_id")
+        target_index = getattr(intent, "target_round_index", None) if not isinstance(intent, dict) else intent.get("target_round_index")
+        history = getattr(self.app.state, "history_collector", None)
+        latest = (history.status().get("latest") or {}) if history is not None else {}
+        phase_bound = bool(
+            phase_state == "BETTING_OPEN"
+            and phase.get("canonical_target_round_id") == target_round_id
+            and phase.get("provider_round_id") == provider_round_id
+            and phase.get("target_round_index") == target_index
+            and phase.get("source_round_id") == latest.get("round_id")
+            and phase.get("source_round_index") == latest.get("round_index")
+            and phase.get("target_round_index") == (latest.get("round_index") + 1
+                if isinstance(latest.get("round_index"), int) else None)
+        )
+        checks["source_target_binding"] = "VERIFIED" if phase_bound else "UNVERIFIED"
+        if not phase_bound:
+            reasons.append("provider round identity, source binding, or betting deadline is missing, stale, or mismatched")
         else:
-            reasons.append("risk_manager_unavailable")
+            checks["betting_phase"] = "BETTING_OPEN"
 
+        health = getattr(self.app.state, "system_health", None)
+        browser_observation = health.browser_observation() if health is not None else {}
+        requested_currency = getattr(intent, "amount_currency", None) if not isinstance(intent, dict) else intent.get("amount_currency")
+        account_currency = browser_observation.get("currency")
+        currency_matches = bool(
+            browser_observation.get("verified") is True
+            and browser_observation.get("currency_verified") is True
+            and requested_currency and requested_currency == account_currency
+        )
+        checks["stake_currency"] = "MATCHES_VERIFIED_ACCOUNT" if currency_matches else "UNVERIFIED_OR_MISMATCHED"
+        if not currency_matches:
+            reasons.append("stake currency does not match the fresh verified platform account currency")
         execution_store = getattr(getattr(self.app.state, "wp", None), "repository", None)
         repository = getattr(execution_store, "execution_for", None)
         execution_repository = getattr(execution_store, "open_executions", None)
@@ -757,8 +703,7 @@ class BettingModeManager:
         backend = getattr(betting, "backend", None)
         capabilities = backend.verified_capabilities() if backend and callable(
             getattr(backend, "verified_capabilities", None)) else {}
-        required_capabilities = ("target_identity", "betting_deadline", "acceptance_receipt",
-                                 "settlement_receipt", "currency_rwf")
+        required_capabilities = ("acceptance_receipt", "settlement_receipt", "currency_validation")
         missing_capabilities = [name for name in required_capabilities if capabilities.get(name) is not True]
         checks["platform_acceptance_and_settlement"] = "VERIFIED" if not missing_capabilities else "UNVERIFIED"
         reasons.extend(f"platform_capability_unverified:{name}" for name in missing_capabilities)

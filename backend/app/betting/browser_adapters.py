@@ -1,4 +1,4 @@
-"""Executors that translate risk-approved decisions into game actions.
+"""Executors that translate eligible decisions into game actions.
 
 Two backends implement the same ``PlacementBackend`` protocol:
 
@@ -239,9 +239,6 @@ class SimulationBackend:
 
     async def ensure_ready(self) -> None:
         self._advance_if_due()
-        if self._balance < 100:
-            raise PlacementUnavailable("insufficient_balance",
-                                       "simulated balance below minimum stake")
 
     async def cashout_configuration(self, panel: int = 0) -> dict:
         return {**inspect_cashout_configuration(None), "simulated": True,
@@ -250,11 +247,6 @@ class SimulationBackend:
     async def place(self, *, amount_bif: int, target_multiplier: float,
                     bet_slot: int, decision_id: str) -> PlacementOutcome:
         self._advance_if_due()
-        if amount_bif > self._balance:
-            raise PlacementUnavailable(
-                "insufficient_balance",
-                f"simulated balance {self._balance:.0f} BIF < stake {amount_bif} BIF",
-            )
         self._queue.append({
             "decision_id": decision_id,
             "amount_bif": amount_bif,
@@ -310,7 +302,7 @@ class RealBrowserBackend:
         """
         return {"target_identity": False, "betting_deadline": False,
                 "acceptance_receipt": False, "settlement_receipt": False,
-                "currency_rwf": False}
+                "currency_validation": False}
 
     async def readiness(self) -> dict:
         """Read-only readiness against the live browser."""

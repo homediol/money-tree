@@ -30,14 +30,24 @@ def collector_status(request: Request):
 
 @router.get("/latest")
 def latest(request: Request):
+    repository = request.app.state.wp.repository
+    if repository.database_url:
+        rows = repository.load_recent_rounds(2)
+        return {"latest": rows[-1] if rows else None,
+                "previous": rows[-2] if len(rows) > 1 else None}
     rows = request.app.state.history_collector.rows()
     return {"latest": rows[-1] if rows else None, "previous": rows[-2] if len(rows) > 1 else None}
 
 
 @router.get("/recent")
 def recent(request: Request, limit: int = 25):
-    rows = request.app.state.history_collector.rows()
     limit = min(max(limit, 1), 5000)
+    repository = request.app.state.wp.repository
+    if repository.database_url:
+        rows = repository.load_recent_rounds(limit)
+        return {"count": repository.round_history_status()["count"],
+                "returned": len(rows), "rounds": rows}
+    rows = request.app.state.history_collector.rows()
     return {"count": len(rows), "returned": min(limit, len(rows)), "rounds": rows[-limit:]}
 
 

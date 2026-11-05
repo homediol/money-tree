@@ -84,6 +84,8 @@ def _node_collector_snapshot(source: dict, supervisor: dict, now: datetime | Non
         "browser_connected": source.get("browserConnected") is True or supervisor.get("browser_connected") is True,
         "history_page_connected": source.get("pageConnected") is True or supervisor.get("history_page_connected") is True,
         "frame_connected": source.get("frameConnected") is True or supervisor.get("frame_connected") is True,
+        "session_watchdog": source.get("sessionWatchdog")
+            if isinstance(source.get("sessionWatchdog"), dict) else None,
         "last_observed_round_id": source.get("lastObservedRoundId") or supervisor.get("last_observed_round"),
         "last_persisted_round_id": source.get("lastRoundId") or supervisor.get("last_persisted_round"),
         "last_error": last_error,
@@ -122,8 +124,8 @@ async def capabilities(request: Request) -> dict:
     rules_engine = getattr(request.app.state, "rules_engine", None)
     reconciliation = getattr(request.app.state, "reconciliation", None)
     repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
-    financial_stop_recovery = bool(
-        rules_engine and callable(getattr(rules_engine, "recover_financial_state", None))
+    execution_reconciliation_recovery = bool(
+        rules_engine and callable(getattr(rules_engine, "recover_execution_reconciliation", None))
         and repository and callable(getattr(repository, "list_reconciled_rule_executions", None))
         and callable(getattr(repository, "has_open_rule_session_executions", None)))
     receipt_to_rules = bool(reconciliation and rules_engine
@@ -135,7 +137,7 @@ async def capabilities(request: Request) -> dict:
         "capabilities": {
             "read_only_platform_balance_monitor": balance_monitor_running,
             "history_collector_status": history is not None,
-            "rule_financial_stop_recovery": financial_stop_recovery,
+            "rule_execution_reconciliation_recovery": execution_reconciliation_recovery,
             "receipt_reconciliation_to_rule_session": receipt_to_rules,
         },
     }

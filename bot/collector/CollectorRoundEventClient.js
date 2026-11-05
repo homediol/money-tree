@@ -1,4 +1,5 @@
 const DEFAULT_ROUND_EVENT_URL = 'http://127.0.0.1:8000/api/collector/round-observed';
+const DEFAULT_ROUND_HISTORY_URL = 'http://127.0.0.1:8000/api/history?limit=100';
 
 function directRound(round, { httpStartedAt = null } = {}) {
   const id = String(round.round_id);
@@ -18,6 +19,9 @@ function directRound(round, { httpStartedAt = null } = {}) {
     identity_confidence: round.identity_confidence ?? 'UNKNOWN',
     round_identity_type: round.round_identity_type ?? 'UNKNOWN',
     round_index_source: round.round_index_source ?? 'UNKNOWN',
+    ...(round.source_metadata && typeof round.source_metadata === 'object'
+      ? { source_metadata: round.source_metadata } : {}),
+    ...(round.continuity_proof ? { continuity_proof: String(round.continuity_proof).slice(0, 160) } : {}),
     delivery_mode: round.delivery_mode || 'LIVE',
     local_appended_at: round.local_appended_at ?? null,
     collector_http_started_at: httpStartedAt,
@@ -37,7 +41,8 @@ function directRound(round, { httpStartedAt = null } = {}) {
 export async function publishDirectRoundObservations(rounds, {
   url = process.env.COLLECTOR_BACKEND_ROUND_OBSERVED_URL || DEFAULT_ROUND_EVENT_URL,
   apiKey = process.env.API_KEY,
-  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 3000,
+  collectorTiming = null,
+  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 15000,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!Array.isArray(rounds) || rounds.length === 0) {
@@ -61,7 +66,9 @@ export async function publishDirectRoundObservations(rounds, {
     const response = await fetchImpl(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ source: 'WINNER_DIRECT_PAGE_HISTORY', rounds: rounds.map(round => directRound(round, { httpStartedAt })) }),
+      body: JSON.stringify({ source: 'WINNER_DIRECT_PAGE_HISTORY',
+        rounds: rounds.map(round => directRound(round, { httpStartedAt })),
+        ...(Array.isArray(collectorTiming) ? { collector_timing: collectorTiming } : {}) }),
       signal: controller.signal,
     });
     const responseText = await response.text();
@@ -89,11 +96,7 @@ export async function publishDirectRoundObservations(rounds, {
       });
     }
     const roundtripMs = Math.max(0, performance.now() - requestStarted);
-    const apiStageMs = Number(result.api_receipt_to_sse_publication_ms);
     result.collector_api_roundtrip_ms = Math.round(roundtripMs * 1000) / 1000;
-    result.collector_to_api_one_way_estimate_ms = Number.isFinite(apiStageMs)
-      ? Math.round(Math.max(0, (roundtripMs - apiStageMs) / 2) * 1000) / 1000 : null;
-    result.collector_to_api_estimate_method = 'HTTP_RTT_MINUS_API_STAGE_DIVIDED_BY_TWO';
     return result;
   } catch (error) {
     if (error?.name === 'AbortError') {
@@ -126,7 +129,7 @@ export async function drainDirectRoundEventOutbox(outbox, options = {}) {
 export async function publishCommittedRoundEvents(rounds, {
   url = process.env.COLLECTOR_BACKEND_ROUND_PERSISTED_URL || 'http://127.0.0.1:8000/api/collector/round-persisted',
   apiKey = process.env.API_KEY,
-  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 3000,
+  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 15000,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!Array.isArray(rounds) || rounds.length === 0) return { ok: true, accepted: 0, events: [] };
@@ -182,11 +185,60 @@ export async function publishCommittedRoundEvents(rounds, {
   }
 }
 
+/**
+ * Read-only diagnostic confirming that the latest committed round can be read
+ * from the existing Round History API. This is called off the collector's
+ * detection and PostgreSQL write path and never changes round state.
+ */
+export async function probeRoundHistoryVisibility(roundId, {
+  url = process.env.COLLECTOR_BACKEND_ROUND_HISTORY_URL || DEFAULT_ROUND_HISTORY_URL,
+  apiKey = process.env.API_KEY,
+  timeoutMs = Number(process.env.COLLECTOR_ROUND_HISTORY_PROBE_TIMEOUT_MS) || 5000,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!roundId) return { available: false, status: 'ROUND_ID_UNKNOWN', checked_at: null };
+  if (typeof fetchImpl !== 'function') throw Object.assign(new Error('global fetch is unavailable'), {
+    category: 'CLIENT_UNAVAILABLE',
+  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(100, Number(timeoutMs) || 5000));
+  timeout.unref?.();
+  try {
+    const headers = { accept: 'application/json' };
+    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+    const response = await fetchImpl(url, { method: 'GET', signal: controller.signal,
+      headers });
+    const body = await response.text();
+    if (!response.ok) throw Object.assign(new Error(`Round History API returned HTTP ${response.status}`), {
+      category: 'ROUND_HISTORY_API_REJECTED', httpStatus: response.status,
+    });
+    let payload;
+    try { payload = JSON.parse(body); }
+    catch (error) { throw Object.assign(new Error(`Round History API returned invalid JSON: ${error.message}`), {
+      category: 'ROUND_HISTORY_API_INVALID_RESPONSE',
+    }); }
+    const rows = Array.isArray(payload?.rounds) ? payload.rounds : [];
+    const available = rows.some(row => String(row?.round_id || '') === String(roundId));
+    return { available, status: available ? 'CONFIRMED' : 'ROUND_NOT_IN_RESPONSE',
+      checked_at: new Date().toISOString(), round_id: String(roundId) };
+  } catch (error) {
+    if (error?.category) throw error;
+    if (error?.name === 'AbortError') throw Object.assign(new Error('Round History API visibility probe timed out'), {
+      category: 'ROUND_HISTORY_API_TIMEOUT', timeoutMs,
+    });
+    throw Object.assign(new Error(`Round History API visibility probe failed: ${error.message}`), {
+      category: 'ROUND_HISTORY_API_UNAVAILABLE',
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /** Publish one read-only game-phase transition from the collector-owned Aviator frame. */
 export async function publishCollectorGamePhase(phase, sourceIdentity, {
   url = process.env.COLLECTOR_BACKEND_GAME_PHASE_URL || 'http://127.0.0.1:8000/api/collector/game-phase',
   apiKey = process.env.API_KEY,
-  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 3000,
+  timeoutMs = Number(process.env.COLLECTOR_BACKEND_EVENT_TIMEOUT_MS) || 15000,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!phase || !sourceIdentity?.round_id || !Number.isSafeInteger(Number(sourceIdentity.round_index))) {
@@ -211,6 +263,13 @@ export async function publishCollectorGamePhase(phase, sourceIdentity, {
         source_round_index: Number(sourceIdentity.round_index),
         phase: String(phase.phase || 'UNKNOWN'),
         observed_at: String(phase.observed_at || ''),
+        provider_round_id: phase.provider_round_id || null,
+        canonical_target_round_id: phase.canonical_target_round_id || null,
+        target_round_index: Number(sourceIdentity.round_index) + 1,
+        betting_deadline: phase.betting_deadline || null,
+        target_identity_verified: phase.target_identity_verified === true,
+        target_started: typeof phase.target_started === 'boolean' ? phase.target_started : null,
+        target_identity_proof: phase.target_identity_proof || null,
         evidence: phase.evidence || {},
       }),
       signal: controller.signal,

@@ -6,7 +6,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.database.repository import Repository
-from main import _collector_target_identity, _validate_direct_collector_observations
+from main import (
+    _collector_target_identity,
+    _validate_collector_game_phase,
+    _validate_direct_collector_observations,
+)
 
 
 def _observation(round_id="direct-1", multiplier=2.35, observed_at="2026-10-06T17:00:00+00:00"):
@@ -124,6 +128,56 @@ def test_rule_target_identity_is_only_forwarded_with_explicit_collector_proof():
         "target_round_id": "target-12", "target_identity_verified": True,
         "target_started": False, "target_identity_proof": proof,
     }
+
+
+def test_game_phase_requires_explicit_provider_identity_and_deadline_evidence():
+    now = datetime.now(timezone.utc)
+    phase = {
+        "source": "OWNED_AVIATOR_GAME_FRAME_READ_ONLY",
+        "event_id": "phase-11",
+        "source_round_id": "canonical-10",
+        "source_round_index": 10,
+        "phase": "BETTING_OPEN",
+        "observed_at": now.isoformat(),
+        "provider_round_id": "provider-11",
+        "canonical_target_round_id": "canonical-11",
+        "target_round_index": 11,
+        "betting_deadline": (now + timedelta(seconds=20)).isoformat(),
+        "target_identity_verified": True,
+        "target_started": False,
+        "target_identity_proof": {
+            "provider_round_id": "provider-11",
+            "target_round_id": "canonical-11",
+            "target_not_started": True,
+            "proof_method": "platform_target_id_before_start",
+        },
+        "evidence": {
+            "source": "AVIATOR_GAME_PHASE_READ_ONLY",
+            "provider_phase_source": "EXPLICIT_PROVIDER_DATA_ATTRIBUTES",
+            "provider_phase_selector": "[data-aviator-phase][data-provider-round-id][data-canonical-target-round-id][data-betting-deadline]",
+            "selector": ".bet-block .btn-success.bet",
+            "button_visible": True,
+            "button_enabled": True,
+            "stake_input_visible": True,
+            "bet_tab_active": True,
+        },
+    }
+
+    accepted = _validate_collector_game_phase(phase, require_source=True)
+    assert accepted["phase"] == "BETTING_OPEN"
+    assert accepted["canonical_target_round_id"] == "canonical-11"
+    assert accepted["target_round_index"] == 11
+
+    button_only = {**phase, "provider_round_id": None,
+                   "canonical_target_round_id": None,
+                   "target_identity_verified": False,
+                   "target_identity_proof": None}
+    with pytest.raises(ValueError, match="known betting phase requires"):
+        _validate_collector_game_phase(button_only, require_source=True)
+
+    wrong_target = {**phase, "target_round_index": 12}
+    with pytest.raises(ValueError, match="immediate successor"):
+        _validate_collector_game_phase(wrong_target, require_source=True)
 
 
 def test_observation_queue_snapshot_handles_text_created_at_without_postgres_timestamp_math():

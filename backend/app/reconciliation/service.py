@@ -36,7 +36,7 @@ class InvalidTransition(ValueError):
 
 class ReconciliationService:
     ALLOWED = {
-        "AUTHORIZED": {"RISK_APPROVED"}, "RISK_APPROVED": {"QUEUED"},
+        "AUTHORIZED": {"QUEUED"},
         "QUEUED": {"PLACED", "FAILED", "EXPIRED"},
         "PLACED": {"ROUND_ACTIVE", "UNKNOWN"},
         "ROUND_ACTIVE": {"CASHOUT_PENDING", "CASHED_OUT", "LOST", "UNKNOWN"},
@@ -48,11 +48,10 @@ class ReconciliationService:
     }
 
     def __init__(self, repository, *, broadcaster: Callable[[dict], Awaitable[None]] | None = None,
-                 betting_manager=None, risk_manager=None):
+                 betting_manager=None):
         self.repository = repository
         self.broadcaster = broadcaster
         self.betting_manager = betting_manager
-        self.risk_manager = risk_manager
         self.rules_engine = None
 
     async def emit(self, kind: str, **payload) -> None:
@@ -257,7 +256,7 @@ class ReconciliationService:
             self.repository.update_execution(execution)
             self.repository.append_execution_event(execution["execution_id"],
                 "RECONCILIATION_PENDING", stamp, reconciliation["verification"])
-            reconciliation["risk_action"] = await self._post_result(execution, reconciliation)
+            reconciliation["post_result_action"] = await self._post_result(execution, reconciliation)
             await self.emit("reconciliation:updated", reconciliation=reconciliation)
             await self.emit("execution:updated", execution=execution)
             return reconciliation
@@ -271,7 +270,7 @@ class ReconciliationService:
         self.repository.append_execution_event(execution["execution_id"], final_status, stamp,
                                                reconciliation["verification"])
         action = await self._post_result(execution, reconciliation)
-        reconciliation["risk_action"] = action
+        reconciliation["post_result_action"] = action
         await self.emit("reconciliation:updated", reconciliation=reconciliation)
         await self.emit("execution:updated", execution=execution)
         await self.emit("balance:updated", balance=reconciliation["balance"])
@@ -299,7 +298,7 @@ class ReconciliationService:
                                                    else "goal_reached"))
             except Exception:
                 pass
-        await self.emit("risk:post_result", action=action,
+        await self.emit("execution:post_result", action=action,
                         execution_id=execution["execution_id"])
         return action
 
@@ -314,7 +313,7 @@ class ReconciliationService:
             if callable(method):
                 method(execution, reconciliation)
             return
-        method = getattr(engine, "block_unknown_financial_execution", None)
+        method = getattr(engine, "block_unknown_execution_reconciliation", None)
         if callable(method):
             reason = ((reconciliation.get("verification") or {}).get("pending_reason")
                       or reconciliation.get("status") or "reconciliation_pending")

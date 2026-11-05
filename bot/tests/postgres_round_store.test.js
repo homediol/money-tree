@@ -17,6 +17,33 @@ test('collector lease refuses a second collector and releases its connection', a
   assert.equal(store.collectorLease, null);
 });
 
+test('recent round context uses newest-first SQL and returns chronological order', async () => {
+  const store = new PostgresRoundStore();
+  const queries = [];
+  store.pool = {
+    async query(sql, params) {
+      queries.push({ sql, params });
+      return { rows: [250, 249, 248].map(roundIndex => ({
+        round_id: `round-${roundIndex}`, platform_round_id: null,
+        platform_round_index: null, round_index: roundIndex,
+        local_round_index: roundIndex, multiplier: 1.5, raw: {},
+        timestamp: '2026-11-03T00:00:00.000Z', platform_timestamp: null,
+        observed_at: null, stored_at: null,
+        round_identity_type: 'COLLECTOR_OBSERVATION_HASH',
+        round_index_source: 'LOCAL_SEQUENCE', identity_confidence: 'UNKNOWN',
+        continuity_verified: false, gap_before: false,
+        continuity_proof: 'UNVERIFIED',
+      })) };
+    },
+  };
+
+  const rows = await store.loadRecentRounds(3);
+
+  assert.match(queries[0].sql, /ORDER BY round_index DESC LIMIT \$1/);
+  assert.deepEqual(queries[0].params, [3]);
+  assert.deepEqual(rows.map(row => row.round_index), [248, 249, 250]);
+});
+
 test('collector lease is held on one session and unlocked at store shutdown', async () => {
   const store = new PostgresRoundStore();
   const queries = [];
@@ -70,11 +97,13 @@ test('saveRounds returns committed database identity and total row count for cap
         rowCount: 1,
         rows: [{
           id: 501, round_id: params[0], round_index: params[3],
-          platform_round_id: params[1], platform_round_index: params[2],
-          multiplier: params[5], platform_timestamp: params[7],
+          platform_round_id: params[1], platform_round_index: params[2], local_round_index: params[4],
+          multiplier: params[5], timestamp: params[6], platform_timestamp: params[7],
           observed_at: params[8], stored_at: new Date('2026-10-04T10:00:00.050Z'),
+          round_identity_type: params[9], round_index_source: params[10],
           source: params[15], continuity_verified: params[12], gap_before: params[13],
           identity_confidence: params[11],
+          continuity_proof: params[14],
         }],
       };
       throw new Error(`Unexpected client query: ${sql}`);
@@ -101,13 +130,17 @@ test('saveRounds returns committed database identity and total row count for cap
     platform_round_id: null,
     platform_round_index: null,
     multiplier: 2.42,
+    timestamp: '2026-10-04T10:00:00.000Z',
     platform_timestamp: null,
     observed_at: '2026-10-04T10:00:00.000Z',
     stored_at: '2026-10-04T10:00:00.050Z',
     source: 'collector',
+    round_identity_type: 'COLLECTOR_OBSERVATION_HASH',
+    round_index_source: 'LOCAL_SEQUENCE',
     continuity_verified: true,
     gap_before: false,
     identity_confidence: 'OVERLAP_VERIFIED_ORDER_ONLY',
+    continuity_proof: 'HISTORY_SNAPSHOT_OVERLAP',
   });
 });
 

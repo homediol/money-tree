@@ -6,9 +6,12 @@ import os
 import re
 import sqlite3
 import uuid
+from collections import deque
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
+import time
 from typing import Any
 
 MAX_COLLECTOR_EVENT_ATTEMPTS = 6
@@ -68,7 +71,7 @@ CREATE TABLE IF NOT EXISTS bet_executions (
   execution_id TEXT PRIMARY KEY,
   decision_id TEXT NOT NULL,
   target_round_id TEXT NOT NULL,
-  profile TEXT NOT NULL,
+  profile TEXT,
   bet_amount REAL NOT NULL,
   cashout_target REAL NOT NULL,
   status TEXT NOT NULL,
@@ -206,6 +209,19 @@ CREATE TABLE IF NOT EXISTS rule_selections (
   payload TEXT NOT NULL,
   UNIQUE(session_id,selection_id)
 );
+CREATE TABLE IF NOT EXISTS bet_signals (
+  signal_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  round_id TEXT NOT NULL,
+  target_round_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  settlement_status TEXT NOT NULL DEFAULT 'PENDING',
+  payload TEXT NOT NULL,
+  UNIQUE(session_id,target_round_id)
+);
+CREATE INDEX IF NOT EXISTS bet_signals_created_idx ON bet_signals(created_at DESC);
+CREATE INDEX IF NOT EXISTS bet_signals_target_round_created_idx
+  ON bet_signals(target_round_id,created_at,signal_id);
 CREATE TABLE IF NOT EXISTS rule_execution_intents (
   intent_id TEXT PRIMARY KEY,
   decision_id TEXT NOT NULL UNIQUE,
@@ -311,8 +327,9 @@ class _PostgresCursor:
 
 class _PostgresConnection:
     """Compatibility wrapper for the repository's qmark SQL."""
-    def __init__(self, raw):
+    def __init__(self, raw, *, release=None):
         self.raw = raw
+        self._release = release
 
     @staticmethod
     def _sql(sql: str, params=None) -> str:
@@ -351,7 +368,12 @@ class _PostgresConnection:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        return self.raw.__exit__(exc_type, exc, tb)
+        try:
+            return self.raw.__exit__(exc_type, exc, tb)
+        finally:
+            if self._release is not None:
+                self._release(self.raw)
+                self._release = None
 
     def __getattr__(self, name):
         return getattr(self.raw, name)
@@ -364,15 +386,128 @@ class Repository:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.database_url = database_url or os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("WINNER_DATABASE_URL")
         self.require_postgres = bool(require_postgres or os.getenv("REQUIRE_POSTGRES", "false").lower() == "true")
+        self._pg_pool = None
+        self._pg_pool_lock = Lock()
+        self._rules_engine_snapshot_lock = Lock()
+        self._pool_wait_samples_ms = deque(maxlen=1000)
+        self._pool_metrics_lock = Lock()
+        # Snapshot persistence still refreshes the authoritative session state
+        # on every round, but immutable ledger rows are written only when their
+        # contents change. Replaying up to 500 historical evaluations per
+        # session on every round was producing thousands of redundant PG
+        # statements and starving collector/status requests.
+        self._rules_engine_ledger_fingerprints: dict[tuple[str, str], str] = {}
+        # Rule-evaluation children are immutable once created. The small
+        # parent signature lets persistence detect commit upgrades without
+        # re-encoding every nested historical rule result on every round.
+        self._rules_engine_evaluation_states: dict[str, str] = {}
         if self.require_postgres and not self.database_url:
             raise RuntimeError("REQUIRE_POSTGRES is enabled but DATABASE_URL is not configured")
+
+    @staticmethod
+    def _rules_engine_fingerprint(value: Any) -> str:
+        # Callers that persist ledger rows already encode their payloads once.
+        # Hash that canonical JSON string directly instead of JSON-encoding the
+        # string again (which hashes a quoted/escaped wrapper and wastes CPU).
+        canonical = (value if isinstance(value, str) else
+                     json.dumps(value, sort_keys=True, separators=(",", ":"), default=str))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _rules_engine_evaluation_state(evaluation: dict[str, Any]) -> str:
+        projection = {
+            "evaluated_at": evaluation.get("evaluated_at"),
+            "source_round": evaluation.get("source_round"),
+            "target_round": evaluation.get("target_round"),
+            "decision": evaluation.get("decision"),
+            "persistence_status": evaluation.get("persistence_status"),
+            "committed_stream_sequence": evaluation.get("committed_stream_sequence"),
+            "commit_evidence": evaluation.get("commit_evidence"),
+        }
+        encoded = json.dumps(projection, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def prime_rules_engine_ledger_cache(self, payload: dict[str, Any]) -> bool:
+        """Prime existing ledger rows and report sessions missing from the DB."""
+        fingerprints = self._rules_engine_ledger_fingerprints
+        with self.connect() as conn:
+            persisted_session_ids = {str(row["session_id"])
+                for row in conn.execute("SELECT session_id FROM rule_sessions").fetchall()}
+        missing_session = False
+        for session_id, session in (payload.get("sessions") or {}).items():
+            session_id = str(session_id)
+            session_payload = json.dumps(session, sort_keys=True, separators=(",", ":"))
+            session_key = ("session", session_id)
+            session_persisted = session_id in persisted_session_ids
+            if session_persisted:
+                fingerprints[session_key] = self._rules_engine_fingerprint(session_payload)
+            else:
+                # Legacy snapshots may contain sessions that were never
+                # copied to the queryable ledger. Leave the whole session's
+                # ledger unprimed so startup persistence writes it to the DB.
+                fingerprints.pop(session_key, None)
+                missing_session = True
+            for evaluation in session.get("evaluations", []):
+                source = evaluation.get("source_round") or {}
+                evaluated_at = str(evaluation.get("evaluated_at") or "")
+                identity = "\0".join((str(session_id), str(source.get("streamId") or ""),
+                                       str(source.get("roundId") or ""), evaluated_at))
+                evaluation_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+                if session_persisted:
+                    self._rules_engine_evaluation_states[evaluation_id] = (
+                        self._rules_engine_evaluation_state(evaluation))
+                else:
+                    self._rules_engine_evaluation_states.pop(evaluation_id, None)
+                evaluation_payload = json.dumps(evaluation, sort_keys=True, separators=(",", ":"))
+                evaluation_key = ("evaluation", evaluation_id)
+                if session_persisted:
+                    fingerprints[evaluation_key] = self._rules_engine_fingerprint(evaluation_payload)
+                else:
+                    fingerprints.pop(evaluation_key, None)
+                for rule_evaluation in evaluation.get("rule_evaluations", []):
+                    rule_source = rule_evaluation.get("source_round") or source
+                    source_stream = str(rule_source.get("streamId") or "")
+                    source_round = str(rule_source.get("roundId") or "")
+                    source_index = rule_source.get("roundIndex")
+                    rule_id = str(rule_evaluation.get("rule_id") or "")
+                    if (not rule_id or not source_stream or not source_round
+                            or isinstance(source_index, bool) or not isinstance(source_index, int)):
+                        continue
+                    rule_identity = "\0".join((str(session_id), rule_id, source_stream,
+                                                str(source_index)))
+                    rule_evaluation_id = hashlib.sha256(rule_identity.encode("utf-8")).hexdigest()
+                    expected = rule_evaluation.get("target_round") or {}
+                    row_payload = {
+                        "rule_version": str(rule_evaluation.get("rule_version") or "UNKNOWN"),
+                        "expected_target_index": expected.get("roundIndex") if isinstance(expected, dict) else None,
+                        "eligible": rule_evaluation.get("eligible"),
+                        "status": str(rule_evaluation.get("status") or "UNKNOWN"),
+                        "reason": str(rule_evaluation.get("reason") or ""),
+                        "evaluated_at": evaluated_at,
+                        "source_evidence": {
+                            "source_round": rule_source,
+                            "expected_target": expected,
+                            "proposal": rule_evaluation.get("proposal"),
+                        },
+                        "state_snapshot": rule_evaluation.get("state_snapshot") or {},
+                    }
+                    rule_evaluation_key = ("rule_evaluation", rule_evaluation_id)
+                    if session_persisted:
+                        fingerprints[rule_evaluation_key] = self._rules_engine_fingerprint(row_payload)
+                    else:
+                        fingerprints.pop(rule_evaluation_key, None)
+        return missing_session
 
     def connect(self):
         if self.database_url:
             try:
-                import psycopg
-                from psycopg.rows import dict_row
-                return _PostgresConnection(psycopg.connect(self.database_url, row_factory=dict_row))
+                pool = self._postgres_pool()
+                started = time.perf_counter()
+                raw = pool.getconn(timeout=float(os.getenv("WINNER_DB_POOL_ACQUIRE_TIMEOUT_SECONDS", "3")))
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                with self._pool_metrics_lock:
+                    self._pool_wait_samples_ms.append(elapsed_ms)
+                return _PostgresConnection(raw, release=pool.putconn)
             except Exception:
                 if self.require_postgres:
                     raise
@@ -386,6 +521,57 @@ class Repository:
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    def _postgres_pool(self):
+        pool = self._pg_pool
+        if pool is not None:
+            return pool
+        with self._pg_pool_lock:
+            if self._pg_pool is not None:
+                return self._pg_pool
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+
+            minimum = max(1, int(os.getenv("WINNER_DB_POOL_MIN_SIZE", "1")))
+            maximum = max(minimum, int(os.getenv("WINNER_DB_POOL_MAX_SIZE", "12")))
+            timeout = max(1.0, float(os.getenv("WINNER_DB_POOL_ACQUIRE_TIMEOUT_SECONDS", "3")))
+            pool = ConnectionPool(
+                conninfo=self.database_url,
+                min_size=minimum,
+                max_size=maximum,
+                timeout=timeout,
+                kwargs={"row_factory": dict_row},
+                open=True,
+            )
+            pool.wait(timeout=timeout)
+            self._pg_pool = pool
+            return pool
+
+    def connection_pool_metrics(self) -> dict[str, Any]:
+        """Expose pool wait samples and current capacity without querying PostgreSQL."""
+        with self._pool_metrics_lock:
+            values = sorted(self._pool_wait_samples_ms)
+        def percentile(fraction: float):
+            if not values:
+                return None
+            import math
+            return round(values[min(len(values) - 1, max(0, math.ceil(fraction * len(values)) - 1))], 3)
+        pool_stats = self._pg_pool.get_stats() if self._pg_pool is not None else {}
+        return {
+            "samples": len(values),
+            "average_ms": round(sum(values) / len(values), 3) if values else None,
+            "p50_ms": percentile(0.50), "p95_ms": percentile(0.95),
+            "p99_ms": percentile(0.99), "max_ms": round(values[-1], 3) if values else None,
+            "pool": {key: pool_stats.get(key) for key in (
+                "pool_size", "pool_available", "requests_waiting", "requests_queued",
+                "requests_wait_ms", "requests_num") if key in pool_stats},
+        }
+
+    def close(self) -> None:
+        pool = self._pg_pool
+        self._pg_pool = None
+        if pool is not None:
+            pool.close()
 
     @staticmethod
     def _collector_observation_matches(round_id: str) -> bool:
@@ -402,6 +588,13 @@ class Repository:
         if self.database_url:
             with self.connect() as conn:
                 conn.executescript(SCHEMA)
+                conn.execute("ALTER TABLE bet_signals ADD COLUMN IF NOT EXISTS settlement_status TEXT NOT NULL DEFAULT 'PENDING'")
+                conn.execute("UPDATE bet_signals SET settlement_status='COMMITTED' WHERE settlement_status='PENDING' AND payload::jsonb->>'settlement_status'='COMMITTED'")
+                conn.execute("CREATE INDEX IF NOT EXISTS bet_signals_settlement_created_idx ON bet_signals(settlement_status,created_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS bet_signals_target_round_created_idx ON bet_signals(target_round_id,created_at,signal_id)")
+                # Keep the historical column and values, but new executions
+                # no longer depend on a betting profile being present.
+                conn.execute("ALTER TABLE bet_executions ALTER COLUMN profile DROP NOT NULL")
                 conn.execute("ALTER TABLE collector_round_observation_events DROP CONSTRAINT IF EXISTS collector_round_observation_events_event_status_check")
                 conn.execute("""ALTER TABLE collector_round_observation_events
                     ADD CONSTRAINT collector_round_observation_events_event_status_check
@@ -459,6 +652,7 @@ class Repository:
                     UNIQUE(stream_id,round_id)
                 )""")
                 conn.execute("CREATE INDEX IF NOT EXISTS round_distribution_events_round_idx ON round_distribution_events(round_index)")
+                conn.execute("CREATE INDEX IF NOT EXISTS round_distribution_events_stream_sequence_idx ON round_distribution_events(stream_id,stream_sequence)")
                 conn.execute("DELETE FROM round_distribution_events WHERE stream_id<>(SELECT stream_id FROM round_distribution_meta WHERE singleton=1)")
                 conn.execute("""CREATE TABLE IF NOT EXISTS external_project_tokens (
                     token_id TEXT PRIMARY KEY,
@@ -466,9 +660,24 @@ class Repository:
                     label TEXT NOT NULL DEFAULT '',
                     token_hash TEXT NOT NULL UNIQUE,
                     token_prefix TEXT NOT NULL,
+                    key_type TEXT NOT NULL DEFAULT 'consumer',
+                    scopes TEXT NOT NULL DEFAULT '[\"signals:read\",\"rules:read\",\"metrics:read\"]',
+                    console_managed BOOLEAN NOT NULL DEFAULT FALSE,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_used_at TIMESTAMPTZ,
+                    expires_at TIMESTAMPTZ,
                     revoked_at TIMESTAMPTZ
                 )""")
+                conn.execute("ALTER TABLE external_project_tokens ADD COLUMN IF NOT EXISTS key_type TEXT NOT NULL DEFAULT 'consumer'")
+                conn.execute("ALTER TABLE external_project_tokens ADD COLUMN IF NOT EXISTS scopes TEXT NOT NULL DEFAULT '[\"signals:read\",\"rules:read\",\"metrics:read\"]'")
+                conn.execute("ALTER TABLE external_project_tokens ADD COLUMN IF NOT EXISTS console_managed BOOLEAN NOT NULL DEFAULT FALSE")
+                conn.execute("ALTER TABLE external_project_tokens ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ")
+                conn.execute("ALTER TABLE external_project_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
+                conn.execute("""CREATE TABLE IF NOT EXISTS api_key_audit_log (
+                    audit_id TEXT PRIMARY KEY, action TEXT NOT NULL, token_id TEXT,
+                    key_name TEXT, actor TEXT NOT NULL DEFAULT 'owner',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+                conn.execute("CREATE INDEX IF NOT EXISTS api_key_audit_created_idx ON api_key_audit_log(created_at DESC)")
                 conn.execute("CREATE INDEX IF NOT EXISTS external_project_tokens_project_idx ON external_project_tokens(project_id,created_at)")
                 conn.execute("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS round_id TEXT")
                 conn.execute("UPDATE rounds SET round_id = round_index::text WHERE round_id IS NULL")
@@ -484,6 +693,18 @@ class Repository:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(SCHEMA)
+            bet_signal_columns = {row[1] for row in conn.execute("PRAGMA table_info(bet_signals)").fetchall()}
+            if "settlement_status" not in bet_signal_columns:
+                conn.execute("ALTER TABLE bet_signals ADD COLUMN settlement_status TEXT NOT NULL DEFAULT 'PENDING'")
+                for row in conn.execute("SELECT signal_id,target_round_id,payload FROM bet_signals").fetchall():
+                    try:
+                        payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+                    except (TypeError, json.JSONDecodeError):
+                        payload = {}
+                    if isinstance(payload, dict) and payload.get("settlement_status") == "COMMITTED":
+                        conn.execute("UPDATE bet_signals SET settlement_status='COMMITTED' WHERE signal_id=? AND target_round_id=?",
+                                     (str(row["signal_id"]), str(row["target_round_id"])))
+            conn.execute("CREATE INDEX IF NOT EXISTS bet_signals_settlement_created_idx ON bet_signals(settlement_status,created_at)")
             columns = {row[1] for row in conn.execute("PRAGMA table_info(rounds)").fetchall()}
             if "round_id" not in columns:
                 conn.execute("ALTER TABLE rounds ADD COLUMN round_id TEXT")
@@ -596,11 +817,76 @@ class Repository:
                  "timestamp": self._db_time_text(row["timestamp"])}
                 for row in reversed(rows)]
 
+    def load_recent_round_context(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Load an indexed, bounded live context while retaining full history in storage."""
+        bounded = min(max(int(limit), 1), 5000)
+        table = "aviator_rounds" if self.database_url else "rounds"
+        if self.database_url:
+            projection = ("round_id,round_index,multiplier,timestamp,platform_round_id,platform_round_index,"
+                          "local_round_index,platform_timestamp,observed_at,COALESCE(stored_at,created_at) AS stored_at,"
+                          "round_identity_type,round_index_source,identity_confidence,continuity_verified,gap_before,continuity_proof")
+        else:
+            projection = ("round_id,round_index,multiplier,timestamp,NULL AS platform_round_id,"
+                          "NULL AS platform_round_index,round_index AS local_round_index,"
+                          "NULL AS platform_timestamp,NULL AS observed_at,NULL AS stored_at,"
+                          "'LEGACY_UNKNOWN' AS round_identity_type,'LEGACY_UNKNOWN' AS round_index_source,"
+                          "'UNKNOWN' AS identity_confidence,0 AS continuity_verified,0 AS gap_before,"
+                          "'LEGACY_UNVERIFIED' AS continuity_proof")
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT {projection} FROM {table} ORDER BY round_index DESC LIMIT ?",
+                (bounded,),
+            ).fetchall()
+        return self._round_rows_to_dicts(list(reversed(rows)))
+
+    def round_history_stats(self) -> dict[str, Any]:
+        """Aggregate historical reporting in the database without materializing every round."""
+        table = "aviator_rounds" if self.database_url else "rounds"
+        if self.database_url:
+            with self.connect() as conn:
+                row = conn.execute(f"""SELECT COUNT(*) AS total, MIN(multiplier) AS minimum,
+                    MAX(multiplier) AS maximum, AVG(multiplier) AS mean,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY multiplier) AS median,
+                    COUNT(*) FILTER (WHERE multiplier<1.5) AS below_1_5x,
+                    COUNT(*) FILTER (WHERE multiplier>=2) AS at_least_2x,
+                    COUNT(*) FILTER (WHERE multiplier>=5) AS at_least_5x,
+                    COUNT(*) FILTER (WHERE multiplier>=10) AS at_least_10x
+                    FROM {table}""").fetchone()
+            return {
+                "total": int(row["total"] or 0),
+                "min": float(row["minimum"]) if row["minimum"] is not None else None,
+                "max": float(row["maximum"]) if row["maximum"] is not None else None,
+                "mean": float(row["mean"]) if row["mean"] is not None else None,
+                "median": float(row["median"]) if row["median"] is not None else None,
+                "threshold_counts": {
+                    "below_1_5x": int(row["below_1_5x"] or 0),
+                    "at_least_2x": int(row["at_least_2x"] or 0),
+                    "at_least_5x": int(row["at_least_5x"] or 0),
+                    "at_least_10x": int(row["at_least_10x"] or 0),
+                },
+            }
+        import statistics
+        with self.connect() as conn:
+            rows = conn.execute(f"SELECT multiplier FROM {table} ORDER BY multiplier").fetchall()
+        values = [float(row["multiplier"]) for row in rows]
+        return {
+            "total": len(values), "min": min(values) if values else None,
+            "max": max(values) if values else None,
+            "mean": statistics.fmean(values) if values else None,
+            "median": statistics.median(values) if values else None,
+            "threshold_counts": {
+                "below_1_5x": sum(value < 1.5 for value in values),
+                "at_least_2x": sum(value >= 2 for value in values),
+                "at_least_5x": sum(value >= 5 for value in values),
+                "at_least_10x": sum(value >= 10 for value in values),
+            },
+        }
+
     def round_history_status(self) -> dict[str, Any]:
         """Return the exact history count and two newest rounds without loading the full ledger."""
         table = "aviator_rounds" if self.database_url else "rounds"
         with self.connect() as conn:
-            count_row = conn.execute(f"SELECT COUNT(*) AS round_count FROM {table}").fetchone()
+            count_row = conn.execute(f"SELECT COUNT(*) AS round_count,MIN(timestamp) AS first_timestamp FROM {table}").fetchone()
             recent = conn.execute(
                 f"SELECT round_id,round_index,multiplier,timestamp FROM {table} "
                 "ORDER BY round_index DESC LIMIT 2"
@@ -619,6 +905,8 @@ class Repository:
         ordered = list(reversed(recent))
         return {
             "count": int(count_row["round_count"] or 0) if count_row else 0,
+            "first_timestamp": self._db_time_text(count_row["first_timestamp"])
+                if count_row and count_row["first_timestamp"] is not None else None,
             "latest": as_round(ordered[-1]) if ordered else None,
             "previous": as_round(ordered[-2]) if len(ordered) > 1 else None,
         }
@@ -967,6 +1255,67 @@ class Repository:
                 (str(stream_id), int(after_sequence), int(through_sequence), bounded)).fetchall()
         return [self._round_distribution_payload(row) for row in rows]
 
+    def committed_round_distribution_event_by_id(self, round_id: str) -> dict[str, Any] | None:
+        """Load a committed distribution event by its canonical round identity."""
+        if not self.database_url:
+            return None
+        with self.connect() as conn:
+            row = conn.execute("""SELECT payload FROM round_distribution_events
+                WHERE round_id=? ORDER BY stream_sequence DESC LIMIT 1""", (str(round_id),)).fetchone()
+        return self._round_distribution_payload(row)
+
+    def committed_round_distribution_event_by_index(self, stream_id: str,
+                                                     round_index: int) -> dict[str, Any] | None:
+        """Load a committed distribution event by its canonical stream slot."""
+        if not self.database_url:
+            return None
+        with self.connect() as conn:
+            row = conn.execute("""SELECT payload FROM round_distribution_events
+                WHERE stream_id=? AND round_index=? ORDER BY stream_sequence DESC LIMIT 1""",
+                (str(stream_id), int(round_index))).fetchone()
+        return self._round_distribution_payload(row)
+
+    def round_distribution_events_page(self, stream_id: str, *, through_sequence: int,
+                                       limit: int = 500, after_sequence: int = 0,
+                                       before_sequence: int | None = None,
+                                       search: str | None = None,
+                                       min_multiplier: float | None = None,
+                                       max_multiplier: float | None = None,
+                                       order: str = "asc") -> list[dict[str, Any]]:
+        """Return a filtered, cursor-paginated page of committed round events."""
+        if not self.database_url:
+            raise RuntimeError("round distribution requires authoritative PostgreSQL")
+        direction = str(order).lower()
+        if direction not in {"asc", "desc"}:
+            raise ValueError("round event order must be asc or desc")
+        bounded = min(max(int(limit), 1), 501)
+        conditions = ["stream_id=?", "stream_sequence<=?"]
+        params: list[Any] = [str(stream_id), int(through_sequence)]
+        if direction == "asc":
+            conditions.append("stream_sequence>?")
+            params.append(max(0, int(after_sequence)))
+        else:
+            if before_sequence is not None:
+                conditions.append("stream_sequence<?")
+                params.append(int(before_sequence))
+        if search:
+            conditions.append(
+                "POSITION(LOWER(?) IN LOWER(COALESCE(payload->>'round_id', ''))) > 0")
+            params.append(str(search))
+        if min_multiplier is not None:
+            conditions.append("(payload->>'multiplier')::numeric>=?")
+            params.append(float(min_multiplier))
+        if max_multiplier is not None:
+            conditions.append("(payload->>'multiplier')::numeric<=?")
+            params.append(float(max_multiplier))
+        params.append(bounded)
+        query = f"""SELECT payload FROM round_distribution_events
+            WHERE {' AND '.join(conditions)}
+            ORDER BY stream_sequence {direction.upper()} LIMIT ?"""
+        with self.connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [self._round_distribution_payload(row) for row in rows]
+
     def count_round_distribution_after(self, stream_id: str, after_sequence: int,
                                        through_sequence: int) -> int:
         if not self.database_url:
@@ -980,13 +1329,17 @@ class Repository:
     def persist_round_distribution_event(self, round_id: str, expected_multiplier: float,
                                          observation: dict[str, Any], retention: int = 100000,
                                          *, connection: Any | None = None,
-                                         prune: bool = True) -> dict[str, Any]:
+                                         prune: bool = True,
+                                         stream_id: str | None = None) -> dict[str, Any]:
         """Create one replayable committed event only after its canonical PG row exists."""
         if not self.database_url:
             raise RuntimeError("round distribution requires authoritative PostgreSQL")
         with (nullcontext(connection) if connection is not None else self.connect()) as conn:
-            meta = conn.execute("SELECT stream_id FROM round_distribution_meta WHERE singleton=1").fetchone()
-            stream_id = str(meta["stream_id"])
+            if stream_id is None:
+                meta = conn.execute("SELECT stream_id FROM round_distribution_meta WHERE singleton=1").fetchone()
+                stream_id = str(meta["stream_id"])
+            else:
+                stream_id = str(stream_id)
             canonical = conn.execute("""SELECT round_id,round_index,multiplier,platform_round_id,
                     platform_round_index,platform_timestamp,observed_at,COALESCE(stored_at,created_at) AS stored_at,
                     round_identity_type,round_index_source,identity_confidence,continuity_verified,gap_before,source
@@ -1015,6 +1368,7 @@ class Repository:
             legacy_event_id = f"aviator-round:{round_id}"
             event_id = f"{legacy_event_id}:persisted"
             observation_id = str(observation.get("observation_id") or round_id)
+            published_at = datetime.now(timezone.utc).isoformat()
             payload = {
                 "schema_version": "1.0",
                 "event_id": event_id,
@@ -1031,7 +1385,7 @@ class Repository:
                 "platform_timestamp": iso(canonical["platform_timestamp"]),
                 "observed_at": iso(observed_at),
                 "stored_at": iso(canonical["stored_at"]),
-                "published_at": None,
+                "published_at": published_at,
                 "commit_acknowledged_at": iso(observation.get("commit_acknowledged_at")),
                 "observation_to_commit_ms": observation.get("observation_to_commit_ms"),
                 "commit_latency_measurement_clock": ("COLLECTOR_MONOTONIC"
@@ -1064,10 +1418,9 @@ class Repository:
                         conn.execute("UPDATE round_distribution_meta SET continuity_unknown=continuity_unknown+1 WHERE singleton=1")
                 if prune:
                     bounded_retention = min(max(int(retention), 1000), 1_000_000)
-                    conn.execute("""DELETE FROM round_distribution_events WHERE stream_id=? AND stream_sequence NOT IN
-                        (SELECT stream_sequence FROM round_distribution_events WHERE stream_id=?
-                         ORDER BY stream_sequence DESC LIMIT ?)""",
-                        (stream_id, stream_id, bounded_retention))
+                    if sequence > bounded_retention and sequence % 1000 == 0:
+                        conn.execute("DELETE FROM round_distribution_events WHERE stream_id=? AND stream_sequence<=?",
+                                     (stream_id, sequence - bounded_retention))
                 return payload
             existing = conn.execute("SELECT payload FROM round_distribution_events WHERE stream_id=? AND round_id=?",
                                     (stream_id, str(round_id))).fetchone()
@@ -1136,7 +1489,8 @@ class Repository:
             return payload
 
     def persist_round_distribution_batch(self, observations: list[dict[str, Any]],
-                                         retention: int = 100000) -> list[dict[str, Any]]:
+                                         retention: int = 100000, *,
+                                         stream_id: str | None = None) -> list[dict[str, Any]]:
         """Commit ordered canonical handoffs in one PostgreSQL transaction."""
         if not observations:
             return []
@@ -1146,16 +1500,22 @@ class Repository:
             for observation in observations:
                 event = self.persist_round_distribution_event(
                     observation["round_id"], observation["multiplier"], observation,
-                    bounded_retention, connection=conn, prune=False)
+                    bounded_retention, connection=conn, prune=False, stream_id=stream_id)
                 if event.get("published_at") is None:
-                    event = self.mark_round_distribution_event_published(
-                        event["stream_id"], event["stream_sequence"], connection=conn)
+                    published_at = datetime.now(timezone.utc)
+                    event["published_at"] = published_at.isoformat()
+                    conn.execute("""UPDATE round_distribution_events SET published_at=?,payload=?::jsonb
+                        WHERE stream_id=? AND stream_sequence=?""",
+                        (published_at,
+                         json.dumps(event, sort_keys=True, separators=(",", ":")),
+                         event["stream_id"], event["stream_sequence"]))
                 events.append(event)
             stream_id = events[0]["stream_id"]
-            conn.execute("""DELETE FROM round_distribution_events WHERE stream_id=? AND stream_sequence NOT IN
-                (SELECT stream_sequence FROM round_distribution_events WHERE stream_id=?
-                 ORDER BY stream_sequence DESC LIMIT ?)""",
-                (stream_id, stream_id, bounded_retention))
+            latest_sequence = max(int(event["stream_sequence"]) for event in events)
+            if (latest_sequence > bounded_retention
+                    and latest_sequence % 1000 < len(events)):
+                conn.execute("DELETE FROM round_distribution_events WHERE stream_id=? AND stream_sequence<=?",
+                             (stream_id, latest_sequence - bounded_retention))
         return events
 
     def page_round_distribution(self, stream_id: str, after_sequence: int,
@@ -1172,14 +1532,94 @@ class Repository:
             conn.execute("""INSERT INTO external_project_tokens(token_id,project_id,label,token_hash,token_prefix)
                 VALUES(?,?,?,?,?)""", (token_id, project_id, label, token_hash, token_prefix))
 
+    def list_managed_api_keys(self) -> list[dict[str, Any]]:
+        if not self.database_url:
+            raise RuntimeError("API key management requires authoritative PostgreSQL")
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT token_id,project_id,label,token_prefix,key_type,scopes,console_managed,
+                created_at,last_used_at,expires_at,revoked_at
+                FROM external_project_tokens ORDER BY created_at DESC,token_id DESC""").fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["scopes"] = json.loads(item.get("scopes") or "[]")
+            except (TypeError, json.JSONDecodeError):
+                item["scopes"] = []
+            result.append(item)
+        return result
+
+    def create_managed_api_key(self, *, token_id: str, project_id: str, label: str,
+                               token_hash: str, token_prefix: str, key_type: str,
+                               scopes: list[str], expires_at: str | None,
+                               rotate_token_id: str | None = None) -> dict[str, Any] | None:
+        if not self.database_url:
+            raise RuntimeError("API key management requires authoritative PostgreSQL")
+        encoded_scopes = json.dumps(scopes, separators=(",", ":"))
+        with self.connect() as conn:
+            if rotate_token_id:
+                prior = conn.execute("""SELECT token_id FROM external_project_tokens
+                    WHERE token_id=? AND revoked_at IS NULL FOR UPDATE""", (rotate_token_id,)).fetchone()
+                if not prior:
+                    return None
+            conn.execute("""INSERT INTO external_project_tokens(
+                token_id,project_id,label,token_hash,token_prefix,key_type,scopes,console_managed,expires_at)
+                VALUES(?,?,?,?,?,?,?,TRUE,?)""",
+                (token_id, project_id, label, token_hash, token_prefix, key_type,
+                 encoded_scopes, expires_at))
+            conn.execute("""INSERT INTO api_key_audit_log(audit_id,action,token_id,key_name,actor)
+                VALUES(?,?,?,?,?)""", (uuid.uuid4().hex, "CREATED", token_id, label, "owner"))
+            if rotate_token_id:
+                conn.execute("""UPDATE external_project_tokens SET revoked_at=CURRENT_TIMESTAMP
+                    WHERE token_id=? AND revoked_at IS NULL""", (rotate_token_id,))
+                conn.execute("""INSERT INTO api_key_audit_log(audit_id,action,token_id,key_name,actor)
+                    VALUES(?,?,?,?,?)""", (uuid.uuid4().hex, "ROTATED", rotate_token_id, label, "owner"))
+        return {"token_id": token_id, "project_id": project_id, "label": label,
+                "token_prefix": token_prefix, "key_type": key_type, "scopes": list(scopes),
+                "expires_at": expires_at}
+
+    def revoke_managed_api_key(self, token_id: str) -> dict[str, Any] | None:
+        if not self.database_url:
+            raise RuntimeError("API key management requires authoritative PostgreSQL")
+        with self.connect() as conn:
+            row = conn.execute("""UPDATE external_project_tokens SET revoked_at=CURRENT_TIMESTAMP
+                WHERE token_id=? AND revoked_at IS NULL
+                RETURNING token_id,label,key_type""", (token_id,)).fetchone()
+            if row:
+                conn.execute("""INSERT INTO api_key_audit_log(audit_id,action,token_id,key_name,actor)
+                    VALUES(?,?,?,?,?)""", (uuid.uuid4().hex, "REVOKED", token_id, row["label"], "owner"))
+        return dict(row) if row else None
+
+    def record_api_key_audit(self, action: str, *, token_id: str | None = None,
+                             key_name: str | None = None, actor: str = "owner") -> None:
+        if not self.database_url:
+            raise RuntimeError("API key audit requires authoritative PostgreSQL")
+        with self.connect() as conn:
+            conn.execute("""INSERT INTO api_key_audit_log(audit_id,action,token_id,key_name,actor)
+                VALUES(?,?,?,?,?)""", (uuid.uuid4().hex, action, token_id, key_name, actor))
+
     def external_project_token(self, token_hash: str) -> dict[str, Any] | None:
         if not self.database_url:
             raise RuntimeError("external project tokens require authoritative PostgreSQL")
         with self.connect() as conn:
-            row = conn.execute("""SELECT token_id,project_id,label,token_prefix,created_at
+            row = conn.execute("""SELECT token_id,project_id,label,token_prefix,key_type,scopes,console_managed,
+                    created_at,last_used_at,expires_at
                 FROM external_project_tokens WHERE token_hash=? AND revoked_at IS NULL""",
                 (token_hash,)).fetchone()
-        return dict(row) if row else None
+        item = dict(row) if row else None
+        if item:
+            try:
+                item["scopes"] = json.loads(item.get("scopes") or "[]")
+            except (TypeError, json.JSONDecodeError):
+                item["scopes"] = []
+        return item
+
+    def touch_external_project_token(self, token_id: str) -> None:
+        if not self.database_url:
+            raise RuntimeError("external project tokens require authoritative PostgreSQL")
+        with self.connect() as conn:
+            conn.execute("UPDATE external_project_tokens SET last_used_at=CURRENT_TIMESTAMP WHERE token_id=? AND revoked_at IS NULL",
+                         (token_id,))
 
     def revoke_external_project_token(self, project_id: str, token_id: str) -> bool:
         if not self.database_url:
@@ -1356,10 +1796,11 @@ class Repository:
         return dict(row) if row else None
 
     def rebuild_collector_state(self, *, required_rounds: int = 100,
-                                collector_session_id: str | None = None) -> dict[str, Any]:
+                                collector_session_id: str | None = None,
+                                total_history: int | None = None) -> dict[str, Any]:
         """Recompute the latest continuity window from durable rounds."""
         from datetime import datetime, timezone
-        rows = self.load_rounds()
+        rows = self.load_recent_round_context(max(100, int(required_rounds) + 1))
         # Round index defines the observed sequence. Sorting by timestamp
         # hides clock inversions and can report a false restored streak.
         rows.sort(key=lambda row: int(row["round_index"]))
@@ -1380,7 +1821,8 @@ class Repository:
             "last_processed_round_id": str(latest.get("round_id")) if latest else None,
             "last_round_timestamp": latest.get("timestamp") if latest else None,
             "contiguous_rounds": contiguous,
-            "total_history": len(rows),
+            "total_history": (self.round_history_status()["count"]
+                              if total_history is None else max(0, int(total_history))),
             "warmup_status": "READY" if contiguous >= required_rounds else "WARMING_UP",
             "collector_session_id": collector_session_id,
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1400,13 +1842,51 @@ class Repository:
                          (key, json.dumps(payload), updated_at))
 
     def save_rules_engine_snapshot(self, payload: dict[str, Any], updated_at: str) -> None:
+        """Serialize concurrent rule snapshots and reject stale generations."""
+        with self._rules_engine_snapshot_lock:
+            self._save_rules_engine_snapshot(payload, updated_at)
+
+    def _save_rules_engine_snapshot(self, payload: dict[str, Any], updated_at: str) -> None:
         """Persist the engine snapshot and its durable, queryable rule ledger.
 
         Selection intents are recorded as blocked audit-queue entries. This
         method never authorizes or submits a platform action.
         """
-        state = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        # Session records already have their own durable table. Keep the
+        # singleton application_state row compact and merge rule_sessions on
+        # load; copying every historical evaluation into this row on every
+        # round made each checkpoint proportional to the entire experiment
+        # archive.
+        persisted_state = dict(payload)
+        persisted_state.pop("sessions", None)
+        persisted_state["_rules_engine_sessions_source"] = "rule_sessions"
+        state = json.dumps(persisted_state, sort_keys=True, separators=(",", ":"))
+        fingerprint_updates: dict[tuple[str, str], str] = {}
+        evaluation_state_updates: dict[str, str] = {}
+
+        def ledger_changed(kind: str, identity: str, value: Any) -> bool:
+            key = (kind, identity)
+            fingerprint = self._rules_engine_fingerprint(value)
+            if (fingerprint_updates.get(key)
+                    or self._rules_engine_ledger_fingerprints.get(key)) == fingerprint:
+                return False
+            fingerprint_updates[key] = fingerprint
+            return True
+
         with self.connect() as conn:
+            existing_state = conn.execute(
+                "SELECT payload FROM application_state WHERE state_key='rules_engine_state_v1'").fetchone()
+            incoming_generation = int(payload.get("_rules_engine_generation") or 0)
+            if existing_state:
+                stored_payload = existing_state["payload"]
+                if isinstance(stored_payload, str):
+                    try:
+                        stored_payload = json.loads(stored_payload)
+                    except (TypeError, json.JSONDecodeError):
+                        stored_payload = {}
+                stored_generation = int((stored_payload or {}).get("_rules_engine_generation") or 0)
+                if stored_generation > incoming_generation:
+                    return
             conn.execute("""INSERT INTO application_state(state_key,payload,updated_at)
                 VALUES('rules_engine_state_v1',?,?) ON CONFLICT(state_key) DO UPDATE SET
                 payload=excluded.payload,updated_at=excluded.updated_at""", (state, updated_at))
@@ -1419,25 +1899,46 @@ class Repository:
                 (configuration_version, "GLOBAL", configuration, updated_at))
             sessions = payload.get("sessions") or {}
             for session_id, session in sessions.items():
+                session_id = str(session_id)
                 session_payload = json.dumps(session, sort_keys=True, separators=(",", ":"))
-                conn.execute("""INSERT INTO rule_sessions(session_id,mode,status,started_at,updated_at,payload)
-                    VALUES(?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET
-                    mode=excluded.mode,status=excluded.status,updated_at=excluded.updated_at,
-                    payload=excluded.payload""",
-                    (str(session_id), session.get("mode", "UNKNOWN"), session.get("status", "UNKNOWN"),
-                     session.get("started_at") or updated_at, updated_at, session_payload))
+                if ledger_changed("session", session_id, session_payload):
+                    conn.execute("""INSERT INTO rule_sessions(session_id,mode,status,started_at,updated_at,payload)
+                        VALUES(?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET
+                        mode=excluded.mode,status=excluded.status,updated_at=excluded.updated_at,
+                        payload=excluded.payload""",
+                        (session_id, session.get("mode", "UNKNOWN"), session.get("status", "UNKNOWN"),
+                         session.get("started_at") or updated_at, updated_at, session_payload))
+                else:
+                    # If the persisted session body did not change, neither its
+                    # queryable ledgers nor the execution intents derived from
+                    # it need another pass through hundreds of saved events.
+                    continue
                 for evaluation in session.get("evaluations", []):
                     source = evaluation.get("source_round") or {}
                     ev_at = str(evaluation.get("evaluated_at") or updated_at)
                     identity = "\0".join((str(session_id), str(source.get("streamId") or ""),
                                            str(source.get("roundId") or ""), ev_at))
                     evaluation_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-                    evaluation_payload = json.dumps(evaluation, sort_keys=True, separators=(",", ":"))
-                    conn.execute("""INSERT OR IGNORE INTO rule_evaluations(
-                        evaluation_id,session_id,source_stream_id,source_round_id,evaluated_at,result,payload)
-                        VALUES(?,?,?,?,?,?,?)""",
-                        (evaluation_id, str(session_id), source.get("streamId"), source.get("roundId"),
-                         ev_at, str(evaluation.get("decision", {}).get("action") or "WAIT"), evaluation_payload))
+                    evaluation_state = self._rules_engine_evaluation_state(evaluation)
+                    is_new_evaluation = evaluation_id not in self._rules_engine_evaluation_states
+                    evaluation_changed = (is_new_evaluation
+                        or self._rules_engine_evaluation_states.get(evaluation_id) != evaluation_state)
+                    if evaluation_changed:
+                        evaluation_payload = json.dumps(evaluation, sort_keys=True, separators=(",", ":"))
+                        if ledger_changed("evaluation", evaluation_id, evaluation_payload):
+                            conn.execute("""INSERT INTO rule_evaluations(
+                                evaluation_id,session_id,source_stream_id,source_round_id,evaluated_at,result,payload)
+                                VALUES(?,?,?,?,?,?,?) ON CONFLICT(evaluation_id) DO UPDATE SET
+                                result=excluded.result,payload=excluded.payload""",
+                                (evaluation_id, str(session_id), source.get("streamId"), source.get("roundId"),
+                                 ev_at, str(evaluation.get("decision", {}).get("action") or "WAIT"), evaluation_payload))
+                        evaluation_state_updates[evaluation_id] = evaluation_state
+
+                    # The nested rule evaluation rows are immutable after the
+                    # parent is first recorded. Commit confirmation only changes
+                    # the parent's durability metadata; skip all old children.
+                    if not is_new_evaluation:
+                        continue
                     for rule_evaluation in evaluation.get("rule_evaluations", []):
                         rule_source = rule_evaluation.get("source_round") or source
                         source_stream = str(rule_source.get("streamId") or "")
@@ -1458,24 +1959,35 @@ class Repository:
                         }, sort_keys=True, separators=(",", ":"))
                         state_snapshot = json.dumps(rule_evaluation.get("state_snapshot") or {},
                             sort_keys=True, separators=(",", ":"))
-                        conn.execute("""INSERT INTO rules_engine_evaluations(
-                            evaluation_id,session_id,rule_id,rule_version,source_stream_id,
-                            source_round_id,source_round_index,expected_target_index,eligible,
-                            status,reason,evaluated_at,source_evidence,state_snapshot)
-                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                            ON CONFLICT(session_id,rule_id,source_stream_id,source_round_index)
-                            DO UPDATE SET rule_version=excluded.rule_version,
-                            expected_target_index=excluded.expected_target_index,
-                            eligible=excluded.eligible,status=excluded.status,reason=excluded.reason,
-                            evaluated_at=excluded.evaluated_at,source_evidence=excluded.source_evidence,
-                            state_snapshot=excluded.state_snapshot""",
-                            (rule_evaluation_id, str(session_id), rule_id,
-                             str(rule_evaluation.get("rule_version") or "UNKNOWN"), source_stream,
-                             source_round, source_index,
-                             expected.get("roundIndex") if isinstance(expected, dict) else None,
-                             rule_evaluation.get("eligible"), str(rule_evaluation.get("status") or "UNKNOWN"),
-                             str(rule_evaluation.get("reason") or ""), ev_at, source_evidence,
-                             state_snapshot))
+                        rule_row_fingerprint = {
+                            "rule_version": str(rule_evaluation.get("rule_version") or "UNKNOWN"),
+                            "expected_target_index": expected.get("roundIndex") if isinstance(expected, dict) else None,
+                            "eligible": rule_evaluation.get("eligible"),
+                            "status": str(rule_evaluation.get("status") or "UNKNOWN"),
+                            "reason": str(rule_evaluation.get("reason") or ""),
+                            "evaluated_at": ev_at,
+                            "source_evidence": json.loads(source_evidence),
+                            "state_snapshot": json.loads(state_snapshot),
+                        }
+                        if ledger_changed("rule_evaluation", rule_evaluation_id, rule_row_fingerprint):
+                            conn.execute("""INSERT INTO rules_engine_evaluations(
+                                evaluation_id,session_id,rule_id,rule_version,source_stream_id,
+                                source_round_id,source_round_index,expected_target_index,eligible,
+                                status,reason,evaluated_at,source_evidence,state_snapshot)
+                                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                ON CONFLICT(session_id,rule_id,source_stream_id,source_round_index)
+                                DO UPDATE SET rule_version=excluded.rule_version,
+                                expected_target_index=excluded.expected_target_index,
+                                eligible=excluded.eligible,status=excluded.status,reason=excluded.reason,
+                                evaluated_at=excluded.evaluated_at,source_evidence=excluded.source_evidence,
+                                state_snapshot=excluded.state_snapshot""",
+                                (rule_evaluation_id, str(session_id), rule_id,
+                                 str(rule_evaluation.get("rule_version") or "UNKNOWN"), source_stream,
+                                 source_round, source_index,
+                                 expected.get("roundIndex") if isinstance(expected, dict) else None,
+                                 rule_evaluation.get("eligible"), str(rule_evaluation.get("status") or "UNKNOWN"),
+                                 str(rule_evaluation.get("reason") or ""), ev_at, source_evidence,
+                                 state_snapshot))
 
                 selection_rows = []
                 for selection in session.get("selections", []):
@@ -1490,16 +2002,18 @@ class Repository:
                     if not selection_id:
                         continue
                     selection_payload = {**selection, "selection_kind": selection_kind}
-                    conn.execute("""INSERT INTO rule_selections(
-                        selection_id,session_id,selection_kind,source_stream_id,source_round_id,
-                        target_stream_id,target_round_id,target_round_index,created_at,payload)
-                        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id,selection_id) DO UPDATE SET
-                        target_round_id=excluded.target_round_id,payload=excluded.payload""",
-                        (selection_id, str(session_id), selection_kind, source.get("streamId"),
-                         source.get("roundId"), expected.get("streamId"),
-                         (selection.get("actual_target") or {}).get("roundId"),
-                         expected.get("roundIndex"), str(selection.get("selected_at") or updated_at),
-                         json.dumps(selection_payload, sort_keys=True, separators=(",", ":"))))
+                    selection_json = json.dumps(selection_payload, sort_keys=True, separators=(",", ":"))
+                    if ledger_changed("selection", selection_id, selection_json):
+                        conn.execute("""INSERT INTO rule_selections(
+                            selection_id,session_id,selection_kind,source_stream_id,source_round_id,
+                            target_stream_id,target_round_id,target_round_index,created_at,payload)
+                            VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id,selection_id) DO UPDATE SET
+                            target_round_id=excluded.target_round_id,payload=excluded.payload""",
+                            (selection_id, str(session_id), selection_kind, source.get("streamId"),
+                             source.get("roundId"), expected.get("streamId"),
+                             (selection.get("actual_target") or {}).get("roundId"),
+                             expected.get("roundIndex"), str(selection.get("selected_at") or updated_at),
+                             selection_json))
 
                     actual = selection.get("actual_target")
                     if actual or selection.get("actual_multiplier") is not None:
@@ -1517,29 +2031,30 @@ class Repository:
                             "recorded_at": selection.get("resolved_at") or updated_at,
                         }
                         outcome_id = hashlib.sha256(selection_id.encode("utf-8")).hexdigest()
-                        previous_outcome = conn.execute(
-                            "SELECT bet_result,reconciled_at,payload FROM rule_target_outcomes WHERE selection_id=?",
-                            (selection_id,)).fetchone()
-                        if (previous_outcome and previous_outcome["reconciled_at"]
-                                and previous_outcome["bet_result"] in {"WIN", "LOSS"}):
-                            # Rule-session snapshots may be saved after the platform
-                            # receipt. Preserve its financial result while refreshing
-                            # the independent canonical-round observation fields.
-                            previous_payload = json.loads(previous_outcome["payload"])
-                            outcome_payload["bet_result"] = previous_outcome["bet_result"]
-                            outcome_payload["financial_result"] = previous_payload.get("financial_result")
-                            outcome_payload["evidence_type"] = previous_payload.get("evidence_type")
-                        conn.execute("""INSERT INTO rule_target_outcomes(
-                            outcome_id,selection_id,session_id,target_round_id,target_round_index,
-                            multiplier,round_outcome,bet_result,reconciled_at,payload)
-                            VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(selection_id) DO UPDATE SET
-                            target_round_id=excluded.target_round_id,target_round_index=excluded.target_round_index,
-                            multiplier=excluded.multiplier,round_outcome=excluded.round_outcome,
-                            payload=excluded.payload""",
-                            (outcome_id, selection_id, str(session_id), outcome_payload["target_round_id"],
-                             outcome_payload["target_round_index"], outcome_payload["multiplier"],
-                             outcome_payload["round_outcome"], "UNKNOWN", outcome_payload["recorded_at"],
-                             json.dumps(outcome_payload, sort_keys=True, separators=(",", ":"))))
+                        if ledger_changed("target_outcome", selection_id, outcome_payload):
+                            previous_outcome = conn.execute(
+                                "SELECT bet_result,reconciled_at,payload FROM rule_target_outcomes WHERE selection_id=?",
+                                (selection_id,)).fetchone()
+                            if (previous_outcome and previous_outcome["reconciled_at"]
+                                    and previous_outcome["bet_result"] in {"WIN", "LOSS"}):
+                                # Rule-session snapshots may be saved after the platform
+                                # receipt. Preserve its financial result while refreshing
+                                # the independent canonical-round observation fields.
+                                previous_payload = json.loads(previous_outcome["payload"])
+                                outcome_payload["bet_result"] = previous_outcome["bet_result"]
+                                outcome_payload["financial_result"] = previous_payload.get("financial_result")
+                                outcome_payload["evidence_type"] = previous_payload.get("evidence_type")
+                            conn.execute("""INSERT INTO rule_target_outcomes(
+                                outcome_id,selection_id,session_id,target_round_id,target_round_index,
+                                multiplier,round_outcome,bet_result,reconciled_at,payload)
+                                VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(selection_id) DO UPDATE SET
+                                target_round_id=excluded.target_round_id,target_round_index=excluded.target_round_index,
+                                multiplier=excluded.multiplier,round_outcome=excluded.round_outcome,
+                                payload=excluded.payload""",
+                                (outcome_id, selection_id, str(session_id), outcome_payload["target_round_id"],
+                                 outcome_payload["target_round_index"], outcome_payload["multiplier"],
+                                 outcome_payload["round_outcome"], "UNKNOWN", outcome_payload["recorded_at"],
+                                 json.dumps(outcome_payload, sort_keys=True, separators=(",", ":"))))
 
                     if selection_kind == "SHARED":
                         target_stream = str(expected.get("streamId") or "")
@@ -1580,45 +2095,64 @@ class Repository:
                                 "BETTING_DEADLINE_UNVERIFIED",
                                 "BET_AMOUNT_CURRENCY_UNVERIFIED" if not intent["requested_stake_currency"] else
                                     "STAKE_CURRENCY_NOT_RECONCILED",
-                                "VERIFIED_BALANCE_AND_SUFFICIENT_FUNDS_REQUIRED",
                                 "CASHOUT_PLATFORM_ACKNOWLEDGEMENT_UNVERIFIED",
                                 "PLATFORM_ACCEPTANCE_AND_SETTLEMENT_UNVERIFIED",
                             ])
                             intent_json = json.dumps(intent, sort_keys=True, separators=(",", ":"))
-                            conn.execute("""INSERT OR IGNORE INTO rule_execution_intents(
-                                intent_id,decision_id,selection_id,session_id,source_round_id,
-                                target_stream_id,target_round_id,target_round_index,panel,requested_stake,
-                                requested_stake_currency,cashout_target,execution_status,created_at,expires_at,payload)
-                                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                (intent["intent_id"], selection_id, selection_id, str(session_id), source.get("roundId"),
-                                 target_stream, intent.get("target_round_id"), target_index, intent["panel"],
-                                 intent.get("requested_stake"),
-                                 intent["requested_stake_currency"], 2.0, intent["execution_status"],
-                                intent["created_at"], intent["expires_at"], intent_json))
-                            # The exact completed target identity may become
-                            # available after the prospective intent was
-                            # recorded. Upgrade only that same immutable intent;
-                            # never replace another session's target reservation.
-                            conn.execute("""UPDATE rule_execution_intents SET
-                                target_round_id=COALESCE(?,target_round_id),
-                                expires_at=COALESCE(?,expires_at),payload=?
-                                WHERE intent_id=?""",
-                                (intent.get("target_round_id"), intent.get("expires_at"), intent_json,
-                                 intent["intent_id"]))
+                            if ledger_changed("execution_intent", intent["intent_id"], intent_json):
+                                conn.execute("""INSERT OR IGNORE INTO rule_execution_intents(
+                                    intent_id,decision_id,selection_id,session_id,source_round_id,
+                                    target_stream_id,target_round_id,target_round_index,panel,requested_stake,
+                                    requested_stake_currency,cashout_target,execution_status,created_at,expires_at,payload)
+                                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                    (intent["intent_id"], selection_id, selection_id, str(session_id), source.get("roundId"),
+                                     target_stream, intent.get("target_round_id"), target_index, intent["panel"],
+                                     intent.get("requested_stake"),
+                                     intent["requested_stake_currency"], 2.0, intent["execution_status"],
+                                    intent["created_at"], intent["expires_at"], intent_json))
+                                # The exact completed target identity may become
+                                # available after the prospective intent was
+                                # recorded. Upgrade only that same immutable intent;
+                                # never replace another session's target reservation.
+                                conn.execute("""UPDATE rule_execution_intents SET
+                                    target_round_id=COALESCE(?,target_round_id),
+                                    expires_at=COALESCE(?,expires_at),payload=?
+                                    WHERE intent_id=?""",
+                                    (intent.get("target_round_id"), intent.get("expires_at"), intent_json,
+                                     intent["intent_id"]))
 
-                reason = session.get("selection_stop_reason") or session.get("stop_reason")
-                stopped_at = ((session.get("selection_stopped_at") or session.get("ended_at")
-                               or session.get("stopped_at")) if session.get("selection_stop_reason")
-                              else session.get("ended_at") or session.get("stopped_at"))
-                if reason and stopped_at:
+                stop_events = list(session.get("stop_history") or [])
+                if not stop_events:
+                    reason = session.get("selection_stop_reason") or session.get("stop_reason")
+                    stopped_at = (session.get("selection_stopped_at") or session.get("stop_at")
+                                  or session.get("ended_at") or session.get("stopped_at"))
+                    if reason and stopped_at:
+                        stop_events = [{"reason": reason, "stopped_at": stopped_at,
+                            "source": session.get("selection_stop_source") or session.get("stop_source")
+                                      or "LEGACY_UNVERIFIED",
+                            "source_round": {"round_id": session.get("selection_stopped_at_round_id")
+                                                           or session.get("stop_round_id")},
+                            "scope": "LEGACY_UNVERIFIED", "details": {}}]
+                for stop in stop_events:
+                    reason = stop.get("reason")
+                    stopped_at = stop.get("stopped_at")
+                    if not reason or not stopped_at:
+                        continue
+                    # The table's unique key remains (session, reason, time),
+                    # while the payload retains the source and scope.
                     event_id = hashlib.sha256(f"{session_id}\0{reason}\0{stopped_at}".encode("utf-8")).hexdigest()
                     event = {"stop_event_id": event_id, "session_id": str(session_id),
                              "reason": str(reason), "stopped_at": str(stopped_at),
-                             "status": session.get("status")}
-                    conn.execute("""INSERT OR IGNORE INTO rule_session_stop_events(
-                        stop_event_id,session_id,reason,stopped_at,payload) VALUES(?,?,?,?,?)""",
-                        (event_id, str(session_id), str(reason), str(stopped_at),
-                         json.dumps(event, sort_keys=True, separators=(",", ":"))))
+                             "status": session.get("status"),
+                             "source": stop.get("source", "LEGACY_UNVERIFIED"),
+                             "source_round": stop.get("source_round"),
+                             "scope": stop.get("scope", "UNKNOWN"),
+                             "details": stop.get("details") or {}}
+                    event_json = json.dumps(event, sort_keys=True, separators=(",", ":"))
+                    if ledger_changed("stop_event", event_id, event_json):
+                        conn.execute("""INSERT OR IGNORE INTO rule_session_stop_events(
+                            stop_event_id,session_id,reason,stopped_at,payload) VALUES(?,?,?,?,?)""",
+                            (event_id, str(session_id), str(reason), str(stopped_at), event_json))
                 financials = {
                     "session_id": str(session_id), "starting_balance": None, "current_balance": None,
                     "balance_change": None, "realized_betting_pl": None,
@@ -1631,12 +2165,168 @@ class Repository:
                     },
                     "actual_betting_financials_status": "NO_RECONCILED_BETS",
                 }
-                conn.execute("""INSERT INTO rule_session_financials(
-                    session_id,starting_balance,current_balance,balance_change,realized_betting_pl,
-                    win_count,loss_count,currency,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(session_id) DO UPDATE SET updated_at=excluded.updated_at,payload=excluded.payload""",
-                    (str(session_id), None, None, None, None, 0, 0, None, updated_at,
-                     json.dumps(financials, sort_keys=True, separators=(",", ":"))))
+                financials_fingerprint = {key: value for key, value in financials.items()
+                                          if key != "updated_at"}
+                if ledger_changed("financials", str(session_id), financials_fingerprint):
+                    conn.execute("""INSERT INTO rule_session_financials(
+                        session_id,starting_balance,current_balance,balance_change,realized_betting_pl,
+                        win_count,loss_count,currency,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(session_id) DO UPDATE SET updated_at=excluded.updated_at,payload=excluded.payload""",
+                        (str(session_id), None, None, None, None, 0, 0, None, updated_at,
+                         json.dumps(financials, sort_keys=True, separators=(",", ":"))))
+
+        # Only record cache updates after the transaction committed. If the
+        # transaction failed, a retry must execute every skipped ledger write.
+        self._rules_engine_ledger_fingerprints.update(fingerprint_updates)
+        self._rules_engine_evaluation_states.update(evaluation_state_updates)
+
+    def delete_rules_engine_session(self, session_id: str, snapshot: dict[str, Any],
+                                    deleted_at: str) -> None:
+        """Remove one finished session through the same transaction path as bulk deletes."""
+        result = self.delete_rules_engine_sessions([session_id], snapshot, deleted_at)
+        if result["failures"]:
+            failure = result["failures"][0]
+            if failure["reason"] == "SESSION_NOT_FOUND":
+                raise KeyError(failure["reason"])
+            raise ValueError(failure["reason"])
+
+    def _rule_session_deletion_data(self, conn, session_id: str) -> dict[str, Any]:
+        row = conn.execute("SELECT status,payload FROM rule_sessions WHERE session_id=?",
+                           (session_id,)).fetchone()
+        if not row:
+            raise KeyError("SESSION_NOT_FOUND")
+        persisted = json.loads(row["payload"])
+        stored_status = persisted.get("status")
+        observed = persisted.get("observed_rounds")
+        window = persisted.get("window_size")
+        if (stored_status in {"RUNNING", "SETTLING"}
+                and isinstance(observed, int) and not isinstance(observed, bool)
+                and isinstance(window, int) and not isinstance(window, bool)
+                and window > 0 and observed >= window):
+            # Compatibility for completed windows written by older code that
+            # left the persisted state at SETTLING.
+            stored_status = "COMPLETED"
+        if stored_status not in {"COMPLETED", "SETTLING", "PAUSED", "MANUALLY_STOPPED", "RESET", "RECONFIGURED"}:
+            raise ValueError("SESSION_NOT_FINISHED")
+        if persisted.get("auto_next_armed"):
+            raise ValueError("SESSION_AUTO_NEXT_ARMED")
+        selections = list(persisted.get("selections") or [])
+        selections.extend(item for rows in (persisted.get("rule_selections") or {}).values()
+                          for item in rows)
+        intent_rows = conn.execute(
+            "SELECT execution_status,payload FROM rule_execution_intents WHERE session_id=?",
+            (session_id,),
+        ).fetchall()
+        allowed_shadow_intent_states = {"BLOCKED_READ_ONLY", "REJECTED", "FAILED", "EXPIRED"}
+        for intent_row in intent_rows:
+            intent = json.loads(intent_row["payload"])
+            if (intent_row["execution_status"] not in allowed_shadow_intent_states
+                    or intent.get("platform_execution_id") or intent.get("execution_id")):
+                raise ValueError("SESSION_HAS_EXECUTION_EVIDENCE")
+            execution = conn.execute(
+                "SELECT 1 FROM bet_executions WHERE decision_id=? LIMIT 1",
+                (intent.get("decision_id"),),
+            ).fetchone()
+            if execution:
+                raise ValueError("SESSION_HAS_EXECUTION_EVIDENCE")
+
+        outcome = conn.execute(
+            "SELECT 1 FROM rule_target_outcomes WHERE session_id=? "
+            "AND bet_result IN ('WIN','LOSS') LIMIT 1", (session_id,),
+        ).fetchone()
+        if outcome:
+            raise ValueError("SESSION_HAS_RECONCILED_OUTCOMES")
+        financial_row = conn.execute(
+            "SELECT starting_balance,current_balance,balance_change,realized_betting_pl,"
+            "win_count,loss_count,currency,payload "
+            "FROM rule_session_financials WHERE session_id=?", (session_id,),
+        ).fetchone()
+        if financial_row:
+            financials = json.loads(financial_row["payload"])
+            financial_status = financials.get("actual_betting_financials_status")
+            has_reconciled_betting_values = (
+                financial_row["realized_betting_pl"] is not None
+                or int(financial_row["win_count"] or 0) > 0
+                or int(financial_row["loss_count"] or 0) > 0
+                or financial_status not in {None, "NO_RECONCILED_BETS"}
+            )
+            has_unclassified_financial_values = (
+                financial_status is None
+                and any(financial_row[key] is not None for key in (
+                    "starting_balance", "current_balance", "balance_change", "currency"))
+            )
+            if has_reconciled_betting_values or has_unclassified_financial_values:
+                raise ValueError("SESSION_HAS_RECONCILED_FINANCIALS")
+        return {"persisted": persisted, "stored_status": stored_status,
+                "selections": selections}
+
+    def delete_rules_engine_sessions(self, session_ids: list[str], snapshot: dict[str, Any],
+                                     deleted_at: str) -> dict[str, Any]:
+        """Delete eligible sessions in one transaction while retaining audit evidence."""
+        unique_ids = list(dict.fromkeys(str(session_id) for session_id in session_ids))
+        prepared: list[dict[str, Any]] = []
+        failures: list[dict[str, str]] = []
+        with self.connect() as conn:
+            snapshot_sessions = snapshot.get("sessions") or {}
+            existing_session_ids = {str(row["session_id"])
+                for row in conn.execute("SELECT session_id FROM rule_sessions").fetchall()}
+            for session_id, session in snapshot_sessions.items():
+                session_id = str(session_id)
+                if session_id in existing_session_ids:
+                    continue
+                session_payload = json.dumps(session, sort_keys=True, separators=(",", ":"))
+                conn.execute("""INSERT INTO rule_sessions(session_id,mode,status,started_at,updated_at,payload)
+                    VALUES(?,?,?,?,?,?) ON CONFLICT(session_id) DO NOTHING""",
+                    (session_id, session.get("mode", "UNKNOWN"), session.get("status", "UNKNOWN"),
+                     session.get("started_at") or deleted_at, deleted_at, session_payload))
+                existing_session_ids.add(session_id)
+
+            for session_id in unique_ids:
+                try:
+                    deletion_data = self._rule_session_deletion_data(conn, session_id)
+                except KeyError as exc:
+                    failures.append({"session_id": session_id, "reason": str(exc.args[0])})
+                except ValueError as exc:
+                    failures.append({"session_id": session_id, "reason": str(exc)})
+                else:
+                    prepared.append({"session_id": session_id, **deletion_data})
+
+            for candidate in prepared:
+                session_id = candidate["session_id"]
+                persisted = candidate["persisted"]
+                selections = candidate["selections"]
+                # Keep blocked intents, stop events, and the immutable system audit trail.
+                for table in ("rule_target_outcomes", "rule_selections", "rule_evaluations",
+                              "rules_engine_evaluations",
+                              "rule_session_financials", "rule_sessions"):
+                    conn.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
+                audit = {"session_id": session_id, "mode": persisted.get("mode"),
+                         "status": candidate["stored_status"],
+                         "started_at": persisted.get("started_at"), "deleted_at": deleted_at,
+                         "selection_count": len(selections),
+                         "deleted_pending_session_events": sum(
+                             isinstance(record, dict) and record.get("persistence_status") == "PENDING"
+                             for record in (persisted.get("event_records") or {}).values()),
+                         "settling_observer_stopped": candidate["stored_status"] == "SETTLING",
+                         "deleted_shadow_results": {
+                             result: sum(item.get("status") == result for item in selections)
+                             for result in ("WIN", "LOSS", "PENDING")
+                         }}
+                conn.execute("""INSERT INTO system_audit_log(event_type,entity_id,recorded_at,payload)
+                    VALUES(?,?,?,?)""", ("RULE_SHADOW_SESSION_DELETED", session_id, deleted_at,
+                                           json.dumps(audit, sort_keys=True, separators=(",", ":"))))
+
+            if prepared:
+                state_payload = dict(snapshot)
+                state_payload.pop("sessions", None)
+                state_payload["_rules_engine_sessions_source"] = "rule_sessions"
+                state = json.dumps(state_payload, sort_keys=True, separators=(",", ":"))
+                conn.execute("""INSERT INTO application_state(state_key,payload,updated_at)
+                    VALUES('rules_engine_state_v1',?,?) ON CONFLICT(state_key) DO UPDATE SET
+                    payload=excluded.payload,updated_at=excluded.updated_at""", (state, deleted_at))
+
+        return {"deleted_session_ids": [row["session_id"] for row in prepared],
+                "failures": failures}
 
     def record_platform_balance_observation(self, observation: dict[str, Any]) -> dict[str, Any] | None:
         amount = observation.get("balance")
@@ -2048,7 +2738,15 @@ class Repository:
     def load_application_state(self, key: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute("SELECT payload FROM application_state WHERE state_key=?", (key,)).fetchone()
-        return json.loads(row["payload"]) if row else None
+            if not row:
+                return None
+            payload = json.loads(row["payload"])
+            if (key == "rules_engine_state_v1"
+                    and payload.get("_rules_engine_sessions_source") == "rule_sessions"):
+                rows = conn.execute("SELECT session_id,payload FROM rule_sessions ORDER BY started_at,session_id").fetchall()
+                payload["sessions"] = {str(item["session_id"]): json.loads(item["payload"])
+                                       for item in rows}
+            return payload
 
 
 
@@ -2130,13 +2828,12 @@ class Repository:
         with self.connect() as conn:
             cur = conn.execute(
                 """INSERT OR IGNORE INTO bet_executions(
-                     execution_id, decision_id, target_round_id, profile,
+                     execution_id, decision_id, target_round_id,
                      bet_amount, cashout_target, status, simulated, created_at,
                      updated_at, balance_before, payload)
-                   VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (execution["execution_id"], execution["decision_id"],
-                 execution["target_round_id"], execution["profile"],
-                 execution["bet_amount"], execution["cashout_target"],
+                 execution["target_round_id"], execution["bet_amount"], execution["cashout_target"],
                  execution["status"], int(bool(execution.get("simulated"))),
                  execution["created_at"], execution["updated_at"],
                  execution.get("balance_before"), json.dumps(execution)),
@@ -2336,6 +3033,196 @@ class Repository:
 
 
 
+
+    @staticmethod
+    def _bet_signal_from_row(row) -> dict[str, Any] | None:
+        if not row:
+            return None
+        payload = row["payload"]
+        return json.loads(payload) if isinstance(payload, str) else dict(payload or {})
+
+    def bet_signal_for_target(self, session_id: str, target_round_id: str) -> dict[str, Any] | None:
+        """Return the immutable BET signal already assigned to this session target."""
+        with self.connect() as conn:
+            row = conn.execute("""SELECT payload FROM bet_signals
+                WHERE session_id=? AND target_round_id=?""",
+                (str(session_id), str(target_round_id))).fetchone()
+        return self._bet_signal_from_row(row)
+
+    def bet_signal_by_id(self, signal_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM bet_signals WHERE signal_id=? LIMIT 1",
+                               (str(signal_id),)).fetchone()
+        return self._bet_signal_from_row(row)
+
+    def bet_signals_for_target_round(self, target_round_id: str) -> list[dict[str, Any]]:
+        """Return durable signals waiting on one exact Aviator target round."""
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT payload FROM bet_signals
+                WHERE target_round_id=? ORDER BY created_at,signal_id""",
+                (str(target_round_id),)).fetchall()
+        return [self._bet_signal_from_row(row) for row in rows if row]
+
+    def bet_signals_for_target_round_index(self, stream_id: str,
+                                           round_index: int) -> list[dict[str, Any]]:
+        """Return index-only SHADOW signals assigned to one canonical stream slot."""
+        target_key = f"shadow-index:{stream_id}:{int(round_index)}"
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT payload FROM bet_signals
+                WHERE target_round_id=? ORDER BY created_at,signal_id""",
+                (target_key,)).fetchall()
+        return [self._bet_signal_from_row(row) for row in rows if row]
+
+    def insert_bet_signal(self, payload: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        """Persist one signal per session/target with a server publication timestamp."""
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        with self.connect() as conn:
+            result = conn.execute("""INSERT INTO bet_signals(
+                signal_id,session_id,round_id,target_round_id,created_at,settlement_status,payload)
+                VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id,target_round_id) DO NOTHING""",
+                (str(payload["signal_id"]), str(payload["session_id"]), str(payload["round_id"]),
+                 str(payload["target_round_id"]), datetime.now(timezone.utc).isoformat(),
+                 str(payload.get("settlement_status") or "PENDING"), encoded))
+            inserted = int(getattr(result, "rowcount", 0) or 0) == 1
+            row = conn.execute("""SELECT payload FROM bet_signals
+                WHERE session_id=? AND target_round_id=?""",
+                (str(payload["session_id"]), str(payload["target_round_id"]))).fetchone()
+        existing = self._bet_signal_from_row(row)
+        return inserted, existing or payload
+
+    def accept_bet_signal(self, payload: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        """Atomically insert or resolve one idempotent signal in a single DB checkout."""
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        session_id = str(payload["session_id"])
+        target_round_id = str(payload["target_round_id"])
+        signal_id = str(payload["signal_id"])
+        with self.connect() as conn:
+            result = conn.execute("""INSERT INTO bet_signals(
+                signal_id,session_id,round_id,target_round_id,created_at,settlement_status,payload)
+                VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                (signal_id, session_id, str(payload["round_id"]), target_round_id,
+                 datetime.now(timezone.utc).isoformat(),
+                 str(payload.get("settlement_status") or "PENDING"), encoded))
+            inserted = int(getattr(result, "rowcount", 0) or 0) == 1
+            if inserted:
+                return True, dict(payload)
+            row = conn.execute("""SELECT payload FROM bet_signals
+                WHERE (session_id=? AND target_round_id=?) OR signal_id=?
+                ORDER BY CASE WHEN session_id=? AND target_round_id=? THEN 0 ELSE 1 END
+                LIMIT 1""",
+                (session_id, target_round_id, signal_id, session_id, target_round_id)).fetchone()
+        existing = self._bet_signal_from_row(row)
+        if existing is None:
+            raise RuntimeError("signal_conflict_row_not_found")
+        return False, existing
+
+    def update_bet_signal_settlement(self, signal_id: str, target_round_id: str,
+                                     settlement: dict[str, Any]) -> dict[str, Any] | None:
+        """Attach committed result evidence without changing the signal identity."""
+        with self.connect() as conn:
+            row = conn.execute("""SELECT payload FROM bet_signals
+                WHERE signal_id=? AND target_round_id=? LIMIT 1""",
+                (str(signal_id), str(target_round_id))).fetchone()
+            payload = self._bet_signal_from_row(row)
+            if payload is None:
+                return None
+            if payload.get("settlement_status") == "COMMITTED":
+                return payload
+            updated = dict(payload)
+            updated["settlement_status"] = "COMMITTED"
+            updated["settlement"] = dict(settlement)
+            if (updated.get("target_identity_status") == "INDEX_ONLY_SHADOW"
+                    and settlement.get("target_round_id")):
+                updated["resolved_target_round_id"] = str(settlement["target_round_id"])
+            encoded = json.dumps(updated, sort_keys=True, separators=(",", ":"), default=str)
+            conn.execute("""UPDATE bet_signals SET payload=?,settlement_status='COMMITTED'
+                WHERE signal_id=? AND target_round_id=?""",
+                (encoded, str(signal_id), str(target_round_id)))
+        return updated
+
+    def pending_bet_signals(self, limit: int = 1000) -> list[dict[str, Any]]:
+        """Return a bounded oldest-first batch for settlement recovery."""
+        bounded = min(max(int(limit), 1), 5000)
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT payload FROM bet_signals
+                WHERE settlement_status='PENDING' ORDER BY created_at,signal_id LIMIT ?""",
+                (bounded,)).fetchall()
+        return [self._bet_signal_from_row(row) for row in rows if row]
+
+    def list_bet_signals(self, limit: int = 100, *, session_id: str | None = None) -> list[dict[str, Any]]:
+        bounded = min(max(int(limit), 1), 1000)
+        page_size = min(max(bounded, 16), 1000)
+        accepted: list[dict[str, Any]] = []
+        offset = 0
+        with self.connect() as conn:
+            while len(accepted) < bounded:
+                if session_id:
+                    rows = conn.execute("""SELECT payload FROM bet_signals WHERE session_id=?
+                        ORDER BY created_at DESC,signal_id DESC LIMIT ? OFFSET ?""",
+                        (str(session_id), page_size, offset)).fetchall()
+                else:
+                    rows = conn.execute("""SELECT payload FROM bet_signals
+                        ORDER BY created_at DESC,signal_id DESC LIMIT ? OFFSET ?""",
+                        (page_size, offset)).fetchall()
+                signals = [self._bet_signal_from_row(row) for row in rows if row]
+                accepted.extend(signal for signal in signals
+                                if signal and signal.get("distribution_status")
+                                in (None, "ACCEPTED"))
+                offset += len(rows)
+                if len(rows) < page_size:
+                    break
+        return accepted[:bounded]
+
+    def count_bet_signals(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS total FROM bet_signals").fetchone()
+        return int(row["total"] if row else 0)
+
+    def shadow_signal_bridge_status_snapshot(self) -> dict[str, Any]:
+        """Load durable counters and latest signal for the built-in bridge."""
+        with self.connect() as conn:
+            counts = conn.execute("""SELECT COUNT(*) AS published_count,
+                COALESCE(SUM(CASE WHEN settlement_status='COMMITTED' THEN 1 ELSE 0 END),0)
+                    AS settled_count
+                FROM bet_signals WHERE signal_id LIKE ?""", ("shadow-%",)).fetchone()
+            latest = conn.execute("""SELECT payload FROM bet_signals
+                WHERE signal_id LIKE ?
+                ORDER BY created_at DESC,signal_id DESC LIMIT 1""", ("shadow-%",)).fetchone()
+        return {
+            "published_count": int(counts["published_count"] if counts else 0),
+            "settled_count": int(counts["settled_count"] if counts else 0),
+            "last_signal": self._bet_signal_from_row(latest),
+        }
+
+    def has_committed_round_distribution_event(self, round_id: str) -> bool:
+        """Check exact identity in the canonical persisted round distribution."""
+        if not self.database_url:
+            return False
+        with self.connect() as conn:
+            row = conn.execute("SELECT 1 FROM round_distribution_events WHERE round_id=? LIMIT 1",
+                               (str(round_id),)).fetchone()
+        return bool(row)
+
+    def has_committed_round_distribution_index(self, stream_id: str, round_index: int) -> bool:
+        """Check whether a canonical committed event already occupies this stream index."""
+        if not self.database_url:
+            return False
+        with self.connect() as conn:
+            row = conn.execute("""SELECT 1 FROM round_distribution_events
+                WHERE stream_id=? AND round_index=? LIMIT 1""",
+                (str(stream_id), int(round_index))).fetchone()
+        return bool(row)
+
+    def has_committed_round_distribution_identity(self, stream_id: str, round_id: str,
+                                                  round_index: int) -> bool:
+        """Check that a source event matches its stream, ID and canonical index."""
+        if not self.database_url:
+            return False
+        with self.connect() as conn:
+            row = conn.execute("""SELECT 1 FROM round_distribution_events
+                WHERE stream_id=? AND round_id=? AND round_index=? LIMIT 1""",
+                (str(stream_id), str(round_id), int(round_index))).fetchone()
+        return bool(row)
 
     def save_shadow_session(self, payload: dict[str, Any]) -> None:
         with self.connect() as conn:

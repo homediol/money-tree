@@ -25,27 +25,38 @@ class AppState:
                      "multiplier": float(row.multiplier), "timestamp": row.timestamp}
                     for row in legacy_rounds.itertuples(index=False)
                 ])
-        self._load_history()
+        self._load_history(include_exact_count=True)
         previous_collector_state = self.repository.load_collector_state()
         self.collector_state = self.repository.rebuild_collector_state(
             required_rounds=settings.history_status_window_rounds,
             collector_session_id=(previous_collector_state or {}).get("collector_session_id"),
+            total_history=self.quality.get("valid_records"),
         )
 
-    def _load_history(self) -> None:
+    def _load_history(self, *, include_exact_count: bool = False) -> None:
         if self.repository.database_url:
-            rows = self.repository.load_rounds()
+            # The live application only needs a bounded context. Historical
+            # records remain in PostgreSQL and reporting APIs query them there.
+            rows = self.repository.load_recent_round_context(100)
             self.rounds = pd.DataFrame(rows)
             if not self.rounds.empty:
                 self.rounds = self.rounds.sort_values("round_index").reset_index(drop=True)
             valid = len(self.rounds)
             stamps = self.rounds.get("timestamp") if valid else None
+            latest_index = int(self.rounds.iloc[-1]["round_index"]) if valid else None
+            if include_exact_count or not hasattr(self, "quality"):
+                summary = self.repository.round_history_status()
+                history_count = summary["count"]
+                first_timestamp = summary.get("first_timestamp")
+            else:
+                history_count = int((self.quality or {}).get("valid_records") or valid)
+                first_timestamp = (self.quality or {}).get("first_timestamp")
             self.quality = {
-                "valid_records": valid,
+                "valid_records": history_count,
                 "invalid_records": 0,
-                "first_timestamp": stamps.iloc[0] if stamps is not None and valid else None,
+                "first_timestamp": first_timestamp,
                 "last_timestamp": stamps.iloc[-1] if stamps is not None and valid else None,
-                "last_round_index": int(self.rounds.iloc[-1]["round_index"]) if valid else None,
+                "last_round_index": latest_index,
                 "source": "PostgreSQL:aviator_rounds",
             }
         else:
@@ -55,14 +66,15 @@ class AppState:
         self.rounds = self.rounds.copy()
 
     def reload(self) -> None:
-        self._load_history()
+        self._load_history(include_exact_count=False)
         if not self.repository.database_url and not self.rounds.empty:
             self.sync_database()
-        previous_collector_state = getattr(self, "collector_state", {}) or {}
-        self.collector_state = self.repository.rebuild_collector_state(
-            required_rounds=self.settings.history_status_window_rounds,
-            collector_session_id=previous_collector_state.get("collector_session_id"),
-        )
+        if not self.repository.database_url:
+            previous_collector_state = getattr(self, "collector_state", {}) or {}
+            self.collector_state = self.repository.rebuild_collector_state(
+                required_rounds=self.settings.history_status_window_rounds,
+                collector_session_id=previous_collector_state.get("collector_session_id"),
+            )
 
     def sync_database(self) -> None:
         if self.repository.database_url or self.rounds.empty:

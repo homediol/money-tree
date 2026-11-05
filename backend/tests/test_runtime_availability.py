@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+import main as main_module
 from app.core.runtime import InstanceLock, SingleInstanceError
 from app.database.repository import Repository
-from main import app
+from main import app, settings
 
 
 def run(coro):
@@ -46,6 +47,56 @@ def test_health_reports_backend_and_database(tmp_path):
     assert payload["backend"]["status"] == "ok"
     assert payload["database"]["status"] == "ok"
     assert payload["ok"] is True
+    assert payload["auth_required"] is bool(settings.api_key)
+    assert payload["local_browser_session_available"] is bool(settings.api_key)
+
+
+def test_remote_health_never_advertises_local_browser_bootstrap(tmp_path):
+    prepare_runtime(tmp_path)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app, client=("198.51.100.25", 44321))
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="https://api.example.test") as client:
+            return await client.get("/health")
+
+    response = run(scenario())
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["auth_required"] is True
+    assert payload["local_browser_session_available"] is False
+
+
+def test_local_health_does_not_show_access_gate_when_owner_key_is_not_configured(tmp_path, monkeypatch):
+    prepare_runtime(tmp_path)
+    monkeypatch.setattr(main_module, "settings", SimpleNamespace(api_key=None))
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1",
+        ) as client:
+            return await client.get("/health")
+
+    response = run(scenario())
+    assert response.status_code == 200
+    assert response.json()["auth_required"] is False
+    assert response.json()["local_browser_session_available"] is False
+
+
+def test_local_access_does_not_trust_loopback_proxy_forwards_from_remote_clients():
+    def request(peer, forwarded_client=None):
+        headers = {} if forwarded_client is None else {
+            "x-winner-proxy-client": forwarded_client,
+        }
+        return SimpleNamespace(
+            client=SimpleNamespace(host=peer),
+            url=SimpleNamespace(hostname="127.0.0.1"),
+            headers=headers,
+        )
+
+    assert main_module._is_loopback_request(request("127.0.0.1", "192.0.2.25")) is False
+    assert main_module._is_loopback_request(request("127.0.0.1", "127.0.0.1")) is True
+    assert main_module._is_loopback_request(request("198.51.100.25", "127.0.0.1")) is False
 
 
 def test_health_reports_postgres_without_exposing_dsn_or_sqlite_path(tmp_path):
@@ -86,7 +137,8 @@ def test_unhandled_request_returns_500_and_server_stays_healthy(tmp_path):
             transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
             base_url="http://test",
         ) as client:
-            failed = await client.get("/api/system/status")
+            headers = {"Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
+            failed = await client.get("/api/system/status", headers=headers)
             healthy = await client.get("/health")
             return failed, healthy
 

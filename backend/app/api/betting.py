@@ -15,12 +15,10 @@ from fastapi.responses import JSONResponse
 
 from app.betting.browser_client import AviatorBrowserClient
 from app.betting.cashout import inspect_cashout_configuration
-from app.betting.profiles import profile_keys
 from app.betting.schemas import (
     AutomaticStartRequest,
     DecisionIntent,
     SessionStartRequest,
-    profile_choices,
 )
 from app.betting.session import BettingError
 
@@ -33,10 +31,6 @@ def _betting(request: Request):
     if manager is None:
         raise BettingError("betting manager not initialised")
     return manager
-
-
-def _risk(request: Request):
-    return getattr(request.app.state, "risk", None)
 
 
 def _health_gate(request: Request, mode: str = "REAL"):
@@ -55,13 +49,10 @@ def _conflict(exc: BettingError) -> JSONResponse:
 @router.get("/status")
 async def status(request: Request):
     manager = _betting(request)
-    return {"ok": True, "status": manager.status()}
-
-
-@router.get("/profiles")
-async def profiles(request: Request):
-    return {"ok": True, "profiles": profile_choices(),
-            "keys": profile_keys()}
+    status = manager.status()
+    stop = getattr(request.app.state, "emergency_stop", None)
+    status["emergency_stop"] = stop.status() if stop else {"latched": None}
+    return {"ok": True, "status": status}
 
 
 @router.post("/start")
@@ -249,15 +240,13 @@ async def session_control(request: Request, body: SessionStartRequest):
                     "message": "REAL sessions require /api/live/start and "
                                "platform verification",
                 })
-            risk = _risk(request)
-            if risk and risk.emergency_latched:
+            emergency_stop = getattr(request.app.state, "emergency_stop", None)
+            if emergency_stop and emergency_stop.latched:
                 return JSONResponse(status_code=409, content={
                     "ok": False, "error": "emergency_stop_latched",
                     "message": "Reset emergency stop before starting a new session",
                 })
             status = await manager.start_session(body)
-            if risk:
-                await risk.on_session_start(body.profile)
         else:
             status = await manager.stop_session(emergency=False)
         return {"ok": True, "status": status}
@@ -268,9 +257,9 @@ async def session_control(request: Request, body: SessionStartRequest):
 @router.post("/emergency-stop")
 async def emergency_stop(request: Request):
     manager = _betting(request)
-    risk = _risk(request)
-    if risk:
-        await risk.emergency_stop()
+    emergency_stop = getattr(request.app.state, "emergency_stop", None)
+    if emergency_stop:
+        await emergency_stop.trigger()
     modes = getattr(request.app.state, "betting_mode", None)
     if modes:
         return {"ok": True, "status": await modes.force_safe("emergency_stop")}
@@ -283,39 +272,13 @@ async def emergency_stop(request: Request):
 
 @router.post("/decisions")
 async def submit_decision(request: Request, body: DecisionIntent):
-    engine = getattr(request.app.state, "rules_engine", None)
-    evaluation = (engine.last_evaluation or engine.evaluate()
-                  if engine is not None else None)
-    rule_status = engine.status() if engine is not None else {}
-    rule_execution_path_ready = bool(
-        engine is not None
-        and callable(getattr(engine, "execution_authorized", None))
-        and engine.execution_authorized() is True
-    )
-    configured = int(rule_status.get("rules_enabled") or 0) > 0
-    blocker = ("decision_interface_not_connected" if configured
-               else "rules_engine_not_configured")
-    reasons = []
-    if not configured:
-        reasons.append("No configured, enabled Rules Engine rule can authorize execution")
-    if not rule_execution_path_ready:
-        reasons.append("Rule selections are not connected to a target-bound decision intent")
-    reasons.extend([
-        "No final Risk Engine approval is attached to this intent",
-        "The next stream/index target is not bound to a verified provider round ID",
-        "Platform acceptance and settlement receipts are not verified",
-    ])
-    return JSONResponse(status_code=409, content={
-        "ok": False,
-        "error": blocker,
-        "blocker": blocker,
-        "message": "Execution remains blocked until the complete rule, target, risk, and platform contract is ready.",
-        "decision": "NO_ACTION",
-        "automatic_execution": "OFF",
-        "rule_evaluation": evaluation,
-        "rule_execution_path_ready": rule_execution_path_ready,
-        "reasons": list(dict.fromkeys(reasons)),
-    })
+    dispatcher = getattr(request.app.state, "decision_dispatcher", None)
+    if dispatcher is None:
+        from app.services.decision_dispatcher import DecisionDispatcher
+        dispatcher = DecisionDispatcher(request.app)
+    result = await dispatcher.dispatch_intent(body)
+    status_code = int(result.pop("http_status", 200))
+    return JSONResponse(status_code=status_code, content=result) if status_code != 200 else result
 
 
 @router.get("/ledger")

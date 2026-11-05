@@ -8,10 +8,22 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.betting.schemas import SessionStartRequest
+from app.betting.platform_state import classify_betting_window
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _fresh_timestamp(value: Any, *, max_age_seconds: float = 20.0) -> bool:
+    try:
+        observed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            return False
+        age = (datetime.now(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds()
+        return 0 <= age <= max_age_seconds
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 class LiveActivationManager:
@@ -84,8 +96,7 @@ class LiveActivationManager:
                        else platform_observation or {})
         browser_status = observation.get("browser_status") or betting_status.get("browser_status")
         ui_ready = observation.get("ui_ready") if use_observation else betting_status.get("last_ui_ready")
-        balance = observation.get("balance") if use_observation else betting_status.get("current_balance")
-        browser_ready = (browser_status in {"CONNECTED", "READY"} and bool(ui_ready) and balance is not None
+        browser_ready = (browser_status in {"CONNECTED", "READY"} and bool(ui_ready)
                          and (not use_observation or bool(observation.get("verified"))))
         checks["betting_page"] = "HEALTHY" if browser_ready else "NOT_READY"
         if bool(getattr(settings, "allow_real_placement", False)) and not browser_ready:
@@ -152,18 +163,69 @@ class LiveActivationManager:
             reasons.append("LIVE stake must be explicitly selected")
         selected_currency = (execution_configuration or {}).get("currency")
         current_currency = observation.get("currency")
-        if isinstance(selected_currency, str) and selected_currency and selected_currency == current_currency:
+        account_currency_verified = bool(
+            authentication_verified
+            and observation.get("currency_verified") is True
+            and _fresh_timestamp(observation.get("observed_at"))
+        )
+        if (account_currency_verified and isinstance(selected_currency, str)
+                and selected_currency and selected_currency == current_currency):
             checks["stake_currency"] = "MATCHES_VERIFIED_ACCOUNT"
         else:
             checks["stake_currency"] = "UNVERIFIED_OR_MISMATCHED"
             reasons.append("LIVE stake currency must match the verified platform account currency")
-        # Read-only DOM evidence can verify visible configuration, but it does
-        # not prove the platform accepted it or accepted a bet. Keep execution
-        # and target identity blocked until those independent receipts exist.
-        checks["platform_execution"] = "UNVERIFIED"
-        reasons.append("platform acceptance, round and cashout controls are unverified")
-        checks["target_identity"] = "UNVERIFIED"
-        reasons.append("the next target has no verified provider round identity before execution")
+        rules_engine = getattr(app.state, "rules_engine", None)
+        configured_setup = (rules_engine.ui_setup_configuration()
+                            if rules_engine is not None and callable(
+                                getattr(rules_engine, "ui_setup_configuration", None)) else {})
+        if configured_setup.get("status") == "CONFIGURED":
+            if selected_stake is not None and selected_stake != configured_setup.get("requested_stake"):
+                reasons.append("LIVE stake does not match the active Rules Engine fixed stake")
+            if selected_currency and selected_currency != configured_setup.get("requested_stake_currency"):
+                reasons.append("LIVE currency does not match the active Rules Engine stake currency")
+            if selected_panel is not None and selected_panel != configured_setup.get("execution_panel"):
+                reasons.append("LIVE panel does not match the active Rules Engine execution panel")
+
+        phase = observation.get("provider_phase") or {}
+        phase_state = classify_betting_window(phase)
+        try:
+            collector_state = (getattr(app.state, "history_collector", None).status()
+                               if getattr(app.state, "history_collector", None) else {})
+            latest_round = collector_state.get("latest") or {}
+            latest_index = int(latest_round.get("round_index"))
+            source_matches = (
+                str(phase.get("source_round_id") or "") == str(latest_round.get("round_id") or "")
+                and int(phase.get("source_round_index")) == latest_index
+                and int(phase.get("target_round_index")) == latest_index + 1
+            )
+        except (TypeError, ValueError, OverflowError):
+            latest_round = {}
+            source_matches = False
+        target_identity_verified = bool(
+            source_matches and phase.get("target_identity_verified") is True
+            and phase.get("target_started") is False
+            and phase.get("canonical_target_round_id")
+            and phase.get("provider_round_id")
+        )
+        checks["target_identity"] = "VERIFIED" if target_identity_verified else "UNVERIFIED"
+        if not target_identity_verified:
+            reasons.append("provider target round identity is missing, stale, or mismatched with the latest committed source")
+        checks["betting_phase"] = phase_state
+        if phase_state == "BETTING_CLOSED":
+            reasons.append("provider betting window is closed for the verified round")
+        elif phase_state != "BETTING_OPEN":
+            reasons.append("provider betting phase or deadline evidence is missing, stale, or uncertain")
+        elif not source_matches:
+            reasons.append("provider betting evidence does not match the latest committed source and immediate target")
+
+        backend = getattr(getattr(app.state, "betting", None), "backend", None)
+        capabilities = (backend.verified_capabilities() if backend is not None and callable(
+            getattr(backend, "verified_capabilities", None)) else {})
+        acceptance_ready = (capabilities.get("acceptance_receipt") is True
+                            and capabilities.get("settlement_receipt") is True)
+        checks["platform_execution"] = "VERIFIED" if acceptance_ready else "UNVERIFIED"
+        if not acceptance_ready:
+            reasons.append("platform acceptance and settlement receipts are not verified by the executor")
         checks["cashout_monitor"] = "AVAILABLE" if getattr(app.state, "reconciliation", None) else "UNAVAILABLE"
         if checks["cashout_monitor"] == "UNAVAILABLE": reasons.append("cashout/result reconciliation unavailable")
         history = getattr(app.state, "history_collector", None)
@@ -175,28 +237,41 @@ class LiveActivationManager:
             if not fresh: reasons.append("history is stale or not collecting")
         except Exception as exc:
             checks["history"] = "ERROR"; reasons.append(f"history check failed: {exc}")
-        for name in ("risk", "reconciliation", "orchestrator"):
+        for name in ("reconciliation", "orchestrator"):
             ok = getattr(app.state, name, None) is not None
             checks[name] = "HEALTHY" if ok else "UNAVAILABLE"
             if not ok: reasons.append(f"{name} unavailable")
-        rules_engine = getattr(app.state, "rules_engine", None)
         rules_status = rules_engine.status() if rules_engine is not None else {}
         checks["rules_engine"] = "READY" if rules_status.get("rules_enabled", 0) else "NOT_CONFIGURED"
         if not rules_status.get("rules_enabled", 0):
             reasons.append("Rules Engine has no enabled rules")
+        decision_executor = getattr(getattr(app.state, "betting", None), "submit_decision", None)
         decision_interface_ready = bool(
             rules_engine is not None
-            and callable(getattr(rules_engine, "execution_authorized", None))
-            and rules_engine.execution_authorized() is True
+            and callable(getattr(rules_engine, "execution_selection", None))
+            and callable(decision_executor)
         )
         checks["decision_interface"] = "READY" if decision_interface_ready else "UNAVAILABLE"
         if not decision_interface_ready:
-            reasons.append("rule selections are not connected to target-bound, risk-approved execution intents")
-        risk = getattr(app.state, "risk", None)
-        checks["emergency_stop"] = ("UNAVAILABLE" if risk is None else
-                                     "LATCHED" if risk.emergency_latched else "CLEAR")
-        if risk and risk.emergency_latched: reasons.append("emergency stop is latched")
-        checks["risk"] = "BLOCKED" if risk and risk.emergency_latched else "HEALTHY"
+            reasons.append("rule-selection lookup or executor decision submission is unavailable")
+        decision_dispatcher = getattr(app.state, "decision_dispatcher", None)
+        dispatcher_ready = bool(
+            callable(getattr(decision_dispatcher, "dispatch_evaluation", None))
+            and callable(getattr(decision_dispatcher, "dispatch_intent", None))
+            and getattr(decision_dispatcher, "app", None) is app
+            and callable(getattr(decision_dispatcher, "is_connected", None))
+            and decision_dispatcher.is_connected() is True
+        )
+        checks["decision_dispatcher"] = "READY" if dispatcher_ready else "UNAVAILABLE"
+        if not dispatcher_ready:
+            reasons.append("eligible rule selections are not forwarded to the betting executor")
+        emergency_stop = getattr(app.state, "emergency_stop", None)
+        checks["emergency_stop"] = ("UNAVAILABLE" if emergency_stop is None else
+                                     "LATCHED" if emergency_stop.latched else "CLEAR")
+        if emergency_stop is None:
+            reasons.append("emergency stop unavailable")
+        elif emergency_stop.latched:
+            reasons.append("emergency stop is latched")
         result = {"ready": not reasons, "state": "LIVE_READY" if not reasons else "BLOCKED", "reasons": list(dict.fromkeys(reasons)), "checks": checks, "checked_at": now()}
         self.last_readiness = result
         return result
@@ -214,7 +289,7 @@ class LiveActivationManager:
                 return {"ok": False, "error": "operator_authorization_required",
                         "message": "LIVE activation requires a server-authenticated operator identity"}
             if payload.get("real_funds_can_be_lost") is not True:
-                return {"ok": False, "error": "real_funds_at_risk_confirmation_required",
+                return {"ok": False, "error": "real_money_loss_confirmation_required",
                         "message": "Explicitly confirm that real funds can be lost."}
             if self.live_active:
                 return {"ok": False, "error": "already_active", "status": self.status()}
@@ -236,28 +311,23 @@ class LiveActivationManager:
             if not readiness["ready"]:
                 await self._audit("activation_blocked", {"reasons": readiness["reasons"]})
                 return {"ok": False, "error": "LIVE ACTIVATION BLOCKED", "reasons": readiness["reasons"], "readiness": readiness}
-            profile = payload.get("profile", "PROFILE_A")
-            req = SessionStartRequest(action="start", mode="REAL", profile=profile,
+            req = SessionStartRequest(action="start", mode="REAL",
                                       starting_balance=payload.get("starting_balance"),
                                       goal_balance=payload.get("goal_balance"),
-                                      session_loss_limit_enabled=payload.get("session_loss_limit_enabled"),
-                                      session_loss_limit=payload.get("session_loss_limit"),
                                       win_limit_enabled=payload.get("win_limit_enabled"),
                                       win_limit=payload.get("win_limit"), label="live")
             betting = self.app.state.betting
             status = await betting.start_session(req)
             sid = f"LIVE-{uuid.uuid4().hex[:12]}"
             snapshot = {"live_session_id": sid, "configuration_version": payload.get("configuration_version", "current"),
-                        "risk_version": "current", "executor_version": "current", "started_at": now(), "profile": profile,
+                        "executor_version": "current", "started_at": now(),
                         "operator_identity": operator_identity, "execution_panel": panel,
                         "stake_amount": stake, "currency": currency,
-                        "cashout_target": payload.get("cashout_target", 2.0),
+                        "cashout_target": 2.0,
                         "real_funds_can_be_lost": True,
                         "stop_conditions": {
                             "win_limit_enabled": bool(payload.get("win_limit_enabled")),
                             "win_limit": payload.get("win_limit"),
-                            "loss_limit_enabled": bool(payload.get("session_loss_limit_enabled")),
-                            "loss_limit": payload.get("session_loss_limit"),
                         }}
             self.session = {"session_id": sid, "started_at": snapshot["started_at"], "mode": "LIVE_ACTIVE", "snapshot": snapshot, "status": status}
             self.repository.save_live_session(self.session)
@@ -280,7 +350,7 @@ class LiveActivationManager:
 
     async def stop(self, emergency: bool = False) -> dict[str, Any]:
         if emergency:
-            await self.app.state.risk.emergency_stop()
+            await self.app.state.emergency_stop.trigger()
         status = await self.pause("emergency_stop" if emergency else "manual_stop")
         if emergency:
             self.mode = "EMERGENCY_STOP"
@@ -292,11 +362,11 @@ class LiveActivationManager:
 
     async def resume(self, confirmation: str) -> dict[str, Any]:
         # A paused or crashed session must repeat the full readiness and
-        # balance/profile/limits review through /start.
+        # fixed-stake/session target review through /start.
         return {
             "ok": False,
             "error": "fresh_live_activation_required",
-            "message": "Review current platform balance and configuration, "
+            "message": "Review the current platform session and configuration, "
                        "then start a new LIVE session",
         }
 
@@ -306,27 +376,18 @@ class LiveActivationManager:
         mode_manager = getattr(self.app.state, "betting_mode", None) if self.app else None
         if not self.explicit_live_authorization or not mode_manager or not mode_manager.can_execute_live():
             blocks.append("backend live authorization is not active")
-        if getattr(getattr(self.app.state, "risk", None), "emergency_latched", False): blocks.append("emergency stop is active")
+        if getattr(getattr(self.app.state, "emergency_stop", None), "latched", False): blocks.append("emergency stop is active")
         status = betting_status or self.app.state.betting.status()
         if status.get("mode") != "REAL" or not status.get("automatic_enabled"): blocks.append("real automatic session is not active")
-        balance_stamp = status.get("last_balance_observed_at")
-        try:
-            balance_age = (datetime.now(timezone.utc) - datetime.fromisoformat(
-                str(balance_stamp).replace("Z", "+00:00"))).total_seconds()
-            if balance_age < 0 or balance_age > 20:
-                blocks.append("real balance observation is stale")
-        except (TypeError, ValueError):
-            blocks.append("real balance observation timestamp is missing")
-        if decision.get("status") != "READY_FOR_EXECUTION": blocks.append("decision is not risk approved")
+        if status.get("authentication_state") != "AUTHENTICATED":
+            blocks.append("authenticated Aviator session is not verified")
+        if decision.get("status") != "READY_FOR_EXECUTION": blocks.append("decision is not eligible for execution")
         expiry = decision.get("expires_at")
         try:
             if not expiry or datetime.fromisoformat(str(expiry).replace("Z", "+00:00")) <= datetime.now(timezone.utc):
                 blocks.append("decision expired or expiry missing")
         except (TypeError, ValueError):
             blocks.append("decision expiry invalid")
-        decision_risk = decision.get("risk_evaluation") or decision.get("risk") or {}
-        if decision_risk.get("status") != "APPROVED" or not decision_risk.get("approved"):
-            blocks.append("risk approval missing")
         latest_row = (self.app.state.history_collector.status().get("latest") or {})
         latest = latest_row.get("round_id")
         if latest is None or str(decision.get("source_round_id")) != str(latest):
@@ -347,8 +408,6 @@ class LiveActivationManager:
                 blocks.append("unresolved previous execution exists")
         except Exception:
             blocks.append("execution database unavailable")
-        if not status.get("current_balance") or status.get("current_balance") < (decision_risk.get("approved_bet") or decision_risk.get("approved_bet_amount") or 0):
-            blocks.append("real balance insufficient or unverified")
         settings = getattr(self.app.state.betting, "settings", None)
         if not getattr(settings, "allow_real_placement", False):
             blocks.append("real placement disabled by configuration")

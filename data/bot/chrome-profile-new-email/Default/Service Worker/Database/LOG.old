@@ -1,3 +1,7 @@
-2026/10/14-18:13:36.700 600ee Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Service Worker/Database/MANIFEST-000001
-2026/10/14-18:13:36.702 600ee Recovering log #3
-2026/10/14-18:13:36.702 600ee Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Service Worker/Database/000003.log 
+2026/11/03-21:19:24.260 1a8aa Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Service Worker/Database/MANIFEST-000001
+2026/11/03-21:19:24.261 1a8aa Recovering log #3
+2026/11/03-21:19:25.184 1a8aa (ignoring error) /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Service Worker/Database/000003.log: dropping 44 bytes; Corruption: missing start of fragmented record(2)
+2026/11/03-21:19:26.306 1a8aa Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/Service Worker/Database/000003.log 
+2026/11/04-00:13:21.291 1a8a7 Level-0 table #5: started
+2026/11/04-00:13:21.711 1a8a7 Level-0 table #5: 63149 bytes OK
+2026/11/04-00:13:22.057 1a8a7 Delete type=0 #3

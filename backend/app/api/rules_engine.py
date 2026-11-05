@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import math
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -10,6 +13,48 @@ router = APIRouter(prefix="/api/rules-engine", tags=["rules engine"])
 SHADOW_BOUNDARY_MAX_AGE_SECONDS = 120
 CASHOUT_READBACK_MAX_AGE_SECONDS = 300
 CASHOUT_REFRESH_READBACK_MAX_AGE_SECONDS = 60
+_RETIRED_RISK_KEY_FRAGMENTS = (
+    "risk", "bankroll", "drawdown", "consecutive_loss",
+    "minimum_balance", "min_balance", "profile",
+)
+_NET_OUTCOME_LIMIT_KEYS = {"loss_limit_enabled", "loss_limit_count"}
+_RETIRED_RISK_BLOCKERS = {
+    "VERIFIED_BALANCE_AND_SUFFICIENT_FUNDS_REQUIRED",
+    "MINIMUM_BALANCE_REQUIRED",
+    "DRAWDOWN_LIMIT_REACHED",
+    "SESSION_LOSS_LIMIT_REACHED",
+    "CONSECUTIVE_LOSS_LIMIT_REACHED",
+}
+_RETIRED_RISK_STATUSES = {"RISK_WAITING", "RISK_REJECTED", "RISK_APPROVED"}
+
+
+def _without_retired_risk_data(value, *, net_limits_enabled: bool = False):
+    """Hide removed gate fields from API views while preserving DB history."""
+    if isinstance(value, dict):
+        net_limits_enabled = (net_limits_enabled
+                              or value.get("net_outcome_limit_version") == 1)
+        cleaned = {}
+        for key, child in value.items():
+            normalized_key = str(key).lower().replace("-", "_")
+            if ("loss_limit" in normalized_key
+                    and not (net_limits_enabled and normalized_key in _NET_OUTCOME_LIMIT_KEYS)):
+                continue
+            if any(fragment in normalized_key for fragment in _RETIRED_RISK_KEY_FRAGMENTS):
+                continue
+            if normalized_key == "blockers" and isinstance(child, list):
+                child = [item for item in child
+                         if not (isinstance(item, str)
+                                 and (item.upper() in _RETIRED_RISK_BLOCKERS
+                                      or item.upper() in _RETIRED_RISK_STATUSES
+                                      or item.upper().startswith(("RISK_", "RISK:"))))]
+            cleaned[key] = _without_retired_risk_data(child, net_limits_enabled=net_limits_enabled)
+        return cleaned
+    if isinstance(value, list):
+        return [_without_retired_risk_data(item, net_limits_enabled=net_limits_enabled) for item in value]
+    if isinstance(value, str) and value.upper() in _RETIRED_RISK_STATUSES:
+        # Old approval labels are not accepted or surfaced as current evidence.
+        return "BLOCKED_READ_ONLY"
+    return value
 
 
 def _engine(request: Request):
@@ -291,8 +336,11 @@ def _shared_aviator_readiness(request: Request) -> dict[str, Any]:
 @router.get("/status")
 def status(request: Request):
     engine = _engine(request)
-    return {**engine.status(), **_history(request),
-            "shadow_readiness": _shadow_readiness(request, engine)}
+    result = _without_retired_risk_data({**engine.status(), **_history(request),
+            "shadow_readiness": _shadow_readiness(request, engine)})
+    result["shadow_signal_bridge"] = getattr(
+        request.app.state, "shadow_signal_bridge_status", {"state": "UNAVAILABLE"})
+    return result
 
 
 @router.get("/ui-setup")
@@ -359,12 +407,12 @@ async def ui_setup(request: Request):
 
 @router.get("/registry")
 def registry(request: Request):
-    return _engine(request).registry()
+    return _without_retired_risk_data(_engine(request).registry())
 
 
 @router.get("/sessions")
 def sessions(request: Request):
-    return {"sessions": _engine(request).sessions_status()}
+    return _without_retired_risk_data({"sessions": _engine(request).sessions_status()})
 
 
 @router.get("/execution-intents")
@@ -373,7 +421,9 @@ def execution_intents(request: Request, limit: int = 100):
     if repository is None:
         raise HTTPException(status_code=503, detail="authoritative_postgresql_required")
     try:
-        return {"intents": repository.list_rule_execution_intents(limit)}
+        return _without_retired_risk_data({
+            "intents": repository.list_rule_execution_intents(limit),
+        })
     except Exception as exc:
         raise HTTPException(status_code=503, detail="execution_intent_store_unavailable") from exc
 
@@ -387,6 +437,10 @@ def dashboard(request: Request):
     shared_readiness = _shared_aviator_readiness(request)
     active = status_row.get("active_session") or {}
     detail = engine.session(active.get("session_id")) if active.get("session_id") else None
+    reporting_session = active or status_row.get("latest_session") or {}
+    reporting_detail = (detail if active else
+                        engine.session(reporting_session.get("session_id"))
+                        if reporting_session.get("session_id") else None)
     latest_evaluation = ((detail or {}).get("evaluations") or [None])[-1]
     decision = (latest_evaluation or {}).get("decision") or {"action": "WAIT", "reason": "NO_EVALUATION"}
     shared_decision = (latest_evaluation or {}).get("shared_decision")
@@ -416,16 +470,10 @@ def dashboard(request: Request):
                               or (balance or {}).get("application_session_id"))
     financials = (repository.rules_session_financials(str(application_session_id))
                   if repository and application_session_id else None)
-    config = (detail or {}).get("configuration_snapshot") or {}
-    financial_stop = (detail or {}).get("financial_stop") or (active or {}).get("financial_stop") or {
-        "status": "ACTIVE", "reason": None, "realized_betting_pl": None,
-        "currency": None, "win_count": 0, "loss_count": 0, "reconciled_bets": 0,
-    }
+    config = ((detail or reporting_detail or {}).get("configuration_snapshot") or {})
+    reconciled_financials = ((detail or {}).get("reconciled_financials")
+                             or (active or {}).get("reconciled_financials") or {})
     blockers = ["REAL_MONEY_EXECUTION_DISABLED_UNTIL_SEPARATE_AUTHORIZATION_AND_VERIFICATION"]
-    if not balance or balance.get("verified") is not True:
-        blockers.append("AUTHENTICATED_PLATFORM_BALANCE_UNVERIFIED")
-    elif balance_age_s is None or balance_age_s > 20:
-        blockers.append("PLATFORM_BALANCE_OBSERVATION_STALE")
     if not balance or not balance.get("currency"):
         blockers.append("PLATFORM_BALANCE_CURRENCY_UNVERIFIED")
     browser_pages = shared_readiness.get("browser_pages") or {}
@@ -459,10 +507,6 @@ def dashboard(request: Request):
         blockers.append("PLATFORM_CASHOUT_ACKNOWLEDGEMENT_UNVERIFIED")
     if mode.get("live_authorized") is not True:
         blockers.append("EXPLICIT_LIVE_SESSION_AUTHORIZATION_REQUIRED")
-    if financial_stop.get("status") == "RECONCILIATION_REQUIRED":
-        blockers.append("RULE_SESSION_TRANSACTION_RECONCILIATION_REQUIRED")
-    elif financial_stop.get("status") == "STOPPED":
-        blockers.append("RULE_SESSION_STOP_LIMIT_REACHED")
     if repository:
         try:
             if repository.open_executions():
@@ -470,7 +514,7 @@ def dashboard(request: Request):
         except Exception:
             blockers.append("EXECUTION_DATABASE_UNAVAILABLE")
     evaluations = (latest_evaluation or {}).get("rule_evaluations") or []
-    return {
+    return _without_retired_risk_data({
         "ok": True,
         "current_round": latest.get("latest_real_round"),
         "collector_status": latest.get("collector_status"),
@@ -485,39 +529,189 @@ def dashboard(request: Request):
         "balance_age_seconds": balance_age_s,
         "browser_topology": {"verified": browser_topology_verified, "pages": browser_pages},
         "financials": financials,
-        "financial_stop": financial_stop,
+        "reconciled_financials": reconciled_financials,
         "session_controls": {
             "scope": "combined rule session; one result per shared selection",
             "profit_target": config.get("profit_target_rwf"),
             "profit_target_enabled": config.get("profit_target_enabled"),
-            "loss_limit": config.get("loss_limit_rwf"),
-            "loss_limit_enabled": config.get("loss_limit_enabled"),
+            "win_limit_enabled": config.get("win_limit_enabled", False),
             "win_limit_count": config.get("win_limit_count"),
+            "loss_limit_enabled": config.get("loss_limit_enabled", False),
             "loss_limit_count": config.get("loss_limit_count"),
-            "reconciled_profit_target_rwf": config.get("reconciled_profit_target_rwf"),
-            "reconciled_profit_target_enabled": config.get("reconciled_profit_target_enabled"),
-            "reconciled_loss_limit_rwf": config.get("reconciled_loss_limit_rwf"),
-            "reconciled_loss_limit_enabled": config.get("reconciled_loss_limit_enabled"),
-            "reconciled_win_limit_count": config.get("reconciled_win_limit_count"),
-            "reconciled_win_limit_enabled": config.get("reconciled_win_limit_enabled"),
-            "reconciled_loss_count_limit": config.get("reconciled_loss_count_limit"),
-            "reconciled_loss_count_limit_enabled": config.get("reconciled_loss_count_limit_enabled"),
+            "net_outcome_limit_version": config.get("net_outcome_limit_version"),
             "maximum_selected_rounds": config.get("max_selections"),
             "manual_stop_available": True,
-            "financial_stop_status": financial_stop.get("status"),
-            "financial_stop_reason": financial_stop.get("reason"),
         },
         "execution_readiness": {"status": "BLOCKED", "ready": False,
                                 "blockers": list(dict.fromkeys(blockers))},
         "realized_betting_pl": (financials or {}).get("realized_betting_pl"),
         "shadow_result_summary": {
-            "net_profit_rwf": (detail or {}).get("net_profit_rwf"),
-            "wins": (detail or {}).get("total_wins", 0),
-            "losses": (detail or {}).get("total_losses", 0),
+            "session_id": reporting_session.get("session_id"),
+            "session_status": reporting_session.get("status"),
+            "net_profit_rwf": (reporting_detail or {}).get("net_profit_rwf"),
+            "wins": (reporting_detail or {}).get("total_wins", 0),
+            "losses": (reporting_detail or {}).get("total_losses", 0),
+            "pending": (reporting_detail or {}).get("results", {}).get("PENDING", 0),
+            "net_outcome": (reporting_detail or {}).get("net_outcome", 0),
+            "stop_reason": (reporting_detail or {}).get("stop_reason"),
+            "stop_reason_source": (reporting_detail or {}).get("stop_reason_source"),
+            "stop_reason_at": (reporting_detail or {}).get("stop_reason_at"),
             "label": "RULE OBSERVATION RESULTS; NOT RECONCILED BETTING P/L",
         },
         "execution_intents": repository.list_rule_execution_intents(50) if repository else [],
         "real_money_execution": "DISABLED",
+    })
+
+
+@router.get("/performance")
+async def performance(request: Request):
+    """Expose measured, correlation-linked round processing stage latencies."""
+    hub = getattr(request.app.state, "round_distribution", None)
+    metrics = await hub.metrics() if hub is not None else {}
+    backend = metrics.get("latency_ms") or {}
+    latest = metrics.get("latest_samples") or {}
+    collector_path = Path(getattr(
+        request.app.state, "collector_performance_status_path",
+        Path(__file__).resolve().parents[3] / "data" / "bot" / "status.json"))
+    try:
+        collector = json.loads(collector_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        collector = {}
+    if not isinstance(collector, dict):
+        collector = {}
+    collector_last_round_at = collector.get("lastSuccessfulCollection")
+    collector_last_round_age = _timestamp_age_seconds(collector_last_round_at)
+    collector_metrics_fresh = (
+        collector.get("collectorRunning") is True
+        and collector_last_round_age is not None
+        and 0 <= collector_last_round_age <= 120.0
+    )
+    backend_sampled_at = max(
+        (str(sample.get("sampled_at")) for sample in latest.values()
+         if isinstance(sample, dict) and sample.get("sampled_at")),
+        default=None,
+    )
+    round_delivery = ((collector.get("storage") or {}).get("round_delivery")
+                      if isinstance(collector, dict) else {})
+    collector_latency = ((round_delivery or {}).get("latency_ms") or {})
+    queue = getattr(request.app.state, "round_event_queue", None)
+    persistence_queue = getattr(request.app.state, "rules_state_persistence_queue", None)
+    dashboard_queue = getattr(request.app.state, "rules_dashboard_notification_queue", None)
+    repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
+    pool_metrics = (repository.connection_pool_metrics()
+                    if repository is not None and callable(
+                        getattr(repository, "connection_pool_metrics", None)) else None)
+    total = latest.get("backend_receive_to_decision_ready_ms") or {}
+    total_ms = total.get("latency_ms")
+    if isinstance(total_ms, (int, float)):
+        status = "GREEN" if total_ms < 500 else "WARNING" if total_ms <= 2000 else "CRITICAL"
+    else:
+        status = "UNKNOWN"
+    end_to_end = latest.get("collector_detection_to_signal_api_acceptance_ms") or {}
+    end_to_end_ms = end_to_end.get("latency_ms")
+    end_to_end_summary = backend.get("collector_detection_to_signal_api_acceptance_ms")
+    end_to_end_target_ms = 2000
+    if isinstance(end_to_end_ms, (int, float)) and math.isfinite(float(end_to_end_ms)):
+        end_to_end_status = "GREEN" if float(end_to_end_ms) < end_to_end_target_ms else "CRITICAL"
+    else:
+        end_to_end_status = "UNKNOWN"
+    rows = [
+        ("Collector mutation to extraction", collector_latency.get("page_mutation_to_multiplier_extraction_ms")),
+        ("Collector durable append", collector_latency.get("observation_to_durable_append_ms")),
+        ("Collector HTTP acknowledgment", collector_latency.get("collector_http_roundtrip_to_api_ack_ms")),
+        ("Backend inbox append", backend.get("api_durable_inbox_append_ms")),
+        ("Backend round queue wait", backend.get("round_event_processor_queue_wait_ms")),
+        ("Backend event loop lag", backend.get("backend_event_loop_lag_ms")),
+        ("Backend receive to decision ready", backend.get("backend_receive_to_decision_ready_ms")),
+        ("Rules Engine lock wait", backend.get("rules_engine_lock_wait_ms")),
+        ("USER_PLAYING_POLICY evaluation", backend.get("user_playing_policy_evaluation_ms")),
+        ("Standard rule evaluation", backend.get("standard_rule_evaluation_ms")),
+        ("Selected result evaluation", backend.get("selected_result_evaluation_ms")),
+        ("TWO_BET_WINS transition", backend.get("two_bet_wins_transition_ms")),
+        ("Target identity check", backend.get("target_identity_check_ms")),
+        ("Decision aggregation", backend.get("decision_aggregation_ms")),
+        ("Rules Engine total", backend.get("rules_engine_evaluation_ms")),
+        ("Rules persistence queue wait", backend.get("rules_state_persistence_queue_wait_ms")),
+        ("Rules snapshot capture", backend.get("rules_snapshot_capture_ms")),
+        ("Rules database persistence", backend.get("rules_database_persistence_ms")
+            or backend.get("database_persistence_ms")),
+        ("Rules persistence total", backend.get("rules_persistence_total_ms")),
+        ("Signal create and durable acknowledgment", backend.get("signal_create_to_durable_ack_ms")),
+        ("Decision to Signal API acceptance", backend.get("decision_to_signal_api_acceptance_ms")),
+        ("Backend receive to Signal API acceptance", backend.get("backend_receive_to_signal_api_acceptance_ms")),
+        ("Collector detection to Signal API acceptance", end_to_end_summary),
+        ("Backend database pool acquisition", pool_metrics),
+        ("PostgreSQL round write", collector_latency.get("database_write_ms")),
+        ("Backend receive to final decision", backend.get("backend_receive_to_final_decision_ms")),
+    ]
+    available = [(name, summary) for name, summary in rows
+                 if isinstance(summary, dict) and int(summary.get("samples") or 0) > 0]
+    collector_stage_names = {
+        "Collector mutation to extraction", "Collector durable append",
+        "Collector HTTP acknowledgment", "PostgreSQL round write",
+    }
+    current_available = [
+        (name, summary) for name, summary in available
+        if collector_metrics_fresh or name not in collector_stage_names
+    ]
+    slowest = max(current_available,
+                  key=lambda item: float(item[1].get("average_ms")
+                                         if item[1].get("average_ms") is not None
+                                         else item[1].get("p50_ms") or 0),
+                  default=(None, None))
+    queue_depth = queue.qsize() if queue is not None else 0
+    return {
+        "ok": True,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "sample_freshness": {
+            "backend_started_at": getattr(request.app.state, "started_at", None),
+            "backend_latest_sample_at": backend_sampled_at,
+            "collector_last_round_at": collector_last_round_at,
+            "collector_last_round_age_seconds": (
+                round(collector_last_round_age, 3)
+                if collector_last_round_age is not None else None),
+            "collector_current": collector_metrics_fresh,
+            "collector_current_max_age_seconds": 120,
+            "collector_state": collector.get("state") or "UNKNOWN",
+        },
+        "correlation_key": "round_id",
+        "status": status,
+        "backend_path_status": status,
+        "end_to_end_target_status": end_to_end_status,
+        "end_to_end_target_ms": end_to_end_target_ms,
+        "end_to_end_latest_ms": end_to_end_ms,
+        "end_to_end_latest_correlation_id": end_to_end.get("correlation_id"),
+        "end_to_end_latest_sampled_at": end_to_end.get("sampled_at"),
+        "total_stage": "backend_receive_to_decision_ready_ms",
+        "total_latest_ms": total_ms,
+        "total_latest_correlation_id": total.get("correlation_id"),
+        "slowest_stage": slowest[0],
+        "slowest_stage_metrics": slowest[1],
+        "queue": {"depth": queue_depth, "capacity": getattr(queue, "maxsize", None),
+                  "busy": bool(getattr(request.app.state, "round_event_processor_busy", False))},
+        "rules_state_persistence_queue": {
+            "depth": persistence_queue.qsize() if persistence_queue is not None else 0,
+            "capacity": getattr(persistence_queue, "maxsize", None),
+            "busy": bool(getattr(request.app.state, "rules_state_persistence_busy", False)),
+        },
+        "dashboard_notifications": {
+            "depth": dashboard_queue.qsize() if dashboard_queue is not None else 0,
+            "capacity": getattr(dashboard_queue, "maxsize", None),
+            "coalesced": int(getattr(request.app.state,
+                                     "rules_dashboard_notifications_coalesced", 0)),
+        },
+        "stages": {name: summary for name, summary in rows},
+        "backend_latency_ms": backend,
+        "latest_correlated_samples": latest,
+        "measurement_availability": {
+            "provider_round_available_timestamp": "UNAVAILABLE_PROVIDER_DOES_NOT_EXPOSE_EVENT_TIME",
+            "collector_page_to_node_one_way": "UNAVAILABLE_DIFFERENT_MONOTONIC_CLOCK_ORIGINS",
+            "external_signal_consumer_ack": "UNAVAILABLE_NO_CLIENT_ACK_PROTOCOL",
+            "current_end_to_end_total": ("AVAILABLE" if end_to_end_status != "UNKNOWN"
+                                          else "UNAVAILABLE_NO_COMPLETE_CORRELATED_DETECTION_TO_ACCEPTANCE_SPAN"),
+            "collector_detection_to_signal_api_acceptance": ("AVAILABLE" if end_to_end_status != "UNKNOWN"
+                else "UNAVAILABLE_NO_LOOPBACK_DETECTION_TIMESTAMP_OR_DURABLE_ACCEPTANCE_SPAN"),
+        },
     }
 
 
@@ -526,36 +720,79 @@ def session_detail(request: Request, session_id: str):
     result = _engine(request).session(session_id)
     if result is None:
         raise HTTPException(status_code=404, detail="session_not_found")
-    return result
+    return _without_retired_risk_data(result)
+
+
+@router.post("/sessions/delete-batch")
+async def delete_sessions(request: Request):
+    import asyncio
+
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid_json_body") from exc
+    session_ids = body.get("session_ids") if isinstance(body, dict) else None
+    if (not isinstance(session_ids, list) or not session_ids
+            or len(session_ids) > 1000
+            or any(not isinstance(session_id, str) or not session_id.strip()
+                   for session_id in session_ids)):
+        raise HTTPException(status_code=422, detail="invalid_session_ids")
+    try:
+        result = await asyncio.to_thread(_engine(request).delete_sessions, session_ids)
+        return _without_retired_risk_data(result)
+    except ValueError as exc:
+        code = str(exc)
+        status_code = 422 if code == "INVALID_SESSION_IDS" else 503
+        raise HTTPException(status_code=status_code, detail=code) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="rules_session_bulk_delete_unavailable") from exc
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(request: Request, session_id: str):
+    try:
+        return _without_retired_risk_data(_engine(request).delete_session(session_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="rules_session_delete_unavailable") from exc
 
 
 @router.put("/configuration/{rule_id}")
 async def configure_rule(request: Request, rule_id: str):
+    import asyncio
+
     try:
         body = await request.json()
         if not isinstance(body, dict) or type(body.get("enabled")) is not bool:
             raise ValueError("enabled_must_be_boolean")
-        saved = _engine(request).configure(rule_id, enabled=body["enabled"], parameters=body.get("parameters"))
-        return {"rule_id": rule_id, **saved}
+        saved = await asyncio.to_thread(_engine(request).configure, rule_id,
+            enabled=body["enabled"], parameters=body.get("parameters"))
+        return _without_retired_risk_data({"rule_id": rule_id, **saved})
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/presets")
 async def save_preset(request: Request):
+    import asyncio
+
     try:
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("invalid_preset")
-        return _engine(request).save_preset(body.get("name"), body.get("mode"),
-                                             body.get("rule_ids"), body.get("options"))
+        saved = await asyncio.to_thread(_engine(request).save_preset,
+            body.get("name"), body.get("mode"), body.get("rule_ids"), body.get("options"))
+        return _without_retired_risk_data(saved)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/presets")
 def presets(request: Request):
-    return {"presets": _engine(request).status().get("presets", {})}
+    return _without_retired_risk_data({"presets": _engine(request).status().get("presets", {})})
 
 
 @router.post("/sessions")
@@ -565,7 +802,7 @@ async def start_session(request: Request):
     repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
     if repository is None or not repository.database_url:
         raise HTTPException(status_code=503, detail="authoritative_postgresql_required")
-    readiness = _shadow_readiness(request)
+    readiness = await asyncio.to_thread(_shadow_readiness, request)
     if not readiness["ready"]:
         raise HTTPException(status_code=503,
             detail="SHADOW_SESSION_START_BLOCKED:" + ",".join(readiness["blockers"]))
@@ -583,8 +820,13 @@ async def start_session(request: Request):
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("invalid_session_configuration")
-        session = _engine(request).start_session(mode=body.get("mode"), rule_ids=body.get("rule_ids"),
-            boundary=boundary, prestart_context=context, options=body.get("options"))
+        replace_session_id = body.get("replace_session_id")
+        if replace_session_id is not None and not isinstance(replace_session_id, str):
+            raise ValueError("invalid_session_replacement")
+        session = await asyncio.to_thread(_engine(request).start_session,
+            mode=body.get("mode"), rule_ids=body.get("rule_ids"),
+            boundary=boundary, prestart_context=context, options=body.get("options"),
+            replace_session_id=replace_session_id)
         # Balance is optional enrichment for the dashboard. It must never turn
         # a successfully persisted SHADOW session into a 503 response.
         try:
@@ -614,15 +856,113 @@ async def start_session(request: Request):
                     }
         return session
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        status_code = 409 if str(exc) in {
+            "SESSION_ALREADY_ACTIVE_FOR_MODE", "SESSION_NOT_RESTARTABLE",
+            "SESSION_REQUIRES_RECONCILIATION", "SESSION_RECONCILIATION_STATUS_UNAVAILABLE",
+        } else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"rules_session_start_unavailable:{type(exc).__name__}") from exc
 
 
-@router.post("/sessions/{session_id}/{action}")
-def session_action(request: Request, session_id: str, action: str):
+@router.post("/sessions/{session_id}/reconfigure")
+async def reconfigure_session(request: Request, session_id: str):
+    """Close one historical session and start a new, explicitly confirmed one."""
+    import asyncio
+
     try:
-        return _engine(request).session_action(session_id, action)
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid_json_body") from exc
+    if not isinstance(body, dict) or body.get("confirmation") != f"RECONFIGURE SESSION {session_id}":
+        raise HTTPException(status_code=409, detail={
+            "error": "operator_confirmation_required",
+            "confirmation": f"RECONFIGURE SESSION {session_id}",
+            "settings_changed": False,
+        })
+    engine = _engine(request)
+    previous = await asyncio.to_thread(engine.session, session_id)
+    if previous is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    if previous.get("status") not in {"RUNNING", "SETTLING", "PAUSED"}:
+        raise HTTPException(status_code=409, detail="rules_session_is_not_active")
+
+    modes = getattr(request.app.state, "betting_mode", None)
+    live = getattr(request.app.state, "live", None)
+    betting = getattr(request.app.state, "betting", None)
+    betting_status = await asyncio.to_thread(betting.status) if betting is not None else {}
+    if (getattr(modes, "mode", None) == "LIVE_REAL"
+            or bool(getattr(modes, "live_authorized", False))
+            or bool(getattr(live, "live_active", False))
+            or (betting_status.get("mode") == "REAL" and betting_status.get("automatic_enabled"))):
+        raise HTTPException(status_code=409, detail="DISARM_LIVE_BEFORE_RULES_SESSION_RECONFIGURATION")
+
+    repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
+    if repository is None or not repository.database_url:
+        raise HTTPException(status_code=503, detail="authoritative_postgresql_required")
+    readiness = await asyncio.to_thread(_shadow_readiness, request, engine)
+    if not readiness["ready"]:
+        raise HTTPException(status_code=503,
+            detail="RULES_SESSION_RECONFIGURATION_BLOCKED:" + ",".join(readiness["blockers"]))
+
+    try:
+        snapshot = await asyncio.to_thread(repository.round_distribution_snapshot)
+        boundary = snapshot.get("latest") or {}
+        if boundary.get("event_type") != "round.persisted" or boundary.get("durability") != "COMMITTED":
+            raise ValueError("verified_committed_round_boundary_required")
+        _require_fresh_shadow_boundary(boundary)
+        context: list[dict[str, Any]] = []
+        first_sequence = max(0, int(boundary.get("stream_sequence") or 0) - 5)
+        if boundary.get("stream_id"):
+            context = await asyncio.to_thread(repository.round_distribution_events,
+                boundary["stream_id"], first_sequence,
+                int(boundary.get("stream_sequence") or 0), 10)
+        mode = body.get("mode")
+        rule_ids = body.get("rule_ids")
+        options = body.get("options")
+        if not isinstance(mode, str) or not isinstance(rule_ids, list) or not isinstance(options, dict):
+            raise ValueError("new_mode_rule_ids_and_options_required")
+        def apply_reconfiguration():
+            # Keep conflict checking and both persisted changes serialized
+            # against round delivery, while the blocking PostgreSQL work runs
+            # outside the ASGI event loop.
+            with engine._lock:
+                conflicts = [row for row in engine.sessions.values()
+                             if row.get("session_id") != session_id
+                             and row.get("mode") == mode
+                             and row.get("status") in {"RUNNING", "SETTLING", "PAUSED"}
+                             and row.get("selection_status") == "ACTIVE"]
+                if conflicts:
+                    raise ValueError("another_active_session_for_mode_exists")
+                new_session = engine.start_session(mode=mode, rule_ids=rule_ids,
+                    boundary=boundary, prestart_context=context, options=options,
+                    reconfigure_session_id=session_id)
+                try:
+                    closed = engine.close_for_reconfiguration(
+                        session_id, new_session["session_id"], body["confirmation"])
+                except Exception:
+                    engine.session_action(new_session["session_id"], "stop")
+                    raise
+                return new_session, closed
+
+        new_session, closed = await asyncio.to_thread(apply_reconfiguration)
+        return {"ok": True, "previous_session": _without_retired_risk_data(closed),
+                "new_session": _without_retired_risk_data(new_session),
+                "history_preserved": True, "settings_changed_only_by_explicit_request": True}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503,
+                            detail=f"rules_session_reconfiguration_unavailable:{type(exc).__name__}") from exc
+
+
+@router.post("/sessions/{session_id}/{action}")
+async def session_action(request: Request, session_id: str, action: str):
+    import asyncio
+
+    try:
+        session = await asyncio.to_thread(_engine(request).session_action, session_id, action)
+        return _without_retired_risk_data(session)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -633,4 +973,4 @@ def session_action(request: Request, session_id: str, action: str):
 def evaluate(request: Request):
     # Selection is created only from the ordered committed-event dispatcher.
     latest = _history(request).get("latest_real_round")
-    return _engine(request).evaluate(latest)
+    return _without_retired_risk_data(_engine(request).evaluate(latest))

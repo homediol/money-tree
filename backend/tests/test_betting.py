@@ -29,7 +29,6 @@ from app.betting.selectors import (
 )
 from app.betting.config import BettingSettings
 from app.betting.events import betting_event, ledger_event, notice_event, state_event
-from app.betting.profiles import PROFILES, profile_keys
 from app.betting.schemas import DecisionIntent, SessionStartRequest
 from app.betting.session import (
     BettingManager,
@@ -44,7 +43,7 @@ from app.betting.states import (
     OutcomeStatus,
     SessionState,
 )
-from main import app
+from main import app, settings
 
 MIN_CRASH_1 = 1.21  # SIM_CRASH_SEQUENCE[0] — crashes below a 2.0 target
 
@@ -63,22 +62,22 @@ def fast_settings(**kw) -> BettingSettings:
 
 
 def sim_request(**kw) -> SessionStartRequest:
-    return SessionStartRequest(action="start", mode="SIMULATION",
-                               profile="PROFILE_A", **kw)
+    return SessionStartRequest(action="start", mode="SIMULATION", **kw)
 
 
 def real_request(**kw) -> SessionStartRequest:
-    return SessionStartRequest(action="start", mode="REAL",
-                               profile="PROFILE_A", **kw)
+    return SessionStartRequest(action="start", mode="REAL", **kw)
 
 
 def decision(decision_id: str, target_multiplier: float = 2.0,
              **kw) -> DecisionIntent:
+    kw.setdefault("amount_currency", "BIF")
     return DecisionIntent(decision_id=decision_id,
                           round_id=kw.pop("round_id", f"round-{decision_id}"),
                           execute=kw.pop("execute", True),
-                          profile=kw.pop("profile", "PROFILE_A"),
-                          target_multiplier=target_multiplier, **kw)
+                          target_multiplier=target_multiplier,
+                          expires_at=kw.pop("expires_at", datetime.now(timezone.utc) + timedelta(minutes=1)),
+                          **kw)
 
 
 def _run(coro):
@@ -264,7 +263,7 @@ def test_mock_ui_practice_configures_cashout_and_stake_without_bet_submission():
         assert stake["input"]["value"] == "100"
         assert stake_details["minimum_stake_evidence"]["platform_enforcement_verified"] is False
         assert button["detected"] is True and button["interaction_performed"] is False
-        assert window["state"] == "BETTING_OPEN"
+        assert window["state"] == "UNKNOWN"
         assert insufficient["detected"] is True
         assert insufficient["source"] == "OBSERVED_ALERT_TEXT"
         assert balance["verified"] is True
@@ -578,14 +577,13 @@ def test_sim_backend_place_between_rounds_joins_next_round():
     _run(go())
 
 
-def test_sim_backend_rejects_stake_above_balance():
+def test_sim_backend_does_not_apply_a_balance_stake_gate():
     async def go():
         sim = SimulationBackend(round_every_s=0.05, initial_balance=100.0)
-        with pytest.raises(PlacementUnavailable) as exc:
-            await sim.place(amount_bif=500, target_multiplier=2.0,
-                            bet_slot=0, decision_id="d-poor")
-        assert exc.value.reason == "insufficient_balance"
-        assert sim.pending_count() == 0
+        placed = await sim.place(amount_bif=500, target_multiplier=2.0,
+                                 bet_slot=0, decision_id="d-poor")
+        assert placed.ok is True
+        assert sim.pending_count() == 1
     _run(go())
 
 
@@ -625,18 +623,18 @@ def test_sim_session_places_resolves_and_autostops_on_max_rounds():
         assert entry["status"] == OutcomeStatus.PLACED.value
         assert entry["simulated"] is True
         assert entry["mode"] == "SIMULATION"
-        assert entry["amount_bif"] == 500       # profile default applied
+        assert entry["amount_bif"] == 100       # fixed simulation default
         await _wait_task(session._task)
         assert session.state == SessionState.STOPPED
         assert session.stop_reason == "max_rounds"
         st = session.status()
         assert st["resolved_decisions"] == 1
-        assert st["running_pnl_bif"] == -500
+        assert st["running_pnl_bif"] == -100
         assert st["simulated"] is True
         (entry2,) = session.ledger_slice()
         assert entry2["status"] == OutcomeStatus.RESOLVED.value
         assert entry2["crash_point"] == MIN_CRASH_1
-        assert entry2["pnl_bif"] == -500
+        assert entry2["pnl_bif"] == -100
         assert entry2["note"] == "lost"
         assert entry2["simulated"] is True
     _run(go())
@@ -648,17 +646,17 @@ def test_sim_session_win_accumulates_pnl():
         await mgr.start_session(sim_request(max_rounds=1))
         session = mgr.session
         session.backend.crash_sequence = [3.10]
-        # Profile A requires 2.00x; a 3.10x crash yields +500.
+        # Fixed 2.00x cashout with the 100 RWF default yields +100.
         entry = await mgr.submit_decision(decision("d-win", 2.0))
         assert entry["status"] == OutcomeStatus.PLACED.value
         await _wait_task(session._task)
         st = session.status()
         assert st["state"] == SessionState.STOPPED.value
         assert st["stop_reason"] == "max_rounds"
-        assert st["running_pnl_bif"] == 500.0
+        assert st["running_pnl_bif"] == 100.0
         assert st["resolved_decisions"] == 1
         (e,) = session.ledger_slice()
-        assert e["pnl_bif"] == 500.0
+        assert e["pnl_bif"] == 100.0
         assert e["note"] == "won"
     _run(go())
 
@@ -666,7 +664,7 @@ def test_sim_session_win_accumulates_pnl():
 def test_auto_stop_target_profit():
     async def go():
         mgr = BettingManager(fast_settings())
-        # +500 profit crosses the +20 goal on the first resolution.
+        # The configured default stake is fixed at 100 RWF.
         await mgr.start_session(sim_request(target_profit_bif=20))
         session = mgr.session
         session.backend.crash_sequence = [3.10]
@@ -674,21 +672,22 @@ def test_auto_stop_target_profit():
         await _wait_task(session._task)
         assert session.state == SessionState.STOPPED
         assert session.stop_reason == "target_profit"
-        assert session.status()["running_pnl_bif"] == 500.0
+        assert session.status()["running_pnl_bif"] == 100.0
     _run(go())
 
 
-def test_auto_stop_max_loss():
+def test_loss_does_not_trigger_a_session_loss_limit():
     async def go():
         mgr = BettingManager(fast_settings())
-        # -500 loss exceeds the -400 floor.
-        await mgr.start_session(sim_request(max_loss_bif=400))
+        await mgr.start_session(sim_request())
         session = mgr.session
         await mgr.submit_decision(decision("d-loss", 2.0))
+        await asyncio.sleep(.16)
+        assert session.losses == 1
+        assert session.status()["running_pnl_bif"] == -100
+        assert session.state != SessionState.STOPPED
+        await mgr.stop_session()
         await _wait_task(session._task)
-        assert session.state == SessionState.STOPPED
-        assert session.stop_reason == "max_loss"
-        assert session.status()["running_pnl_bif"] == -500
     _run(go())
 
 
@@ -764,27 +763,40 @@ def _real_session(settings: BettingSettings) -> BettingSession:
     return session
 
 
-def test_real_gating_unknown_balance_is_rejected():
+def test_real_gating_requires_ui_readiness_not_a_balance_amount():
     async def go():
         session = _real_session(fast_settings())
-        # last_balance starts None → funds can't be verified → reject.
+        session.last_ui_ready = True
+        session.last_snapshot = {"authentication_state": "AUTHENTICATED", "balance_currency": "BIF"}
+
+        class CaptureOnlyBackend:
+            allow_real_placement = True
+
+            async def ensure_ready(self):
+                return None
+
+            async def place(self, **_kwargs):
+                raise PlacementUnavailable("safe_test_hold", "test stopped before placement")
+
+        session.backend = CaptureOnlyBackend()
         entry = await session.submit_decision(decision("r-1", 2.0))
-        assert entry["status"] == OutcomeStatus.REJECTED.value
-        assert entry["reason"] == DecisionRejectReason.UI_NOT_READY.value
+        assert entry["status"] == OutcomeStatus.DEFERRED.value
+        assert entry["reason"] == "safe_test_hold"
         assert entry["simulated"] is False
-        assert "balance unknown" in (entry["note"] or "")
+        assert entry["note"] == "test stopped before placement"
     _run(go())
 
 
-def test_real_gating_insufficient_balance_is_rejected():
+def test_balance_does_not_adjust_or_limit_the_fixed_stake():
     async def go():
         session = _real_session(fast_settings())
-        session.last_balance = 100.0     # < 500 default stake
+        session.last_balance = 1.0
         session.last_ui_ready = True
+        session.last_snapshot = {"authentication_state": "AUTHENTICATED", "balance_currency": "BIF"}
         entry = await session.submit_decision(decision("r-2", 2.0))
-        assert entry["status"] == OutcomeStatus.REJECTED.value
-        assert entry["reason"] == DecisionRejectReason.INSUFFICIENT_BALANCE.value
-        assert session.rejected_count == 1
+        assert entry["status"] == OutcomeStatus.DEFERRED.value
+        assert entry["reason"] == DecisionRejectReason.PLACEMENT_DISABLED.value
+        assert entry["amount_bif"] == 100
         assert session.placed_count == 0
     _run(go())
 
@@ -794,6 +806,7 @@ def test_real_gating_ui_not_ready_is_rejected():
         session = _real_session(fast_settings())
         session.last_balance = 5000.0
         session.last_ui_ready = False    # betting panel not observable
+        session.last_snapshot = {"authentication_state": "AUTHENTICATED", "balance_currency": "BIF"}
         entry = await session.submit_decision(decision("r-3", 2.0))
         assert entry["status"] == OutcomeStatus.REJECTED.value
         assert entry["reason"] == DecisionRejectReason.UI_NOT_READY.value
@@ -805,6 +818,7 @@ def test_real_gating_funded_and_ready_defers_not_places():
         session = _real_session(fast_settings())
         session.last_balance = 5000.0
         session.last_ui_ready = True
+        session.last_snapshot = {"authentication_state": "AUTHENTICATED", "balance_currency": "BIF"}
         entry = await session.submit_decision(decision("r-4", 2.0))
         assert entry["status"] == OutcomeStatus.DEFERRED.value
         assert entry["reason"] == DecisionRejectReason.PLACEMENT_DISABLED.value
@@ -822,6 +836,7 @@ def test_real_gating_master_switch_on_still_defers_driver_not_implemented():
         session = _real_session(fast_settings(allow_real_placement=True))
         session.last_balance = 5000.0
         session.last_ui_ready = True
+        session.last_snapshot = {"authentication_state": "AUTHENTICATED", "balance_currency": "BIF"}
         assert session.backend.allow_real_placement is True
         entry = await session.submit_decision(decision("r-5", 2.0))
         assert entry["status"] == OutcomeStatus.DEFERRED.value
@@ -892,25 +907,22 @@ def test_snapshot_missing_balance_is_unknown_not_zero():
     assert snap.as_dict()["balance"] is None
 
 
-# ── Schemas / events / profiles contracts ───────────────────────────────────
+# ── Schemas and events ─────────────────────────────────────────────────────
 
-def test_decision_intent_schema_rejects_out_of_band_values():
+def test_decision_intent_schema_requires_expiry_and_fixed_cashout():
     with pytest.raises(Exception):
-        DecisionIntent(decision_id="d", profile="PROFILE_A",
-                       target_multiplier=2.0, amount_bif=50)   # < min 100
+        DecisionIntent(decision_id="d", round_id="target-1", target_multiplier=2.0)
     with pytest.raises(Exception):
-        DecisionIntent(decision_id="d", profile="PROFILE_A",
-                       target_multiplier=0.5)                  # < 1.01
+        decision("d", target_multiplier=1.5)
     with pytest.raises(Exception):
         SessionStartRequest(action="start", mode="SIMULATION",
                             max_rounds=0)                      # < 1
 
 
-def test_decision_effective_amount_uses_profile_default():
+def test_decision_uses_fixed_default_without_profile_adjustment():
     d = decision("d-amt")                       # no amount given
-    assert d.effective_amount() == PROFILES["PROFILE_A"].default_amount_bif
-    d2 = DecisionIntent(decision_id="d2", profile="PROFILE_B",
-                        target_multiplier=1.5, amount_bif=300)
+    assert d.effective_amount() == 100
+    d2 = decision("d2", amount_bif=300)
     assert d2.effective_amount() == 300
 
 
@@ -925,15 +937,6 @@ def test_event_helpers_use_betting_prefix():
     assert n["level"] == "warn"
 
 
-def test_profiles_contract():
-    keys = profile_keys()
-    assert keys == sorted(PROFILES)
-    for key in keys:
-        p = PROFILES[key]
-        assert p.min_amount_bif <= p.default_amount_bif <= p.max_amount_bif
-        assert p.max_loss_bif >= p.max_amount_bif
-
-
 # ── REST surface (real FastAPI router, in-process async client) ─────────────
 
 class ApiHarness:
@@ -942,6 +945,7 @@ class ApiHarness:
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",
+            headers={"Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {},
         )
         self._previous = None
         self._had_previous = False
@@ -968,11 +972,11 @@ class ApiHarness:
         elif hasattr(app.state, "decision_engine"):
             delattr(app.state, "decision_engine")
 
-    def authorize(self, decision_id, round_id, profile="PROFILE_A", amount=500):
+    def authorize(self, decision_id, round_id, amount=100):
         record = {"status": "READY_FOR_EXECUTION", "decision_id": decision_id,
-                  "target_round_id": round_id, "profile": profile,
+                  "target_round_id": round_id,
                   "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
-                  "risk_evaluation": {"approved": True, "approved_bet": amount}}
+                  "requested_stake": amount}
         app.state.decision_engine = SimpleNamespace(current=lambda: record)
 
     async def get(self, path: str, **kw):
@@ -998,14 +1002,13 @@ def test_api_status_idle_shape():
     assert body["status"]["session_id"] is None
 
 
-def test_api_profiles_choices():
+def test_risk_and_profile_api_endpoints_are_removed():
     async def go(client):
-        return await client.get("/api/betting/profiles")
-    r = _run(_api_call(go))
-    assert r.status_code == 200
-    body = r.json()
-    assert set(body["keys"]) == {"PROFILE_A", "PROFILE_B"}
-    assert body["profiles"]["PROFILE_A"]["default_amount_bif"] == 500
+        return (await client.get("/api/risk/status"),
+                await client.get("/api/betting/profiles"))
+    risk_response, profile_response = _run(_api_call(go))
+    assert risk_response.status_code == 404
+    assert profile_response.status_code == 404
 
 
 def test_api_session_control_validation():
@@ -1021,7 +1024,7 @@ def test_api_session_control_validation():
 def test_api_session_control_rejects_direct_real_start():
     async def go(client):
         return await client.post("/api/betting/session", json={
-            "action": "start", "mode": "REAL", "profile": "PROFILE_A",
+            "action": "start", "mode": "REAL",
         })
     r = _run(_api_call(go))
     assert r.status_code == 409
@@ -1030,24 +1033,27 @@ def test_api_session_control_rejects_direct_real_start():
 
 
 def test_api_decision_out_of_band_rejected_422():
-    payload = {"decision_id": "d-422", "profile": "PROFILE_A",
-               "target_multiplier": 2.0, "amount_bif": 50}
+    payload = {"decision_id": "d-422", "round_id": "target-422",
+               "target_multiplier": 2.0, "amount_bif": 50,
+               "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()}
     async def go(client):
         return await client.post("/api/betting/decisions", json=payload)
     r = _run(_api_call(go))
-    assert r.status_code == 422
+    assert r.status_code == 409
+    assert r.json()["error"] == "eligible_rule_decision_not_found"
 
 
 def test_api_decision_while_idle_conflict_409():
-    payload = {"decision_id": "d-idle", "round_id": "round-idle", "profile": "PROFILE_A",
-               "target_multiplier": 2.0}
+    payload = {"decision_id": "d-idle", "round_id": "round-idle",
+               "target_multiplier": 2.0,
+               "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()}
     async def go(client):
         client.authorize("d-idle", "round-idle")
         return await client.post("/api/betting/decisions", json=payload)
     r = _run(_api_call(go))
     assert r.status_code == 409
     body = r.json()
-    assert body["error"] == "rules_engine_not_configured"
+    assert body["error"] == "eligible_rule_decision_not_found"
     assert body["decision"] == "NO_ACTION"
     assert body["automatic_execution"] == "OFF"
 
@@ -1071,7 +1077,7 @@ def test_api_stop_without_session_conflict_409():
 def test_api_simulation_decision_fails_closed_until_rules_are_configured():
     async def go(client):
         r = await client.post("/api/betting/session", json={
-            "action": "start", "mode": "SIMULATION", "profile": "PROFILE_A",
+            "action": "start", "mode": "SIMULATION",
         })
         assert r.status_code == 200
         started = r.json()["status"]
@@ -1079,10 +1085,11 @@ def test_api_simulation_decision_fails_closed_until_rules_are_configured():
         assert started["simulated"] is True
 
         r = await client.post("/api/betting/decisions", json={
-            "decision_id": "d-api-1", "round_id": "round-api-1", "profile": "PROFILE_A",
-            "target_multiplier": 2.0})
+            "decision_id": "d-api-1", "round_id": "round-api-1",
+            "target_multiplier": 2.0,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()})
         assert r.status_code == 409
-        assert r.json()["error"] == "rules_engine_not_configured"
+        assert r.json()["error"] == "eligible_rule_decision_not_found"
         assert r.json()["decision"] == "NO_ACTION"
         assert r.json()["automatic_execution"] == "OFF"
         assert (await client.get("/api/betting/ledger")).json()["entries"] == []
@@ -1096,15 +1103,16 @@ def test_api_simulation_decision_fails_closed_until_rules_are_configured():
 def test_api_repeated_decision_attempts_remain_blocked_without_rules():
     async def go(client):
         await client.post("/api/betting/session", json={
-            "action": "start", "mode": "SIMULATION", "profile": "PROFILE_A"})
+            "action": "start", "mode": "SIMULATION"})
 
-        payload = {"decision_id": "d-api-dup", "round_id": "round-api-dup", "profile": "PROFILE_A",
-                   "target_multiplier": 2.0}
+        payload = {"decision_id": "d-api-dup", "round_id": "round-api-dup",
+                   "target_multiplier": 2.0,
+                   "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()}
         first = await client.post("/api/betting/decisions", json=payload)
         second = await client.post("/api/betting/decisions", json=payload)
         assert first.status_code == 409
         assert second.status_code == 409
-        assert first.json()["error"] == second.json()["error"] == "rules_engine_not_configured"
+        assert first.json()["error"] == second.json()["error"] == "eligible_rule_decision_not_found"
         assert (await client.get("/api/betting/ledger")).json()["entries"] == []
 
         r = await client.post("/api/betting/session", json={"action": "stop"})
@@ -1135,8 +1143,8 @@ def test_execute_false_and_missing_round_are_rejected():
         mgr = BettingManager(fast_settings())
         await mgr.start_session(sim_request())
         denied = await mgr.submit_decision(decision("no-exec", execute=False))
-        missing = DecisionIntent(decision_id="no-round", profile="PROFILE_A",
-                                 cashout=2.0)
+        missing = DecisionIntent(decision_id="no-round", round_id=" ", cashout=2.0,
+                                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=1))
         missing_entry = await mgr.submit_decision(missing)
         assert denied["reason"] == "execution_not_authorized"
         assert missing_entry["reason"] == "invalid_round"
@@ -1145,16 +1153,9 @@ def test_execute_false_and_missing_round_are_rejected():
     _run(go())
 
 
-def test_profile_cashout_must_match_active_profile():
-    async def go():
-        mgr = BettingManager(fast_settings())
-        await mgr.start_session(sim_request())
-        mismatch = await mgr.submit_decision(decision("bad-cashout", 1.5))
-        assert mismatch["reason"] == "cashout_mismatch"
-        assert mgr.session.placed_count == 0
-        await mgr.stop_session()
-        await _wait_task(mgr.session._task)
-    _run(go())
+def test_cashout_cannot_be_overridden_from_fixed_2_00x():
+    with pytest.raises(ValueError, match="cashout must remain fixed at 2.00x"):
+        decision("bad-cashout", 1.5)
 
 
 def test_goal_balance_reached_stops_and_emits_event():
@@ -1196,7 +1197,6 @@ def test_api_automatic_start_requires_explicit_live_activation():
     async def go(client):
         return await client.post("/api/betting/start", json={
             "starting_balance": 5000, "goal_balance": 10000,
-            "profile": "profile_a",
         })
     response = _run(_api_call(go))
     assert response.status_code == 409
@@ -1255,21 +1255,25 @@ def test_unreachable_status_stops_connected_real_session():
     _run(go())
 
 
-def test_unknown_observed_balance_stops_real_session():
+def test_unknown_observed_balance_does_not_stop_real_session():
     class UnknownBalanceBackend:
         async def readiness(self):
             return {"connected": True, "stage": "ready"}
 
         async def snapshot(self):
             return {"ok": True, "balance": None, "balance_text": "",
-                    "ui_ready": True, "payouts_head": []}
+                    "ui_ready": True, "payouts_head": [],
+                    "authentication_state": "AUTHENTICATED"}
+
+        async def collect_resolved(self):
+            return []
 
     async def go():
         session = _real_session(fast_settings())
         session.backend = UnknownBalanceBackend()
         await session._real_observe_cycle()
-        assert session._stop_requested is True
-        assert session.stop_reason == "balance_unverified"
+        assert session._stop_requested is False
         assert session.last_balance is None
+        assert session.last_ui_ready is True
 
     _run(go())

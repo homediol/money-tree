@@ -14,27 +14,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const HOME_URL    = 'https://winner.rw';
 const LOGIN_URL   = 'https://winner.rw/en/authentication/login';
-const DEFAULT_AVIATOR_URLS = [
-  'https://winner.rw/en/virtual/crash-games/aviator',
-  'https://winner.rw/en/games/aviator',
-];
+export const AVIATOR_URL = 'https://winner.rw/en/virtual/crash-games/aviator';
+const AVIATOR_PATH = '/en/virtual/crash-games/aviator';
 const acknowledgedAuthRoutes = new WeakMap();
 const trackedAuthRoutePages = new WeakSet();
+let aviatorUrlConfigWarningLogged = false;
+
+function warnAboutAviatorUrlConfig() {
+  if (aviatorUrlConfigWarningLogged) return;
+  aviatorUrlConfigWarningLogged = true;
+  log.warn(`Ignoring unsupported WINNER_AVIATOR_URL; using ${AVIATOR_URL}`);
+}
 
 function aviatorUrls() {
   const configured = process.env.WINNER_AVIATOR_URL;
-  if (!configured) return DEFAULT_AVIATOR_URLS;
+  if (!configured) return [AVIATOR_URL];
   try {
     const url = new URL(configured);
-    if (url.hostname !== 'winner.rw' || !url.pathname.startsWith('/en/')) {
-      throw new Error('WINNER_AVIATOR_URL must be an /en/ route on winner.rw');
+    if (url.origin !== 'https://winner.rw' || url.pathname !== AVIATOR_PATH) {
+      warnAboutAviatorUrlConfig();
+      return [AVIATOR_URL];
     }
     url.search = '';
     url.hash = '';
-    const primary = url.toString();
-    return [primary, ...DEFAULT_AVIATOR_URLS.filter(candidate => candidate !== primary)];
-  } catch (error) {
-    throw new Error(`Invalid configured Aviator route: ${error.message}`);
+    return [url.toString()];
+  } catch {
+    warnAboutAviatorUrlConfig();
+    return [AVIATOR_URL];
   }
 }
 
@@ -60,6 +66,121 @@ export function isExpiredAuthRoute(url) {
   }
 }
 
+export function isLogoutPopupRoute(url) {
+  try {
+    const parsed = new URL(url);
+    return /(^|\.)winner\.rw$/i.test(parsed.hostname)
+      && /^\/en\/user\/logout\/popup\/?$/i.test(parsed.pathname);
+  } catch (error) {
+    log.debug(`Could not parse Winner logout-popup route: ${error.message}`);
+    return false;
+  }
+}
+
+async function inspectLogoutPopup(page) {
+  const route = safeUrl(page?.url?.() || '');
+  const bodyText = await page.locator('body').innerText({ timeout: 1000 }).catch(error => {
+    log.debug(`Logout countdown text was unavailable: ${error.message}`);
+    return '';
+  });
+  const clockCountdown = bodyText.match(/\b(\d{1,3}):([0-5]\d)\b/);
+  const minuteCountdown = bodyText.match(/\b(\d+)\s*(?:minutes?|mins?)(?:\s*(?:and)?\s*(\d+)\s*(?:seconds?|secs?))?\b/i);
+  const secondCountdown = bodyText.match(/\b(\d+)\s*(?:seconds?|secs?)\b/i);
+  const confirmedPrompt = /log\s*out\s*\?/i.test(bodyText)
+    && /\byes\b/i.test(bodyText) && /\bno\b/i.test(bodyText);
+  if (!confirmedPrompt || (!clockCountdown && !minuteCountdown && !secondCountdown)) {
+    return { status: 'UNKNOWN', reasonCode: 'LOGOUT_POPUP_UNVERIFIED', evidence: { route } };
+  }
+  const countdownSeconds = clockCountdown
+    ? Number(clockCountdown[1]) * 60 + Number(clockCountdown[2])
+    : minuteCountdown
+      ? Number(minuteCountdown[1]) * 60 + Number(minuteCountdown[2] || 0)
+      : Number(secondCountdown[1]);
+  if (!Number.isFinite(countdownSeconds)) {
+    return { status: 'UNKNOWN', reasonCode: 'LOGOUT_COUNTDOWN_UNREADABLE', evidence: { route } };
+  }
+  if (countdownSeconds <= 0) {
+    return { status: 'EXPIRED', reasonCode: 'LOGOUT_COUNTDOWN_ELAPSED',
+      evidence: { route, countdown_seconds: 0 } };
+  }
+  return {
+    status: 'EXPIRING',
+    reasonCode: 'LOGOUT_COUNTDOWN_VISIBLE',
+    evidence: { route, countdown_seconds: countdownSeconds },
+  };
+}
+
+async function dismissLogoutPopup(page, { waitForPromptMs = 0 } = {}) {
+  const route = safeUrl(page?.url?.() || '');
+  if (!page || page.isClosed?.() || !isLogoutPopupRoute(page.url?.() || '')) {
+    return { status: 'NOT_APPLICABLE', reasonCode: 'NOT_LOGOUT_POPUP_ROUTE', evidence: { route } };
+  }
+
+  // Winner injects this prompt after the route's splash screen. Match the
+  // rendered prompt and accessible button, then use Playwright's real input
+  // click rather than dispatching a synthetic DOM event.
+  const prompt = page.locator('xpath=//*[contains(normalize-space(text()), "Log out?")]').first();
+  try {
+    if (waitForPromptMs > 0) {
+      await prompt.waitFor({ state: 'visible', timeout: waitForPromptMs });
+    } else if (!await prompt.isVisible()) {
+      return { status: 'NOT_PRESENT', reasonCode: 'LOGOUT_PROMPT_NOT_VISIBLE', evidence: { route } };
+    }
+  } catch (error) {
+    return { status: 'NOT_PRESENT', reasonCode: 'LOGOUT_PROMPT_NOT_VISIBLE',
+      evidence: { route, detail: String(error?.message || error).slice(0, 160) } };
+  }
+
+  // Use the same accessible-name matching as the verified Ui.Vision macro.
+  const noButtons = page.getByRole('button', { name: 'NO' });
+  try {
+    const noButton = noButtons.first();
+    await noButton.waitFor({ state: 'visible', timeout: 5000 });
+    if (await noButtons.count() !== 1 || !await noButton.isVisible()) {
+      return { status: 'UNAVAILABLE', reasonCode: 'LOGOUT_NO_BUTTON_NOT_UNIQUE_OR_VISIBLE', evidence: { route } };
+    }
+
+    // Winner replaces the button node during its countdown animation, which
+    // makes Locator.click's stability wait time out even when NO is visible.
+    // A fresh bounding box plus Playwright's CDP-backed mouse click matches
+    // Ui.Vision's trusted browser.click and avoids waiting for a stable node.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (!isLogoutPopupRoute(page.url?.() || '')) break;
+      const box = await noButton.boundingBox().catch(() => null);
+      if (!box) {
+        await noButton.waitFor({ state: 'visible', timeout: 1000 });
+        continue;
+      }
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 30 });
+      if (await waitForLogoutPromptDismissal(page, prompt, { timeoutMs: 5000 })) {
+        return { status: 'DISMISSED', reasonCode: 'LOGOUT_PROMPT_NO_CLICK_VERIFIED', evidence: { route, attempts: attempt + 1 } };
+      }
+    }
+    throw new Error('Trusted NO click did not dismiss the logout prompt');
+  } catch (error) {
+    log.warn(`Winner logout popup NO click was not verified: ${error.message}`);
+    return { status: 'FAILED', reasonCode: 'LOGOUT_NO_CLICK_UNVERIFIED',
+      evidence: { route, detail: String(error?.message || error).slice(0, 160) } };
+  }
+}
+
+async function waitForLogoutPromptDismissal(page, prompt, { timeoutMs = 1500, stableMs = 500 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let absentSince = null;
+  while (Date.now() < deadline) {
+    if (!isLogoutPopupRoute(page.url?.() || '')) return true;
+    const visible = await prompt.isVisible().catch(() => false);
+    if (visible) {
+      absentSince = null;
+    } else {
+      absentSince ??= Date.now();
+      if (Date.now() - absentSince >= stableMs) return true;
+    }
+    await page.waitForTimeout(100);
+  }
+  return false;
+}
+
 function winnerRouteKey(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
@@ -75,7 +196,7 @@ export function isAviatorRoute(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
     if (!/(^|\.)winner\.rw$/i.test(parsed.hostname) || isExpiredAuthRoute(parsed.href)) return false;
-    return /\/(?:aviator|crash-games|crash)(?:\/|$)/i.test(parsed.pathname);
+    return parsed.pathname.replace(/\/+$/, '').toLowerCase() === AVIATOR_PATH;
   } catch (error) {
     log.debug(`Could not parse Aviator route: ${error.message}`);
     return false;
@@ -95,7 +216,7 @@ export function isAcknowledgedAuthRoute(page) {
 function acknowledgeAuthRoute(page) {
   try {
     const url = page?.url?.() || '';
-    if (!page || !isExpiredAuthRoute(url)) return;
+    if (!page || !isExpiredAuthRoute(url) || isLogoutPopupRoute(url)) return;
     acknowledgedAuthRoutes.set(page, winnerRouteKey(url));
     if (trackedAuthRoutePages.has(page) || typeof page.on !== 'function') return;
     trackedAuthRoutePages.add(page);
@@ -285,6 +406,30 @@ export class LoginManager {
     }
   }
 
+  async _authenticatedRelatedPage(page, relatedPages = []) {
+    for (const relatedPage of relatedPages) {
+      try {
+        if (!relatedPage || relatedPage === page || relatedPage.isClosed?.()) continue;
+        const relatedUrl = relatedPage.url?.() || '';
+        if (isExpiredAuthRoute(relatedUrl) || isLogoutPopupRoute(relatedUrl)) continue;
+        const session = await this.inspectSession(relatedPage);
+        if (session.status === 'AUTHENTICATED') {
+          return {
+            status: 'AUTHENTICATED',
+            reasonCode: 'SHARED_CONTEXT_AUTHENTICATED_SESSION',
+            evidence: {
+              relatedRoute: safeUrl(relatedUrl),
+              relatedReasonCode: session.reasonCode || null,
+            },
+          };
+        }
+      } catch (error) {
+        log.debug(`Related authenticated session evidence was unavailable: ${error.message}`);
+      }
+    }
+    return null;
+  }
+
   async inspectSession(page, { relatedPages = [] } = {}) {
     try {
       if (!page || page.isClosed()) {
@@ -292,6 +437,7 @@ export class LoginManager {
       }
       const url = page.url().toLowerCase();
       const route = safeUrl(url);
+      if (isLogoutPopupRoute(url)) return await inspectLogoutPopup(page);
       if (isExpiredAuthRoute(url)) {
         const routeText = await page.locator('body').innerText({ timeout: 1000 }).catch(error => {
           log.debug(`Authentication-route verification text was unavailable: ${error.message}`);
@@ -300,26 +446,23 @@ export class LoginManager {
         if (/verify you are human|checking your browser|captcha|two[- ]factor|security code/i.test(routeText)) {
           return { status: 'MANUAL_VERIFICATION', reasonCode: 'HUMAN_VERIFICATION_REQUIRED', evidence: { route } };
         }
+        const relatedSession = await this._authenticatedRelatedPage(page, relatedPages);
+        if (relatedSession) {
+          return { ...relatedSession, evidence: { route, ...relatedSession.evidence } };
+        }
         return { status: 'EXPIRED', reasonCode: isLoginRoute(url) ? 'AUTH_REDIRECT' : 'LOGOUT_ROUTE', evidence: { route } };
       }
-      const relatedLoginPage = relatedPages.find(relatedPage => {
-        try {
-          return relatedPage && !relatedPage.isClosed?.()
-            && isExpiredAuthRoute(relatedPage.url?.() || '')
-            && !isAcknowledgedAuthRoute(relatedPage);
-        }
-        catch (error) { log.debug(`Related page login-route evidence was unavailable: ${error.message}`); return false; }
+      let relatedLogoutPopupExpired = null;
+      const relatedLogoutPopup = relatedPages.find(relatedPage => {
+        try { return relatedPage && !relatedPage.isClosed?.() && isLogoutPopupRoute(relatedPage.url?.() || ''); }
+        catch (error) { log.debug(`Related logout-popup route was unavailable: ${error.message}`); return false; }
       });
-      if (relatedLoginPage) {
-        const relatedRoute = safeUrl(relatedLoginPage.url());
-        const relatedText = await relatedLoginPage.locator('body').innerText({ timeout: 1000 }).catch(error => {
-          log.debug(`Related authentication-route verification text was unavailable: ${error.message}`);
-          return '';
-        });
-        if (/verify you are human|checking your browser|captcha|two[- ]factor|security code/i.test(relatedText)) {
-          return { status: 'MANUAL_VERIFICATION', reasonCode: 'HUMAN_VERIFICATION_REQUIRED', evidence: { route, relatedRoute } };
+      if (relatedLogoutPopup) {
+        const popup = await inspectLogoutPopup(relatedLogoutPopup);
+        if (popup.status === 'EXPIRING') {
+          return { ...popup, evidence: { ...popup.evidence, relatedRoute: route } };
         }
-        return { status: 'EXPIRED', reasonCode: 'RELATED_LOGIN_ROUTE_VISIBLE', evidence: { route, relatedRoute } };
+        if (popup.status === 'EXPIRED') relatedLogoutPopupExpired = popup;
       }
       if (await isAccessDeniedPage(page)) {
         return { status: 'UNKNOWN', reasonCode: 'ACCESS_DENIED_PAGE', evidence: { route } };
@@ -354,9 +497,37 @@ export class LoginManager {
           }
         } catch (error) { log.debug(`Session selector ${selector} was unavailable: ${error.message}`); }
       }
+      const relatedSession = await this._authenticatedRelatedPage(page, relatedPages);
+      if (relatedSession) {
+        return { ...relatedSession, evidence: { route, ...relatedSession.evidence } };
+      }
+      const relatedLoginPage = relatedPages.find(relatedPage => {
+        try {
+          return relatedPage && !relatedPage.isClosed?.()
+            && isExpiredAuthRoute(relatedPage.url?.() || '')
+            && !isLogoutPopupRoute(relatedPage.url?.() || '')
+            && !isAcknowledgedAuthRoute(relatedPage);
+        }
+        catch (error) { log.debug(`Related page login-route evidence was unavailable: ${error.message}`); return false; }
+      });
+      if (relatedLoginPage) {
+        const relatedRoute = safeUrl(relatedLoginPage.url());
+        const relatedText = await relatedLoginPage.locator('body').innerText({ timeout: 1000 }).catch(error => {
+          log.debug(`Related authentication-route verification text was unavailable: ${error.message}`);
+          return '';
+        });
+        if (/verify you are human|checking your browser|captcha|two[- ]factor|security code/i.test(relatedText)) {
+          return { status: 'MANUAL_VERIFICATION', reasonCode: 'HUMAN_VERIFICATION_REQUIRED', evidence: { route, relatedRoute } };
+        }
+        return { status: 'EXPIRED', reasonCode: 'RELATED_LOGIN_ROUTE_VISIBLE', evidence: { route, relatedRoute } };
+      }
       for (const selector of ['#phoneInput', 'input[type="password"]', ...LOGOUT_SIGNALS]) {
         try {
           if (await page.locator(selector).first().isVisible({ timeout: 300 })) {
+            const relatedSession = await this._authenticatedRelatedPage(page, relatedPages);
+            if (relatedSession) {
+              return { ...relatedSession, evidence: { route, ...relatedSession.evidence } };
+            }
             return { status: 'EXPIRED', reasonCode: 'LOGIN_FORM_VISIBLE', evidence: { route, selector } };
           }
         } catch (error) { log.debug(`Login selector ${selector} was unavailable: ${error.message}`); }
@@ -389,6 +560,9 @@ export class LoginManager {
           log.debug(`Related page session evidence was unavailable: ${error.message}`);
         }
       }
+      if (relatedLogoutPopupExpired) {
+        return { ...relatedLogoutPopupExpired, evidence: { ...relatedLogoutPopupExpired.evidence, relatedRoute: route } };
+      }
       return { status: 'UNKNOWN', reasonCode: 'NO_SESSION_SIGNAL', evidence: { route } };
     } catch (error) {
       log.debug(`Login session evidence check failed: ${error.message}`);
@@ -396,12 +570,16 @@ export class LoginManager {
     }
   }
 
-  async isLoggedIn(page) {
-    return (await this.inspectSession(page)).status === 'AUTHENTICATED';
+  async isLoggedIn(page, options = {}) {
+    return (await this.inspectSession(page, options)).status === 'AUTHENTICATED';
   }
 
   async isExplicitlyLoggedOut(page) {
     return (await this.inspectSession(page)).status === 'EXPIRED';
+  }
+
+  async dismissLogoutPopup(page, options = {}) {
+    return dismissLogoutPopup(page, options);
   }
 
   async _requireNoAuthRedirect(page) {
@@ -423,22 +601,47 @@ export class LoginManager {
    * If already logged in, returns true immediately.
    * Otherwise navigates to login and submits credentials.
    */
-  async ensureLoggedIn(page, signal, { relatedPages = [] } = {}) {
+  async ensureLoggedIn(page, signal, { relatedPages = [], forceLogin = false } = {}) {
     return withRetry(async (attempt) => {
       if (signal?.aborted) throw new Error('Aborted');
+
+      if (isLogoutPopupRoute(page?.url?.() || '')) {
+        const popup = await inspectLogoutPopup(page);
+        if (popup.status === 'EXPIRED' || popup.status === 'MANUAL_VERIFICATION') {
+          throw new AuthRequiredError('Winner session expired or requires verification on the logout popup');
+        }
+        const dismissal = await this.dismissLogoutPopup(page, { waitForPromptMs: 30000 });
+        if (dismissal.status !== 'DISMISSED') {
+          throw new AuthRequiredError(`Winner logout prompt could not be dismissed with NO (${dismissal.reasonCode})`);
+        }
+        for (const candidate of relatedPages) {
+          if (!candidate || candidate === page || candidate.isClosed?.()
+              || isExpiredAuthRoute(candidate.url?.() || '')
+              || isLogoutPopupRoute(candidate.url?.() || '')) continue;
+          const candidateSession = await this.inspectSession(candidate);
+          if (candidateSession.status === 'AUTHENTICATED') return true;
+        }
+        throw new AuthRequiredError('Winner logout prompt was dismissed, but the session is not yet verified');
+      }
 
       const relatedLoginRoute = relatedPages.some(relatedPage => {
         try {
           return relatedPage && !relatedPage.isClosed?.()
             && isExpiredAuthRoute(relatedPage.url?.() || '')
+            && !isLogoutPopupRoute(relatedPage.url?.() || '')
             && !isAcknowledgedAuthRoute(relatedPage);
         }
         catch (error) { log.debug(`Related page login-route evidence was unavailable during login: ${error.message}`); return false; }
       });
+      const currentSession = await this.inspectSession(page, { relatedPages });
+      if (currentSession.status === 'EXPIRING') {
+        throw new AuthRequiredError('Winner logout countdown is active; dismiss the prompt with NO before automatic login');
+      }
+      const relatedSessionExpired = forceLogin || currentSession.status === 'EXPIRED' || relatedLoginRoute;
 
       // A restored Aviator tab may already have a valid session. Keep that
       // page in place instead of bouncing through the sportsbook on recovery.
-      if (await this.isLoggedIn(page) && !relatedLoginRoute) {
+      if (currentSession.status === 'AUTHENTICATED' && !relatedSessionExpired) {
         for (const relatedPage of relatedPages) acknowledgeAuthRoute(relatedPage);
         log.info('LoginManager: session valid on current page');
         return true;
@@ -447,10 +650,10 @@ export class LoginManager {
       // A login route in another page of the shared context is explicit
       // expiry evidence. Verify it through the existing History page; never
       // navigate the separate Betting page, which may protect an active bet.
-      if (relatedLoginRoute && !isLoginRoute(page.url())) {
+      if (relatedSessionExpired && !isLoginRoute(page.url())) {
         await this._navigate(page, LOGIN_URL, signal);
         await sleep(1000, signal);
-        if (await this.isLoggedIn(page)) {
+        if (await this.isLoggedIn(page, { relatedPages })) {
           for (const relatedPage of relatedPages) acknowledgeAuthRoute(relatedPage);
           log.info('LoginManager: session verified after shared-context login-route check');
           return true;
@@ -464,7 +667,7 @@ export class LoginManager {
         await this._navigate(page, HOME_URL, signal);
         await sleep(1500, signal);
 
-        if (await this.isLoggedIn(page)) {
+        if (await this.isLoggedIn(page, { relatedPages })) {
           log.info('LoginManager: session valid');
           return true;
         }
@@ -478,7 +681,7 @@ export class LoginManager {
       log.info(`LoginManager: not logged in — starting login (attempt ${attempt + 1})`);
       await this._doLogin(page, signal);
 
-      if (await this.isLoggedIn(page)) {
+      if (await this.isLoggedIn(page, { relatedPages })) {
         for (const relatedPage of relatedPages) acknowledgeAuthRoute(relatedPage);
         this.loginCount++;
         log.info(`LoginManager: login successful (total logins: ${this.loginCount})`);
@@ -494,7 +697,7 @@ export class LoginManager {
       for (const candidate of aviatorUrls()) {
         if (!await this._navigate(page, candidate, signal)) continue;
         await sleep(2000, signal);
-        if (await this.isLoggedIn(page)) {
+        if (await this.isLoggedIn(page, { relatedPages })) {
           for (const relatedPage of relatedPages) acknowledgeAuthRoute(relatedPage);
           this.loginCount++;
           log.info(`LoginManager: session verified after opening Aviator route — ${safeUrl(page.url())}`);

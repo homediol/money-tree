@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 import tempfile
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,11 +29,24 @@ class Settings(BaseSettings):
     database_path: Path = Path(__file__).resolve().parents[2] / "winner_predict.sqlite3"
     database_url: Optional[str] = Field(default=None, description="Authoritative PostgreSQL DSN in production")
     require_postgres: bool = Field(default=True, description="Fail startup when authoritative PostgreSQL is unavailable")
-    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    cors_origins: list[str] = [
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:5174", "http://127.0.0.1:5174",
+    ]
     round_stream_allowed_origins: list[str] = Field(default_factory=list)
     api_key: str | None = Field(default=None, min_length=16)
-    public_access: bool = Field(default=False, description="Allow unauthenticated access to dashboard reads and actions")
-    public_read_only: bool = Field(default=False, description="Allow unauthenticated dashboard reads while protecting writes")
+    rules_publisher_api_key: SecretStr | None = Field(
+        default=None, min_length=32,
+        description="Optional separate publisher credential; API_KEY remains the owner credential",
+    )
+    public_access: bool = Field(
+        default=False,
+        description="Deprecated compatibility setting; ignored. Only explicit public read routes are anonymous.",
+    )
+    public_read_only: bool = Field(
+        default=False,
+        description="Deprecated compatibility setting; ignored. Private reads still require authentication.",
+    )
     backend_host: str = "0.0.0.0"
     backend_port: int = Field(default=8000, ge=1, le=65535)
     enforce_single_instance: bool = True

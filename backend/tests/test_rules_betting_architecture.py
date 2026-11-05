@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app.api.rules_engine import dashboard
@@ -110,6 +111,9 @@ def test_balance_parser_does_not_invent_amount_or_currency():
 
 
 def test_snapshot_retains_account_identity_and_cashout_observation_without_claiming_ack():
+    observed_at = datetime.now(timezone.utc).isoformat()
+    provider_id = "provider-round-11"
+    canonical_id = "canonical-round-11"
     snapshot = GameSnapshot.from_value({
         "ok": True, "payouts": ["2.00x"], "bets": 0, "betPanel": True,
         "stakeInputs": [{"slot": 0, "visible": True}],
@@ -118,9 +122,21 @@ def test_snapshot_retains_account_identity_and_cashout_observation_without_claim
             "autoTabSelected": True,
             "autoCashoutEnabled": True, "platformAcknowledged": None}],
         "bettingWindow": {"state": "BETTING_OPEN", "evidence": {
-            "source": "AVIATOR_BETTING_PANEL_READ_ONLY",
-            "selector": ".btn-success.bet", "panel_index": 0, "button_visible": True,
-            "button_enabled": True, "stake_input_visible": True, "bet_tab_active": True,
+            "source": "AVIATOR_GAME_PHASE_READ_ONLY", "phase_state": "BETTING_OPEN",
+            "provider_round_id": provider_id, "canonical_target_round_id": canonical_id,
+            "target_round_index": 11, "source_round_id": "canonical-round-10",
+            "source_round_index": 10, "target_identity_verified": True,
+            "target_started": False,
+            "target_identity_proof": {"provider_round_id": provider_id,
+                "target_round_id": canonical_id, "target_not_started": True,
+                "proof_method": "platform_target_id_before_start"},
+            "evidence": {"source": "AVIATOR_GAME_PHASE_READ_ONLY",
+                "provider_phase_source": "EXPLICIT_PROVIDER_DATA_ATTRIBUTES",
+                "provider_phase_selector": "[data-aviator-phase][data-provider-round-id][data-canonical-target-round-id][data-betting-deadline]",
+                "selector": ".bet-block .btn-success.bet", "button_visible": True,
+                "button_enabled": True, "stake_input_visible": True, "bet_tab_active": True},
+            "observed_at": observed_at,
+            "betting_deadline": (datetime.now(timezone.utc) + timedelta(seconds=20)).isoformat(),
         }},
     })
 
@@ -130,14 +146,34 @@ def test_snapshot_retains_account_identity_and_cashout_observation_without_claim
     assert snapshot.betting_window["state"] == "BETTING_OPEN"
 
 
-def test_betting_window_requires_owned_visible_controls_and_button_state():
+def test_betting_window_requires_fresh_provider_phase_round_and_deadline():
     base = {"source": "AVIATOR_BETTING_PANEL_READ_ONLY",
             "selector": ".btn-success.bet", "panel_index": 0, "button_visible": True,
             "button_enabled": True, "stake_input_visible": True, "bet_tab_active": True}
-    assert classify_betting_window(base) == "BETTING_OPEN"
-    assert classify_betting_window({**base, "button_enabled": False}) == "BETTING_CLOSED"
-    assert classify_betting_window({**base, "bet_tab_active": False}) == "UNKNOWN"
-    assert classify_betting_window({**base, "source": "arbitrary-dom"}) == "UNKNOWN"
+    assert classify_betting_window(base) == "UNKNOWN"
+    phase = {"source": "AVIATOR_GAME_PHASE_READ_ONLY", "phase_state": "BETTING_OPEN",
+             "provider_round_id": "provider-round-11",
+             "canonical_target_round_id": "canonical-round-11",
+             "source_round_id": "canonical-round-10", "source_round_index": 10,
+             "target_round_index": 11, "target_identity_verified": True,
+             "target_started": False,
+             "target_identity_proof": {"provider_round_id": "provider-round-11",
+                 "target_round_id": "canonical-round-11", "target_not_started": True,
+                 "proof_method": "platform_target_id_before_start"},
+             "evidence": {"source": "AVIATOR_GAME_PHASE_READ_ONLY",
+                 "provider_phase_source": "EXPLICIT_PROVIDER_DATA_ATTRIBUTES",
+                 "provider_phase_selector": "[data-aviator-phase][data-provider-round-id][data-canonical-target-round-id][data-betting-deadline]",
+                 "selector": ".bet-block .btn-success.bet", "button_visible": True,
+                 "button_enabled": True, "stake_input_visible": True, "bet_tab_active": True},
+             "observed_at": datetime.now(timezone.utc).isoformat(),
+             "betting_deadline": (datetime.now(timezone.utc) + timedelta(seconds=20)).isoformat()}
+    assert classify_betting_window(phase) == "BETTING_OPEN"
+    assert classify_betting_window({**phase, "betting_deadline":
+                                    (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()}) == "BETTING_CLOSED"
+    assert classify_betting_window({**phase, "provider_round_id": None}) == "UNKNOWN"
+    assert classify_betting_window({**phase, "target_round_index": 12}) == "UNKNOWN"
+    assert classify_betting_window({**phase, "observed_at":
+        (datetime.now(timezone.utc) - timedelta(seconds=6)).isoformat()}) == "UNKNOWN"
     untrusted_snapshot = GameSnapshot.from_value({"ok": True, "bettingWindow": {
         "state": "BETTING_OPEN", "evidence": {**base, "source": "arbitrary-dom"},
     }})
@@ -181,6 +217,46 @@ def test_rules_dashboard_api_never_reports_ready_without_live_evidence(tmp_path)
         in result["execution_readiness"]["blockers"]
     assert result["shared_selection"] is None
     assert result["balance"] is None
+
+
+def test_rules_dashboard_uses_the_latest_finished_session_settlement_scope(tmp_path):
+    repository = Repository(tmp_path / "rules-finished-dashboard.sqlite3")
+    repository.init()
+    engine = RulesEngine(persistence=repository)
+    boundary = {"stream_id": "dashboard-stream", "round_id": "dashboard-boundary",
+        "observation_id": "dashboard-boundary", "round_index": 100,
+        "stream_sequence": 100, "multiplier": 1.5,
+        "event_type": "round.persisted", "durability": "COMMITTED",
+        "continuity_status": "VERIFIED"}
+    session = engine.start_session(mode="ALL_RULES_TOGETHER", rule_ids=[], boundary=boundary,
+        options={"window_size": 50, "fixed_stake_rwf": 1000,
+                 "win_limit_enabled": False, "loss_limit_enabled": False},
+        now="2026-10-16T00:00:00+00:00")
+    stored = engine.sessions[session["session_id"]]
+    for offset, outcome in enumerate(["WIN", "WIN", "LOSS", "LOSS", "LOSS", "LOSS"], start=1):
+        stored["selections"].append({"selection_id": f"dashboard-{offset}", "status": outcome,
+            "expected_target": {"streamId": "dashboard-stream", "roundIndex": 100 + offset}})
+    stored["net_profit_rwf"] = -2000
+    engine.session_action(session["session_id"], "stop", now="2026-10-16T00:01:00+00:00")
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+        rules_engine=engine,
+        history_collector=SimpleNamespace(status=lambda: {"status": "HEALTHY", "count": 100,
+                                                           "latest": {"round_id": "round-100"}}),
+        betting_mode=SimpleNamespace(status=lambda: {"live_authorized": False}),
+        live=None,
+        wp=SimpleNamespace(repository=repository),
+    )))
+
+    result = dashboard(request)
+    summary = result["shadow_result_summary"]
+    assert summary["session_id"] == session["session_id"]
+    assert summary["wins"] == 2
+    assert summary["losses"] == 4
+    assert summary["net_outcome"] == summary["wins"] - summary["losses"] == -2
+    assert summary["net_profit_rwf"] == -2000
+    assert summary["stop_reason"] == "MANUAL_STOP"
+    assert summary["stop_reason_source"] == "MANUAL_STOP_CONTROL"
+    assert result["real_money_execution"] == "DISABLED"
 
 
 def test_platform_state_needs_receipt_and_a_round_multiplier_does_not_settle_bet():

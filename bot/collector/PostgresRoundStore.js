@@ -50,6 +50,8 @@ function normalizeRound(record, index = 0) {
     continuity_verified: Boolean(record?.continuity_verified),
     gap_before: Boolean(record?.gap_before),
     continuity_proof: record?.continuity_proof || 'UNVERIFIED',
+    source_metadata: record?.source_metadata && typeof record.source_metadata === 'object'
+      ? record.source_metadata : null,
   };
 }
 
@@ -229,7 +231,7 @@ export class PostgresRoundStore {
 
     if (!this.pool) return [];
     const result = await this.pool.query(`
-      SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index, multiplier::float8 AS multiplier,
+      SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index, multiplier::float8 AS multiplier, raw,
              COALESCE(platform_timestamp, timestamp) AS timestamp,
              platform_timestamp, observed_at, COALESCE(stored_at, created_at) AS stored_at,
              round_identity_type, round_index_source, identity_confidence, continuity_verified, gap_before, continuity_proof
@@ -237,7 +239,28 @@ export class PostgresRoundStore {
       ORDER BY round_index ASC
     `);
 
-    return result.rows.map((row) => ({
+    return this._mapRoundRows(result.rows);
+  }
+
+  async loadRecentRounds(limit = 100) {
+    const bounded = Math.min(5000, Math.max(1, Number(limit) || 100));
+    if (this.usingFileFallback) return readRoundHistory().slice(-bounded);
+    if (!this.pool) return [];
+    const result = await this.pool.query(`
+      SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index,
+             multiplier::float8 AS multiplier, raw,
+             COALESCE(platform_timestamp, timestamp) AS timestamp,
+             platform_timestamp, observed_at, COALESCE(stored_at, created_at) AS stored_at,
+             round_identity_type, round_index_source, identity_confidence, continuity_verified,
+             gap_before, continuity_proof
+      FROM ${this.tableIdent}
+      ORDER BY round_index DESC LIMIT $1
+    `, [bounded]);
+    return this._mapRoundRows(result.rows.reverse());
+  }
+
+  _mapRoundRows(rows) {
+    return rows.map((row) => ({
       round_id: String(row.round_id),
       platform_round_id: row.platform_round_id == null ? null : String(row.platform_round_id),
       platform_round_index: row.platform_round_index == null ? null : Number(row.platform_round_index),
@@ -254,6 +277,7 @@ export class PostgresRoundStore {
       continuity_verified: Boolean(row.continuity_verified),
       gap_before: Boolean(row.gap_before),
       continuity_proof: row.continuity_proof,
+      source_metadata: row.raw?.source_metadata || null,
     }));
   }
 
@@ -261,7 +285,7 @@ export class PostgresRoundStore {
     const ids = [...new Set(roundIds.map(value => String(value)).filter(Boolean))];
     if (!ids.length || !this.pool || this.usingFileFallback) return [];
     const result = await this.pool.query(`
-      SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index,
+      SELECT round_id, platform_round_id, platform_round_index, round_index, local_round_index, raw,
              multiplier::float8 AS multiplier, COALESCE(platform_timestamp, timestamp) AS timestamp,
              platform_timestamp, observed_at, COALESCE(stored_at, created_at) AS stored_at,
              round_identity_type, round_index_source, identity_confidence,
@@ -286,6 +310,7 @@ export class PostgresRoundStore {
       continuity_verified: Boolean(row.continuity_verified),
       gap_before: Boolean(row.gap_before),
       continuity_proof: row.continuity_proof,
+      source_metadata: row.raw?.source_metadata || null,
     }));
   }
 
@@ -518,8 +543,10 @@ export class PostgresRoundStore {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17::jsonb)
              ON CONFLICT DO NOTHING
              RETURNING id, round_id, round_index, platform_round_id, platform_round_index,
-                       multiplier, platform_timestamp, observed_at, stored_at, source,
-                       continuity_verified, gap_before, identity_confidence`,
+                       local_round_index, multiplier, COALESCE(platform_timestamp, timestamp) AS timestamp,
+                       platform_timestamp, observed_at, COALESCE(stored_at, created_at) AS stored_at,
+                       round_identity_type, round_index_source, identity_confidence,
+                       continuity_verified, gap_before, continuity_proof, source`,
             [candidate.round_id, candidate.platform_round_id, candidate.platform_round_index,
               candidate.round_index, candidate.local_round_index, candidate.multiplier,
               candidate.timestamp, candidate.platform_timestamp, candidate.observed_at,
@@ -536,17 +563,21 @@ export class PostgresRoundStore {
                 db_id: Number(persisted.id),
                 round_id: String(persisted.round_id),
                 round_index: Number(persisted.round_index),
-                local_round_index: Number(candidate.local_round_index || persisted.round_index),
+                local_round_index: Number(persisted.local_round_index ?? persisted.round_index),
                 platform_round_id: persisted.platform_round_id == null ? null : String(persisted.platform_round_id),
                 platform_round_index: persisted.platform_round_index == null ? null : Number(persisted.platform_round_index),
                 multiplier: Number(persisted.multiplier),
+                timestamp: persisted.timestamp ? new Date(persisted.timestamp).toISOString() : null,
                 platform_timestamp: persisted.platform_timestamp ? new Date(persisted.platform_timestamp).toISOString() : null,
                 observed_at: persisted.observed_at ? new Date(persisted.observed_at).toISOString() : null,
                 stored_at: persisted.stored_at ? new Date(persisted.stored_at).toISOString() : null,
                 source: persisted.source,
+                round_identity_type: persisted.round_identity_type,
+                round_index_source: persisted.round_index_source,
                 continuity_verified: Boolean(persisted.continuity_verified),
                 gap_before: Boolean(persisted.gap_before),
                 identity_confidence: persisted.identity_confidence || 'UNKNOWN',
+                continuity_proof: persisted.continuity_proof || null,
               });
             }
             if (candidate.round_index <= maxRoundIndex) {

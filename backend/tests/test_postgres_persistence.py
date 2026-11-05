@@ -13,7 +13,7 @@ from scripts.migrate_sqlite_to_postgres import migrate
 
 
 @pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
-def test_postgres_restarts_preserve_history_risk_and_execution_state(tmp_path):
+def test_postgres_restarts_preserve_history_legacy_stop_and_execution_state(tmp_path):
     import psycopg
     from psycopg.conninfo import make_conninfo
 
@@ -33,7 +33,7 @@ def test_postgres_restarts_preserve_history_risk_and_execution_state(tmp_path):
             if restart == 0:
                 assert repository.import_legacy_rounds(rounds) == 150
                 repository.save_application_state("risk_runtime", {
-                    "selected_profile": "PROFILE_B", "emergency_latched": True,
+                    "emergency_latched": True,
                 }, datetime.now(timezone.utc).isoformat())
                 repository.save_betting_mode("SHADOW_REALISTIC", {
                     "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -56,6 +56,8 @@ def test_postgres_restarts_preserve_history_risk_and_execution_state(tmp_path):
             assert state["warmup_status"] == "WARMING_UP"
             assert state["total_history"] == 150
             assert repository.load_application_state("risk_runtime")["emergency_latched"] is True
+            from app.services.emergency_stop import EmergencyStop
+            assert EmergencyStop(repository).latched is True
             assert repository.load_betting_mode()["mode"] == "SHADOW_REALISTIC"
             execution = repository.execution_for("decision-1", "151")
             assert execution["execution_id"] == "exec-1"
@@ -66,7 +68,7 @@ def test_postgres_restarts_preserve_history_risk_and_execution_state(tmp_path):
 
 
 @pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
-def test_sqlite_migration_keeps_stable_round_ids_risk_and_mode(tmp_path):
+def test_sqlite_migration_keeps_stable_round_ids_legacy_stop_and_mode(tmp_path):
     import psycopg
     from psycopg.conninfo import make_conninfo
 
@@ -86,7 +88,7 @@ def test_sqlite_migration_keeps_stable_round_ids_risk_and_mode(tmp_path):
         source = Repository(source_path)
         source.init()
         source.upsert_rounds([{**row, "target": int(row["multiplier"] >= 2)} for row in rounds])
-        source.save_application_state("risk_runtime", {"selected_profile": "PROFILE_B"},
+        source.save_application_state("risk_runtime", {"emergency_latched": True},
                                       datetime.now(timezone.utc).isoformat())
         source.save_betting_mode("SHADOW_REALISTIC", {"updated_at": datetime.now(timezone.utc).isoformat()})
 
@@ -96,7 +98,9 @@ def test_sqlite_migration_keeps_stable_round_ids_risk_and_mode(tmp_path):
         assert len(destination.load_rounds()) == 150
         assert destination.load_rounds()[-1]["round_id"] == "platform-150"
         assert destination.rebuild_collector_state()["contiguous_rounds"] == 0
-        assert destination.load_application_state("risk_runtime")["selected_profile"] == "PROFILE_B"
+        assert destination.load_application_state("risk_runtime")["emergency_latched"] is True
+        from app.services.emergency_stop import EmergencyStop
+        assert EmergencyStop(destination).latched is True
         assert destination.load_betting_mode()["mode"] == "SHADOW_REALISTIC"
     finally:
         with psycopg.connect(root_dsn) as conn:

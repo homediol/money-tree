@@ -3,10 +3,10 @@ import {
   AlertTriangle, Bot, CheckCircle2, Circle, OctagonX, Radio, Square, Zap,
 } from 'lucide-react';
 import Card from '../components/Card.jsx';
-import { getWebSocketUrl } from '../auth.js';
+import { getWebSocketAuthProtocols, getWebSocketUrl } from '../auth.js';
 import {
   checkBettingBrowser, emergencyStopBetting, getBettingLedger,
-  getBettingStatus, getRiskStatus, resetRiskEmergency,
+  getBettingStatus, resetEmergencyStop,
   stopBettingSession,
 } from '../services/api.js';
 
@@ -88,7 +88,6 @@ export default function Betting() {
   const [status, setStatus] = useState(null);      // backend /api/betting/status payload
   const [ledger, setLedger] = useState([]);
   const [browser, setBrowser] = useState(null);
-  const [risk, setRisk] = useState(null);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -112,17 +111,13 @@ export default function Betting() {
       return;
     }
     refreshInFlight.current = true;
-    const requests = await Promise.allSettled([
-      getBettingStatus(), getBettingLedger(50), getRiskStatus(),
-    ]);
-    const [statusResult, ledgerResult, riskResult] = requests;
+    const requests = await Promise.allSettled([getBettingStatus(), getBettingLedger(50)]);
+    const [statusResult, ledgerResult] = requests;
     const failed = [];
     if (statusResult.status === 'fulfilled') setStatus(statusResult.value);
     else failed.push(`session status: ${errMsg(statusResult.reason)}`);
     if (ledgerResult.status === 'fulfilled') setLedger(Array.isArray(ledgerResult.value?.entries) ? ledgerResult.value.entries : []);
     else failed.push(`ledger: ${errMsg(ledgerResult.reason)}`);
-    if (riskResult.status === 'fulfilled') setRisk(riskResult.value?.status || null);
-    else failed.push(`risk status: ${errMsg(riskResult.reason)}`);
     setRefreshError(failed.length ? failed.join(' · ') : null);
     if (requests.some((result) => result.status === 'fulfilled')) setLastUpdated(new Date());
     setInitialLoading(false);
@@ -139,14 +134,14 @@ export default function Betting() {
     let attempts = 0;
     function connect() {
       if (closed) return;
-    const ws = new WebSocket(getWebSocketUrl());
+      const ws = new WebSocket(getWebSocketUrl(), getWebSocketAuthProtocols());
       wsRef.current = ws;
       ws.onopen = () => { attempts = 0; };
       ws.onmessage = (event) => {
         if (closed) return;
         try {
           const msg = JSON.parse(event.data);
-          if (!msg?.type || (!msg.type.startsWith('betting:') && !msg.type.startsWith('browser:') && !msg.type.startsWith('risk:'))) return;
+          if (!msg?.type || (!msg.type.startsWith('betting:') && !msg.type.startsWith('browser:') && !msg.type.startsWith('safety:'))) return;
           if (msg.type === 'betting:state') {
             setStatus((prev) => ({ ...prev, status: { ...(prev?.status || {}), ...msg } }));
             refresh();
@@ -227,7 +222,7 @@ export default function Betting() {
   const browserReady = browser?.browser;
   const currencyLabel = browser?.platform_balance?.currency_verified === true
     ? browser.platform_balance.currency
-    : browser?.snapshot?.balance_currency || s.currency || s.balance_currency || risk?.currency || 'currency unverified';
+    : browser?.snapshot?.balance_currency || s.currency || s.balance_currency || 'currency unverified';
   const verifiedLiveBalance = browser?.platform_balance?.verified === true
     && browser?.platform_balance?.fresh === true
     && browserReady?.game_found === true
@@ -238,7 +233,7 @@ export default function Betting() {
     setActionBusy(true);
     setError(null);
     try {
-      await resetRiskEmergency();
+      await resetEmergencyStop();
       setNotice('Emergency-stop latch reset. Automatic betting remains off until explicitly started.');
       await refresh();
     } catch (e) { setError(errMsg(e)); }
@@ -248,21 +243,21 @@ export default function Betting() {
   return (
     <div className="space-y-5">
       <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-        Automatic real-money execution is OFF. Rule selections are not connected to target-bound, risk-approved execution intents, and platform acceptance/results are not verified.
+        Automatic real-money execution is OFF. Rule selections are not connected to a verified target round and platform acceptance/results are not verified.
       </div>
       <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-300">
-            <Bot size={14} /> Execution &amp; Risk Control
+            <Bot size={14} /> Execution Control
           </div>
           <h1 className="mt-1 flex items-center gap-3 text-3xl font-semibold">
-            Aviator Betting · Risk Managed
+            Aviator Betting
             <StateBadge state={state} simulated={st.simulated} />
           </h1>
-          <p className="mt-2 max-w-2xl text-sm text-zinc-400">Automatic real-money execution is OFF until the backend can bind a verified rule selection to one exact upcoming round, pass final risk checks, and confirm platform acceptance and settlement. Risk and emergency-stop controls remain available.</p>
+          <p className="mt-2 max-w-2xl text-sm text-zinc-400">Automatic real-money execution is OFF until the backend can bind a verified rule selection to one exact upcoming round and confirm platform acceptance and settlement. Emergency stop remains available.</p>
           {st.session_id && (
             <div className="mt-1 text-xs text-zinc-500">
-              session {st.session_id} · mode {st.mode} · profile {st.profile}
+              session {st.session_id} · mode {st.mode}
               {st.stop_reason ? ` · stopped: ${st.stop_reason}` : ''}
             </div>
           )}
@@ -290,7 +285,7 @@ export default function Betting() {
           {error || notice}
         </div>
       )}
-      {initialLoading && <div role="status" className="rounded border border-zinc-700 bg-zinc-900/60 px-4 py-3 text-sm text-zinc-400">Loading session, risk, and ledger data…</div>}
+      {initialLoading && <div role="status" className="rounded border border-zinc-700 bg-zinc-900/60 px-4 py-3 text-sm text-zinc-400">Loading session and ledger data…</div>}
       {refreshError && <div role="status" className="rounded border border-amber-500/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-200">
         Some Betting data could not refresh: {refreshError}. Showing the last available values{lastUpdated ? ` from ${lastUpdated.toLocaleTimeString()}` : ''}.
       </div>}
@@ -328,37 +323,20 @@ export default function Betting() {
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Card><div className="text-xs text-zinc-500">Session Starting Balance</div><div className="text-lg font-semibold">{s.starting_balance ?? '—'} {currencyLabel}</div></Card>
         <Card><div className="text-xs text-zinc-500">Session Goal</div><div className="text-lg font-semibold">{s.goal_balance ?? '—'} {currencyLabel}</div></Card>
-        <Card><div className="text-xs text-zinc-500">Selected Profile</div><div className="text-lg font-semibold">{s.profile_label || s.profile || '—'}</div></Card>
         <Card><div className="text-xs text-zinc-500">Current Bet / Last Result</div><div className="truncate text-sm font-semibold">{s.current_bet?.decision_id || 'No active bet'} / {s.last_result?.note || '—'}</div></Card>
       </section>
 
       {['goal_reached', 'WIN_LIMIT_REACHED'].includes(s.stop_reason) && <div className="rounded border border-emerald-400 bg-emerald-500/15 p-4 text-xl font-bold text-emerald-200">WIN_LIMIT_REACHED — session stopped at the configured win limit.</div>}
-      {['LOSS_LIMIT_REACHED', 'risk_loss_limit'].includes(s.stop_reason) && <div className="rounded border border-rose-400 bg-rose-500/15 p-4 text-xl font-bold text-rose-200">LOSS_LIMIT_REACHED — session stopped at the configured loss limit.</div>}
 
-      <Card title="Risk Management · Part 2" action={
-        risk?.emergency_stop ? <button onClick={resetEmergency} disabled={actionBusy} className="rounded border border-amber-500/40 px-3 py-1 text-xs text-amber-200 disabled:cursor-wait disabled:opacity-50">{actionBusy ? 'Resetting…' : 'Reset emergency latch'}</button> : null
-      }>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Risk Profile</div><div className="font-semibold">{risk?.profile_name || '—'}</div><div className="text-xs text-zinc-500">cashout {risk?.cashout ?? '—'}x</div></div>
-          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Risk Level</div><div className={`font-semibold ${risk?.risk_level === 'BLOCKED' ? 'text-rose-300' : risk?.risk_level === 'NOT_EVALUATED' ? 'text-amber-300' : 'text-emerald-300'}`}>{risk?.risk_level || 'NOT_EVALUATED'}</div><div className="text-xs text-zinc-500">{risk?.risk_status || 'WAITING'}</div></div>
-          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Approved Bet / Maximum</div><div className="font-semibold">{risk?.current_bet_size ?? '—'} / {risk?.maximum_bet ?? '—'} {currencyLabel}</div><div className="text-xs text-zinc-500">max {(100 * (risk?.maximum_balance_percentage || 0)).toFixed(0)}% of balance</div></div>
-          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Session Loss / Maximum</div><div className="font-semibold">{risk?.session_loss ?? '—'} / {risk?.session_loss_limit_enabled === false ? 'Disabled' : `${risk?.maximum_session_loss ?? '—'} ${currencyLabel}`}</div><div className="text-xs text-zinc-500">P/L {risk?.profit_loss == null ? '—' : `${risk.profit_loss} ${currencyLabel}`}</div></div>
-          <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Consecutive Losses</div><div className="font-semibold">{risk?.consecutive_losses ?? '—'} / {risk?.maximum_consecutive_losses ?? '—'}</div><div className="text-xs text-zinc-500">available {risk?.available_balance ?? '—'} {currencyLabel}</div></div>
-        </div>
-        <div className={`mt-3 rounded border p-3 text-sm ${risk?.risk_status === 'APPROVED' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : risk?.risk_status === 'WAITING' ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-rose-500/30 bg-rose-500/10 text-rose-200'}`}>
-          <span className="font-semibold">Risk check: {{ APPROVED: 'Approved', WAITING: 'Waiting', BLOCKED: 'Blocked' }[risk?.risk_status] || 'Waiting'}</span>
-          <span className="ml-2">{risk?.risk_status === 'WAITING'
-            ? 'No current bet approval yet. Betting stays paused until the latest round passes the safety checks.'
-            : risk?.reason || 'The system is checking whether a bet can be approved.'}</span>
-          {risk?.emergency_stop && ' · Emergency stop is latched; no new bets can be approved.'}
-        </div>
-      </Card>
+      {s.emergency_stop?.latched && <Card title="Emergency stop" action={
+        <button onClick={resetEmergency} disabled={actionBusy || st.mode === 'LIVE_REAL'} className="rounded border border-amber-500/40 px-3 py-1 text-xs text-amber-200 disabled:cursor-wait disabled:opacity-50">{actionBusy ? 'Resetting…' : 'Reset emergency stop'}</button>
+      }><p className="text-sm text-amber-200">The operator stop is latched. Resetting it does not authorize or start betting.</p></Card>}
 
       <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
         <Card title="Session control">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Mode</div><div className="font-semibold">{st.mode || 'SHADOW · stopped'}</div></div>
-            <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Profile</div><div className="font-semibold">{risk?.profile_name || st.profile_label || st.profile || '—'}</div></div>
+            <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Emergency stop</div><div className="font-semibold">{s.emergency_stop?.latched ? 'LATCHED' : 'CLEAR'}</div></div>
             <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Starting balance</div><div className="font-semibold">{s.starting_balance ?? '—'} {currencyLabel}</div></div>
             <div className="rounded bg-zinc-900 p-3"><div className="text-xs text-zinc-500">Goal</div><div className="font-semibold">{s.goal_balance ?? '—'} {currencyLabel}</div></div>
           </div>
@@ -456,7 +434,7 @@ export default function Betting() {
                     <td className="py-2 pr-3 whitespace-nowrap text-zinc-400">{fmtTime(e.received_at)}</td>
                     <td className="py-2 pr-3">
                       <div className="font-medium text-zinc-200">{e.decision_id}</div>
-                      <div className="text-[10px] text-zinc-500">{e.profile}{e.simulated ? ' · SIM' : ''}{e.bet_slot ? ' · slot 1' : ''}</div>
+                      <div className="text-[10px] text-zinc-500">{e.simulated ? 'SIM' : 'EXECUTION'}{e.bet_slot ? ' · slot 1' : ''}</div>
                     </td>
                     <td className="py-2 pr-3">
                       <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold ${STATUS_CHIP[e.status] || STATUS_CHIP.received}`}>

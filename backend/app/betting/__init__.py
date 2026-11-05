@@ -18,7 +18,6 @@ WAITING_FOR_BROWSER so callers can always tell simulation from reality.
 """
 
 from app.betting.config import BettingSettings, get_betting_settings
-from app.betting.profiles import PROFILES, BettingProfile, profile_keys
 from app.betting.schemas import DecisionIntent, SessionStartRequest
 from app.betting.session import (
     BettingManager,
@@ -35,12 +34,8 @@ __all__ = [
     "BettingSession",
     "configure_default_manager",
     "get_betting_manager",
-    "PROFILES",
-    "BettingProfile",
-    "profile_keys",
     "DecisionIntent",
     "SessionStartRequest",
     "OutcomeStatus",
     "SessionState",
 ]
-

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AviatorPageManager, BrowserSupervisor, getBrowserSupervisor } from '../collector/BrowserManager.js';
+import { AviatorPageManager, BrowserSupervisor, buildLaunchOptions, getBrowserSupervisor } from '../collector/BrowserManager.js';
 import { RecoveryManager } from '../collector/RecoveryManager.js';
-import { Watchdog } from '../collector/Watchdog.js';
+import { Watchdog, WinnerSessionWatchdog } from '../collector/Watchdog.js';
 import { State, StateMachine } from '../collector/StateMachine.js';
 import { backoffMs, classifyError, recoveryRetryDelayMs } from '../collector/RetryManager.js';
 import { log } from '../collector/Logger.js';
@@ -10,6 +10,13 @@ import { log } from '../collector/Logger.js';
 // Recovery fixtures share the collector logger singleton. Keep unit-test
 // events out of the live collector log used for operational evidence.
 for (const method of ['debug', 'info', 'warn', 'error', 'recovery']) log[method] = () => {};
+
+test('managed browser runs through Playwright without loading Chrome extensions', () => {
+  const options = buildLaunchOptions();
+  assert.ok(options.args.includes('--disable-extensions'));
+  assert.equal(options.args.some(argument => argument.startsWith('--load-extension=')), false);
+  assert.equal(options.args.some(argument => argument.startsWith('--disable-extensions-except=')), false);
+});
 
 test('legacy and current callers resolve one process-wide supervisor', () => {
   assert.equal(getBrowserSupervisor(false), getBrowserSupervisor(false));
@@ -46,6 +53,68 @@ test('history and betting accessors share one Aviator page and never provision a
   assert.deepEqual(context.pages(), [page]);
   assert.equal(newPages, 0);
   assert.equal(browser._aviatorTargetId, 'aviator-target');
+});
+
+test('managed blank page restores the canonical route instead of a stale persisted route', async () => {
+  let currentUrl = 'about:blank';
+  let navigatedTo = null;
+  const page = {
+    isClosed: () => false,
+    url: () => currentUrl,
+    goto: async url => { navigatedTo = url; currentUrl = url; },
+  };
+  const context = { pages: () => [page] };
+  const browser = new BrowserSupervisor(true);
+  browser._browser = { isConnected: () => true, contexts: () => [context] };
+  browser._context = context;
+  browser._contextClosed = false;
+  browser._ownsBrowser = true;
+  browser._lastKnownUrls = { aviator: 'https://winner.rw/en/games/aviator' };
+  browser._restoreSessionStorage = async () => {};
+  browser._targetIdForPage = async () => 'canonical-target';
+  browser._adoptAviatorPage = selected => { browser._aviatorPage = selected; browser._page = selected; };
+  browser._trackPage = () => {};
+  browser._cleanupManagedStarterPages = async () => {};
+  browser._persistMetadata = () => {};
+
+  assert.equal(await browser.getAviatorPage(), page);
+  assert.equal(navigatedTo, 'https://winner.rw/en/virtual/crash-games/aviator');
+});
+
+test('session monitor tab uses the shared context and restores the Aviator tab focus', async () => {
+  const pages = [];
+  let mainFocusCount = 0;
+  let monitorNavigatedTo = null;
+  let monitorClosed = false;
+  const mainPage = { isClosed: () => false, bringToFront: async () => { mainFocusCount += 1; } };
+  const monitorPage = {
+    isClosed: () => monitorClosed,
+    on() {},
+    goto: async url => { monitorNavigatedTo = url; },
+    close: async () => { monitorClosed = true; },
+  };
+  const context = {
+    pages: () => pages.filter(page => !page.isClosed?.()),
+    newPage: async () => { pages.push(monitorPage); return monitorPage; },
+  };
+  const browser = new BrowserSupervisor(true);
+  browser._browser = { isConnected: () => true, contexts: () => [context] };
+  browser._context = context;
+  browser._contextClosed = false;
+  browser._event = () => {};
+  browser._persistMetadata = () => {};
+
+  const first = await browser.getSessionMonitorPage(mainPage);
+  const second = await browser.getSessionMonitorPage(mainPage);
+  assert.equal(first, monitorPage);
+  assert.equal(second, monitorPage);
+  assert.equal(monitorNavigatedTo, 'https://winner.rw/en/user/logout/popup');
+  assert.equal(mainFocusCount, 1);
+  assert.equal(browser.isSessionMonitorPage(monitorPage), true);
+
+  await browser.closeSessionMonitorPage();
+  assert.equal(monitorClosed, true);
+  assert.equal(mainPage.isClosed(), false);
 });
 
 test('duplicate session-ended Aviator tab is retired only after a healthy shared page is identified and transaction state is clear', async () => {
@@ -265,7 +334,7 @@ test('closed page recovery replaces only the page in its existing context', asyn
 });
 
 test('authenticated wrong page navigates to Aviator in the same browser context', async () => {
-  const fixture = recoveryFixture({ pageUrl: 'https://winner.rw/en/sportsbook/upcoming' });
+  const fixture = recoveryFixture({ pageUrl: 'https://winner.rw/en/games/aviator' });
   await fixture.recovery.recover(new Error('page navigated away'), fixture.page);
   assert.equal(fixture.aviatorNavigations, 1);
   assert.equal(fixture.restarts, 0);
@@ -297,6 +366,73 @@ test('outer-page heartbeat timeout does not trigger recovery while collecting', 
   await watchdog._check();
 
   assert.equal(alerts, 0, 'outer-page probe failure must not reload a live Aviator frame');
+});
+
+test('watchdog rejects the retired Winner route while collecting', async () => {
+  const sm = new StateMachine();
+  sm.transition(State.LOGIN, 'test');
+  sm.transition(State.HOME, 'test');
+  sm.transition(State.GAME_LOADING, 'test');
+  sm.transition(State.WAITING_IFRAME, 'test');
+  sm.transition(State.COLLECTING, 'test');
+  const alerts = [];
+  const page = {
+    isClosed: () => false,
+    url: () => 'https://winner.rw/en/games/aviator',
+  };
+  const watchdog = new Watchdog({
+    stateMachine: sm,
+    browserManager: { isAlive: () => true },
+    loginManager: { isLoggedIn: async () => true },
+    health: { snapshot: () => ({ network: { status: 'ONLINE' } }), setBrowserConnected() {}, setPageConnected() {} },
+    onUnhealthy: async reason => alerts.push(reason),
+  });
+  watchdog.setPage(page);
+
+  await watchdog._check();
+
+  assert.deepEqual(alerts, ['wrong Aviator route: https://winner.rw/en/games/aviator']);
+});
+
+test('WinnerSessionWatchdog starts a same-context monitor after authentication is verified', async () => {
+  const sm = new StateMachine();
+  sm.transition(State.LOGIN, 'test');
+  sm.transition(State.HOME, 'test');
+  sm.transition(State.GAME_LOADING, 'test');
+  sm.transition(State.WAITING_IFRAME, 'test');
+  sm.transition(State.COLLECTING, 'test');
+  const mainPage = { isClosed: () => false, url: () => 'https://winner.rw/en/virtual/crash-games/aviator' };
+  const monitorPage = { isClosed: () => false, url: () => 'https://winner.rw/en/' };
+  let monitorStarts = 0;
+  const updates = [];
+  const browser = {
+    isAlive: () => true,
+    _context: { pages: () => [mainPage, monitorPage] },
+    getSessionMonitorPage: async page => {
+      assert.equal(page, mainPage);
+      monitorStarts += 1;
+      return monitorPage;
+    },
+  };
+  const watchdog = new WinnerSessionWatchdog({
+    stateMachine: sm,
+    browserManager: browser,
+    loginManager: { inspectSession: async () => ({ status: 'AUTHENTICATED', reasonCode: 'ACCOUNT_SHELL' }) },
+    health: {
+      snapshot: () => ({ network: { status: 'ONLINE' }, frameConnected: true }),
+      setSessionWatchdog: value => updates.push(value),
+      setLoggedIn() {}, setAuthRequired() {}, setRecovery() {}, setBrowserConnected() {}, setPageConnected() {},
+    },
+    onUnhealthy: async () => assert.fail('verified session should not trigger recovery'),
+  });
+  watchdog.setPage(mainPage);
+  watchdog._lastLoginCheck = 0;
+
+  await watchdog._check();
+
+  assert.equal(monitorStarts, 1);
+  assert.equal(watchdog._monitorPage, monitorPage);
+  assert.ok(updates.some(update => update.status === 'ACTIVE' && update.monitor_tab_status === 'OPEN'));
 });
 
 test('login route navigation overrides stale auth while recovery is active', async () => {

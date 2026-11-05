@@ -49,12 +49,9 @@ async def shadow_review(request: Request):
 
 
 @router.get("/live-review")
-async def live_review(request: Request, profile: str = "PROFILE_A",
-                      win_limit_enabled: bool | None = None, win_limit: float | None = None,
-                      session_loss_limit_enabled: bool | None = None,
-                      session_loss_limit: float | None = None,
+async def live_review(request: Request, win_limit_enabled: bool | None = None,
+                      win_limit: float | None = None,
                       execution_panel: int | None = None,
-                      stake_amount: int | None = None,
                       currency: str | None = None):
     # This endpoint is read-only. It deliberately exposes the complete
     # activation review and blockers so the dashboard can explain why LIVE is
@@ -62,10 +59,8 @@ async def live_review(request: Request, profile: str = "PROFILE_A",
     # credential and repeats every value and safety check.
     try:
         return await request.app.state.betting_mode.live_review(
-            profile=profile, win_limit_enabled=win_limit_enabled, win_limit=win_limit,
-            session_loss_limit_enabled=session_loss_limit_enabled,
-            session_loss_limit=session_loss_limit, execution_panel=execution_panel,
-            stake_amount=stake_amount, currency=currency)
+            win_limit_enabled=win_limit_enabled, win_limit=win_limit,
+            execution_panel=execution_panel, currency=currency)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -76,7 +71,6 @@ async def switch_mode(request: Request, body: dict):
     modes = request.app.state.betting_mode
     if requested == SHADOW_REALISTIC:
         result = await modes.switch_shadow(
-            profile=str(body.get("profile") or "PROFILE_A").upper(),
             goal_balance=body.get("goal_balance"),
             starting_balance=body.get("starting_balance"),
             configuration=body.get("configuration"),

@@ -100,7 +100,7 @@ fi
 echo ""
 echo "════════════════════════════════════════════"
 echo "  Sandbox fix complete."
-echo "  You can now run your Selenium scripts"
+echo "  You can now run Playwright browser automation"
 echo "  WITHOUT --no-sandbox or --disable-setuid-sandbox"
 echo "════════════════════════════════════════════"
 echo ""

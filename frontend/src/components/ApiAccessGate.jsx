@@ -3,6 +3,7 @@ import { KeyRound } from 'lucide-react';
 import { API_UNAUTHORIZED_EVENT, getApiToken, logout, setApiToken } from '../auth.js';
 import { useBackendConnection } from '../services/backendConnection.js';
 import { getApiBaseUrl } from '../services/endpoints.js';
+import { bootstrapLocalBrowserSession } from '../services/localBrowserSession.js';
 import { accessScreenState, hasUsableApplicationState } from '../services/accessPolicy.js';
 
 async function checkToken(token) {
@@ -12,6 +13,7 @@ async function checkToken(token) {
     const response = await fetch(`${getApiBaseUrl()}/api/system/status`, {
       method: 'GET',
       cache: 'no-store',
+      credentials: 'include',
       signal: controller.signal,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
@@ -34,6 +36,7 @@ export default function ApiAccessGate({ children }) {
   const [retryAttempt, setRetryAttempt] = useState(0);
   const online = connection.status === 'online' || connection.status === 'degraded';
   const authRequired = connection.health?.auth_required;
+  const localBrowserSessionAvailable = connection.health?.local_browser_session_available === true;
   const publicAccess = connection.health?.public_access === true
     || connection.health?.public_read_only === true;
   const screenState = accessScreenState(access, connection.state);
@@ -47,12 +50,19 @@ export default function ApiAccessGate({ children }) {
       return () => { cancelled = true; };
     }
     const saved = getApiToken();
-    if (authRequired === true && !saved) {
+    if (authRequired === true && !saved && !localBrowserSessionAvailable) {
       setAccess('required');
       return () => { cancelled = true; };
     }
     setAccess('checking');
-    checkToken(saved).then((valid) => {
+    const verifyAccess = async () => {
+      if (saved && await checkToken(saved)) return true;
+      if (!localBrowserSessionAvailable) return false;
+      if (saved) logout();
+      await bootstrapLocalBrowserSession(`${getApiBaseUrl()}/api/auth/local-browser-session`);
+      return checkToken('');
+    };
+    verifyAccess().then((valid) => {
       if (cancelled) return;
       if (!valid) logout();
       setAccess(valid ? 'granted' : 'required');
@@ -65,19 +75,25 @@ export default function ApiAccessGate({ children }) {
       }
     });
     return () => { cancelled = true; if (retryTimer) window.clearTimeout(retryTimer); };
-  }, [online, authRequired, publicAccess, access, retryAttempt]);
+  }, [online, authRequired, localBrowserSessionAvailable, publicAccess, access, retryAttempt]);
 
   useEffect(() => {
     const unauthorized = () => {
       logout();
       if (publicAccess) return;
       setToken('');
+      if (localBrowserSessionAvailable) {
+        setError('');
+        setAccess('checking');
+        setRetryAttempt((value) => value + 1);
+        return;
+      }
       setError('The API token is no longer valid. Enter the current token.');
       setAccess('required');
     };
     window.addEventListener(API_UNAUTHORIZED_EVENT, unauthorized);
     return () => window.removeEventListener(API_UNAUTHORIZED_EVENT, unauthorized);
-  }, [publicAccess]);
+  }, [localBrowserSessionAvailable, publicAccess]);
 
   async function submit(event) {
     event.preventDefault();

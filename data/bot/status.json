@@ -1,22 +1,37 @@
 {
   "collectorRunning": true,
-  "pid": 21356,
+  "pid": 101397,
   "browserConnected": true,
   "pageConnected": true,
-  "frameConnected": false,
+  "frameConnected": true,
   "siteStatus": "AVAILABLE",
   "loggedIn": true,
   "authenticationState": "AUTHENTICATED",
   "authenticationReason": null,
   "authRequired": false,
   "authRequiredReason": null,
-  "state": "NAVIGATING_AVIATOR",
-  "activityState": "NAVIGATING_AVIATOR",
+  "sessionWatchdog": {
+    "status": "ACTIVE",
+    "monitor_tab_status": "OPEN",
+    "reason_code": "LOGOUT_PROMPT_NO_CLICK_SESSION_VERIFIED",
+    "last_successful_check_at": "2026-11-04T16:13:09.744Z",
+    "last_successful_activity_at": null,
+    "estimated_remaining_seconds": null,
+    "next_scheduled_maintenance_at": null,
+    "last_successful_maintenance_at": null,
+    "last_successful_refresh_at": null,
+    "last_verified_no_click_at": "2026-11-04T16:13:09.455Z",
+    "logout_countdown_seconds": null,
+    "recovery_attempts": 0,
+    "collector_connected": true
+  },
+  "state": "COLLECTING",
+  "activityState": "COLLECTING",
   "gameReadiness": {
-    "frameAttached": false,
-    "contentLoaded": false,
-    "payoutsReady": false,
-    "reason": "GAME_FRAME_NOT_FOUND"
+    "frameAttached": true,
+    "contentLoaded": true,
+    "payoutsReady": true,
+    "reason": "SHARED_GAME_FRAME_PAYOUT_SELECTOR_PRESENT"
   },
   "recovery": {
     "stage": null,
@@ -25,2804 +40,1404 @@
     "reasonCode": null,
     "evidence": null
   },
-  "lastRoundTime": "2026-10-14T20:17:18.712Z",
-  "lastRoundId": "aviator-1b73b1f18b31bbc68e2405f8",
-  "lastRoundIndex": 29601,
-  "lastObservedRoundId": "aviator-1b73b1f18b31bbc68e2405f8",
-  "lastObservedRoundIndex": 29601,
-  "lastObservedAt": "2026-10-14T20:17:18.712Z",
+  "lastRoundTime": "2026-11-04T16:12:58.222Z",
+  "lastRoundId": "aviator-dc5cee026f14b0e7e61b7c95",
+  "lastRoundIndex": 24695,
+  "lastDetectedRoundId": null,
+  "lastDetectedAt": null,
+  "lastDetectedStatus": "UNKNOWN",
+  "lastDetectedReason": null,
+  "lastObservedRoundId": "aviator-dc5cee026f14b0e7e61b7c95",
+  "lastObservedRoundIndex": 24695,
+  "lastObservedAt": "2026-11-04T16:12:58.222Z",
   "gamePhase": "UNKNOWN",
-  "gamePhaseObservedAt": "2026-10-14T20:17:18.712Z",
-  "gamePhaseEventId": "UNKNOWN:2026-10-14T20:17:18.712Z:aviator-1b73b1f18b31bbc68e2405f8",
+  "gamePhaseObservedAt": "2026-11-04T16:13:07.521Z",
+  "gamePhaseEventId": "UNKNOWN:2026-11-04T16:13:07.521Z:aviator-dc5cee026f14b0e7e61b7c95",
   "gamePhaseEvidence": {
-    "source": "AVIATOR_BETTING_PANEL_READ_ONLY",
+    "source": "AVIATOR_GAME_PHASE_READ_ONLY",
+    "provider_phase_source": null,
+    "provider_phase_selector": null,
     "selector": ".bet-block .btn-success.bet",
     "button_visible": false,
     "button_enabled": false,
     "stake_input_visible": true,
     "bet_tab_active": false,
     "button_text": null,
-    "button_class": null
+    "button_class": null,
+    "provider_marker_count": 0
   },
-  "gamePhaseSourceRoundId": "aviator-1b73b1f18b31bbc68e2405f8",
-  "gamePhaseSourceRoundIndex": 29601,
-  "lastSuccessfulCollection": "2026-10-14T20:17:21.130Z",
+  "gamePhaseSourceRoundId": "aviator-dc5cee026f14b0e7e61b7c95",
+  "gamePhaseSourceRoundIndex": 24695,
+  "lastSuccessfulCollection": "2026-11-04T16:13:00.014Z",
   "roundCommitSamples": [
     {
-      "round_id": "aviator-b5acbfd7ffd08dda0e5ac6d0",
-      "observed_at": "2026-10-14T17:44:35.069Z",
-      "committed_at": "2026-10-14T17:44:38.203Z",
-      "latency_ms": 2926.63,
+      "round_id": "aviator-75783379a8d69464fd57b8e3",
+      "observed_at": "2026-11-04T14:53:07.899Z",
+      "committed_at": "2026-11-04T14:53:15.656Z",
+      "latency_ms": 7735.61,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-7e6c8e2957ad78e15ebe839a",
-      "observed_at": "2026-10-14T17:45:31.917Z",
-      "committed_at": "2026-10-14T17:45:36.280Z",
-      "latency_ms": 4312.47,
+      "round_id": "aviator-dada78d1ff960ebd01c46aa2",
+      "observed_at": "2026-11-04T14:55:07.387Z",
+      "committed_at": "2026-11-04T14:55:20.475Z",
+      "latency_ms": 13067.99,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-cd07a907332b6a2f04ea738d",
-      "observed_at": "2026-10-14T17:46:06.043Z",
-      "committed_at": "2026-10-14T17:46:10.920Z",
-      "latency_ms": 4748.74,
+      "round_id": "aviator-df8037f897757eb69e88186f",
+      "observed_at": "2026-11-04T14:55:07.387Z",
+      "committed_at": "2026-11-04T14:55:20.475Z",
+      "latency_ms": 13067.99,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-e3feb863511585126bf406d0",
-      "observed_at": "2026-10-14T17:47:08.356Z",
-      "committed_at": "2026-10-14T17:47:27.338Z",
-      "latency_ms": 18891.66,
+      "round_id": "aviator-3cab212c3802855e648b585c",
+      "observed_at": "2026-11-04T14:55:07.387Z",
+      "committed_at": "2026-11-04T14:55:20.475Z",
+      "latency_ms": 13067.99,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-026fcf42c25adc0841cb51e7",
-      "observed_at": "2026-10-14T17:47:53.061Z",
-      "committed_at": "2026-10-14T17:48:05.943Z",
-      "latency_ms": 12812.4,
+      "round_id": "aviator-79c207c1f518481cc8008d81",
+      "observed_at": "2026-11-04T14:55:07.387Z",
+      "committed_at": "2026-11-04T14:55:20.475Z",
+      "latency_ms": 13067.99,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-9c25cfd61c67580b6a52c5e4",
-      "observed_at": "2026-10-14T17:48:23.434Z",
-      "committed_at": "2026-10-14T17:48:28.609Z",
-      "latency_ms": 5081.24,
+      "round_id": "aviator-bb448043c89b43ce8a256def",
+      "observed_at": "2026-11-04T14:55:07.387Z",
+      "committed_at": "2026-11-04T14:55:20.475Z",
+      "latency_ms": 13067.99,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-df9040f4195f30a0e4c0f4c7",
-      "observed_at": "2026-10-14T17:48:43.136Z",
-      "committed_at": "2026-10-14T17:48:54.994Z",
-      "latency_ms": 11735.15,
+      "round_id": "aviator-ee7017efa2580c574c30294c",
+      "observed_at": "2026-11-04T14:55:09.872Z",
+      "committed_at": "2026-11-04T14:55:20.475Z",
+      "latency_ms": 10590.63,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-66ec4524e0b982e84cccac4b",
-      "observed_at": "2026-10-14T17:49:15.474Z",
-      "committed_at": "2026-10-14T17:49:17.508Z",
-      "latency_ms": 1989.68,
+      "round_id": "aviator-c505d6b80e480e705deba19f",
+      "observed_at": "2026-11-04T14:55:24.470Z",
+      "committed_at": "2026-11-04T14:55:34.580Z",
+      "latency_ms": 9945.83,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-fb9799137817520eab7b22ce",
-      "observed_at": "2026-10-14T17:49:51.146Z",
-      "committed_at": "2026-10-14T17:49:52.217Z",
-      "latency_ms": 902.14,
+      "round_id": "aviator-e688400b5286edb273474285",
+      "observed_at": "2026-11-04T14:55:46.149Z",
+      "committed_at": "2026-11-04T14:55:50.394Z",
+      "latency_ms": 4193.99,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-bf5ebefae3ce5fdd5b55d373",
-      "observed_at": "2026-10-14T17:50:19.146Z",
-      "committed_at": "2026-10-14T17:50:24.058Z",
-      "latency_ms": 4829.71,
+      "round_id": "aviator-396f0069fa1f2d0529b03886",
+      "observed_at": "2026-11-04T14:56:06.470Z",
+      "committed_at": "2026-11-04T14:56:10.150Z",
+      "latency_ms": 3621.42,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-510d28dc082f900fbf92d2c5",
-      "observed_at": "2026-10-14T17:50:41.598Z",
-      "committed_at": "2026-10-14T17:50:47.892Z",
-      "latency_ms": 6177.31,
+      "round_id": "aviator-8c4830b96d2624e761d87cc9",
+      "observed_at": "2026-11-04T14:56:24.469Z",
+      "committed_at": "2026-11-04T14:56:28.536Z",
+      "latency_ms": 4007.09,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-9da13e24716636159e177469",
-      "observed_at": "2026-10-14T17:51:05.196Z",
-      "committed_at": "2026-10-14T17:51:07.858Z",
-      "latency_ms": 2622.97,
+      "round_id": "aviator-0c73a2b4808f6e1357023e02",
+      "observed_at": "2026-11-04T14:56:36.777Z",
+      "committed_at": "2026-11-04T14:56:40.243Z",
+      "latency_ms": 3455.28,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-936f5c02544130c0d34dce72",
-      "observed_at": "2026-10-14T17:51:22.387Z",
-      "committed_at": "2026-10-14T17:52:04.875Z",
-      "latency_ms": 42258.28,
+      "round_id": "aviator-8165d13374ef5dfb0af9793a",
+      "observed_at": "2026-11-04T14:56:57.909Z",
+      "committed_at": "2026-11-04T14:56:59.841Z",
+      "latency_ms": 1781.46,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-c3d1b32dcb418fe4c03fb793",
-      "observed_at": "2026-10-14T17:52:09.178Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 873055.68,
+      "round_id": "aviator-047cb754bf87285ee6d3fdf6",
+      "observed_at": "2026-11-04T14:57:11.037Z",
+      "committed_at": "2026-11-04T14:57:12.042Z",
+      "latency_ms": 991.41,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-ee13c1c262283ec28d055ccb",
-      "observed_at": "2026-10-14T17:52:21.910Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 857514.84,
+      "round_id": "aviator-49011f7a422177b311cb9e77",
+      "observed_at": "2026-11-04T14:57:22.159Z",
+      "committed_at": "2026-11-04T14:57:23.659Z",
+      "latency_ms": 1485.21,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-53c22f63c1edc056756e8d2f",
-      "observed_at": "2026-10-14T17:52:36.087Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 848303.89,
+      "round_id": "aviator-20bb4f9a1744c073c5294c08",
+      "observed_at": "2026-11-04T14:57:33.583Z",
+      "committed_at": "2026-11-04T14:57:34.262Z",
+      "latency_ms": 659.05,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-b02e1d85995fed83d960b07b",
-      "observed_at": "2026-10-14T17:53:04.046Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 751434.05,
+      "round_id": "aviator-d8358aa84b9924f81731d391",
+      "observed_at": "2026-11-04T14:57:48.631Z",
+      "committed_at": "2026-11-04T14:57:49.406Z",
+      "latency_ms": 640.43,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-98636fce1d04495a4ee5f55a",
-      "observed_at": "2026-10-14T17:58:31.955Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 493077.64,
+      "round_id": "aviator-5c46a940ac513a538398f6c3",
+      "observed_at": "2026-11-04T14:58:44.851Z",
+      "committed_at": "2026-11-04T14:58:46.261Z",
+      "latency_ms": 1371.74,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-0a3100439b645c5f95406c99",
-      "observed_at": "2026-10-14T17:58:31.955Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 493077.64,
+      "round_id": "aviator-a7a2ed070b0e031e75533ae6",
+      "observed_at": "2026-11-04T14:59:19.295Z",
+      "committed_at": "2026-11-04T14:59:21.571Z",
+      "latency_ms": 2226.13,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-a212e659b5e6beed13b13fa6",
-      "observed_at": "2026-10-14T17:58:31.955Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 493077.64,
+      "round_id": "aviator-400ea30cf9d60ca53872322c",
+      "observed_at": "2026-11-04T14:59:32.125Z",
+      "committed_at": "2026-11-04T14:59:34.548Z",
+      "latency_ms": 2088.42,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-b61f75ff04465ac3be269efe",
-      "observed_at": "2026-10-14T17:58:31.955Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 493077.64,
+      "round_id": "aviator-1e08f81832da070d40d904cc",
+      "observed_at": "2026-11-04T15:00:05.927Z",
+      "committed_at": "2026-11-04T15:00:07.847Z",
+      "latency_ms": 1849.9,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-2c94170a0b0bd19fe8555875",
-      "observed_at": "2026-10-14T17:58:31.955Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 493077.64,
+      "round_id": "aviator-074b6ccb73f4f49e4f1e1f10",
+      "observed_at": "2026-11-04T15:00:22.301Z",
+      "committed_at": "2026-11-04T15:00:24.501Z",
+      "latency_ms": 2119.13,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-24464e70f896799b41536bfb",
-      "observed_at": "2026-10-14T17:58:31.955Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 493077.64,
+      "round_id": "aviator-686df6421230513fabb50f12",
+      "observed_at": "2026-11-04T15:00:51.355Z",
+      "committed_at": "2026-11-04T15:00:53.494Z",
+      "latency_ms": 2094.16,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-b91e9c494e65a76bf8c06e08",
-      "observed_at": "2026-10-14T17:58:31.955Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 493077.64,
+      "round_id": "aviator-b071882f504fe7f094c97823",
+      "observed_at": "2026-11-04T15:01:09.017Z",
+      "committed_at": "2026-11-04T15:01:12.772Z",
+      "latency_ms": 3715.93,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-ba5dc6c2e19116ba81127f5e",
-      "observed_at": "2026-10-14T17:58:31.955Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 493077.64,
+      "round_id": "aviator-661d658a233b8e117d18724d",
+      "observed_at": "2026-11-04T15:01:38.895Z",
+      "committed_at": "2026-11-04T15:01:40.630Z",
+      "latency_ms": 1627.42,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-326798de42da2d0d67a7ffd0",
-      "observed_at": "2026-10-14T17:58:31.955Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 493077.64,
+      "round_id": "aviator-ddd6d9db84f7fc3f6df81d7e",
+      "observed_at": "2026-11-04T15:01:52.723Z",
+      "committed_at": "2026-11-04T15:01:55.561Z",
+      "latency_ms": 2809.9,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-8e76dc8debc9e26a0e6ff8c2",
-      "observed_at": "2026-10-14T17:58:52.782Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 472286.99,
+      "round_id": "aviator-c0bc4f8d35d19d41a901145d",
+      "observed_at": "2026-11-04T15:02:08.514Z",
+      "committed_at": "2026-11-04T15:02:10.523Z",
+      "latency_ms": 1990.12,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-23e968d9aefb5ac54c1d5856",
-      "observed_at": "2026-10-14T17:59:22.875Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 442020.87,
+      "round_id": "aviator-93384bb94e443f730a8aae4d",
+      "observed_at": "2026-11-04T15:02:27.471Z",
+      "committed_at": "2026-11-04T15:02:28.425Z",
+      "latency_ms": 949.18,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-0e03e97cf89c0c8806e9d521",
-      "observed_at": "2026-10-14T17:59:38.430Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 426308.85,
+      "round_id": "aviator-16279a9a199996111a0eec4a",
+      "observed_at": "2026-11-04T15:02:51.676Z",
+      "committed_at": "2026-11-04T15:02:53.464Z",
+      "latency_ms": 1743.68,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-59f27dd9787254540b99ff1e",
-      "observed_at": "2026-10-14T17:59:53.197Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 405509.32,
+      "round_id": "aviator-f2f19512e90f131977cb976b",
+      "observed_at": "2026-11-04T15:04:06.488Z",
+      "committed_at": "2026-11-04T15:04:09.268Z",
+      "latency_ms": 2740.77,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-39f51f0cd876cc041a9a682b",
-      "observed_at": "2026-10-14T18:00:09.233Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 395882.63,
+      "round_id": "aviator-c1d767dc7d9655c8d54eed38",
+      "observed_at": "2026-11-04T15:04:49.356Z",
+      "committed_at": "2026-11-04T15:04:51.916Z",
+      "latency_ms": 2503.64,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-06e9feb6b2168e138a22fc0d",
-      "observed_at": "2026-10-14T18:01:08.035Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 336057.85,
+      "round_id": "aviator-e21dceb916c5e3ed626c4704",
+      "observed_at": "2026-11-04T15:05:04.042Z",
+      "committed_at": "2026-11-04T15:05:05.615Z",
+      "latency_ms": 1558.9,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-5d9e7149c281aa8b77c70360",
-      "observed_at": "2026-10-14T18:01:28.371Z",
-      "committed_at": "2026-10-14T18:06:45.141Z",
-      "latency_ms": 301684.19,
+      "round_id": "aviator-48415cb06b87abf7ba995342",
+      "observed_at": "2026-11-04T15:05:15.720Z",
+      "committed_at": "2026-11-04T15:05:17.269Z",
+      "latency_ms": 1437.42,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-b94177aa8cc6132c9a38c786",
-      "observed_at": "2026-10-14T18:02:16.208Z",
-      "committed_at": "2026-10-14T18:06:47.964Z",
-      "latency_ms": 271712.47,
+      "round_id": "aviator-d4ba22eb4a000483da9fbaa1",
+      "observed_at": "2026-11-04T15:05:28.500Z",
+      "committed_at": "2026-11-04T15:05:29.936Z",
+      "latency_ms": 1394.1,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-2634fb1d7d156b29c6feeb9c",
-      "observed_at": "2026-10-14T18:02:32.652Z",
-      "committed_at": "2026-10-14T18:06:47.964Z",
-      "latency_ms": 241367.88,
+      "round_id": "aviator-9220f3637b038e103e41cab4",
+      "observed_at": "2026-11-04T15:05:41.275Z",
+      "committed_at": "2026-11-04T15:05:42.425Z",
+      "latency_ms": 1116.56,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-0b32b696cddd09b0ec2004ec",
-      "observed_at": "2026-10-14T18:03:00.854Z",
-      "committed_at": "2026-10-14T18:06:47.964Z",
-      "latency_ms": 227040.25,
+      "round_id": "aviator-372c4cd70108e8908fc58102",
+      "observed_at": "2026-11-04T15:06:02.002Z",
+      "committed_at": "2026-11-04T15:06:03.219Z",
+      "latency_ms": 1174.31,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-d8f2c2da3f1bd8513cbd597d",
-      "observed_at": "2026-10-14T18:06:00.864Z",
-      "committed_at": "2026-10-14T18:06:47.964Z",
-      "latency_ms": 47007.99,
+      "round_id": "aviator-1b95e993759301b6a1028da9",
+      "observed_at": "2026-11-04T15:06:12.986Z",
+      "committed_at": "2026-11-04T15:06:14.394Z",
+      "latency_ms": 1378.75,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-bafcf7c92fcdce50b61c65d9",
-      "observed_at": "2026-10-14T18:06:00.864Z",
-      "committed_at": "2026-10-14T18:06:47.964Z",
-      "latency_ms": 47007.99,
+      "round_id": "aviator-64549abd023dcb5e184dbeec",
+      "observed_at": "2026-11-04T15:06:24.382Z",
+      "committed_at": "2026-11-04T15:06:26.367Z",
+      "latency_ms": 1957.33,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-c5d95e4d2e25c23653853035",
-      "observed_at": "2026-10-14T18:06:00.864Z",
-      "committed_at": "2026-10-14T18:06:47.964Z",
-      "latency_ms": 47007.99,
+      "round_id": "aviator-562dbe71e71b1503e8112581",
+      "observed_at": "2026-11-04T15:06:36.004Z",
+      "committed_at": "2026-11-04T15:06:37.451Z",
+      "latency_ms": 1399.56,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-39e115804a19f365119731c0",
-      "observed_at": "2026-10-14T18:06:00.864Z",
-      "committed_at": "2026-10-14T18:06:47.964Z",
-      "latency_ms": 47007.99,
+      "round_id": "aviator-37923b4f201b808cdbfe2b1d",
+      "observed_at": "2026-11-04T15:06:53.164Z",
+      "committed_at": "2026-11-04T15:06:55.210Z",
+      "latency_ms": 2018.89,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-60de71292da1c9642f3c2f75",
-      "observed_at": "2026-10-14T18:06:00.864Z",
-      "committed_at": "2026-10-14T18:06:47.964Z",
-      "latency_ms": 47007.99,
+      "round_id": "aviator-5f5223322d49cdf82a430ed1",
+      "observed_at": "2026-11-04T15:07:32.531Z",
+      "committed_at": "2026-11-04T15:07:35.033Z",
+      "latency_ms": 2479.28,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-b06dfb94ebc3ec8a15160e64",
-      "observed_at": "2026-10-14T18:06:05.935Z",
-      "committed_at": "2026-10-14T18:06:47.964Z",
-      "latency_ms": 41776.06,
+      "round_id": "aviator-3e38fc7733321be2807942c8",
+      "observed_at": "2026-11-04T15:07:48.422Z",
+      "committed_at": "2026-11-04T15:07:49.546Z",
+      "latency_ms": 1103.52,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-35f69890229a9bf3e73e7491",
-      "observed_at": "2026-10-14T18:06:28.788Z",
-      "committed_at": "2026-10-14T18:06:47.964Z",
-      "latency_ms": 12236.44,
+      "round_id": "aviator-a1e9c1bb7cb16a926308325f",
+      "observed_at": "2026-11-04T15:08:07.114Z",
+      "committed_at": "2026-11-04T15:08:08.480Z",
+      "latency_ms": 1347.58,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-8500f228bc96b102e2d1f1b8",
-      "observed_at": "2026-10-14T18:06:51.139Z",
-      "committed_at": "2026-10-14T18:07:05.060Z",
-      "latency_ms": 13811.52,
+      "round_id": "aviator-deebfb30146c00cde6a7bff1",
+      "observed_at": "2026-11-04T15:08:51.338Z",
+      "committed_at": "2026-11-04T15:08:52.955Z",
+      "latency_ms": 1575.47,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-b3c70896c23a348118de8e08",
-      "observed_at": "2026-10-14T18:07:10.656Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 748369.2,
+      "round_id": "aviator-c6a6b6b18814028988a9941b",
+      "observed_at": "2026-11-04T15:09:40.384Z",
+      "committed_at": "2026-11-04T15:09:42.374Z",
+      "latency_ms": 1970.06,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-37792dcc7c26a4a228dff364",
-      "observed_at": "2026-10-14T18:07:40.679Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 693493.23,
+      "round_id": "aviator-70ac5c07e13b423fe216931d",
+      "observed_at": "2026-11-04T15:10:01.202Z",
+      "committed_at": "2026-11-04T15:10:04.134Z",
+      "latency_ms": 2889.36,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-1bf04db641c9a39c53634cf0",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-bd39f7656f3c260d49436662",
+      "observed_at": "2026-11-04T15:10:59.350Z",
+      "committed_at": "2026-11-04T15:11:00.488Z",
+      "latency_ms": 1108.13,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-42abb1b413ac4cccfe38336f",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-7d55d3a66b3f3527f32a2577",
+      "observed_at": "2026-11-04T15:11:46.489Z",
+      "committed_at": "2026-11-04T15:11:48.110Z",
+      "latency_ms": 1579.15,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-1ecc1215c270e7abdd1d2adc",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-9568355c2a83c9b6c769d90a",
+      "observed_at": "2026-11-04T15:12:02.171Z",
+      "committed_at": "2026-11-04T15:12:03.606Z",
+      "latency_ms": 1423.88,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-bb0f7d92f8063d38c12d912a",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-5dd82d0383c91a6b91decd35",
+      "observed_at": "2026-11-04T15:12:17.224Z",
+      "committed_at": "2026-11-04T15:12:19.022Z",
+      "latency_ms": 1780.78,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-b40123d338ca33f14ad7a471",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-c51ff39c7bd2bf14f17b22b9",
+      "observed_at": "2026-11-04T15:12:49.225Z",
+      "committed_at": "2026-11-04T15:12:50.673Z",
+      "latency_ms": 1422.32,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-73952df88f83e09f5614e593",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-1ccffefd63cd10a0b8022b01",
+      "observed_at": "2026-11-04T15:13:02.210Z",
+      "committed_at": "2026-11-04T15:13:04.779Z",
+      "latency_ms": 2507.07,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-befc4a2da52b4d0ec3682646",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-d7440a22e32d84a069340b65",
+      "observed_at": "2026-11-04T15:13:13.775Z",
+      "committed_at": "2026-11-04T15:13:14.930Z",
+      "latency_ms": 1068.12,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-884936b0c3f170c6cc23e262",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-195bcd2fca8adc60513a9e22",
+      "observed_at": "2026-11-04T15:13:36.146Z",
+      "committed_at": "2026-11-04T15:13:37.778Z",
+      "latency_ms": 1563.86,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-ab430072902b99e382b40eba",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-bba48aafb3b2ff15092fa612",
+      "observed_at": "2026-11-04T15:13:53.362Z",
+      "committed_at": "2026-11-04T15:13:54.248Z",
+      "latency_ms": 881.25,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-ae0f5124047546c71439b18d",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-7bf899721dc1f0a751670b8c",
+      "observed_at": "2026-11-04T15:14:48.835Z",
+      "committed_at": "2026-11-04T15:14:49.716Z",
+      "latency_ms": 810.38,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-48d04adbfed56851e5ced898",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-f9c86557c650cb51ee01b3ad",
+      "observed_at": "2026-11-04T15:15:07.443Z",
+      "committed_at": "2026-11-04T15:15:09.312Z",
+      "latency_ms": 1813.37,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-df40684b23dae7d1fcbe1fc7",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-d32e6a33564c67a40bd2b22a",
+      "observed_at": "2026-11-04T15:15:20.542Z",
+      "committed_at": "2026-11-04T15:15:24.178Z",
+      "latency_ms": 3607.55,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-452248ef2f92cf5bff938479",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-d42801591f18b2767aa8e44c",
+      "observed_at": "2026-11-04T15:15:44.059Z",
+      "committed_at": "2026-11-04T15:15:46.934Z",
+      "latency_ms": 2634.03,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-887ed931634f4e1448a1bc63",
-      "observed_at": "2026-10-14T18:14:14.661Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 339110.44,
+      "round_id": "aviator-2d94d823bebb6fcb8535aa4d",
+      "observed_at": "2026-11-04T15:16:08.373Z",
+      "committed_at": "2026-11-04T15:16:10.953Z",
+      "latency_ms": 2552.49,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-496ac3d0cc78a8465bf98d27",
-      "observed_at": "2026-10-14T18:14:18.092Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 335678.79,
+      "round_id": "aviator-a2bbf09b38b29b8cfd0d1848",
+      "observed_at": "2026-11-04T15:16:26.062Z",
+      "committed_at": "2026-11-04T15:16:27.954Z",
+      "latency_ms": 1858.12,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-2e3d27b3a9e1fccbe14d1014",
-      "observed_at": "2026-10-14T18:14:50.322Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 302048.72,
+      "round_id": "aviator-b98c138c021aaf8b508ba7bd",
+      "observed_at": "2026-11-04T15:16:52.344Z",
+      "committed_at": "2026-11-04T15:16:53.915Z",
+      "latency_ms": 1552.54,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-1f7e9f52cba612d3215d0812",
-      "observed_at": "2026-10-14T18:15:37.886Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 247467.22,
+      "round_id": "aviator-aa2979e0467102cbdd91a553",
+      "observed_at": "2026-11-04T15:17:05.430Z",
+      "committed_at": "2026-11-04T15:17:06.692Z",
+      "latency_ms": 1093.17,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-fb618eaa6037a033d3acb109",
-      "observed_at": "2026-10-14T18:16:16.446Z",
-      "committed_at": "2026-10-14T18:19:53.914Z",
-      "latency_ms": 217389.19,
+      "round_id": "aviator-e2fb3428e7492876e9e9a0bc",
+      "observed_at": "2026-11-04T15:17:22.228Z",
+      "committed_at": "2026-11-04T15:17:23.432Z",
+      "latency_ms": 1139.01,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-ee50f1e23095bf5add757661",
-      "observed_at": "2026-10-14T18:16:16.446Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 220779.15,
+      "round_id": "aviator-0d5f6a3c0b48d652c76e142a",
+      "observed_at": "2026-11-04T15:17:55.491Z",
+      "committed_at": "2026-11-04T15:17:57.475Z",
+      "latency_ms": 1933.35,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-10a2e4c96e129e607d029998",
-      "observed_at": "2026-10-14T18:16:24.171Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 213083.73,
+      "round_id": "aviator-944ef0ac380b758d4791911d",
+      "observed_at": "2026-11-04T15:18:16.132Z",
+      "committed_at": "2026-11-04T15:18:19.200Z",
+      "latency_ms": 3035.82,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-c1526a7b0d8b5a09a8767d31",
-      "observed_at": "2026-10-14T18:16:37.219Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 199631.13,
+      "round_id": "aviator-cb31612e91547bdeb6bb46c8",
+      "observed_at": "2026-11-04T15:18:28.651Z",
+      "committed_at": "2026-11-04T15:18:32.061Z",
+      "latency_ms": 3390.25,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-35862f0f90d29e9a657f21a5",
-      "observed_at": "2026-10-14T18:17:00.838Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 173510.96,
+      "round_id": "aviator-816c08a3eb1e3865ddd55037",
+      "observed_at": "2026-11-04T15:18:43.325Z",
+      "committed_at": "2026-11-04T15:18:44.845Z",
+      "latency_ms": 1486.83,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-e6b8b4e462272dfe11428dc6",
-      "observed_at": "2026-10-14T18:17:16.617Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 143842.15,
+      "round_id": "aviator-319709a48c1330e4cf9eb10b",
+      "observed_at": "2026-11-04T15:19:05.125Z",
+      "committed_at": "2026-11-04T15:19:07.003Z",
+      "latency_ms": 1680.4,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-c63af332c6e3289a6276e143",
-      "observed_at": "2026-10-14T18:17:38.226Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 131472.55,
+      "round_id": "aviator-e7fa2369117e46752dc26b89",
+      "observed_at": "2026-11-04T15:19:37.015Z",
+      "committed_at": "2026-11-04T15:19:38.078Z",
+      "latency_ms": 964.5,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-ec8f59059eec3909aa0b3b83",
-      "observed_at": "2026-10-14T18:18:48.877Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 68314.62,
+      "round_id": "aviator-ba747d89579b1be3141f3f05",
+      "observed_at": "2026-11-04T15:20:07.336Z",
+      "committed_at": "2026-11-04T15:20:09.086Z",
+      "latency_ms": 1707.19,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-f24e184407fe1ed02edfe85d",
-      "observed_at": "2026-10-14T18:18:48.877Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 68314.62,
+      "round_id": "aviator-b51e6aeb6b5a5de2c52d4486",
+      "observed_at": "2026-11-04T15:21:00.203Z",
+      "committed_at": "2026-11-04T15:21:02.561Z",
+      "latency_ms": 2320.13,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-14c96549ac3fefa0e39734d4",
-      "observed_at": "2026-10-14T18:18:48.877Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 68314.62,
+      "round_id": "aviator-61092f5dd61861e975a1af78",
+      "observed_at": "2026-11-04T15:21:28.081Z",
+      "committed_at": "2026-11-04T15:21:30.789Z",
+      "latency_ms": 2675.46,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-3b408d959f85465b0f346d53",
-      "observed_at": "2026-10-14T18:19:01.410Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 55804.3,
+      "round_id": "aviator-cbfc4f93cdad593158de9020",
+      "observed_at": "2026-11-04T15:21:41.416Z",
+      "committed_at": "2026-11-04T15:21:42.874Z",
+      "latency_ms": 1365.98,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-3a83d441b2a03505b0a214bf",
-      "observed_at": "2026-10-14T18:19:37.149Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 17464.39,
+      "round_id": "aviator-f602cdaa485c88412d3a6000",
+      "observed_at": "2026-11-04T15:22:14.825Z",
+      "committed_at": "2026-11-04T15:22:19.255Z",
+      "latency_ms": 4319.08,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-277f27bced6524628d7c48e7",
-      "observed_at": "2026-10-14T18:19:50.019Z",
-      "committed_at": "2026-10-14T18:19:57.304Z",
-      "latency_ms": 7166.72,
+      "round_id": "aviator-487c22c8e6009447da43071f",
+      "observed_at": "2026-11-04T15:23:00.023Z",
+      "committed_at": "2026-11-04T15:23:01.234Z",
+      "latency_ms": 1185.23,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-1685c9e38b3b81e0995d16e8",
-      "observed_at": "2026-10-14T18:21:04.318Z",
-      "committed_at": "2026-10-14T18:22:36.385Z",
-      "latency_ms": 91910.5,
+      "round_id": "aviator-e64da9ae1ac9daf7ac0416ea",
+      "observed_at": "2026-11-04T15:23:14.394Z",
+      "committed_at": "2026-11-04T15:23:15.798Z",
+      "latency_ms": 1375.73,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-313f423c8b732083fe69dc61",
-      "observed_at": "2026-10-14T18:22:01.532Z",
-      "committed_at": "2026-10-14T18:22:36.385Z",
-      "latency_ms": 26710.56,
+      "round_id": "aviator-75e713df128636720375c3f4",
+      "observed_at": "2026-11-04T15:23:26.680Z",
+      "committed_at": "2026-11-04T15:23:28.380Z",
+      "latency_ms": 1634.53,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-96a680c9aa78264d0bfc9d08",
-      "observed_at": "2026-10-14T18:22:22.535Z",
-      "committed_at": "2026-10-14T18:22:36.385Z",
-      "latency_ms": 5127.11,
+      "round_id": "aviator-6e2e783c758d196d851daf80",
+      "observed_at": "2026-11-04T15:23:39.068Z",
+      "committed_at": "2026-11-04T15:23:40.056Z",
+      "latency_ms": 810.28,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-ea3f48940e5b2c608b491b82",
-      "observed_at": "2026-10-14T18:22:51.282Z",
-      "committed_at": "2026-10-14T18:23:56.827Z",
-      "latency_ms": 65391.57,
+      "round_id": "aviator-0a4e97a6a72aa95c5a5e2ad0",
+      "observed_at": "2026-11-04T15:23:59.638Z",
+      "committed_at": "2026-11-04T15:24:00.574Z",
+      "latency_ms": 892.07,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-46c0cf0b117cedea53551f04",
-      "observed_at": "2026-10-14T18:23:32.672Z",
-      "committed_at": "2026-10-14T18:23:56.827Z",
-      "latency_ms": 18974.79,
+      "round_id": "aviator-d64c8f650ac81527a9ab1585",
+      "observed_at": "2026-11-04T15:24:14.240Z",
+      "committed_at": "2026-11-04T15:24:15.720Z",
+      "latency_ms": 1429.49,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-201f5a20bd2475e6cf313c0a",
-      "observed_at": "2026-10-14T18:24:20.156Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 281966.1,
+      "round_id": "aviator-6635986ba147dd51e1fd1f56",
+      "observed_at": "2026-11-04T15:25:17.751Z",
+      "committed_at": "2026-11-04T15:25:18.662Z",
+      "latency_ms": 813.57,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-2d1251c71ae1dbfce5652ad4",
-      "observed_at": "2026-10-14T18:24:35.345Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 266626.55,
+      "round_id": "aviator-e059c1b2aebf947bb4cb1f0d",
+      "observed_at": "2026-11-04T15:25:47.907Z",
+      "committed_at": "2026-11-04T15:25:50.298Z",
+      "latency_ms": 1951.6,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-af3489aadc98ea153b497fb8",
-      "observed_at": "2026-10-14T18:28:44.481Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 23036.18,
+      "round_id": "aviator-eab7767456e7a186b37725a1",
+      "observed_at": "2026-11-04T15:26:09.976Z",
+      "committed_at": "2026-11-04T15:26:12.685Z",
+      "latency_ms": 2670.11,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-26e078ee510b9f13a2fbe5ad",
-      "observed_at": "2026-10-14T18:28:44.481Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 23036.18,
+      "round_id": "aviator-af8455baa1806763c36b3135",
+      "observed_at": "2026-11-04T15:26:23.859Z",
+      "committed_at": "2026-11-04T15:26:24.795Z",
+      "latency_ms": 899.13,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-fbd2246d6a9c92663388596c",
-      "observed_at": "2026-10-14T18:28:44.481Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 23036.18,
+      "round_id": "aviator-8a122269a27cef9dbbe419e7",
+      "observed_at": "2026-11-04T15:26:49.909Z",
+      "committed_at": "2026-11-04T15:26:51.378Z",
+      "latency_ms": 1373.55,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-616e123b140ef388af5f099c",
-      "observed_at": "2026-10-14T18:28:44.481Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 23036.18,
+      "round_id": "aviator-a105e7db755e455fe479b9be",
+      "observed_at": "2026-11-04T15:27:17.127Z",
+      "committed_at": "2026-11-04T15:27:18.417Z",
+      "latency_ms": 1266.5,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-2a33d7e1d99ea576ee35230c",
-      "observed_at": "2026-10-14T18:28:44.481Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 23036.18,
+      "round_id": "aviator-c437a1899040b3af337cdcd4",
+      "observed_at": "2026-11-04T15:27:32.449Z",
+      "committed_at": "2026-11-04T15:27:33.770Z",
+      "latency_ms": 1290,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-5dd4cea23c315463d6351c4c",
-      "observed_at": "2026-10-14T18:28:44.481Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 23036.18,
+      "round_id": "aviator-f0b30d697aec15274d597843",
+      "observed_at": "2026-11-04T15:27:48.229Z",
+      "committed_at": "2026-11-04T15:27:49.672Z",
+      "latency_ms": 1409.91,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-03d65e5e4b65ec2340b102f5",
-      "observed_at": "2026-10-14T18:28:44.481Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 23036.18,
+      "round_id": "aviator-fa1623c57a53ec2d701f3a49",
+      "observed_at": "2026-11-04T15:28:02.004Z",
+      "committed_at": "2026-11-04T15:28:03.744Z",
+      "latency_ms": 1543.37,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-0551cfbc44f088675a9124a6",
-      "observed_at": "2026-10-14T18:28:44.481Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 23036.18,
+      "round_id": "aviator-2bb2f33be3086d79cc669c25",
+      "observed_at": "2026-11-04T15:28:34.207Z",
+      "committed_at": "2026-11-04T15:28:37.292Z",
+      "latency_ms": 2994.68,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-dadddc1274cb7e4f8e6ec3de",
-      "observed_at": "2026-10-14T18:28:50.526Z",
-      "committed_at": "2026-10-14T18:29:07.571Z",
-      "latency_ms": 13207.83,
+      "round_id": "aviator-4848afe19dae46b9e593bcf5",
+      "observed_at": "2026-11-04T15:28:50.846Z",
+      "committed_at": "2026-11-04T15:28:52.248Z",
+      "latency_ms": 1265.4,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-49b94e922f369438be18c53a",
-      "observed_at": "2026-10-14T18:29:16.916Z",
-      "committed_at": "2026-10-14T18:29:21.088Z",
-      "latency_ms": 4150.22,
+      "round_id": "aviator-65852625a9c10eef33fa4afe",
+      "observed_at": "2026-11-04T15:29:06.442Z",
+      "committed_at": "2026-11-04T15:29:08.217Z",
+      "latency_ms": 1697.61,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-2c2d2bfe1d013229b165b9a0",
-      "observed_at": "2026-10-14T18:29:38.111Z",
-      "committed_at": "2026-10-14T18:29:42.931Z",
-      "latency_ms": 4807.27,
+      "round_id": "aviator-f93ae6f4d7eec85b8cca53b8",
+      "observed_at": "2026-11-04T15:29:23.077Z",
+      "committed_at": "2026-11-04T15:29:25.455Z",
+      "latency_ms": 2292.2,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-4909442c52b189e6b9b5cf70",
-      "observed_at": "2026-10-14T18:29:52.873Z",
-      "committed_at": "2026-10-14T18:29:56.096Z",
-      "latency_ms": 2981.9,
+      "round_id": "aviator-34b63d1f934b9924a5cbe401",
+      "observed_at": "2026-11-04T15:29:43.775Z",
+      "committed_at": "2026-11-04T15:29:45.611Z",
+      "latency_ms": 1760.43,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-1b766dadea812b4c446e97cb",
-      "observed_at": "2026-10-14T18:30:26.699Z",
-      "committed_at": "2026-10-14T18:30:29.293Z",
-      "latency_ms": 2581.59,
+      "round_id": "aviator-f661fae9e55216dc680c15c2",
+      "observed_at": "2026-11-04T15:29:57.413Z",
+      "committed_at": "2026-11-04T15:29:59.165Z",
+      "latency_ms": 1620.09,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-3efc2af8524238b726f66ebf",
-      "observed_at": "2026-10-14T18:30:53.829Z",
-      "committed_at": "2026-10-14T18:30:55.715Z",
-      "latency_ms": 1848.25,
+      "round_id": "aviator-58400b6c444e5ff013316f18",
+      "observed_at": "2026-11-04T15:30:24.082Z",
+      "committed_at": "2026-11-04T15:30:25.047Z",
+      "latency_ms": 891.3,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-652cdbe484c02d471f54c119",
-      "observed_at": "2026-10-14T18:31:39.834Z",
-      "committed_at": "2026-10-14T18:31:43.338Z",
-      "latency_ms": 3462.83,
+      "round_id": "aviator-5c4cfc0a10d3db4764436eeb",
+      "observed_at": "2026-11-04T15:30:44.540Z",
+      "committed_at": "2026-11-04T15:30:45.547Z",
+      "latency_ms": 975.35,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-5006faf3873266a7c4fca22d",
-      "observed_at": "2026-10-14T18:32:03.255Z",
-      "committed_at": "2026-10-14T18:32:06.710Z",
-      "latency_ms": 3418.07,
+      "round_id": "aviator-c7f1059fbf853d8626272c81",
+      "observed_at": "2026-11-04T15:31:09.836Z",
+      "committed_at": "2026-11-04T15:31:11.196Z",
+      "latency_ms": 1286.07,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-642ac74c8f4925a9538772ea",
-      "observed_at": "2026-10-14T18:32:34.698Z",
-      "committed_at": "2026-10-14T18:32:39.195Z",
-      "latency_ms": 4478.77,
+      "round_id": "aviator-86085ce7be70c988ea704a5d",
+      "observed_at": "2026-11-04T15:31:44.561Z",
+      "committed_at": "2026-11-04T15:31:46.589Z",
+      "latency_ms": 1970.92,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-4d84fddae4506150cb250539",
-      "observed_at": "2026-10-14T18:34:40.960Z",
-      "committed_at": "2026-10-14T18:34:44.386Z",
-      "latency_ms": 3340.12,
+      "round_id": "aviator-a0fffeb6630d2853de216c59",
+      "observed_at": "2026-11-04T15:32:08.418Z",
+      "committed_at": "2026-11-04T15:32:10.314Z",
+      "latency_ms": 1745.25,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-d3fc1dad9c57257313872595",
-      "observed_at": "2026-10-14T18:34:40.960Z",
-      "committed_at": "2026-10-14T18:34:44.386Z",
-      "latency_ms": 3340.12,
+      "round_id": "aviator-65f055dda860a3c107a67e64",
+      "observed_at": "2026-11-04T15:32:24.284Z",
+      "committed_at": "2026-11-04T15:32:26.778Z",
+      "latency_ms": 2283.88,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-667828b6d13ed15fa90b9fd1",
-      "observed_at": "2026-10-14T18:34:40.960Z",
-      "committed_at": "2026-10-14T18:34:44.386Z",
-      "latency_ms": 3340.12,
+      "round_id": "aviator-f765fe937037d091e2ddd003",
+      "observed_at": "2026-11-04T15:33:25.957Z",
+      "committed_at": "2026-11-04T15:33:27.868Z",
+      "latency_ms": 1873.3,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-95b0100c55fa60d9e4e5d8fb",
-      "observed_at": "2026-10-14T18:34:40.960Z",
-      "committed_at": "2026-10-14T18:34:44.386Z",
-      "latency_ms": 3340.12,
+      "round_id": "aviator-d59821f06e616f98b5586ecd",
+      "observed_at": "2026-11-04T15:34:33.285Z",
+      "committed_at": "2026-11-04T15:34:35.508Z",
+      "latency_ms": 2166.69,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-3cc283d36ad4834fb98a3bf9",
-      "observed_at": "2026-10-14T18:34:41.490Z",
-      "committed_at": "2026-10-14T18:34:44.386Z",
-      "latency_ms": 2509.99,
+      "round_id": "aviator-4c3a4cad7b8418c58a7dbe82",
+      "observed_at": "2026-11-04T15:34:59.226Z",
+      "committed_at": "2026-11-04T15:35:01.186Z",
+      "latency_ms": 1911.52,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-975a1e31475ad36112f2c254",
-      "observed_at": "2026-10-14T18:35:05.897Z",
-      "committed_at": "2026-10-14T18:35:08.784Z",
-      "latency_ms": 2778.15,
+      "round_id": "aviator-46879e49140b08e65571d840",
+      "observed_at": "2026-11-04T15:35:49.582Z",
+      "committed_at": "2026-11-04T15:35:51.640Z",
+      "latency_ms": 2001.48,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-c6d386bef00acb067b130d86",
-      "observed_at": "2026-10-14T18:35:25.345Z",
-      "committed_at": "2026-10-14T18:35:28.345Z",
-      "latency_ms": 2864.66,
+      "round_id": "aviator-1fb00557581d62136cae8e90",
+      "observed_at": "2026-11-04T15:36:04.539Z",
+      "committed_at": "2026-11-04T15:36:05.760Z",
+      "latency_ms": 1050.65,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-11cd9899fe5b46a9dbc6c567",
-      "observed_at": "2026-10-14T18:35:56.765Z",
-      "committed_at": "2026-10-14T18:36:00.162Z",
-      "latency_ms": 3155.48,
+      "round_id": "aviator-95b0c403bb95d0e8c3bcb1f2",
+      "observed_at": "2026-11-04T15:36:22.139Z",
+      "committed_at": "2026-11-04T15:36:23.755Z",
+      "latency_ms": 1583.2,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-7aefda329bb9c3590aea5ee0",
-      "observed_at": "2026-10-14T18:36:13.517Z",
-      "committed_at": "2026-10-14T18:36:15.780Z",
-      "latency_ms": 2243.96,
+      "round_id": "aviator-171dfd346bd03c0c3712cd0c",
+      "observed_at": "2026-11-04T15:36:44.737Z",
+      "committed_at": "2026-11-04T15:36:45.824Z",
+      "latency_ms": 1070.75,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-72e4877c2e341d17b29a2f49",
-      "observed_at": "2026-10-14T18:36:29.571Z",
-      "committed_at": "2026-10-14T18:37:06.868Z",
-      "latency_ms": 37282.4,
+      "round_id": "aviator-4efe18a4b2ea58f9a002f1d6",
+      "observed_at": "2026-11-04T15:37:21.379Z",
+      "committed_at": "2026-11-04T15:37:23.113Z",
+      "latency_ms": 1667.44,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-8c2a69d1732c5aeb966f89dd",
-      "observed_at": "2026-10-14T18:36:48.334Z",
-      "committed_at": "2026-10-14T18:37:06.868Z",
-      "latency_ms": 18460.13,
+      "round_id": "aviator-577c3776254b6f75becfb7c5",
+      "observed_at": "2026-11-04T15:37:51.003Z",
+      "committed_at": "2026-11-04T15:37:52.549Z",
+      "latency_ms": 1491.64,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-3d16b18fb1877d3c6e439f5f",
-      "observed_at": "2026-10-14T18:37:12.209Z",
-      "committed_at": "2026-10-14T18:37:19.547Z",
-      "latency_ms": 7302.54,
+      "round_id": "aviator-652f56ef69daa7b8ac482d30",
+      "observed_at": "2026-11-04T15:38:14.695Z",
+      "committed_at": "2026-11-04T15:38:16.902Z",
+      "latency_ms": 2155.67,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-5aac2cbffd5fc3c0a411e254",
-      "observed_at": "2026-10-14T18:37:31.810Z",
-      "committed_at": "2026-10-14T18:37:34.642Z",
-      "latency_ms": 2796.41,
+      "round_id": "aviator-b7a220a824560c01de4606f0",
+      "observed_at": "2026-11-04T15:38:40.898Z",
+      "committed_at": "2026-11-04T15:38:43.569Z",
+      "latency_ms": 2532.04,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-360350371f67e386263e2a9b",
-      "observed_at": "2026-10-14T18:38:03.507Z",
-      "committed_at": "2026-10-14T18:38:04.818Z",
-      "latency_ms": 1284.74,
+      "round_id": "aviator-090ddf46d407edb374549fb9",
+      "observed_at": "2026-11-04T15:40:02.084Z",
+      "committed_at": "2026-11-04T15:40:06.246Z",
+      "latency_ms": 4134.26,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-63ad4300d9716dceee20d2f1",
-      "observed_at": "2026-10-14T18:38:32.356Z",
-      "committed_at": "2026-10-14T18:38:36.017Z",
-      "latency_ms": 3632.38,
+      "round_id": "aviator-d18da9eaeb8f38dfa04556c9",
+      "observed_at": "2026-11-04T15:40:18.771Z",
+      "committed_at": "2026-11-04T15:40:20.854Z",
+      "latency_ms": 2050.35,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-282df9eb365e42fc943ff2f2",
-      "observed_at": "2026-10-14T18:38:57.176Z",
-      "committed_at": "2026-10-14T18:38:58.290Z",
-      "latency_ms": 1053.21,
+      "round_id": "aviator-f5e9ec22ac4fc10bbc0802ea",
+      "observed_at": "2026-11-04T15:41:07.207Z",
+      "committed_at": "2026-11-04T15:41:08.154Z",
+      "latency_ms": 913.11,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-ab4195752427660bc2732dfe",
-      "observed_at": "2026-10-14T18:39:39.136Z",
-      "committed_at": "2026-10-14T18:39:43.315Z",
-      "latency_ms": 4151.16,
+      "round_id": "aviator-416e2f2b043bea0e27068ff0",
+      "observed_at": "2026-11-04T15:41:33.385Z",
+      "committed_at": "2026-11-04T15:41:35.495Z",
+      "latency_ms": 2079.93,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-bc36bc1594cf18bf1df95780",
-      "observed_at": "2026-10-14T18:40:05.958Z",
-      "committed_at": "2026-10-14T18:40:08.992Z",
-      "latency_ms": 3018.44,
+      "round_id": "aviator-1ca16c3233f99e6263bb833e",
+      "observed_at": "2026-11-04T15:41:47.192Z",
+      "committed_at": "2026-11-04T15:41:48.600Z",
+      "latency_ms": 1374.87,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-f43cda21aa913e0ae0b778ac",
-      "observed_at": "2026-10-14T18:40:48.129Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 428839.82,
+      "round_id": "aviator-5c358f506ba2b94be65b23ad",
+      "observed_at": "2026-11-04T15:42:02.072Z",
+      "committed_at": "2026-11-04T15:42:03.878Z",
+      "latency_ms": 1764.06,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-0ba06c6040cb4f25ac8c5362",
-      "observed_at": "2026-10-14T18:43:07.928Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 289026.42,
+      "round_id": "aviator-0d2d9d51280258e04806ed69",
+      "observed_at": "2026-11-04T15:42:31.913Z",
+      "committed_at": "2026-11-04T15:42:33.445Z",
+      "latency_ms": 1325.16,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-05576f33041d27d1573fd1af",
-      "observed_at": "2026-10-14T18:43:07.928Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 289026.42,
+      "round_id": "aviator-b7853b82d8305957e07cb5f9",
+      "observed_at": "2026-11-04T15:42:49.100Z",
+      "committed_at": "2026-11-04T15:42:49.962Z",
+      "latency_ms": 780.48,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-32c73dea2839d3bfb2bc0f61",
-      "observed_at": "2026-10-14T18:43:07.928Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 289026.42,
+      "round_id": "aviator-771994017775e579cdff5000",
+      "observed_at": "2026-11-04T15:43:12.616Z",
+      "committed_at": "2026-11-04T15:43:13.454Z",
+      "latency_ms": 772.2,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-3208b1aacae29561c8045ec4",
-      "observed_at": "2026-10-14T18:43:07.928Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 289026.42,
+      "round_id": "aviator-47deed1bd9ac18e82e75c374",
+      "observed_at": "2026-11-04T15:43:27.052Z",
+      "committed_at": "2026-11-04T15:43:28.144Z",
+      "latency_ms": 958.14,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-54026ad89a40d0205ece31e0",
-      "observed_at": "2026-10-14T18:43:16.300Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 280661.48,
+      "round_id": "aviator-db115a0bfb544ef248d2a8bc",
+      "observed_at": "2026-11-04T15:43:41.606Z",
+      "committed_at": "2026-11-04T15:43:44.540Z",
+      "latency_ms": 2728.96,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-7e7f5d94c753a2bdafbcf191",
-      "observed_at": "2026-10-14T18:43:45.525Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 251430.75,
+      "round_id": "aviator-4ceba224fedb3a56ffd63c44",
+      "observed_at": "2026-11-04T15:43:56.336Z",
+      "committed_at": "2026-11-04T15:43:57.583Z",
+      "latency_ms": 1140.66,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-e7f63581edafa7918bee3dc2",
-      "observed_at": "2026-10-14T18:44:22.012Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 214948.5,
+      "round_id": "aviator-b61674ba389b0135810953da",
+      "observed_at": "2026-11-04T15:44:16.721Z",
+      "committed_at": "2026-11-04T15:44:17.956Z",
+      "latency_ms": 1114.65,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-9587cd883a04a45986c97940",
-      "observed_at": "2026-10-14T18:44:46.518Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 190416.62,
+      "round_id": "aviator-ef32cd9930fdc4e8521463dd",
+      "observed_at": "2026-11-04T15:44:37.877Z",
+      "committed_at": "2026-11-04T15:44:40.522Z",
+      "latency_ms": 2611.22,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-3becf38225070ad057a21cbd",
-      "observed_at": "2026-10-14T18:45:15.278Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 161565.14,
+      "round_id": "aviator-176866fa03f9587ada96c5ed",
+      "observed_at": "2026-11-04T15:45:31.888Z",
+      "committed_at": "2026-11-04T15:45:34.992Z",
+      "latency_ms": 2999.52,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-18fdeb3ce6d62f85c722ea38",
-      "observed_at": "2026-10-14T18:45:40.445Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 136513.5,
+      "round_id": "aviator-14e38a66e212759bdee0e95a",
+      "observed_at": "2026-11-04T15:45:52.277Z",
+      "committed_at": "2026-11-04T15:45:55.621Z",
+      "latency_ms": 3309.86,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-a2a8395e29277a5975b2efa7",
-      "observed_at": "2026-10-14T18:45:56.412Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 120554.79,
+      "round_id": "aviator-409dcac5f9c7b8434a6ff3b0",
+      "observed_at": "2026-11-04T15:46:05.913Z",
+      "committed_at": "2026-11-04T15:46:08.142Z",
+      "latency_ms": 2203.91,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-e2d0e7db041040391012535c",
-      "observed_at": "2026-10-14T18:46:23.702Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 91389.7,
+      "round_id": "aviator-ee03290348b9fbe3a94a7dab",
+      "observed_at": "2026-11-04T15:46:26.418Z",
+      "committed_at": "2026-11-04T15:46:28.856Z",
+      "latency_ms": 2124.43,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-77f38657b0fab41ed73fada7",
-      "observed_at": "2026-10-14T18:46:40.469Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 76346.24,
+      "round_id": "aviator-2b436475cd982c7db0cd6098",
+      "observed_at": "2026-11-04T15:46:39.159Z",
+      "committed_at": "2026-11-04T15:46:40.812Z",
+      "latency_ms": 1635.58,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-de455c731db70218c85dec40",
-      "observed_at": "2026-10-14T18:46:56.364Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 60590.46,
+      "round_id": "aviator-3e64465031b40cf4045bf0b7",
+      "observed_at": "2026-11-04T15:46:51.557Z",
+      "committed_at": "2026-11-04T15:46:52.591Z",
+      "latency_ms": 1000.5,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-5ef010a731acadc4b4d18096",
-      "observed_at": "2026-10-14T18:47:25.100Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 31751.27,
+      "round_id": "aviator-4642bcfff54660f395bf43c4",
+      "observed_at": "2026-11-04T15:47:10.156Z",
+      "committed_at": "2026-11-04T15:47:11.868Z",
+      "latency_ms": 1691.85,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-162d8810cb0407b72da3bf96",
-      "observed_at": "2026-10-14T18:47:36.825Z",
-      "committed_at": "2026-10-14T18:47:56.984Z",
-      "latency_ms": 20011.2,
+      "round_id": "aviator-39ea4e73ccc019e8dbab559c",
+      "observed_at": "2026-11-04T15:48:34.075Z",
+      "committed_at": "2026-11-04T15:48:36.143Z",
+      "latency_ms": 1998.06,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-68cde523626fbd3ac2024ff9",
-      "observed_at": "2026-10-14T18:47:55.494Z",
-      "committed_at": "2026-10-14T18:48:00.083Z",
-      "latency_ms": 4504.04,
+      "round_id": "aviator-a9fa07e35146dc2f909ac5f5",
+      "observed_at": "2026-11-04T15:48:56.117Z",
+      "committed_at": "2026-11-04T15:48:57.591Z",
+      "latency_ms": 1304.48,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-54d0a07c360c9d55d2deb460",
-      "observed_at": "2026-10-14T18:48:27.201Z",
-      "committed_at": "2026-10-14T18:48:31.529Z",
-      "latency_ms": 4260.37,
+      "round_id": "aviator-0d15911d98fbb6e8982e1a2c",
+      "observed_at": "2026-11-04T15:49:16.967Z",
+      "committed_at": "2026-11-04T15:49:18.697Z",
+      "latency_ms": 1610.28,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-3c0be29198fc99ff61dc23fa",
-      "observed_at": "2026-10-14T18:48:41.661Z",
-      "committed_at": "2026-10-14T18:48:53.345Z",
-      "latency_ms": 11618.69,
+      "round_id": "aviator-d50957703fe983f7b26a52af",
+      "observed_at": "2026-11-04T15:49:41.815Z",
+      "committed_at": "2026-11-04T15:49:42.984Z",
+      "latency_ms": 1102.97,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-f6ace3c06bc8bcd444e761c2",
-      "observed_at": "2026-10-14T18:49:32.241Z",
-      "committed_at": "2026-10-14T18:49:37.923Z",
-      "latency_ms": 5418.52,
+      "round_id": "aviator-000a6bc137657637642f4a84",
+      "observed_at": "2026-11-04T15:49:58.656Z",
+      "committed_at": "2026-11-04T15:49:59.736Z",
+      "latency_ms": 1058.81,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-6bd8d8367b6570cb2da06a49",
-      "observed_at": "2026-10-14T18:49:44.635Z",
-      "committed_at": "2026-10-14T18:49:58.136Z",
-      "latency_ms": 13316.95,
+      "round_id": "aviator-910b2b3141e6b96a6acca9a5",
+      "observed_at": "2026-11-04T15:50:12.593Z",
+      "committed_at": "2026-11-04T15:50:14.463Z",
+      "latency_ms": 1835.2,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-7c4be8890b3d94db2d8bf5a9",
-      "observed_at": "2026-10-14T18:50:00.368Z",
-      "committed_at": "2026-10-14T18:50:06.267Z",
-      "latency_ms": 5788.75,
+      "round_id": "aviator-ba0da976f76f9aa63c9b4c72",
+      "observed_at": "2026-11-04T15:50:39.317Z",
+      "committed_at": "2026-11-04T15:50:40.653Z",
+      "latency_ms": 1290.88,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-91ad0c4104091979ef048c3c",
-      "observed_at": "2026-10-14T18:50:22.096Z",
-      "committed_at": "2026-10-14T18:50:28.392Z",
-      "latency_ms": 6201.41,
+      "round_id": "aviator-8a5c4a3d68747555595dab3e",
+      "observed_at": "2026-11-04T15:50:58.729Z",
+      "committed_at": "2026-11-04T15:50:59.625Z",
+      "latency_ms": 820.19,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-b95f7370f65dfe5306d83fdc",
-      "observed_at": "2026-10-14T18:50:51.197Z",
-      "committed_at": "2026-10-14T18:50:56.561Z",
-      "latency_ms": 5267.51,
+      "round_id": "aviator-44cccf716af876ed5b1136cd",
+      "observed_at": "2026-11-04T15:51:25.792Z",
+      "committed_at": "2026-11-04T15:51:26.568Z",
+      "latency_ms": 625.86,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-c9a1ebfb376520d30f73811a",
-      "observed_at": "2026-10-14T18:53:36.566Z",
-      "committed_at": "2026-10-14T18:54:41.009Z",
-      "latency_ms": 64405.81,
+      "round_id": "aviator-31a3b82671fc6fe34ae687e5",
+      "observed_at": "2026-11-04T15:51:41.120Z",
+      "committed_at": "2026-11-04T15:51:43.130Z",
+      "latency_ms": 1980.3,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-a1c193bf2c98cb73dcd31578",
-      "observed_at": "2026-10-14T18:53:36.566Z",
-      "committed_at": "2026-10-14T18:54:41.009Z",
-      "latency_ms": 64405.81,
+      "round_id": "aviator-4a165517988c49a93a5d18c0",
+      "observed_at": "2026-11-04T15:51:53.825Z",
+      "committed_at": "2026-11-04T15:51:55.534Z",
+      "latency_ms": 1613.34,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-705bcabe21591242beeb9910",
-      "observed_at": "2026-10-14T18:53:36.566Z",
-      "committed_at": "2026-10-14T18:54:41.009Z",
-      "latency_ms": 64405.81,
+      "round_id": "aviator-3aa0999c16fd8f646476fc77",
+      "observed_at": "2026-11-04T15:52:18.167Z",
+      "committed_at": "2026-11-04T15:52:19.061Z",
+      "latency_ms": 870.19,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-ba0e3e7619b9250ebab42b2c",
-      "observed_at": "2026-10-14T18:53:36.566Z",
-      "committed_at": "2026-10-14T18:54:41.009Z",
-      "latency_ms": 64405.81,
+      "round_id": "aviator-cc23f18561b1922ecb2d5842",
+      "observed_at": "2026-11-04T15:52:33.766Z",
+      "committed_at": "2026-11-04T15:52:34.928Z",
+      "latency_ms": 1143.77,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-206a505ff240dcbf9279a5f9",
-      "observed_at": "2026-10-14T18:53:36.566Z",
-      "committed_at": "2026-10-14T18:54:41.009Z",
-      "latency_ms": 64405.81,
+      "round_id": "aviator-0a2a68e61928aff106833c3e",
+      "observed_at": "2026-11-04T15:52:49.785Z",
+      "committed_at": "2026-11-04T15:52:51.237Z",
+      "latency_ms": 1362.67,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-96dced75ae29d8622f25c88d",
-      "observed_at": "2026-10-14T18:54:09.294Z",
-      "committed_at": "2026-10-14T18:54:41.009Z",
-      "latency_ms": 31077.84,
+      "round_id": "aviator-3a07d9287640f111b0cb8a59",
+      "observed_at": "2026-11-04T15:53:02.293Z",
+      "committed_at": "2026-11-04T15:53:03.422Z",
+      "latency_ms": 1088.38,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-18f9067caf34a2d749b36932",
-      "observed_at": "2026-10-14T18:54:36.358Z",
-      "committed_at": "2026-10-14T18:54:41.009Z",
-      "latency_ms": 4607.23,
+      "round_id": "aviator-9b9f4c352b787d086dc0ff24",
+      "observed_at": "2026-11-04T15:53:18.107Z",
+      "committed_at": "2026-11-04T15:53:19.695Z",
+      "latency_ms": 1493.07,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-c326691be0d1251916760f2d",
-      "observed_at": "2026-10-14T18:54:54.698Z",
-      "committed_at": "2026-10-14T18:54:59.610Z",
-      "latency_ms": 4810.26,
+      "round_id": "aviator-aa3c13803110f79464c5eee4",
+      "observed_at": "2026-11-04T15:54:48.239Z",
+      "committed_at": "2026-11-04T15:54:50.269Z",
+      "latency_ms": 1896.92,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-3af00607ac4cac060fcbfb4c",
-      "observed_at": "2026-10-14T18:55:18.533Z",
-      "committed_at": "2026-10-14T18:55:21.397Z",
-      "latency_ms": 2803.09,
+      "round_id": "aviator-d7cd590dfded8904dc26d9ed",
+      "observed_at": "2026-11-04T15:55:08.313Z",
+      "committed_at": "2026-11-04T15:55:09.633Z",
+      "latency_ms": 1255.2,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-51b6f9737dfecb39a369aedb",
-      "observed_at": "2026-10-14T18:55:43.491Z",
-      "committed_at": "2026-10-14T18:55:45.419Z",
-      "latency_ms": 1840.05,
+      "round_id": "aviator-c19d827762074eaccf597ad3",
+      "observed_at": "2026-11-04T15:55:49.376Z",
+      "committed_at": "2026-11-04T15:55:50.602Z",
+      "latency_ms": 1091.42,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-30c3c5eb2890e6549a30862d",
-      "observed_at": "2026-10-14T18:56:06.424Z",
-      "committed_at": "2026-10-14T18:56:22.025Z",
-      "latency_ms": 15516.79,
+      "round_id": "aviator-6a74c3939b817d9c28140d66",
+      "observed_at": "2026-11-04T15:56:19.678Z",
+      "committed_at": "2026-11-04T15:56:20.922Z",
+      "latency_ms": 1169.07,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-cdd40b0a1cdc8d75ca915900",
-      "observed_at": "2026-10-14T18:56:33.844Z",
-      "committed_at": "2026-10-14T18:56:55.305Z",
-      "latency_ms": 21250.86,
+      "round_id": "aviator-b7749e7d9f11a951c6bceb42",
+      "observed_at": "2026-11-04T15:56:59.021Z",
+      "committed_at": "2026-11-04T15:57:01.935Z",
+      "latency_ms": 2784.58,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-cdf1881aa7ae4039a7e13c16",
-      "observed_at": "2026-10-14T18:56:49.233Z",
-      "committed_at": "2026-10-14T18:56:55.305Z",
-      "latency_ms": 3944.38,
+      "round_id": "aviator-ce075b9ea5a876619e62047e",
+      "observed_at": "2026-11-04T15:57:21.781Z",
+      "committed_at": "2026-11-04T15:57:22.700Z",
+      "latency_ms": 854.9,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-4740a6dc330468dd8dcb7c51",
-      "observed_at": "2026-10-14T18:57:18.264Z",
-      "committed_at": "2026-10-14T18:57:36.375Z",
-      "latency_ms": 18055.45,
+      "round_id": "aviator-b246d2ea0f854a7623d85108",
+      "observed_at": "2026-11-04T15:57:52.620Z",
+      "committed_at": "2026-11-04T15:57:55.739Z",
+      "latency_ms": 2880.99,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-5cce32ff47493e84ff41ef61",
-      "observed_at": "2026-10-14T18:58:00.020Z",
-      "committed_at": "2026-10-14T18:58:06.186Z",
-      "latency_ms": 6055.85,
+      "round_id": "aviator-bbe087e47ff32a2eddec045f",
+      "observed_at": "2026-11-04T15:58:39.160Z",
+      "committed_at": "2026-11-04T15:58:41.407Z",
+      "latency_ms": 2129.83,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-d53b0f58bb959989deeec536",
-      "observed_at": "2026-10-14T18:58:32.398Z",
-      "committed_at": "2026-10-14T18:58:35.530Z",
-      "latency_ms": 3083.91,
+      "round_id": "aviator-c70594754a4c593230ce15b2",
+      "observed_at": "2026-11-04T15:59:30.617Z",
+      "committed_at": "2026-11-04T15:59:32.238Z",
+      "latency_ms": 1549.04,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-acc6aa40ab2732e07789b0c7",
-      "observed_at": "2026-10-14T18:58:51.181Z",
-      "committed_at": "2026-10-14T18:58:56.287Z",
-      "latency_ms": 4773.62,
+      "round_id": "aviator-f1861cb2e073caebe59297a3",
+      "observed_at": "2026-11-04T15:59:54.514Z",
+      "committed_at": "2026-11-04T15:59:55.165Z",
+      "latency_ms": 622.84,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-7ff9385b8000d80ca3c3a2f1",
-      "observed_at": "2026-10-14T18:59:05.931Z",
-      "committed_at": "2026-10-14T18:59:08.144Z",
-      "latency_ms": 2101.44,
+      "round_id": "aviator-a45f8d12cfb1c92d8f582c00",
+      "observed_at": "2026-11-04T16:00:26.356Z",
+      "committed_at": "2026-11-04T16:00:27.473Z",
+      "latency_ms": 1068.15,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-1bac9ef25f6718f42f7610bb",
-      "observed_at": "2026-10-14T18:59:25.588Z",
-      "committed_at": "2026-10-14T18:59:26.453Z",
-      "latency_ms": 802.48,
+      "round_id": "aviator-3e4d935f69de66820e4499cc",
+      "observed_at": "2026-11-04T16:00:41.254Z",
+      "committed_at": "2026-11-04T16:00:42.497Z",
+      "latency_ms": 1185.22,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-6c89ad83da1b7513f6c8ba2a",
-      "observed_at": "2026-10-14T18:59:41.950Z",
-      "committed_at": "2026-10-14T18:59:46.042Z",
-      "latency_ms": 3975.89,
+      "round_id": "aviator-b88c349c7b0fdbb9de904747",
+      "observed_at": "2026-11-04T16:00:53.915Z",
+      "committed_at": "2026-11-04T16:00:55.129Z",
+      "latency_ms": 1190.75,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-f5e0d074ab0c11bc26bd671a",
-      "observed_at": "2026-10-14T18:59:56.607Z",
-      "committed_at": "2026-10-14T19:00:01.157Z",
-      "latency_ms": 4384.89,
+      "round_id": "aviator-6a4d53334f3a0316fdebf4fd",
+      "observed_at": "2026-11-04T16:01:24.967Z",
+      "committed_at": "2026-11-04T16:01:27.186Z",
+      "latency_ms": 2200.82,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-cf9cca228051ac73e6680cbb",
-      "observed_at": "2026-10-14T19:00:30.925Z",
-      "committed_at": "2026-10-14T19:00:32.858Z",
-      "latency_ms": 1847.98,
+      "round_id": "aviator-64a7b78363df20f22330d10b",
+      "observed_at": "2026-11-04T16:02:00.687Z",
+      "committed_at": "2026-11-04T16:02:02.521Z",
+      "latency_ms": 1750.88,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-e814d804c8e971f3cafa63e3",
-      "observed_at": "2026-10-14T19:00:50.303Z",
-      "committed_at": "2026-10-14T19:00:51.424Z",
-      "latency_ms": 911.63,
+      "round_id": "aviator-05760376c2e59d63e7544268",
+      "observed_at": "2026-11-04T16:02:20.502Z",
+      "committed_at": "2026-11-04T16:02:21.410Z",
+      "latency_ms": 870.84,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-1f365b06f70d760630dafca6",
-      "observed_at": "2026-10-14T19:01:58.538Z",
-      "committed_at": "2026-10-14T19:02:00.954Z",
-      "latency_ms": 2363.2,
+      "round_id": "aviator-1b355383e292ad94eed2482f",
+      "observed_at": "2026-11-04T16:02:39.092Z",
+      "committed_at": "2026-11-04T16:02:40.075Z",
+      "latency_ms": 864.38,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-2dd2bcc2229a4a6e83380345",
-      "observed_at": "2026-10-14T19:02:12.669Z",
-      "committed_at": "2026-10-14T19:02:14.584Z",
-      "latency_ms": 1844.53,
+      "round_id": "aviator-e1c44d9a57392d9b5c1fa884",
+      "observed_at": "2026-11-04T16:02:57.037Z",
+      "committed_at": "2026-11-04T16:02:58.449Z",
+      "latency_ms": 1383.97,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-78ae3f30bcd24667c53b678a",
-      "observed_at": "2026-10-14T19:02:35.614Z",
-      "committed_at": "2026-10-14T19:02:38.022Z",
-      "latency_ms": 2387.17,
+      "round_id": "aviator-335d2bd94271538e9119461b",
+      "observed_at": "2026-11-04T16:03:11.037Z",
+      "committed_at": "2026-11-04T16:03:12.442Z",
+      "latency_ms": 1347.37,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-27daa000044238e9860ba4db",
-      "observed_at": "2026-10-14T19:02:54.283Z",
-      "committed_at": "2026-10-14T19:02:55.098Z",
-      "latency_ms": 796.87,
+      "round_id": "aviator-84bfb260fc1f973dee4c5da3",
+      "observed_at": "2026-11-04T16:03:53.027Z",
+      "committed_at": "2026-11-04T16:03:54.424Z",
+      "latency_ms": 1250.34,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-4e6f56f022d18d960be29109",
-      "observed_at": "2026-10-14T19:03:19.907Z",
-      "committed_at": "2026-10-14T19:03:26.406Z",
-      "latency_ms": 6440.84,
+      "round_id": "aviator-7b0268c7ecf27def4bc5d17d",
+      "observed_at": "2026-11-04T16:04:09.683Z",
+      "committed_at": "2026-11-04T16:04:11.849Z",
+      "latency_ms": 2145.6,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-823c8393035e99a6192315f4",
-      "observed_at": "2026-10-14T19:03:38.591Z",
-      "committed_at": "2026-10-14T19:03:43.240Z",
-      "latency_ms": 4542.72,
+      "round_id": "aviator-22e778e50a7d0ec6eda617d8",
+      "observed_at": "2026-11-04T16:04:28.283Z",
+      "committed_at": "2026-11-04T16:04:29.699Z",
+      "latency_ms": 1392.79,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-1e1647ebdb40e84e26b2c74a",
-      "observed_at": "2026-10-14T19:05:47.918Z",
-      "committed_at": "2026-10-14T19:05:51.785Z",
-      "latency_ms": 3783.64,
+      "round_id": "aviator-8b8202aaba5070445f500e3b",
+      "observed_at": "2026-11-04T16:04:58.598Z",
+      "committed_at": "2026-11-04T16:05:01.001Z",
+      "latency_ms": 2367.76,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-f0d397194ad7daf612acf414",
-      "observed_at": "2026-10-14T19:05:47.918Z",
-      "committed_at": "2026-10-14T19:05:51.785Z",
-      "latency_ms": 3783.64,
+      "round_id": "aviator-e062aed310eb7319ce26b671",
+      "observed_at": "2026-11-04T16:05:15.549Z",
+      "committed_at": "2026-11-04T16:05:17.153Z",
+      "latency_ms": 1547.08,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-337d6d69cb5c814a54fe501a",
-      "observed_at": "2026-10-14T19:05:47.918Z",
-      "committed_at": "2026-10-14T19:05:51.785Z",
-      "latency_ms": 3783.64,
+      "round_id": "aviator-480a9a8774a7363a03b7044d",
+      "observed_at": "2026-11-04T16:05:43.072Z",
+      "committed_at": "2026-11-04T16:05:46.746Z",
+      "latency_ms": 3626.98,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-f6bc228f0356cb6e5e11d995",
-      "observed_at": "2026-10-14T19:05:47.918Z",
-      "committed_at": "2026-10-14T19:05:51.785Z",
-      "latency_ms": 3783.64,
+      "round_id": "aviator-82a5a23bb3e092c1f286e1e0",
+      "observed_at": "2026-11-04T16:06:07.928Z",
+      "committed_at": "2026-11-04T16:06:08.803Z",
+      "latency_ms": 856.33,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-ac8d6877848ed7b369e489a2",
-      "observed_at": "2026-10-14T19:05:47.918Z",
-      "committed_at": "2026-10-14T19:05:51.785Z",
-      "latency_ms": 3783.64,
+      "round_id": "aviator-ce2ca1cc60c37b7c2e623c99",
+      "observed_at": "2026-11-04T16:06:23.124Z",
+      "committed_at": "2026-11-04T16:06:24.239Z",
+      "latency_ms": 1091.99,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-8aadfb7217102a4137020581",
-      "observed_at": "2026-10-14T19:05:54.082Z",
-      "committed_at": "2026-10-14T19:05:58.416Z",
-      "latency_ms": 4294.99,
+      "round_id": "aviator-eccd4e4f91125a2df75f6cca",
+      "observed_at": "2026-11-04T16:06:50.636Z",
+      "committed_at": "2026-11-04T16:06:51.676Z",
+      "latency_ms": 1012.41,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-04f57cd39028314028f6765e",
-      "observed_at": "2026-10-14T19:06:17.323Z",
-      "committed_at": "2026-10-14T19:06:19.004Z",
-      "latency_ms": 1622.65,
+      "round_id": "aviator-92f221a6b770cd310bc9223d",
+      "observed_at": "2026-11-04T16:07:08.863Z",
+      "committed_at": "2026-11-04T16:07:09.817Z",
+      "latency_ms": 916.12,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-89d5bdb3ac3c636c3e7483e8",
-      "observed_at": "2026-10-14T19:06:34.067Z",
-      "committed_at": "2026-10-14T19:06:36.126Z",
-      "latency_ms": 2032.24,
+      "round_id": "aviator-9666fe3a7cddc8d4e3297f83",
+      "observed_at": "2026-11-04T16:07:34.307Z",
+      "committed_at": "2026-11-04T16:07:35.739Z",
+      "latency_ms": 1317.99,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-56836865ba5ef71c1478f35a",
-      "observed_at": "2026-10-14T19:06:54.792Z",
-      "committed_at": "2026-10-14T19:06:56.455Z",
-      "latency_ms": 1616.02,
+      "round_id": "aviator-6ae1ae3dc93fa44a7ddd81e0",
+      "observed_at": "2026-11-04T16:07:56.914Z",
+      "committed_at": "2026-11-04T16:07:59.091Z",
+      "latency_ms": 2093,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-7482088d301dad601a398edd",
-      "observed_at": "2026-10-14T19:07:08.281Z",
-      "committed_at": "2026-10-14T19:07:10.692Z",
-      "latency_ms": 2348.52,
+      "round_id": "aviator-4abe4409e950a7aa8f2318f9",
+      "observed_at": "2026-11-04T16:08:19.550Z",
+      "committed_at": "2026-11-04T16:08:20.174Z",
+      "latency_ms": 555.5,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-a61803525ae99ae112abcd7e",
-      "observed_at": "2026-10-14T19:07:20.330Z",
-      "committed_at": "2026-10-14T19:08:58.918Z",
-      "latency_ms": 98566.22,
+      "round_id": "aviator-d359555007ebc1ed3a7969f3",
+      "observed_at": "2026-11-04T16:09:10.088Z",
+      "committed_at": "2026-11-04T16:09:11.935Z",
+      "latency_ms": 1812.22,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-b4e7d20b392d3f7baa7b8213",
-      "observed_at": "2026-10-14T19:07:49.805Z",
-      "committed_at": "2026-10-14T19:08:58.918Z",
-      "latency_ms": 69097.86,
+      "round_id": "aviator-24948a5aaa4e6f81c25fb8b8",
+      "observed_at": "2026-11-04T16:09:25.322Z",
+      "committed_at": "2026-11-04T16:09:26.639Z",
+      "latency_ms": 1285.71,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-df6441b5503cfae3cf74430c",
-      "observed_at": "2026-10-14T19:08:52.209Z",
-      "committed_at": "2026-10-14T19:08:58.918Z",
-      "latency_ms": 6568.12,
+      "round_id": "aviator-d5d3d5829bdd68d8c7ea0073",
+      "observed_at": "2026-11-04T16:09:39.679Z",
+      "committed_at": "2026-11-04T16:09:40.913Z",
+      "latency_ms": 1218.23,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-03a05ee36c9312b86b8053f4",
-      "observed_at": "2026-10-14T19:09:02.302Z",
-      "committed_at": "2026-10-14T19:09:11.149Z",
-      "latency_ms": 8816.75,
+      "round_id": "aviator-973fa0f377d16a6a7be7c7df",
+      "observed_at": "2026-11-04T16:09:56.319Z",
+      "committed_at": "2026-11-04T16:09:58.009Z",
+      "latency_ms": 1607.94,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-71b5538e4ebd55d01514970e",
-      "observed_at": "2026-10-14T19:09:14.399Z",
-      "committed_at": "2026-10-14T19:09:17.047Z",
-      "latency_ms": 2460.85,
+      "round_id": "aviator-75c32aad606bdde33115d732",
+      "observed_at": "2026-11-04T16:10:17.202Z",
+      "committed_at": "2026-11-04T16:10:18.357Z",
+      "latency_ms": 1091.09,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-3d85f1791d63600a03db5c40",
-      "observed_at": "2026-10-14T19:09:32.221Z",
-      "committed_at": "2026-10-14T19:09:35.234Z",
-      "latency_ms": 2974.93,
+      "round_id": "aviator-b7e476b821f3604161b27772",
+      "observed_at": "2026-11-04T16:10:31.153Z",
+      "committed_at": "2026-11-04T16:10:31.996Z",
+      "latency_ms": 774.23,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-69f4457b10695db3f5d6ef35",
-      "observed_at": "2026-10-14T19:09:59.028Z",
-      "committed_at": "2026-10-14T19:10:10.198Z",
-      "latency_ms": 11137.16,
+      "round_id": "aviator-5e94d230eceb7ef946671132",
+      "observed_at": "2026-11-04T16:10:44.434Z",
+      "committed_at": "2026-11-04T16:10:45.445Z",
+      "latency_ms": 991.33,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-75efa0d5476be6dbbbbe2241",
-      "observed_at": "2026-10-14T19:10:43.671Z",
-      "committed_at": "2026-10-14T19:10:48.846Z",
-      "latency_ms": 5096.11,
+      "round_id": "aviator-1c655d5bbd2d17c717f20aaf",
+      "observed_at": "2026-11-04T16:11:04.721Z",
+      "committed_at": "2026-11-04T16:11:05.937Z",
+      "latency_ms": 1190.18,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-e04150d7623c2a5875c90b39",
-      "observed_at": "2026-10-14T19:11:15.710Z",
-      "committed_at": "2026-10-14T19:11:20.387Z",
-      "latency_ms": 4495.97,
+      "round_id": "aviator-7ec1aba6e0916a40b0bd35de",
+      "observed_at": "2026-11-04T16:11:44.085Z",
+      "committed_at": "2026-11-04T16:11:45.415Z",
+      "latency_ms": 1236.72,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-bc02b3d0b7325e644b270b84",
-      "observed_at": "2026-10-14T19:11:35.659Z",
-      "committed_at": "2026-10-14T19:11:39.791Z",
-      "latency_ms": 3900.84,
+      "round_id": "aviator-1cad06581ee68f4fb43a1326",
+      "observed_at": "2026-11-04T16:12:00.490Z",
+      "committed_at": "2026-11-04T16:12:03.161Z",
+      "latency_ms": 2622.63,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-1e729e92066ccfd178a4a317",
-      "observed_at": "2026-10-14T19:11:52.790Z",
-      "committed_at": "2026-10-14T19:12:01.520Z",
-      "latency_ms": 8693.91,
+      "round_id": "aviator-e8cd561248c13b9d87068fc2",
+      "observed_at": "2026-11-04T16:12:20.493Z",
+      "committed_at": "2026-11-04T16:12:22.754Z",
+      "latency_ms": 2235.17,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-e6a3a2072865a0c5ba43b0f3",
-      "observed_at": "2026-10-14T19:12:09.793Z",
-      "committed_at": "2026-10-14T19:12:14.744Z",
-      "latency_ms": 4741.43,
+      "round_id": "aviator-886d5f2c1a60ee01bf2e82c3",
+      "observed_at": "2026-11-04T16:12:46.676Z",
+      "committed_at": "2026-11-04T16:12:48.774Z",
+      "latency_ms": 1914.91,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     },
     {
-      "round_id": "aviator-9022fa9bcaf8fe5fa76e9c60",
-      "observed_at": "2026-10-14T19:12:39.189Z",
-      "committed_at": "2026-10-14T19:12:46.434Z",
-      "latency_ms": 7135.28,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-f003571cd25a19e95b8a9307",
-      "observed_at": "2026-10-14T19:12:41.197Z",
-      "committed_at": "2026-10-14T19:12:46.434Z",
-      "latency_ms": 5213.83,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2ec42efd5a7dbac6b0aa10fc",
-      "observed_at": "2026-10-14T19:12:56.634Z",
-      "committed_at": "2026-10-14T19:12:58.793Z",
-      "latency_ms": 2017.11,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-110f879e985ad7a86c4cdb21",
-      "observed_at": "2026-10-14T19:13:41.052Z",
-      "committed_at": "2026-10-14T19:13:43.609Z",
-      "latency_ms": 2524.37,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-0fff40783e7437b4199a8693",
-      "observed_at": "2026-10-14T19:13:51.529Z",
-      "committed_at": "2026-10-14T19:13:54.722Z",
-      "latency_ms": 3156.47,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-72548c33d46eeb5c65c12959",
-      "observed_at": "2026-10-14T19:14:10.885Z",
-      "committed_at": "2026-10-14T19:14:20.028Z",
-      "latency_ms": 9095.32,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c8c8c0db64add42b2433cbf3",
-      "observed_at": "2026-10-14T19:14:37.340Z",
-      "committed_at": "2026-10-14T19:14:43.629Z",
-      "latency_ms": 6209.4,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-834c0428e032e44e56a8e873",
-      "observed_at": "2026-10-14T19:14:53.672Z",
-      "committed_at": "2026-10-14T19:14:55.930Z",
-      "latency_ms": 2207.24,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2bb937c334909dea1345372c",
-      "observed_at": "2026-10-14T19:15:09.510Z",
-      "committed_at": "2026-10-14T19:15:16.441Z",
-      "latency_ms": 6811.59,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-e9d1613c6bc4abda8bd6f23d",
-      "observed_at": "2026-10-14T19:15:29.618Z",
-      "committed_at": "2026-10-14T19:15:44.655Z",
-      "latency_ms": 12945.75,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-d9404d603bf6e777420a6053",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-7466e96407aa2a409a8af9b4",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-b095a76ddbbac7aa61b8e9d9",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-563fed48a17afcaf6f68150b",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-53c84f196e3e362f3805d41e",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-51ff6088072334f23ff68d9a",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-742f1d4da335aa8abc46ce68",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-dc52be12f9ee368fac85b407",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-859e3cb443137a4ea44d2371",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-b061ecd4149b27898324b624",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-182f7b2f1be48696d9936b45",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c9f39f569862cc35284c629e",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-9bd96ac56fcf5405404260b2",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-b4ecf2ee8daf32e1a0bc3482",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-913618d42722c7a8c7f6f4f1",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-9fe784c4b19658b79a2924ca",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-f576ff5190794a8df5d0eb50",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-b105fffbda967a99617044e2",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-31cc942454cc569d8b8a6da4",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-66fe459176ec4ad29392e4f4",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:16:57.991Z",
-      "latency_ms": 46621.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-11b91bca155cba5277b82f17",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:18:04.564Z",
-      "latency_ms": 113193.7,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2a3719d52a3a25f17b432257",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:18:04.564Z",
-      "latency_ms": 113193.7,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-9491b7a28f62eac2136ef831",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:18:04.564Z",
-      "latency_ms": 113193.7,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-37b9f4177a10feb158f5a079",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:18:04.564Z",
-      "latency_ms": 113193.7,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-561b2eb0636da22fcc052e8c",
-      "observed_at": "2026-10-14T19:16:11.047Z",
-      "committed_at": "2026-10-14T19:18:04.564Z",
-      "latency_ms": 113193.7,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-d7180678d5eff46f27de3efa",
-      "observed_at": "2026-10-14T19:16:21.110Z",
-      "committed_at": "2026-10-14T19:18:04.564Z",
-      "latency_ms": 103059.35,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-db13f1c018e636a44281fc69",
-      "observed_at": "2026-10-14T19:16:44.152Z",
-      "committed_at": "2026-10-14T19:18:04.564Z",
-      "latency_ms": 78851.1,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-5abcbfd2e6f9cc0954d12281",
-      "observed_at": "2026-10-14T19:16:55.484Z",
-      "committed_at": "2026-10-14T19:18:04.564Z",
-      "latency_ms": 67554.74,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c13fa9125529d50fe9656ea2",
-      "observed_at": "2026-10-14T19:17:55.771Z",
-      "committed_at": "2026-10-14T19:18:04.564Z",
-      "latency_ms": 8723.5,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-b2255c3fb0697173bf8a8109",
-      "observed_at": "2026-10-14T19:18:21.144Z",
-      "committed_at": "2026-10-14T19:18:24.439Z",
-      "latency_ms": 3252.94,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-cd5a3c2587341f4b38e13f6e",
-      "observed_at": "2026-10-14T19:18:32.997Z",
-      "committed_at": "2026-10-14T19:18:34.769Z",
-      "latency_ms": 1712.13,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-ea77c9d63397ef781ac26048",
-      "observed_at": "2026-10-14T19:19:21.777Z",
-      "committed_at": "2026-10-14T19:19:24.559Z",
-      "latency_ms": 2718.84,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-5e2038d54a0b167a06fb9d6d",
-      "observed_at": "2026-10-14T19:19:38.478Z",
-      "committed_at": "2026-10-14T19:19:44.005Z",
-      "latency_ms": 5496.35,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-e48b821ec1d26dff98f318c9",
-      "observed_at": "2026-10-14T19:20:55.018Z",
-      "committed_at": "2026-10-14T19:20:57.150Z",
-      "latency_ms": 2003.29,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-591872a81d6e13d7f41d9bbd",
-      "observed_at": "2026-10-14T19:21:10.967Z",
-      "committed_at": "2026-10-14T19:21:12.668Z",
-      "latency_ms": 1653.86,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-07d69f2e5b4dbd1acf0207c7",
-      "observed_at": "2026-10-14T19:21:35.219Z",
-      "committed_at": "2026-10-14T19:21:37.441Z",
-      "latency_ms": 2141.09,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-853d5a1c86b3c2fa2e18dc0b",
-      "observed_at": "2026-10-14T19:21:45.811Z",
-      "committed_at": "2026-10-14T19:21:49.429Z",
-      "latency_ms": 3589.87,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c4ee6f567735cbd076cebe3e",
-      "observed_at": "2026-10-14T19:22:14.206Z",
-      "committed_at": "2026-10-14T19:22:17.009Z",
-      "latency_ms": 2667.57,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-bc794a955a3904f7038c8d6a",
-      "observed_at": "2026-10-14T19:23:09.635Z",
-      "committed_at": "2026-10-14T19:23:29.512Z",
-      "latency_ms": 19802.85,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-0ecd6244fa5e67c041f30f68",
-      "observed_at": "2026-10-14T19:23:26.429Z",
-      "committed_at": "2026-10-14T19:24:12.454Z",
-      "latency_ms": 44223.88,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-7ae639443b0e91e224de4438",
-      "observed_at": "2026-10-14T19:23:38.765Z",
-      "committed_at": "2026-10-14T19:24:12.454Z",
-      "latency_ms": 33557.79,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-9348e97aa6900d4a21bfd819",
-      "observed_at": "2026-10-14T19:23:57.651Z",
-      "committed_at": "2026-10-14T19:24:12.454Z",
-      "latency_ms": 11130.36,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-a3b455f4d9524954a2b3df51",
-      "observed_at": "2026-10-14T19:24:19.071Z",
-      "committed_at": "2026-10-14T19:24:23.560Z",
-      "latency_ms": 4408.74,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-80226de3b3a9ab012d1c745c",
-      "observed_at": "2026-10-14T19:24:43.132Z",
-      "committed_at": "2026-10-14T19:24:47.240Z",
-      "latency_ms": 4022.76,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-a558eb215ca3298f5e5c4dc2",
-      "observed_at": "2026-10-14T19:25:04.804Z",
-      "committed_at": "2026-10-14T19:25:08.503Z",
-      "latency_ms": 3636.58,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-173df4ed16ad53516d8b56a5",
-      "observed_at": "2026-10-14T19:25:45.744Z",
-      "committed_at": "2026-10-14T19:25:48.003Z",
-      "latency_ms": 2183.26,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-4783849a30ddcc129559579a",
-      "observed_at": "2026-10-14T19:26:00.131Z",
-      "committed_at": "2026-10-14T19:26:04.174Z",
-      "latency_ms": 3989.18,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-f21589756f363a45ea575f9e",
-      "observed_at": "2026-10-14T19:26:25.679Z",
-      "committed_at": "2026-10-14T19:26:27.457Z",
-      "latency_ms": 1610.59,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-6adb6c46fce4964254f39ff8",
-      "observed_at": "2026-10-14T19:26:41.594Z",
-      "committed_at": "2026-10-14T19:26:55.780Z",
-      "latency_ms": 14137.11,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-d49585724e5b678a024e7701",
-      "observed_at": "2026-10-14T19:27:03.483Z",
-      "committed_at": "2026-10-14T19:27:12.336Z",
-      "latency_ms": 8821.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-d600cb7c6ba88fc5c2ced6b2",
-      "observed_at": "2026-10-14T19:27:16.198Z",
-      "committed_at": "2026-10-14T19:27:30.186Z",
-      "latency_ms": 13915.32,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-3f25d5a6479ff290f5fb2049",
-      "observed_at": "2026-10-14T19:27:33.036Z",
-      "committed_at": "2026-10-14T19:27:49.092Z",
-      "latency_ms": 15999.08,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-8c6b61fd3636aa1351c43785",
-      "observed_at": "2026-10-14T19:27:57.606Z",
-      "committed_at": "2026-10-14T19:28:05.377Z",
-      "latency_ms": 7711.91,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-0013bca28783c98ff2ce8603",
-      "observed_at": "2026-10-14T19:28:14.677Z",
-      "committed_at": "2026-10-14T19:28:23.642Z",
-      "latency_ms": 8858.46,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c56cf81acd969b6d24db2403",
-      "observed_at": "2026-10-14T19:28:28.269Z",
-      "committed_at": "2026-10-14T19:28:32.100Z",
-      "latency_ms": 3805.93,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c044c828b142c89c59ba5d50",
-      "observed_at": "2026-10-14T19:28:53.339Z",
-      "committed_at": "2026-10-14T19:28:57.056Z",
-      "latency_ms": 3548.52,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2140f6f7bc058ff3ee725345",
-      "observed_at": "2026-10-14T19:29:07.446Z",
-      "committed_at": "2026-10-14T19:29:09.392Z",
-      "latency_ms": 1909.72,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-65783b46e46c8a5eee970d8b",
-      "observed_at": "2026-10-14T19:29:30.382Z",
-      "committed_at": "2026-10-14T19:29:33.182Z",
-      "latency_ms": 2752.79,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2469d9b70a551803622befea",
-      "observed_at": "2026-10-14T19:29:49.817Z",
-      "committed_at": "2026-10-14T19:29:52.925Z",
-      "latency_ms": 2948.15,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-9c7f39a9fab53a68e1e6839f",
-      "observed_at": "2026-10-14T19:30:14.104Z",
-      "committed_at": "2026-10-14T19:30:15.909Z",
-      "latency_ms": 1688.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-311d1d9840cd88f7cf32807b",
-      "observed_at": "2026-10-14T19:30:19.405Z",
-      "committed_at": "2026-10-14T19:30:20.548Z",
-      "latency_ms": 1062.8,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-acb5b74800f41edaa4a23552",
-      "observed_at": "2026-10-14T19:30:29.400Z",
-      "committed_at": "2026-10-14T19:30:33.708Z",
-      "latency_ms": 4225.16,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-fd19076e8b12fe8135e004b9",
-      "observed_at": "2026-10-14T19:30:42.155Z",
-      "committed_at": "2026-10-14T19:30:48.885Z",
-      "latency_ms": 3874.18,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-aa56f6bad551c9913de7be9b",
-      "observed_at": "2026-10-14T19:30:52.965Z",
-      "committed_at": "2026-10-14T19:31:00.866Z",
-      "latency_ms": 7864.72,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-aee848125018f8f3d30922a3",
-      "observed_at": "2026-10-14T19:31:06.044Z",
-      "committed_at": "2026-10-14T19:31:15.390Z",
-      "latency_ms": 8607.52,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-357d9657bd005bb902af3d86",
-      "observed_at": "2026-10-14T19:31:25.866Z",
-      "committed_at": "2026-10-14T19:31:31.479Z",
-      "latency_ms": 5594.04,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-0b4b69df86eda92cee9a6018",
-      "observed_at": "2026-10-14T19:31:35.846Z",
-      "committed_at": "2026-10-14T19:31:44.586Z",
-      "latency_ms": 8258.86,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c5c90cfadfd5732a188ca914",
-      "observed_at": "2026-10-14T19:32:11.910Z",
-      "committed_at": "2026-10-14T19:32:16.057Z",
-      "latency_ms": 4076.15,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-6adaedefdc5a838cf8029fe9",
-      "observed_at": "2026-10-14T19:32:43.090Z",
-      "committed_at": "2026-10-14T19:32:45.584Z",
-      "latency_ms": 2427.59,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c700132f6369a51027a66ffc",
-      "observed_at": "2026-10-14T19:33:00.662Z",
-      "committed_at": "2026-10-14T19:33:07.279Z",
-      "latency_ms": 6541.58,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-706c6a34698ae84ef47e3d3b",
-      "observed_at": "2026-10-14T19:33:15.072Z",
-      "committed_at": "2026-10-14T19:33:27.326Z",
-      "latency_ms": 12193.29,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-5782b994a1894adea7f612c2",
-      "observed_at": "2026-10-14T19:33:27.987Z",
-      "committed_at": "2026-10-14T19:33:32.032Z",
-      "latency_ms": 3918.83,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-4320345ba7447c85f8630d50",
-      "observed_at": "2026-10-14T19:33:40.864Z",
-      "committed_at": "2026-10-14T19:33:46.272Z",
-      "latency_ms": 5335.47,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-0fc9f73d94c91a694d85f460",
-      "observed_at": "2026-10-14T19:34:01.012Z",
-      "committed_at": "2026-10-14T19:34:06.705Z",
-      "latency_ms": 5611.21,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-fb21ada93915cd5c2f64802a",
-      "observed_at": "2026-10-14T19:34:13.001Z",
-      "committed_at": "2026-10-14T19:34:14.610Z",
-      "latency_ms": 1515.5,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-e21c25dc97deda35d85e9672",
-      "observed_at": "2026-10-14T19:34:23.143Z",
-      "committed_at": "2026-10-14T19:34:25.610Z",
-      "latency_ms": 2389.42,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-b2a6a7c86279bf8caf3e7f28",
-      "observed_at": "2026-10-14T19:34:37.506Z",
-      "committed_at": "2026-10-14T19:34:39.282Z",
-      "latency_ms": 1694.86,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-902db4e235ada6a0b469d8e4",
-      "observed_at": "2026-10-14T19:34:53.154Z",
-      "committed_at": "2026-10-14T19:35:08.759Z",
-      "latency_ms": 15558.08,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-55dba25eb88295bac3ad86af",
-      "observed_at": "2026-10-14T19:35:11.768Z",
-      "committed_at": "2026-10-14T19:35:25.134Z",
-      "latency_ms": 13325.03,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2ccaee0878cb3f88efeb508b",
-      "observed_at": "2026-10-14T19:35:45.334Z",
-      "committed_at": "2026-10-14T19:35:54.703Z",
-      "latency_ms": 9284.06,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-494d293ff719b0f8953f52f8",
-      "observed_at": "2026-10-14T19:35:59.569Z",
-      "committed_at": "2026-10-14T19:36:05.040Z",
-      "latency_ms": 4272.46,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-500487539515e3075efd213b",
-      "observed_at": "2026-10-14T19:36:14.882Z",
-      "committed_at": "2026-10-14T19:36:21.138Z",
-      "latency_ms": 6185.07,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-226f687ceec8e207c8d9ad77",
-      "observed_at": "2026-10-14T19:36:34.003Z",
-      "committed_at": "2026-10-14T19:36:41.953Z",
-      "latency_ms": 7884.8,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-d59535399bae8b07154e6c25",
-      "observed_at": "2026-10-14T19:36:53.310Z",
-      "committed_at": "2026-10-14T19:37:05.013Z",
-      "latency_ms": 11663.05,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-f0ede3d54eb019bbe5b701b0",
-      "observed_at": "2026-10-14T19:37:06.386Z",
-      "committed_at": "2026-10-14T19:37:08.910Z",
-      "latency_ms": 2475.6,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-e4d825306363eaeea3b618d3",
-      "observed_at": "2026-10-14T19:39:03.721Z",
-      "committed_at": "2026-10-14T19:39:06.217Z",
-      "latency_ms": 2375.68,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-97dbdcfe245c05b0ea08b16c",
-      "observed_at": "2026-10-14T19:39:03.721Z",
-      "committed_at": "2026-10-14T19:39:06.217Z",
-      "latency_ms": 2375.68,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-0cb0028760e6af46c6bf8058",
-      "observed_at": "2026-10-14T19:39:03.721Z",
-      "committed_at": "2026-10-14T19:39:06.217Z",
-      "latency_ms": 2375.68,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-4e603d24b130aad1ff66477f",
-      "observed_at": "2026-10-14T19:39:03.721Z",
-      "committed_at": "2026-10-14T19:39:06.217Z",
-      "latency_ms": 2375.68,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-0d501fd28d403fb88f7795a8",
-      "observed_at": "2026-10-14T19:39:03.721Z",
-      "committed_at": "2026-10-14T19:39:06.217Z",
-      "latency_ms": 2375.68,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-fced9e75765da8699928c157",
-      "observed_at": "2026-10-14T19:39:53.057Z",
-      "committed_at": "2026-10-14T19:39:58.675Z",
-      "latency_ms": 5567.67,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-29eb9942086a7d376af1d7ab",
-      "observed_at": "2026-10-14T19:40:24.865Z",
-      "committed_at": "2026-10-14T19:40:28.315Z",
-      "latency_ms": 3316.9,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-8aae8c88d32c3e68b1a81ac1",
-      "observed_at": "2026-10-14T19:40:48.432Z",
-      "committed_at": "2026-10-14T19:40:59.462Z",
-      "latency_ms": 10927.59,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-69f7df326f8ad7aee4b55e6c",
-      "observed_at": "2026-10-14T19:41:01.522Z",
-      "committed_at": "2026-10-14T19:41:13.713Z",
-      "latency_ms": 12142.13,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c07f3452228ff484f442b226",
-      "observed_at": "2026-10-14T19:41:30.651Z",
-      "committed_at": "2026-10-14T19:41:35.221Z",
-      "latency_ms": 4502.58,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-f1b8ffc3470f74d4fb91a032",
-      "observed_at": "2026-10-14T19:41:52.821Z",
-      "committed_at": "2026-10-14T19:42:00.110Z",
-      "latency_ms": 7202.98,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2c426c8999a3b59cc561d618",
-      "observed_at": "2026-10-14T19:42:07.459Z",
-      "committed_at": "2026-10-14T19:42:10.682Z",
-      "latency_ms": 3148.87,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-7c51209c91c6e7ea51204176",
-      "observed_at": "2026-10-14T19:42:27.396Z",
-      "committed_at": "2026-10-14T19:42:30.833Z",
-      "latency_ms": 3392.12,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-3f1d1f72e67b93fb6cc16441",
-      "observed_at": "2026-10-14T19:43:20.909Z",
-      "committed_at": "2026-10-14T19:43:22.357Z",
-      "latency_ms": 1355.87,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-46a845ddce73b02e2139f117",
-      "observed_at": "2026-10-14T19:43:33.266Z",
-      "committed_at": "2026-10-14T19:43:46.522Z",
-      "latency_ms": 13191.02,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-f9b4ff62de5131424b50b536",
-      "observed_at": "2026-10-14T19:43:53.139Z",
-      "committed_at": "2026-10-14T19:43:55.823Z",
-      "latency_ms": 2624.24,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-270338635b1fe226c7669011",
-      "observed_at": "2026-10-14T19:44:09.606Z",
-      "committed_at": "2026-10-14T19:44:13.532Z",
-      "latency_ms": 3883.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2dc27e40b7fa132dc252c0ef",
-      "observed_at": "2026-10-14T19:44:38.488Z",
-      "committed_at": "2026-10-14T19:44:40.730Z",
-      "latency_ms": 2175.1,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-396435ca0fa9d0aaee3ebd7e",
-      "observed_at": "2026-10-14T19:45:03.059Z",
-      "committed_at": "2026-10-14T19:46:42.190Z",
-      "latency_ms": 99092.8,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-f0f06ffe23be90911a65af51",
-      "observed_at": "2026-10-14T19:45:17.482Z",
-      "committed_at": "2026-10-14T19:46:42.190Z",
-      "latency_ms": 84671.13,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2b7f70e3bd63b46f57dc5591",
-      "observed_at": "2026-10-14T19:45:37.518Z",
-      "committed_at": "2026-10-14T19:46:42.190Z",
-      "latency_ms": 64660.86,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2f89b9affacac74f0194674a",
-      "observed_at": "2026-10-14T19:46:16.458Z",
-      "committed_at": "2026-10-14T19:46:42.190Z",
-      "latency_ms": 25617.57,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c3918deb826361018ad34e26",
-      "observed_at": "2026-10-14T19:46:32.525Z",
-      "committed_at": "2026-10-14T19:46:42.190Z",
-      "latency_ms": 9638.86,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-6f0073e16997135278d71f70",
-      "observed_at": "2026-10-14T19:46:51.540Z",
-      "committed_at": "2026-10-14T19:46:57.765Z",
-      "latency_ms": 4901.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2cba24a4d313ba976e8096af",
-      "observed_at": "2026-10-14T19:47:20.853Z",
-      "committed_at": "2026-10-14T19:47:25.816Z",
-      "latency_ms": 4906.25,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-3b33941e4f7c851f95214e30",
-      "observed_at": "2026-10-14T19:47:37.534Z",
-      "committed_at": "2026-10-14T19:47:46.319Z",
-      "latency_ms": 8720.79,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-0aa6bf73589dbe15006cdcdf",
-      "observed_at": "2026-10-14T19:47:50.363Z",
-      "committed_at": "2026-10-14T19:47:53.570Z",
-      "latency_ms": 3164.88,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-2ae5476298332a0a0ba4f842",
-      "observed_at": "2026-10-14T19:48:33.712Z",
-      "committed_at": "2026-10-14T19:48:36.513Z",
-      "latency_ms": 2755.99,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-ec5ed7a1658573f6392d75cb",
-      "observed_at": "2026-10-14T19:48:46.388Z",
-      "committed_at": "2026-10-14T19:48:51.330Z",
-      "latency_ms": 4883.26,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-79fd4a96e139aaf7cb6d50b5",
-      "observed_at": "2026-10-14T19:48:58.834Z",
-      "committed_at": "2026-10-14T19:49:01.955Z",
-      "latency_ms": 2369.45,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-14c745732ad4355d4f5185a4",
-      "observed_at": "2026-10-14T19:49:07.842Z",
-      "committed_at": "2026-10-14T19:49:10.657Z",
-      "latency_ms": 2738.94,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-04728460b7e547edd4459a15",
-      "observed_at": "2026-10-14T19:49:35.459Z",
-      "committed_at": "2026-10-14T19:49:38.464Z",
-      "latency_ms": 2962.12,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-bb41507104c761d11aa1436f",
-      "observed_at": "2026-10-14T19:49:48.152Z",
-      "committed_at": "2026-10-14T19:49:51.014Z",
-      "latency_ms": 2802.4,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-d53b94a1619ef969ecaee681",
-      "observed_at": "2026-10-14T19:50:19.779Z",
-      "committed_at": "2026-10-14T19:50:22.714Z",
-      "latency_ms": 2877.36,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-33d2aca73c03db361b62c948",
-      "observed_at": "2026-10-14T19:50:45.118Z",
-      "committed_at": "2026-10-14T19:50:56.440Z",
-      "latency_ms": 11284.6,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-5c6d9dca1b24f14b7b90cabb",
-      "observed_at": "2026-10-14T19:51:37.059Z",
-      "committed_at": "2026-10-14T19:51:39.169Z",
-      "latency_ms": 2011.48,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-0375cebe1d50155c275fb17d",
-      "observed_at": "2026-10-14T19:51:56.178Z",
-      "committed_at": "2026-10-14T19:52:05.411Z",
-      "latency_ms": 9151.1,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-58fc399215ba0be0f204068e",
-      "observed_at": "2026-10-14T19:52:08.498Z",
-      "committed_at": "2026-10-14T19:52:14.938Z",
-      "latency_ms": 6095.29,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-b2cac8032abcf32b71d2a83f",
-      "observed_at": "2026-10-14T19:52:28.668Z",
-      "committed_at": "2026-10-14T19:52:32.842Z",
-      "latency_ms": 4143.49,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-097a37284cf172dd4cab331d",
-      "observed_at": "2026-10-14T19:52:41.455Z",
-      "committed_at": "2026-10-14T19:52:52.831Z",
-      "latency_ms": 11232.97,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-292db3a0de8b7095181036b9",
-      "observed_at": "2026-10-14T19:53:25.028Z",
-      "committed_at": "2026-10-14T19:53:34.026Z",
-      "latency_ms": 8868.5,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-942f2532820149b52db09a23",
-      "observed_at": "2026-10-14T19:54:08.001Z",
-      "committed_at": "2026-10-14T19:54:09.768Z",
-      "latency_ms": 1691.79,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-28694e04878724f287d0f333",
-      "observed_at": "2026-10-14T19:54:36.141Z",
-      "committed_at": "2026-10-14T19:54:39.999Z",
-      "latency_ms": 3756.59,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-89ba971a3c0591213c967081",
-      "observed_at": "2026-10-14T19:54:45.183Z",
-      "committed_at": "2026-10-14T19:54:52.643Z",
-      "latency_ms": 7165.58,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-3ecc748bd1fdf025230a194f",
-      "observed_at": "2026-10-14T19:55:10.716Z",
-      "committed_at": "2026-10-14T19:55:12.190Z",
-      "latency_ms": 1427.17,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-28fe2f13de33353a024b2c2d",
-      "observed_at": "2026-10-14T19:55:31.884Z",
-      "committed_at": "2026-10-14T19:55:37.343Z",
-      "latency_ms": 5181.72,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c539bafd8c8b410bb2feb86f",
-      "observed_at": "2026-10-14T19:55:55.456Z",
-      "committed_at": "2026-10-14T19:55:58.013Z",
-      "latency_ms": 2474.61,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-5c7f79536c1a197783bda9ea",
-      "observed_at": "2026-10-14T19:56:17.444Z",
-      "committed_at": "2026-10-14T19:56:28.968Z",
-      "latency_ms": 11492.99,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-ea650278a47e1aea51c93f19",
-      "observed_at": "2026-10-14T19:56:30.796Z",
-      "committed_at": "2026-10-14T19:56:35.581Z",
-      "latency_ms": 4638.55,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c0aa73a178c2d9592fb1a6af",
-      "observed_at": "2026-10-14T19:56:45.605Z",
-      "committed_at": "2026-10-14T19:56:46.906Z",
-      "latency_ms": 1199.68,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-b275b997be5c226319680ddf",
-      "observed_at": "2026-10-14T19:57:11.106Z",
-      "committed_at": "2026-10-14T19:57:12.059Z",
-      "latency_ms": 870.31,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-fb2211b6af3594b82a84a8cf",
-      "observed_at": "2026-10-14T19:57:31.586Z",
-      "committed_at": "2026-10-14T19:57:37.953Z",
-      "latency_ms": 6299.86,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-ae7bb9ae39ddb8f7a4d474e1",
-      "observed_at": "2026-10-14T19:57:57.415Z",
-      "committed_at": "2026-10-14T19:57:59.296Z",
-      "latency_ms": 1837.18,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-4416467f6fb8d0b32e06ad33",
-      "observed_at": "2026-10-14T19:58:07.278Z",
-      "committed_at": "2026-10-14T19:58:10.022Z",
-      "latency_ms": 2694.75,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-4d81b8a09d1f84d060c0c229",
-      "observed_at": "2026-10-14T19:58:19.243Z",
-      "committed_at": "2026-10-14T19:58:32.265Z",
-      "latency_ms": 12961.76,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-569a6e745804b073933e9467",
-      "observed_at": "2026-10-14T19:58:36.220Z",
-      "committed_at": "2026-10-14T19:58:38.005Z",
-      "latency_ms": 1753.74,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-395c166a580e6ef1589e62f4",
-      "observed_at": "2026-10-14T19:58:54.732Z",
-      "committed_at": "2026-10-14T19:58:58.125Z",
-      "latency_ms": 3356.21,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-51aa9b746129d963ab3bb017",
-      "observed_at": "2026-10-14T19:59:15.297Z",
-      "committed_at": "2026-10-14T19:59:17.490Z",
-      "latency_ms": 2124.92,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-1337ac7f22f8bcf652b67965",
-      "observed_at": "2026-10-14T19:59:30.711Z",
-      "committed_at": "2026-10-14T19:59:35.625Z",
-      "latency_ms": 4746.25,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-7df2cf0299774e0a9c682daf",
-      "observed_at": "2026-10-14T19:59:43.713Z",
-      "committed_at": "2026-10-14T19:59:44.614Z",
-      "latency_ms": 837.65,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-a09fc89ced585e41173cfcf7",
-      "observed_at": "2026-10-14T20:00:05.591Z",
-      "committed_at": "2026-10-14T20:00:09.228Z",
-      "latency_ms": 3593.79,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-90bf19fcbf8a7fe5d4fbbf7a",
-      "observed_at": "2026-10-14T20:00:38.249Z",
-      "committed_at": "2026-10-14T20:00:40.217Z",
-      "latency_ms": 1916.93,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-6d3da7c00d2db9b4172b1682",
-      "observed_at": "2026-10-14T20:00:53.861Z",
-      "committed_at": "2026-10-14T20:00:56.291Z",
-      "latency_ms": 2399.13,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-fab0ee179fe537b2bb974dba",
-      "observed_at": "2026-10-14T20:01:15.400Z",
-      "committed_at": "2026-10-14T20:01:18.475Z",
-      "latency_ms": 2765.72,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-08721a54b8656d3498dc3712",
-      "observed_at": "2026-10-14T20:01:52.820Z",
-      "committed_at": "2026-10-14T20:01:55.099Z",
-      "latency_ms": 2146.61,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-98d779853141f7e523db8b96",
-      "observed_at": "2026-10-14T20:02:10.311Z",
-      "committed_at": "2026-10-14T20:02:13.018Z",
-      "latency_ms": 2617.01,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-47a57b3084e0eacf7d80a5cb",
-      "observed_at": "2026-10-14T20:02:19.876Z",
-      "committed_at": "2026-10-14T20:02:29.514Z",
-      "latency_ms": 3668.43,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-e15a54dbc285bcd34a599605",
-      "observed_at": "2026-10-14T20:03:39.498Z",
-      "committed_at": "2026-10-14T20:03:43.775Z",
-      "latency_ms": 4187.51,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-72ba53d756276f94509c0bc2",
-      "observed_at": "2026-10-14T20:03:58.494Z",
-      "committed_at": "2026-10-14T20:04:00.990Z",
-      "latency_ms": 2459.36,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-9da0536df8ffb8ab3cc15e52",
-      "observed_at": "2026-10-14T20:04:36.542Z",
-      "committed_at": "2026-10-14T20:04:37.816Z",
-      "latency_ms": 1243.19,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-f512fb439d8875bb4ec05e41",
-      "observed_at": "2026-10-14T20:04:58.008Z",
-      "committed_at": "2026-10-14T20:05:05.099Z",
-      "latency_ms": 7002.34,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-a5226c46dc7e0d4aafb089d4",
-      "observed_at": "2026-10-14T20:05:18.185Z",
-      "committed_at": "2026-10-14T20:05:25.513Z",
-      "latency_ms": 7271.42,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-819223820074a51ee1103210",
-      "observed_at": "2026-10-14T20:05:32.232Z",
-      "committed_at": "2026-10-14T20:05:34.896Z",
-      "latency_ms": 1757.83,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-11b3c60a0545549f52d682b8",
-      "observed_at": "2026-10-14T20:05:49.106Z",
-      "committed_at": "2026-10-14T20:05:51.903Z",
-      "latency_ms": 2524.68,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-6c9847d0b82284e534de58c2",
-      "observed_at": "2026-10-14T20:06:02.174Z",
-      "committed_at": "2026-10-14T20:06:12.976Z",
-      "latency_ms": 10774.85,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-a7bafcd6996c5cdddb43793c",
-      "observed_at": "2026-10-14T20:06:23.899Z",
-      "committed_at": "2026-10-14T20:06:36.368Z",
-      "latency_ms": 12413.33,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-43f315470ba6137cecb6c34f",
-      "observed_at": "2026-10-14T20:06:48.063Z",
-      "committed_at": "2026-10-14T20:07:05.898Z",
-      "latency_ms": 17733.74,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-df0d96c77bf7f9be6df4200c",
-      "observed_at": "2026-10-14T20:06:59.557Z",
-      "committed_at": "2026-10-14T20:07:05.898Z",
-      "latency_ms": 6279.11,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-89b6726b6f29ed4f256ca445",
-      "observed_at": "2026-10-14T20:07:12.073Z",
-      "committed_at": "2026-10-14T20:07:16.513Z",
-      "latency_ms": 4362.25,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c6309c02a158dc18d0166857",
-      "observed_at": "2026-10-14T20:07:34.914Z",
-      "committed_at": "2026-10-14T20:07:37.557Z",
-      "latency_ms": 2609.66,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-804dfc354c41d3a095e1d998",
-      "observed_at": "2026-10-14T20:08:04.505Z",
-      "committed_at": "2026-10-14T20:08:09.816Z",
-      "latency_ms": 5199.13,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-902a51e7cb0c0457feb30903",
-      "observed_at": "2026-10-14T20:08:19.369Z",
-      "committed_at": "2026-10-14T20:08:22.371Z",
-      "latency_ms": 2931.91,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-8e2ded359d7169c7166486e9",
-      "observed_at": "2026-10-14T20:08:44.056Z",
-      "committed_at": "2026-10-14T20:08:47.572Z",
-      "latency_ms": 3463.56,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-9d5e72ea89054b25ee84654d",
-      "observed_at": "2026-10-14T20:09:20.475Z",
-      "committed_at": "2026-10-14T20:09:21.695Z",
-      "latency_ms": 1184.91,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-be7a2a1a9da8f65005ace4fa",
-      "observed_at": "2026-10-14T20:09:51.421Z",
-      "committed_at": "2026-10-14T20:09:53.841Z",
-      "latency_ms": 2360.21,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-fc06a3bf97b0c790adf82de6",
-      "observed_at": "2026-10-14T20:10:03.956Z",
-      "committed_at": "2026-10-14T20:10:07.062Z",
-      "latency_ms": 2992.25,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c0b2afdc284fd107dbcf1e9b",
-      "observed_at": "2026-10-14T20:10:21.357Z",
-      "committed_at": "2026-10-14T20:10:25.061Z",
-      "latency_ms": 3579.2,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-f7c71cc210d5ba865924fb3c",
-      "observed_at": "2026-10-14T20:10:40.854Z",
-      "committed_at": "2026-10-14T20:10:43.716Z",
-      "latency_ms": 2780.59,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-8dbf82e8c2924b4240ad3a14",
-      "observed_at": "2026-10-14T20:10:55.099Z",
-      "committed_at": "2026-10-14T20:11:04.802Z",
-      "latency_ms": 9682.54,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-a0835b3e5f3e2e1864dd1294",
-      "observed_at": "2026-10-14T20:11:09.371Z",
-      "committed_at": "2026-10-14T20:11:12.718Z",
-      "latency_ms": 3321.06,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-8f64aa42819af4a2ce30c4b2",
-      "observed_at": "2026-10-14T20:11:23.120Z",
-      "committed_at": "2026-10-14T20:11:28.837Z",
-      "latency_ms": 5665.66,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-6fc3529f28d15cdfbbda2c5e",
-      "observed_at": "2026-10-14T20:11:37.752Z",
-      "committed_at": "2026-10-14T20:11:41.669Z",
-      "latency_ms": 3794.65,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-998329c3cd47add520a61b25",
-      "observed_at": "2026-10-14T20:11:48.036Z",
-      "committed_at": "2026-10-14T20:11:52.153Z",
-      "latency_ms": 4079.3,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-05fa7c0efd92016232a5bad9",
-      "observed_at": "2026-10-14T20:12:01.665Z",
-      "committed_at": "2026-10-14T20:12:04.788Z",
-      "latency_ms": 3095.34,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-bd7875150712c4b00487c13a",
-      "observed_at": "2026-10-14T20:12:21.850Z",
-      "committed_at": "2026-10-14T20:12:26.139Z",
-      "latency_ms": 4205.39,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-e9ef79f529f67398b405eaa5",
-      "observed_at": "2026-10-14T20:12:45.733Z",
-      "committed_at": "2026-10-14T20:12:50.660Z",
-      "latency_ms": 4734.39,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-d9f97d4b36abe13d4b6f6695",
-      "observed_at": "2026-10-14T20:13:20.672Z",
-      "committed_at": "2026-10-14T20:13:36.131Z",
-      "latency_ms": 15323.31,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-f1f45422d647e095d07ca632",
-      "observed_at": "2026-10-14T20:13:39.317Z",
-      "committed_at": "2026-10-14T20:13:42.995Z",
-      "latency_ms": 2148.6,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-c72af1cdb0bc0c9b6c37a9b2",
-      "observed_at": "2026-10-14T20:13:52.634Z",
-      "committed_at": "2026-10-14T20:13:58.896Z",
-      "latency_ms": 6198.61,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-0f006e1ac83279fc5a54f9c2",
-      "observed_at": "2026-10-14T20:14:13.022Z",
-      "committed_at": "2026-10-14T20:14:52.615Z",
-      "latency_ms": 39574.17,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-93e2e6a97ab3813b99d46048",
-      "observed_at": "2026-10-14T20:14:44.092Z",
-      "committed_at": "2026-10-14T20:14:52.615Z",
-      "latency_ms": 8162.72,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-5d190534ad6135662964dced",
-      "observed_at": "2026-10-14T20:14:59.114Z",
-      "committed_at": "2026-10-14T20:15:02.770Z",
-      "latency_ms": 3431.3,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-ab56adefce778745f1338e1a",
-      "observed_at": "2026-10-14T20:15:45.494Z",
-      "committed_at": "2026-10-14T20:15:49.252Z",
-      "latency_ms": 3693.99,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-005ab218c9a4df614a95c8d2",
-      "observed_at": "2026-10-14T20:16:11.963Z",
-      "committed_at": "2026-10-14T20:16:18.359Z",
-      "latency_ms": 6223.44,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-09cfbfe7f920056829c8e9b1",
-      "observed_at": "2026-10-14T20:16:36.454Z",
-      "committed_at": "2026-10-14T20:16:39.248Z",
-      "latency_ms": 2639.19,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-5b12fd9372c57f27b04c6c69",
-      "observed_at": "2026-10-14T20:17:03.178Z",
-      "committed_at": "2026-10-14T20:17:08.036Z",
-      "latency_ms": 4738.36,
-      "measurement_clock": "COLLECTOR_MONOTONIC"
-    },
-    {
-      "round_id": "aviator-1b73b1f18b31bbc68e2405f8",
-      "observed_at": "2026-10-14T20:17:18.712Z",
-      "committed_at": "2026-10-14T20:17:21.130Z",
-      "latency_ms": 2271,
+      "round_id": "aviator-dc5cee026f14b0e7e61b7c95",
+      "observed_at": "2026-11-04T16:12:58.222Z",
+      "committed_at": "2026-11-04T16:13:00.014Z",
+      "latency_ms": 1771.39,
       "measurement_clock": "COLLECTOR_MONOTONIC"
     }
   ],
-  "heartbeatAt": "2026-10-14T20:18:39.529Z",
-  "lastObserverInstalledAt": "2026-10-14T20:10:55.099Z",
+  "heartbeatAt": "2026-11-04T16:13:09.744Z",
+  "lastObserverInstalledAt": "2026-11-04T15:07:32.531Z",
   "network": {
     "status": "ONLINE",
     "reason_code": null,
@@ -2830,27 +1445,27 @@
     "evidence": [
       {
         "host": "winner.rw",
-        "address": "172.64.147.106",
+        "address": "104.18.40.150",
         "result": "TCP_REACHABLE"
       },
       {
         "host": "aviator-next.spribegaming.com",
-        "address": "3.175.179.58",
+        "address": "3.175.179.42",
         "result": "TCP_REACHABLE"
       },
       {
         "host": "aviaport.spribegaming.com",
-        "address": "3.175.179.27",
+        "address": "3.175.179.37",
         "result": "TCP_REACHABLE"
       }
     ],
-    "checked_at": "2026-10-14T20:18:37.189Z"
+    "checked_at": "2026-11-04T16:13:04.079Z"
   },
   "backend": {
     "status": "AVAILABLE",
     "http_status": 200,
     "reason": null,
-    "checked_at": "2026-10-14T20:18:38.431Z"
+    "checked_at": "2026-11-04T16:13:09.440Z"
   },
   "storage": {
     "status": "AVAILABLE",
@@ -2859,70 +1474,213 @@
     "capacity_bytes": 67108864,
     "backlog_bytes": 3,
     "capacity_remaining_records": 50000,
-    "last_commit_acknowledged_at": "2026-10-14T20:17:21.130Z",
+    "last_commit_acknowledged_at": "2026-11-04T16:13:00.014Z",
     "last_committed_rounds": [
       {
-        "db_id": 29698,
-        "round_id": "aviator-1b73b1f18b31bbc68e2405f8",
-        "round_index": 29601,
-        "local_round_index": 29601,
+        "db_id": 24423,
+        "round_id": "aviator-dc5cee026f14b0e7e61b7c95",
+        "round_index": 24695,
+        "local_round_index": 24695,
         "platform_round_id": null,
         "platform_round_index": null,
-        "multiplier": 1.45,
+        "multiplier": 1.11,
+        "timestamp": "2026-11-04T16:12:58.222Z",
         "platform_timestamp": null,
-        "observed_at": "2026-10-14T20:17:18.712Z",
-        "stored_at": "2026-10-14T20:17:21.051Z",
+        "observed_at": "2026-11-04T16:12:58.222Z",
+        "stored_at": "2026-11-04T16:12:59.742Z",
         "source": "collector_async",
+        "round_identity_type": "COLLECTOR_OBSERVATION_HASH",
+        "round_index_source": "LOCAL_SEQUENCE",
         "continuity_verified": true,
         "gap_before": false,
-        "identity_confidence": "OVERLAP_VERIFIED_ORDER_ONLY"
+        "identity_confidence": "OVERLAP_VERIFIED_ORDER_ONLY",
+        "continuity_proof": "HISTORY_SNAPSHOT_OVERLAP"
       }
     ],
     "last_error": null,
     "retry_at": null,
     "round_delivery": {
       "backlog_size": 1,
-      "backlog_bytes": 10883,
+      "backlog_bytes": 6446,
       "capacity_records": 50000,
       "capacity_bytes": 67108864,
       "capacity_remaining_records": 49999,
       "journal_capacity_bytes": 134217728,
       "journal_compaction": {
-        "at": "2026-10-14T20:17:10.437Z",
+        "at": "2026-11-04T16:12:51.714Z",
         "bytes_before": null,
         "bytes_after": 0
       },
-      "oldest_pending_observation_id": "aviator-1b73b1f18b31bbc68e2405f8",
-      "oldest_pending_observation_age_seconds": 9.625,
+      "oldest_pending_observation_id": "aviator-dc5cee026f14b0e7e61b7c95",
+      "oldest_pending_observation_age_seconds": 2.694,
       "persistence_lag_ms": 0,
       "worker_running": true,
       "worker_busy": true,
-      "last_failure": {
-        "stage": "persisted",
-        "attempts": 2,
-        "next_attempt_at": "2026-10-14T20:17:28.696Z",
-        "category": "BACKEND_EVENT_TIMEOUT",
-        "message": "committed event endpoint timed out after 3000ms",
-        "backlog_size": 1
+      "last_failure": null,
+      "last_round_timing": {
+        "round_id": "aviator-dc5cee026f14b0e7e61b7c95",
+        "timestamps": {
+          "mutation_observed_at": "2026-11-04T16:12:58.222Z",
+          "extraction_started_at": "2026-11-04T16:12:58.222Z",
+          "multiplier_extracted_at": "2026-11-04T16:12:58.222Z",
+          "node_received_at": "2026-11-04T16:12:58.228Z",
+          "normalized_at": "2026-11-04T16:12:58.228Z",
+          "validated_at": "2026-11-04T16:12:58.243Z",
+          "durable_append_at": "2026-11-04T16:12:58.299Z",
+          "database_write_started_at": "2026-11-04T16:12:59.742Z",
+          "database_commit_acknowledged_at": "2026-11-04T16:13:00.014Z",
+          "observed_api_receipt_at": "2026-11-04T16:12:59.630353+00:00",
+          "persisted_event_acknowledged_at": "2026-11-04T16:13:02.404Z",
+          "round_history_api_visible_at": null,
+          "rules_engine_received_at": null,
+          "rules_engine_evaluation_finished_at": null,
+          "other_consumer_enqueue_at": null
+        },
+        "round_history_api_visibility": "NOT_MEASURED",
+        "rules_engine_priority_delivery": "DECISION_READY"
+      },
+      "round_history_api_visibility_samples": [],
+      "measurement_availability": {
+        "bet_page_round_available_at": "UNAVAILABLE_PROVIDER_EVENT_NOT_EXPOSED",
+        "page_to_node_receive_monotonic": "UNAVAILABLE_SEPARATE_CLOCK_DOMAINS",
+        "other_consumer_client_ack": "UNAVAILABLE_NO_CLIENT_ACK_PROTOCOL"
       },
       "latency_ms": {
-        "observation_to_durable_append_ms": {
-          "samples": 319,
-          "p50_ms": 718.29,
-          "p95_ms": 4487.82,
-          "max_ms": 15448.18
+        "page_mutation_to_multiplier_extraction_ms": {
+          "samples": 189,
+          "average_ms": 1.75,
+          "p50_ms": 0.9,
+          "p95_ms": 5.9,
+          "p99_ms": 15.6,
+          "max_ms": 23.3
         },
-        "local_append_to_api_receipt_estimate_ms": {
-          "samples": 256,
-          "p50_ms": 647.54,
-          "p95_ms": 1319.47,
-          "max_ms": 1544.07
+        "page_extraction_ms": {
+          "samples": 189,
+          "average_ms": 1.43,
+          "p50_ms": 0.6,
+          "p95_ms": 4.4,
+          "p99_ms": 15.5,
+          "max_ms": 23.2
+        },
+        "node_receive_to_validation_ms": {
+          "samples": 189,
+          "average_ms": 34.54,
+          "p50_ms": 26.96,
+          "p95_ms": 80.58,
+          "p99_ms": 145.77,
+          "max_ms": 148.01
+        },
+        "validation_to_durable_append_ms": {
+          "samples": 189,
+          "average_ms": 242.25,
+          "p50_ms": 184.06,
+          "p95_ms": 652.02,
+          "p99_ms": 890.38,
+          "max_ms": 982.65
+        },
+        "observation_to_durable_append_ms": {
+          "samples": 191,
+          "average_ms": 242.47,
+          "p50_ms": 188.2,
+          "p95_ms": 651.9,
+          "p99_ms": 889.74,
+          "max_ms": 982.56
+        },
+        "validation_to_api_dispatch_ms": {
+          "samples": 189,
+          "average_ms": 308.05,
+          "p50_ms": 209.96,
+          "p95_ms": 712.69,
+          "p99_ms": 1231.85,
+          "max_ms": 7643.44
+        },
+        "api_request_to_rules_engine_receive_ms": {
+          "samples": 0,
+          "average_ms": null,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null
+        },
+        "rules_engine_evaluation_ms": {
+          "samples": 0,
+          "average_ms": null,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null
+        },
+        "rules_complete_to_other_consumer_enqueue_ms": {
+          "samples": 0,
+          "average_ms": null,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null
+        },
+        "collector_ack_wait_for_rules_decision_ms": {
+          "samples": 194,
+          "average_ms": 125.85,
+          "p50_ms": 67.55,
+          "p95_ms": 519.78,
+          "p99_ms": 859.06,
+          "max_ms": 902.84
+        },
+        "api_durable_inbox_append_ms": {
+          "samples": 195,
+          "average_ms": 855.07,
+          "p50_ms": 704.73,
+          "p95_ms": 1857.1,
+          "p99_ms": 4586.71,
+          "max_ms": 6088.05
+        },
+        "collector_http_roundtrip_to_api_ack_ms": {
+          "samples": 195,
+          "average_ms": 1054.56,
+          "p50_ms": 876.04,
+          "p95_ms": 2152.35,
+          "p99_ms": 4672.03,
+          "max_ms": 6120.56
+        },
+        "durable_append_to_api_receipt_ms": {
+          "samples": 195,
+          "average_ms": 1226.98,
+          "p50_ms": 905.07,
+          "p95_ms": 2841.1,
+          "p99_ms": 9181.26,
+          "max_ms": 9564.5
+        },
+        "database_write_ms": {
+          "samples": 190,
+          "average_ms": 255.12,
+          "p50_ms": 183.76,
+          "p95_ms": 617.96,
+          "p99_ms": 1325.06,
+          "max_ms": 1808.45
         },
         "observation_to_postgres_commit_ms": {
-          "samples": 396,
-          "p50_ms": 6440.84,
-          "p95_ms": 405509.32,
-          "max_ms": 873055.68
+          "samples": 195,
+          "average_ms": 2118.57,
+          "p50_ms": 1579.15,
+          "p95_ms": 4193.99,
+          "p99_ms": 13067.99,
+          "max_ms": 13067.99
+        },
+        "durable_append_to_postgres_commit_ms": {
+          "samples": 195,
+          "average_ms": 1873.34,
+          "p50_ms": 1330.09,
+          "p95_ms": 3832.28,
+          "p99_ms": 12691.07,
+          "max_ms": 12691.07
+        },
+        "database_commit_to_history_api_visible_ms": {
+          "samples": 0,
+          "average_ms": null,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null
         }
       }
     }
@@ -2930,48 +1688,48 @@
   "browser_pages": {
     "browser_count": 1,
     "context_count": 1,
-    "page_count": 1,
+    "page_count": 2,
     "aviator_page_count": 1,
-    "aviator_target_id": "EBD3F59227477AC4BB32FEA90D011ABD",
+    "aviator_target_id": "C6959DD2E5E3E07C160E5CF591F4FEE2",
     "aviator_page_state": "OPEN",
-    "game_frame_count": 0,
-    "game_frame_state": "NOT_READY",
+    "game_frame_count": 1,
+    "game_frame_state": "READY",
     "page_role": "SHARED_AVIATOR",
-    "history_target_id": "EBD3F59227477AC4BB32FEA90D011ABD",
-    "betting_target_id": "EBD3F59227477AC4BB32FEA90D011ABD",
+    "history_target_id": "C6959DD2E5E3E07C160E5CF591F4FEE2",
+    "betting_target_id": "C6959DD2E5E3E07C160E5CF591F4FEE2",
     "history_page_state": "OPEN",
     "betting_page_state": "OPEN"
   },
   "cashout_initialization": {
     "target": "2.00",
-    "auto_bet": "UNKNOWN",
-    "status": "UNKNOWN",
-    "panel_1_cashout": "UNKNOWN",
-    "panel_2_cashout": "UNKNOWN",
+    "auto_bet": "OFF",
+    "status": "READY",
+    "panel_1_cashout": "READY",
+    "panel_2_cashout": "READY",
     "panels": [
       {
         "slot": 0,
-        "status": "UNKNOWN",
-        "auto_bet": "UNKNOWN",
-        "auto_cashout": "UNKNOWN",
-        "multiplier": null,
-        "auto_tab_selected": false,
-        "observed_at": "2026-10-14T20:18:38.569Z",
-        "error_reason": "AUTHENTICATION_NO_GAME_FRAME:GAME_FRAME_NOT_FOUND"
+        "status": "READY",
+        "auto_bet": "OFF",
+        "auto_cashout": "ON",
+        "multiplier": "2.00",
+        "auto_tab_selected": true,
+        "observed_at": "2026-11-04T15:07:33.857Z",
+        "error_reason": null
       },
       {
         "slot": 1,
-        "status": "UNKNOWN",
-        "auto_bet": "UNKNOWN",
-        "auto_cashout": "UNKNOWN",
-        "multiplier": null,
-        "auto_tab_selected": false,
-        "observed_at": "2026-10-14T20:18:38.569Z",
-        "error_reason": "AUTHENTICATION_NO_GAME_FRAME:GAME_FRAME_NOT_FOUND"
+        "status": "READY",
+        "auto_bet": "OFF",
+        "auto_cashout": "ON",
+        "multiplier": "2.00",
+        "auto_tab_selected": true,
+        "observed_at": "2026-11-04T15:07:34.376Z",
+        "error_reason": null
       }
     ],
-    "updated_at": "2026-10-14T20:18:38.569Z",
-    "error_reason": "AUTHENTICATION_NO_GAME_FRAME:GAME_FRAME_NOT_FOUND"
+    "updated_at": "2026-11-04T15:07:34.376Z",
+    "error_reason": null
   },
   "bet_amount_initialization": {
     "status": "UNKNOWN",
@@ -2982,29 +1740,31 @@
     "platform_currency": null,
     "observed_value": null,
     "session_id": null,
-    "updated_at": "2026-10-14T20:10:57.614Z",
-    "error_reason": "RULES_ENGINE_SETUP_UNAVAILABLE:20"
+    "updated_at": "2026-11-04T15:00:53.396Z",
+    "error_reason": "RULES_ENGINE_SETUP_UNAVAILABLE:RULES_ENGINE_UI_SETUP_HTTP_401"
   },
   "betting_ui_configuration": {
     "status": "UNKNOWN",
-    "updated_at": "2026-10-14T20:18:38.569Z",
-    "error_reason": "AUTHENTICATION_NO_GAME_FRAME:GAME_FRAME_NOT_FOUND; RULES_ENGINE_SETUP_UNAVAILABLE:20"
+    "updated_at": "2026-11-04T15:07:34.376Z",
+    "error_reason": "RULES_ENGINE_SETUP_UNAVAILABLE:RULES_ENGINE_UI_SETUP_HTTP_401"
   },
   "lastError": {
-    "message": "AUTH_REQUIRED: login route visible on Aviator page",
-    "category": "AUTH_REQUIRED",
+    "message": "History page closed",
+    "category": "PAGE_RECOVER",
     "recovery_action": "recovery_pending",
-    "at": "2026-10-14T20:17:22.921Z"
+    "at": "2026-11-04T15:07:06.347Z"
   },
   "lastRecovery": {
-    "action": "FRAME_RECOVER",
-    "ts": "2026-10-14T20:17:26.160Z"
+    "action": "PAGE_RECOVER",
+    "ts": "2026-11-04T15:07:14.299Z"
   },
-  "recoveryCount": 50,
+  "recoveryCount": 5,
   "browserRestartCount": 0,
-  "loginCount": 3,
-  "totalRoundsSaved": 396,
-  "uptime": 9362,
-  "health": "DISCONNECTED",
+  "loginCount": 4,
+  "totalRoundsSaved": 195,
+  "uptime": 4973,
+  "health": "HEALTHY",
+  "roundSourceStatus": "AVAILABLE",
+  "roundCollectionStatus": "ROUND_PENDING_PERSISTENCE",
   "staleAfterMs": 180000
 }

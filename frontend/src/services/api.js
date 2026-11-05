@@ -8,7 +8,7 @@ import {
 import { getApiBaseUrl } from './endpoints.js';
 import { safeReadRetryDelay, shouldRetryReadFailure } from './readRetryPolicy.js';
 
-export const api = axios.create({ baseURL: getApiBaseUrl(), timeout: 20000 });
+export const api = axios.create({ baseURL: getApiBaseUrl(), timeout: 20000, withCredentials: true });
 
 api.interceptors.request.use((config) => {
   const retryingSafeRead = config.__allowReadDuringReconnect
@@ -64,12 +64,8 @@ export async function getBettingLedger(params = {}) {
   return (await api.get('/api/betting/ledger', { params })).data;
 }
 
-export async function getRiskStatus() {
-  return (await api.get('/api/risk/status')).data;
-}
-
-export async function resetRiskEmergency() {
-  return (await api.post('/api/risk/reset-emergency')).data;
+export async function resetEmergencyStop() {
+  return (await api.post('/api/live/emergency-stop/reset')).data;
 }
 
 export async function getResultExecutions(limit = 50) {

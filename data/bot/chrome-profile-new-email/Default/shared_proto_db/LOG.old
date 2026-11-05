@@ -1,4 +1,3 @@
-2026/10/14-18:13:36.993 600ec Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/shared_proto_db/MANIFEST-000001
-2026/10/14-18:13:36.994 600ec Recovering log #23
-2026/10/14-18:13:36.995 600ec (ignoring error) /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/shared_proto_db/000023.log: dropping 612 bytes; Corruption: missing start of fragmented record(2)
-2026/10/14-18:13:37.001 600ec Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/shared_proto_db/000023.log 
+2026/11/03-21:19:25.056 1a8ab Reusing MANIFEST /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/shared_proto_db/MANIFEST-000001
+2026/11/03-21:19:25.057 1a8ab Recovering log #27
+2026/11/03-21:19:25.268 1a8ab Reusing old log /home/diolo/winner predict/data/bot/chrome-profile-new-email/Default/shared_proto_db/000027.log 

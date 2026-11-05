@@ -131,9 +131,8 @@ SNAPSHOT = r"""() => {
     out.betPanelStates.push({slot: i, ...panelEvidence});
     if (i === 0) {
       out.betTabActive = betTabActive;
-      const controlsReady = buttonVisible && inputVisible && betTabActive;
       out.bettingWindow = {
-        state: controlsReady ? (buttonDisabled ? 'BETTING_CLOSED' : 'BETTING_OPEN') : 'UNKNOWN',
+        state: 'UNKNOWN',
         observedAt: new Date().toISOString(),
         evidence: panelEvidence,
       };

@@ -12,13 +12,14 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from app.round_observation_inbox import run_round_observation_inbox
 
 router = APIRouter(prefix="/api/v1", tags=["external round distribution"])
 PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SSE_HEARTBEAT_INTERVAL_SECONDS = 15.0
+PUBLIC_ROUND_REQUESTS_PER_MINUTE = 120
 
 
 def _require_https_or_loopback(request: Request) -> None:
@@ -34,7 +35,9 @@ def _validate_origin(request: Request) -> None:
     origin = request.headers.get("origin")
     if not origin:
         return
-    allowed = set(request.app.state.settings.round_stream_allowed_origins)
+    settings = request.app.state.settings
+    allowed = set(getattr(settings, "round_stream_allowed_origins", []) or []) | set(
+        getattr(settings, "cors_origins", []) or [])
     if origin not in allowed:
         raise HTTPException(403, detail={"error": "external_project_origin_not_allowed"})
 
@@ -63,17 +66,62 @@ async def _authenticate_project(request: Request) -> dict:
         raise
     except Exception as exc:
         raise HTTPException(503, detail={"error": "project_token_store_unavailable"}) from exc
-    if not token:
+    expires = token.get("expires_at") if token else None
+    try:
+        expires_at = (expires if isinstance(expires, datetime)
+                      else datetime.fromisoformat(str(expires).replace("Z", "+00:00")) if expires else None)
+        expired = bool(expires_at and (expires_at.tzinfo is None
+                                       or expires_at.astimezone(timezone.utc) <= datetime.now(timezone.utc)))
+    except (TypeError, ValueError, OverflowError):
+        expired = True
+    scopes = token.get("scopes", []) if token else []
+    if isinstance(scopes, str):
+        try:
+            scopes = json.loads(scopes)
+        except (TypeError, json.JSONDecodeError):
+            scopes = []
+    if (not token or token.get("key_type", "consumer") != "consumer" or expired
+            or (token.get("console_managed") is True and "rounds:read" not in scopes)):
         raise HTTPException(401, detail={"error": "invalid_or_revoked_project_token"})
     allowed, retry_after = request.app.state.round_distribution.allow_request(token["token_id"])
     if not allowed:
         raise HTTPException(429, detail={"error": "project_rate_limit_exceeded"},
                             headers={"Retry-After": str(retry_after)})
+    touch = getattr(_repository(request), "touch_external_project_token", None)
+    if callable(touch):
+        try:
+            await asyncio.to_thread(touch, token["token_id"])
+        except Exception as exc:
+            raise HTTPException(503, detail={"error": "project_token_store_unavailable"}) from exc
     return token
+
+
+async def _authorize_public_round_read(request: Request) -> dict | None:
+    """Apply public-read transport/rate controls and accept legacy scoped tokens."""
+    _require_https_or_loopback(request)
+    _validate_origin(request)
+    peer = request.client.host if request.client else "unknown"
+    limiter = request.app.state.round_distribution
+    allowed, retry_after = limiter.allow_request(f"public-round-read:{peer}")
+    if not allowed:
+        raise HTTPException(429, detail={"error": "public_rate_limit_exceeded"},
+                            headers={"Retry-After": str(retry_after)})
+
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Bearer "):
+        return None
+    raw_token = authorization[7:].strip()
+    # These prefixes identify the existing external consumer token formats.
+    # An owner API_KEY is deliberately ignored on these already-public reads.
+    if not raw_token.startswith(("wpr_", "wpc_")):
+        return None
+    return await _authenticate_project(request)
 
 
 def _require_admin(request: Request) -> None:
     _require_https_or_loopback(request)
+    if getattr(getattr(request, "state", None), "local_owner_session", False) is True:
+        return
     master = request.app.state.settings.api_key
     if not master:
         raise HTTPException(503, detail={"error": "API_KEY_must_be_configured_to_manage_project_tokens"})
@@ -175,41 +223,138 @@ async def revoke_project_token(project_id: str, token_id: str, request: Request)
     return {"ok": True, "token_id": token_id, "project_id": project_id, "revoked": True}
 
 
-@router.get("/rounds/latest")
+@router.get(
+    "/rounds/latest",
+    summary="Get the latest committed round (public)",
+    description=(
+        "Returns the latest committed Aviator round from PostgreSQL. This read-only endpoint "
+        "requires no API key or consumer token. HTTPS is required outside loopback; browser "
+        "origins must be configured in CORS_ORIGINS or ROUND_STREAM_ALLOWED_ORIGINS. "
+        "Requests are limited to 120 per minute per source IP."
+    ),
+    responses={
+        200: {
+            "description": "Latest committed round and stream retention metadata.",
+            "content": {"application/json": {"example": {
+                "ok": True, "stream_id": "<stream-id>", "project_id": None,
+                "round": {"event_type": "round.persisted", "stage": "PERSISTED",
+                          "stream_sequence": 124, "round_id": "<round-id>",
+                          "round_index": 23291, "multiplier": 2.14,
+                          "durability": "COMMITTED"},
+                "retention": {"earliest_sequence": 1, "latest_sequence": 124,
+                              "retained_events": 124},
+            }}}
+        },
+        403: {"description": "Browser origin is not allowed."},
+        426: {"description": "HTTPS is required for remote callers."},
+        429: {"description": "Public read rate limit exceeded; see Retry-After."},
+        503: {"description": "Authoritative PostgreSQL round stream is unavailable."},
+    },
+    openapi_extra={"x-public-access": True, "x-api-key-required": False},
+)
 async def latest_round(request: Request):
-    await _authenticate_project(request)
+    token = await _authorize_public_round_read(request)
     try:
         snapshot = await asyncio.to_thread(_repository(request).round_distribution_snapshot)
     except Exception as exc:
         raise HTTPException(503, detail={"error": "round_stream_unavailable"}) from exc
-    return {"ok": True, "stream_id": snapshot["stream_id"], "round": snapshot.get("latest"),
+    return {"ok": True, "stream_id": snapshot["stream_id"],
+            "project_id": token.get("project_id") if token else None,
+            "round": snapshot.get("latest"),
             "retention": {"earliest_sequence": snapshot.get("earliest_sequence"),
                           "latest_sequence": snapshot.get("latest_sequence", 0),
                           "retained_events": snapshot.get("retained_events", 0)}}
 
 
-@router.get("/rounds")
-async def committed_rounds(request: Request, after_sequence: int = 0,
-                          limit: int = 500, stream_id: str | None = None):
-    token = await _authenticate_project(request)
-    if after_sequence < 0:
-        raise HTTPException(422, detail={"error": "after_sequence_must_be_nonnegative"})
-    bounded = min(max(int(limit), 1), 500)
+@router.get(
+    "/rounds",
+    summary="List committed rounds (public)",
+    description=(
+        "Returns committed PostgreSQL round events in sequence order. This read-only endpoint "
+        "requires no API key or consumer token. Use after_sequence for ascending pages or "
+        "before_sequence with order=desc for descending pages. Search matches round IDs; "
+        "multiplier filters are inclusive. The maximum page size is 500. Requests are limited "
+        "to 120 per minute per source IP."
+    ),
+    responses={
+        200: {
+            "description": "A page of committed rounds and the next cursor.",
+            "content": {"application/json": {"example": {
+                "ok": True, "project_id": None, "stream_id": "<stream-id>",
+                "rounds": [{"event_type": "round.persisted", "stage": "PERSISTED",
+                            "stream_sequence": 124, "round_id": "<round-id>",
+                            "round_index": 23291, "multiplier": 2.14,
+                            "durability": "COMMITTED"}],
+                "next_cursor": 124, "cursor_direction": "after", "has_more": False,
+                "retention": {"earliest_sequence": 1, "latest_sequence": 124,
+                              "retained_events": 124},
+            }}}
+        },
+        403: {"description": "Browser origin is not allowed."},
+        409: {"description": "The supplied stream cursor is stale or requires resynchronization."},
+        422: {"description": "Query parameters are invalid."},
+        426: {"description": "HTTPS is required for remote callers."},
+        429: {"description": "Public read rate limit exceeded; see Retry-After."},
+        503: {"description": "Authoritative PostgreSQL round stream is unavailable."},
+    },
+    openapi_extra={"x-public-access": True, "x-api-key-required": False},
+)
+async def committed_rounds(
+    request: Request,
+    after_sequence: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=500),
+    stream_id: str | None = None,
+    search: str | None = Query(default=None, min_length=1, max_length=128),
+    min_multiplier: float | None = Query(default=None, gt=0),
+    max_multiplier: float | None = Query(default=None, gt=0),
+    order: str = Query(default="asc", pattern="^(asc|desc)$"),
+    before_sequence: int | None = Query(default=None, ge=1),
+):
+    token = await _authorize_public_round_read(request)
+    if min_multiplier is not None and not math.isfinite(min_multiplier):
+        raise HTTPException(422, detail={"error": "min_multiplier_must_be_finite"})
+    if max_multiplier is not None and not math.isfinite(max_multiplier):
+        raise HTTPException(422, detail={"error": "max_multiplier_must_be_finite"})
+    if min_multiplier is not None and max_multiplier is not None and min_multiplier > max_multiplier:
+        raise HTTPException(422, detail={"error": "min_multiplier_exceeds_max_multiplier"})
+    if order == "asc" and before_sequence is not None:
+        raise HTTPException(422, detail={"error": "before_sequence_requires_desc_order"})
+    if order == "desc" and after_sequence != 0:
+        raise HTTPException(422, detail={"error": "after_sequence_requires_asc_order"})
     repository = _repository(request)
     try:
         snapshot = await asyncio.to_thread(repository.round_distribution_snapshot)
-        _check_cursor(snapshot, after_sequence, stream_id)
-        rounds = await asyncio.to_thread(
-            repository.round_distribution_events, snapshot["stream_id"], after_sequence,
-            int(snapshot["latest_sequence"]), bounded)
+        latest_sequence = int(snapshot.get("latest_sequence") or 0)
+        if order == "asc":
+            _check_cursor(snapshot, after_sequence, stream_id)
+            before = None
+        elif before_sequence is None:
+            if stream_id:
+                _check_cursor(snapshot, latest_sequence, stream_id)
+            before = latest_sequence + 1
+        else:
+            if not stream_id:
+                raise HTTPException(409, detail=_resync_response(snapshot, "stream_id_required_for_resume"))
+            _check_cursor(snapshot, before_sequence - 1, stream_id)
+            before = before_sequence
+        page = await asyncio.to_thread(
+            repository.round_distribution_events_page,
+            snapshot["stream_id"], through_sequence=latest_sequence, limit=limit + 1,
+            after_sequence=after_sequence, before_sequence=before, search=search,
+            min_multiplier=min_multiplier, max_multiplier=max_multiplier, order=order)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(503, detail={"error": "round_stream_unavailable"}) from exc
-    next_cursor = int(rounds[-1]["stream_sequence"]) if rounds else after_sequence
-    return {"ok": True, "project_id": token["project_id"], "stream_id": snapshot["stream_id"],
-            "rounds": rounds, "next_cursor": next_cursor,
-            "has_more": next_cursor < int(snapshot["latest_sequence"] or 0),
+    has_more = len(page) > limit
+    rounds = page[:limit]
+    initial_cursor = before if order == "desc" else after_sequence
+    next_cursor = int(rounds[-1]["stream_sequence"]) if rounds else int(initial_cursor or 0)
+    return {"ok": True, "project_id": token.get("project_id") if token else None,
+            "stream_id": snapshot["stream_id"], "rounds": rounds,
+            "next_cursor": next_cursor,
+            "cursor_direction": "before" if order == "desc" else "after",
+            "has_more": has_more,
             "retention": {"earliest_sequence": snapshot.get("earliest_sequence"),
                           "latest_sequence": snapshot.get("latest_sequence", 0),
                           "retained_events": snapshot.get("retained_events", 0)}}
@@ -282,6 +427,11 @@ def _collector_status_payload(request: Request, stream: dict, metrics: dict) -> 
             state = "HEALTHY"
     latest = stream.get("latest") or {}
     continuity = latest.get("continuity_status", "UNKNOWN")
+    round_delivery = (collector.get("storage", {}).get("round_delivery")
+                     if isinstance(collector.get("storage"), dict) else None)
+    latest_round_timing = collector.get("last_round_timing")
+    if latest_round_timing is None and isinstance(round_delivery, dict):
+        latest_round_timing = round_delivery.get("last_round_timing")
     commit_samples = collector.get("roundCommitSamples") or []
     values = sorted(float(item["latency_ms"]) for item in commit_samples
                     if isinstance(item, dict)
@@ -293,10 +443,11 @@ def _collector_status_payload(request: Request, stream: dict, metrics: dict) -> 
             "samples": len(values),
             "p50_ms": round(values[min(len(values) - 1, max(0, (len(values) - 1) // 2))], 2),
             "p95_ms": round(values[min(len(values) - 1, max(0, math.ceil(len(values) * 0.95) - 1))], 2),
+            "p99_ms": round(values[min(len(values) - 1, max(0, math.ceil(len(values) * 0.99) - 1))], 2),
             "max_ms": round(values[-1], 2),
         }
     else:
-        summary = {"samples": 0, "p50_ms": None, "p95_ms": None, "max_ms": None}
+        summary = {"samples": 0, "p50_ms": None, "p95_ms": None, "p99_ms": None, "max_ms": None}
     metrics = {**metrics, "latency_ms": {**metrics.get("latency_ms", {}),
                                             "observation_to_commit_ms": summary}}
     event_outbox = Path(__file__).resolve().parents[3] / "data" / "bot" / "round-event-outbox.json"
@@ -331,6 +482,14 @@ def _collector_status_payload(request: Request, stream: dict, metrics: dict) -> 
         "backlog_size": 0, "oldest_pending_observation_age_seconds": None,
         "oldest_pending_observation_received_at": None,
     }
+    event_queue = getattr(request.app.state, "round_event_queue", None)
+    event_processor = getattr(request.app.state, "round_event_processor_task", None)
+    metrics = {**metrics, "round_event_processor": {
+        "queue_depth": event_queue.qsize() if event_queue is not None else 0,
+        "queue_capacity": event_queue.maxsize if event_queue is not None else 0,
+        "worker_busy": bool(getattr(request.app.state, "round_event_processor_busy", False)),
+        "worker_running": bool(event_processor is not None and not event_processor.done()),
+    }}
     return {
         "ok": True,
         "collector_status": state,
@@ -338,10 +497,14 @@ def _collector_status_payload(request: Request, stream: dict, metrics: dict) -> 
         "continuity_gap": continuity == "GAP_BEFORE",
         "continuity_gaps_total": int(stream.get("continuity_gaps") or 0),
         "continuity_unknown_total": int(stream.get("continuity_unknown") or 0),
-        "collector": {key: collector.get(key) for key in (
-            "state", "health", "heartbeatAt", "lastSuccessfulCollection", "lastRoundId",
-            "lastObservedRoundId", "lastRoundIndex", "authRequired", "browserConnected",
+        "collector": {**{key: collector.get(key) for key in (
+            "state", "health", "roundSourceStatus", "roundCollectionStatus", "heartbeatAt",
+            "lastSuccessfulCollection", "lastRoundId", "lastRoundTime", "lastRoundIndex",
+            "lastObservedRoundId", "lastObservedRoundIndex", "lastObservedAt",
+            "lastDetectedRoundId", "lastDetectedAt", "lastDetectedStatus", "lastDetectedReason",
+            "authRequired", "browserConnected",
             "pageConnected", "frameConnected", "loggedIn")},
+            "last_round_timing": latest_round_timing},
         "last_error_category": ((collector.get("lastError") or {}).get("category")
                                 if isinstance(collector.get("lastError"), dict) else None),
         "stream": {"stream_id": stream["stream_id"],
@@ -355,8 +518,7 @@ def _collector_status_payload(request: Request, stream: dict, metrics: dict) -> 
                    "oldest_pending_observation_age_seconds": inbox_snapshot["oldest_pending_observation_age_seconds"],
                    "oldest_pending_observation_received_at": inbox_snapshot["oldest_pending_observation_received_at"]},
         "metrics": {**metrics,
-                    "collector_round_delivery": (collector.get("storage", {}).get("round_delivery")
-                        if isinstance(collector.get("storage"), dict) else None)},
+                    "collector_round_delivery": round_delivery},
     }
 
 
@@ -412,7 +574,7 @@ async def external_collector_status(request: Request):
         repository = _repository(request)
         snapshot = await asyncio.to_thread(repository.round_distribution_snapshot)
         metrics = await request.app.state.round_distribution.metrics()
-        payload = _collector_status_payload(request, snapshot, metrics)
+        payload = await asyncio.to_thread(_collector_status_payload, request, snapshot, metrics)
         queue = await asyncio.to_thread(repository.collector_observation_queue_snapshot)
         payload["outbox"]["postgres_observations_waiting_for_round"] = queue.get("depth", 0)
         payload["outbox"]["oldest_observation_age_seconds"] = queue.get("oldest_job_age_seconds")
@@ -741,6 +903,7 @@ def observed_round_event(observation: dict, stream_id: str) -> dict:
     observation_id = str(observation.get("observation_id") or round_id)
     return {
         "schema_version": "1.0",
+        "correlation_id": round_id,
         "event_id": f"aviator-round:{round_id}:observed",
         "legacy_event_id": f"aviator-round:{round_id}",
         "event_type": "round.observed",
@@ -755,7 +918,10 @@ def observed_round_event(observation: dict, stream_id: str) -> dict:
         "platform_timestamp": observation.get("platform_timestamp"),
         "observed_at": observation.get("observed_at"),
         "stored_at": None,
-        "published_at": datetime.now(timezone.utc).isoformat(),
+        # This pending envelope is handed to Rules Engine before fanout. The
+        # actual in-process enqueue time lives in the API response/metrics;
+        # leave this field unknown so it does not imply an earlier publish.
+        "published_at": None,
         "durability": "PENDING",
         "continuity_status": continuity_status,
         "delivery_mode": observation.get("delivery_mode") or "LIVE",

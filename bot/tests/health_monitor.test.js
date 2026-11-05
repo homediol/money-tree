@@ -8,6 +8,22 @@ function makeHealthMonitor() {
   return health;
 }
 
+test('session watchdog publishes verified state without inventing idle time', () => {
+  const health = makeHealthMonitor();
+  health.setSessionWatchdog({
+    status: 'EXPIRING', monitor_tab_status: 'OPEN', reason_code: 'LOGOUT_COUNTDOWN_VISIBLE',
+    last_successful_check_at: '2026-10-31T10:00:00.000Z', logout_countdown_seconds: 20,
+    estimated_remaining_seconds: 'unknown', collector_connected: true,
+  });
+  const watchdog = health.snapshot().sessionWatchdog;
+  assert.equal(watchdog.status, 'EXPIRING');
+  assert.equal(watchdog.monitor_tab_status, 'OPEN');
+  assert.equal(watchdog.logout_countdown_seconds, 20);
+  assert.equal(watchdog.estimated_remaining_seconds, null);
+  assert.equal(watchdog.last_successful_activity_at, null);
+  assert.equal(watchdog.collector_connected, true);
+});
+
 test('collecting telemetry becomes COLLECTOR_STALE after the last round ages out', () => {
   const health = makeHealthMonitor();
   health._metrics.collectorRunning = true;
@@ -115,4 +131,56 @@ test('recovered commits without a monotonic start do not become zero-latency sam
     '2026-10-09T22:00:00Z', [{ round_id: 'recovered-round', observationToCommitMs: null }]);
 
   assert.deepEqual(health.snapshot().roundCommitSamples, []);
+});
+
+test('batched observed-round and storage health updates flush the status file once', () => {
+  const health = new HealthMonitor();
+  let flushes = 0;
+  health._writeSnapshot = () => { flushes += 1; };
+
+  health.batch(() => {
+    health.recordObservedRound({ round_id: 'observed-1', round_index: 7,
+      observed_at: '2026-10-18T07:00:00.000Z' });
+    health.setStorage({ status: 'AVAILABLE', backlog_size: 1 });
+  });
+
+  assert.equal(flushes, 1);
+  assert.equal(health.snapshot().lastObservedRoundId, 'observed-1');
+  assert.equal(health.snapshot().storage.status, 'AVAILABLE');
+});
+
+test('round source and delivery states distinguish waiting, invalid, failed, and caught-up rounds', () => {
+  const health = makeHealthMonitor();
+  health._metrics.collectorRunning = true;
+  health._metrics.browserConnected = true;
+  health._metrics.pageConnected = true;
+  health._metrics.frameConnected = true;
+  health._metrics.authenticationState = 'AUTHENTICATED';
+  health._metrics.loggedIn = true;
+  health._metrics.network = { status: 'ONLINE', checked_at: new Date().toISOString() };
+  health._metrics.state = 'COLLECTING';
+  health._metrics.lastObserverInstalledAt = new Date().toISOString();
+  health._metrics.storage = { status: 'AVAILABLE', backlog_size: 0,
+    round_delivery: { backlog_size: 0 } };
+
+  assert.equal(health.snapshot().roundSourceStatus, 'AVAILABLE');
+  assert.equal(health.snapshot().roundCollectionStatus, 'NO_NEW_ROUND_YET');
+
+  health.recordRoundDetection({ detected_at: new Date().toISOString(), status: 'INVALID',
+    reason: 'NO_ROUND_OVERLAP_PROOF' }, { flush: false });
+  assert.equal(health.snapshot().roundCollectionStatus, 'ROUND_DETECTED_INVALID');
+
+  health._metrics.storage.round_delivery.last_failure = { stage: 'persistence' };
+  assert.equal(health.snapshot().roundCollectionStatus, 'PERSISTENCE_FAILED');
+
+  health._metrics.storage.round_delivery.last_failure = null;
+  health._metrics.lastDetectedStatus = 'VALIDATED';
+  health._metrics.lastObservedRoundId = 'round-10';
+  health._metrics.lastRoundId = 'round-10';
+  health._metrics.lastSuccessfulCollection = new Date().toISOString();
+  assert.equal(health.snapshot().roundCollectionStatus, 'HEALTHY_CAUGHT_UP');
+
+  health._metrics.frameConnected = false;
+  assert.equal(health.snapshot().roundSourceStatus, 'SOURCE_UNAVAILABLE');
+  assert.equal(health.snapshot().roundCollectionStatus, 'SOURCE_UNAVAILABLE');
 });

@@ -12,6 +12,7 @@ import { log } from './Logger.js';
 const DEFAULT_ENDPOINT = process.env.BOT_CDP_ENDPOINT ||
   `http://127.0.0.1:${process.env.BOT_CDP_PORT || '9222'}`;
 const CALL_TIMEOUT_MS = Number(process.env.BOT_CDP_CALL_TIMEOUT || 120000);
+const MAX_BUFFERED_ROUND_EVENTS = 256;
 
 function httpEndpoint(endpoint) {
   const parsed = new URL(endpoint);
@@ -39,6 +40,7 @@ class CdpSocket {
     this.ws = null;
     this.nextId = 0;
     this.pending = new Map();
+    this.notificationHandlers = new Map();
     this.closed = true;
   }
 
@@ -69,12 +71,26 @@ class CdpSocket {
       log.debug(`Malformed CDP game-frame message ignored: ${error.message}`);
       return;
     }
+    if (typeof message.method === 'string') {
+      for (const handler of this.notificationHandlers.get(message.method) || []) {
+        try { handler(message.params || {}); }
+        catch (error) { log.debug(`CDP ${message.method} handler failed: ${error.message}`); }
+      }
+      return;
+    }
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
     clearTimeout(pending.timer);
     if (message.error) pending.reject(new Error(`CDP ${pending.method}: ${message.error.message}`));
     else pending.resolve(message.result || {});
+  }
+
+  onNotification(method, handler) {
+    const handlers = this.notificationHandlers.get(method) || new Set();
+    handlers.add(handler);
+    this.notificationHandlers.set(method, handlers);
+    return () => handlers.delete(handler);
   }
 
   _onClose(event = null) {
@@ -88,6 +104,7 @@ class CdpSocket {
       pending.reject(new Error(message));
     }
     this.pending.clear();
+    this.notificationHandlers.clear();
   }
 
   call(method, params = {}, timeoutMs = CALL_TIMEOUT_MS) {
@@ -115,17 +132,37 @@ export class CdpGameFrame {
     this.target = target;
     this.socket = new CdpSocket(target.webSocketDebuggerUrl, target.id || null);
     this.contextId = null;
+    this.worldName = 'winner-history-collector';
+    this.collectorBindingName = `__winnerCollectorDispatch_${String(target.id || 'frame').replace(/[^a-zA-Z0-9_$]/g, '_')}_${Math.random().toString(36).slice(2)}`;
+    this.eventDriven = false;
+    this.maxQueuedEvents = MAX_BUFFERED_ROUND_EVENTS;
+    this.eventQueue = [];
+    this.eventQueueOverflow = false;
+    this.latestPhaseEvent = null;
+    this.eventWaiter = null;
+    this.eventWaitTimer = null;
+    this.socket.onNotification('Runtime.bindingCalled', payload => this._onCollectorBinding(payload));
   }
 
   async connect() {
     await this.socket.connect();
     await this.socket.call('Page.enable', {}, 10000);
+    try {
+      await this.socket.call('Runtime.enable', {}, 10000);
+      await this.socket.call('Runtime.addBinding', { name: this.collectorBindingName }, 10000);
+      this.eventDriven = true;
+    } catch (error) {
+      // Older Chromium builds can still use the existing in-frame queue. Keep
+      // that path as a compatibility fallback; supported builds are pushed.
+      this.collectorBindingName = null;
+      log.warn(`CDP collector event binding unavailable; using compatibility polling: ${error.message}`);
+    }
     const tree = await this.socket.call('Page.getFrameTree', {}, 10000);
     const frame = findFrame(tree.frameTree, 'aviator-next');
     if (!frame?.id) throw new Error('aviator-next frame missing from aviaport target');
     const world = await this.socket.call('Page.createIsolatedWorld', {
       frameId: frame.id,
-      worldName: 'winner-history-collector',
+      worldName: this.worldName,
       grantUniveralAccess: false,
     }, 10000);
     if (!world.executionContextId) throw new Error('aviator-next execution context unavailable');
@@ -143,6 +180,53 @@ export class CdpGameFrame {
 
   url() {
     return this.target.url || '';
+  }
+
+  _onCollectorBinding(payload) {
+    if (payload?.name !== this.collectorBindingName
+        || payload.executionContextId !== this.contextId
+        || typeof payload.payload !== 'string') return;
+    let event;
+    try { event = JSON.parse(payload.payload); }
+    catch (error) {
+      log.debug(`Malformed collector CDP event ignored: ${error.message}`);
+      return;
+    }
+    if (!event || typeof event !== 'object') return;
+    if (event.phaseOnly === true) this.latestPhaseEvent = event;
+    else if (this.eventQueue.length < this.maxQueuedEvents) this.eventQueue.push(event);
+    else {
+      if (!this.eventQueueOverflow) {
+        log.error(`CDP collector event queue reached ${this.maxQueuedEvents}; forcing snapshot recovery`);
+      }
+      this.eventQueueOverflow = true;
+    }
+    this._resolveEventWaiter();
+  }
+
+  _takeCollectorEvent() {
+    if (this.eventQueue.length) return this.eventQueue.shift();
+    if (this.eventQueueOverflow) {
+      this.eventQueueOverflow = false;
+      return { error: 'collector_event_queue_overflow' };
+    }
+    if (this.latestPhaseEvent) {
+      const event = this.latestPhaseEvent;
+      this.latestPhaseEvent = null;
+      return event;
+    }
+    return null;
+  }
+
+  _resolveEventWaiter() {
+    if (!this.eventWaiter) return;
+    const event = this._takeCollectorEvent();
+    if (!event) return;
+    const resolve = this.eventWaiter;
+    this.eventWaiter = null;
+    clearTimeout(this.eventWaitTimer);
+    this.eventWaitTimer = null;
+    resolve(event);
   }
 
   async evaluate(pageFunction, arg) {
@@ -168,18 +252,39 @@ export class CdpGameFrame {
     }
   }
 
-  /**
-   * Poll the observer queue with Node timers. Chrome can throttle setTimeout
-   * inside a background OOPIF, which would otherwise leave Runtime.evaluate
-   * awaiting a page-side promise long after the collector's idle deadline.
-   */
+  /** Await pushed MutationObserver events without polling Runtime.evaluate. */
   async waitForCollectorMutation(idleMs) {
-    const deadline = Date.now() + idleMs;
+    if (!this.eventDriven) return this._waitForCollectorMutationPolling(idleMs);
+    const ready = this._takeCollectorEvent();
+    if (ready) return ready;
+    if (this.isDetached()) return { error: 'collector_frame_detached' };
+    return new Promise(resolve => {
+      this.eventWaiter = resolve;
+      this.eventWaitTimer = setTimeout(() => {
+        this.eventWaitTimer = null;
+        this.eventWaiter = null;
+        resolve({ timeout: true });
+      }, Math.max(0, Number(idleMs) || 0));
+      // A binding event may have arrived between the initial queue read and
+      // installing the waiter; check once more to close that race.
+      this._resolveEventWaiter();
+    });
+  }
+
+  async _waitForCollectorMutationPolling(idleMs) {
+    const deadline = Date.now() + Math.max(0, Number(idleMs) || 0);
     while (Date.now() < deadline) {
       const event = await this.evaluate(() => {
         const collector = window.__aviatorCollector;
         if (!collector) return { error: 'collector_not_installed' };
-        return collector.queue.length ? collector.queue.shift() : null;
+        if (collector.queue.length) return collector.queue.shift();
+        if (collector.queueOverflow) return { error: 'collector_page_event_queue_overflow' };
+        if (collector.latestPhaseEvent) {
+          const phaseEvent = collector.latestPhaseEvent;
+          collector.latestPhaseEvent = null;
+          return phaseEvent;
+        }
+        return null;
       });
       if (event) return event;
       await new Promise(resolve => setTimeout(resolve, 250));
@@ -208,6 +313,13 @@ export class CdpGameFrame {
 
   close() {
     this.contextId = null;
+    clearTimeout(this.eventWaitTimer);
+    this.eventWaitTimer = null;
+    if (this.eventWaiter) {
+      const resolve = this.eventWaiter;
+      this.eventWaiter = null;
+      resolve({ error: 'collector_frame_detached' });
+    }
     this.socket.close();
   }
 }
