@@ -15,24 +15,51 @@ import time
 from typing import Any
 
 MAX_COLLECTOR_EVENT_ATTEMPTS = 6
+RETIRED_EXECUTION_TABLES = (
+    "decision_audit",
+    "bet_executions",
+    "execution_events",
+    "balance_ledger",
+    "reconciliation_records",
+    "session_metrics",
+    "live_sessions",
+    "betting_mode_state",
+    "rule_execution_intents",
+    "platform_balance_observations",
+    "rule_session_financials",
+)
 
 
-def _is_finite_money(value: Any) -> bool:
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and __import__("math").isfinite(float(value)) and float(value) >= 0)
+def _strip_retired_financial_outcomes(conn) -> None:
+    """Keep canonical SHADOW outcomes while removing retired platform receipts."""
+    rows = conn.execute("SELECT selection_id,payload FROM rule_target_outcomes").fetchall()
+    for row in rows:
+        try:
+            payload = row["payload"]
+            payload = json.loads(payload) if isinstance(payload, str) else dict(payload or {})
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        for key in ("financial_result", "bet_result", "execution_id", "platform_execution_id",
+                    "platform_evidence", "balance_evidence"):
+            payload.pop(key, None)
+        payload["evidence_type"] = "CANONICAL_ROUND_RESULT_ONLY"
+        conn.execute("UPDATE rule_target_outcomes SET payload=? WHERE selection_id=?",
+            (json.dumps(payload, sort_keys=True, separators=(",", ":")),
+             str(row["selection_id"])))
 
 
-def _money_equal(left: Any, right: Any) -> bool:
-    return (_is_finite_money(left) and _is_finite_money(right)
-            and abs(float(left) - float(right)) <= 0.005)
-
-
-def _signed_money_equal(left: Any, right: Any) -> bool:
-    import math
-    return (isinstance(left, (int, float)) and not isinstance(left, bool)
-            and isinstance(right, (int, float)) and not isinstance(right, bool)
-            and math.isfinite(float(left)) and math.isfinite(float(right))
-            and abs(float(left) - float(right)) <= 0.005)
+def _drop_retired_outcome_columns(conn, *, postgres: bool) -> None:
+    if postgres:
+        columns = {row["column_name"] for row in conn.execute("""SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema=current_schema() AND table_name='rule_target_outcomes'""").fetchall()}
+    else:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(rule_target_outcomes)").fetchall()}
+    for name in ("bet_result", "reconciled_at"):
+        if name in columns:
+            conn.execute(f"ALTER TABLE rule_target_outcomes DROP COLUMN {name}")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS rounds (
@@ -60,71 +87,6 @@ CREATE TABLE IF NOT EXISTS collector_round_observation_events (
 );
 CREATE INDEX IF NOT EXISTS collector_round_observation_pending_idx
   ON collector_round_observation_events(event_status, next_attempt_at, created_at);
-CREATE TABLE IF NOT EXISTS decision_audit (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  decision_id TEXT NOT NULL,
-  status TEXT NOT NULL,
-  recorded_at TEXT NOT NULL,
-  payload TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS bet_executions (
-  execution_id TEXT PRIMARY KEY,
-  decision_id TEXT NOT NULL,
-  target_round_id TEXT NOT NULL,
-  profile TEXT,
-  bet_amount REAL NOT NULL,
-  cashout_target REAL NOT NULL,
-  status TEXT NOT NULL,
-  simulated INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  placed_at TEXT,
-  resolved_at TEXT,
-  result_multiplier REAL,
-  balance_before REAL,
-  balance_after REAL,
-  profit_loss REAL,
-  error TEXT,
-  payload TEXT NOT NULL,
-  UNIQUE(decision_id, target_round_id)
-);
-CREATE INDEX IF NOT EXISTS bet_executions_status_idx ON bet_executions(status);
-CREATE TABLE IF NOT EXISTS execution_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  execution_id TEXT NOT NULL,
-  state TEXT NOT NULL,
-  recorded_at TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  UNIQUE(execution_id, state, recorded_at)
-);
-CREATE TABLE IF NOT EXISTS balance_ledger (
-  ledger_id TEXT PRIMARY KEY,
-  execution_id TEXT,
-  session_id TEXT,
-  event_type TEXT NOT NULL,
-  amount REAL,
-  internal_expected_balance REAL,
-  platform_observed_balance REAL,
-  reconciled_balance REAL,
-  balance_status TEXT NOT NULL,
-  recorded_at TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  UNIQUE(execution_id, event_type)
-);
-CREATE TABLE IF NOT EXISTS reconciliation_records (
-  reconciliation_id TEXT PRIMARY KEY,
-  execution_id TEXT NOT NULL UNIQUE,
-  round_id TEXT NOT NULL,
-  status TEXT NOT NULL,
-  outcome TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  payload TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS session_metrics (
-  session_id TEXT PRIMARY KEY,
-  updated_at TEXT NOT NULL,
-  payload TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS system_audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_type TEXT NOT NULL,
@@ -151,16 +113,6 @@ CREATE TABLE IF NOT EXISTS shadow_trades (
 CREATE TABLE IF NOT EXISTS shadow_ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, event_type TEXT NOT NULL,
   amount REAL, balance REAL, recorded_at TEXT NOT NULL, payload TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS live_sessions (
-  session_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT,
-  mode TEXT NOT NULL, snapshot TEXT NOT NULL, payload TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS betting_mode_state (
-  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-  mode TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  payload TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS collector_state (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -222,25 +174,17 @@ CREATE TABLE IF NOT EXISTS bet_signals (
 CREATE INDEX IF NOT EXISTS bet_signals_created_idx ON bet_signals(created_at DESC);
 CREATE INDEX IF NOT EXISTS bet_signals_target_round_created_idx
   ON bet_signals(target_round_id,created_at,signal_id);
-CREATE TABLE IF NOT EXISTS rule_execution_intents (
-  intent_id TEXT PRIMARY KEY,
-  decision_id TEXT NOT NULL UNIQUE,
-  selection_id TEXT NOT NULL UNIQUE,
-  session_id TEXT NOT NULL,
-  source_round_id TEXT,
-  target_stream_id TEXT NOT NULL,
-  target_round_id TEXT,
-  target_round_index BIGINT NOT NULL,
-  panel INTEGER NOT NULL DEFAULT 0,
-  requested_stake NUMERIC,
-  requested_stake_currency TEXT,
-  cashout_target NUMERIC NOT NULL,
-  execution_status TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  expires_at TEXT,
+CREATE TABLE IF NOT EXISTS behaviour_strategy_settlement_outbox (
+  signal_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'PENDING',
   payload TEXT NOT NULL,
-  UNIQUE(target_stream_id,target_round_index,panel)
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  delivered_at TEXT
 );
+CREATE INDEX IF NOT EXISTS behaviour_strategy_settlement_pending_idx
+  ON behaviour_strategy_settlement_outbox(status,created_at);
 CREATE TABLE IF NOT EXISTS rule_target_outcomes (
   outcome_id TEXT PRIMARY KEY,
   selection_id TEXT NOT NULL UNIQUE,
@@ -249,30 +193,6 @@ CREATE TABLE IF NOT EXISTS rule_target_outcomes (
   target_round_index BIGINT,
   multiplier NUMERIC,
   round_outcome TEXT,
-  bet_result TEXT NOT NULL DEFAULT 'UNKNOWN',
-  reconciled_at TEXT,
-  payload TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS platform_balance_observations (
-  observation_id TEXT PRIMARY KEY,
-  amount NUMERIC,
-  currency TEXT,
-  observed_at TEXT NOT NULL,
-  provider_identity TEXT,
-  session_identity TEXT,
-  observation_status TEXT NOT NULL,
-  payload TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS rule_session_financials (
-  session_id TEXT PRIMARY KEY,
-  starting_balance NUMERIC,
-  current_balance NUMERIC,
-  balance_change NUMERIC,
-  realized_betting_pl NUMERIC,
-  win_count BIGINT NOT NULL DEFAULT 0,
-  loss_count BIGINT NOT NULL DEFAULT 0,
-  currency TEXT,
-  updated_at TEXT NOT NULL,
   payload TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS rule_session_stop_events (
@@ -587,14 +507,16 @@ class Repository:
     def init(self) -> None:
         if self.database_url:
             with self.connect() as conn:
+                for table in RETIRED_EXECUTION_TABLES:
+                    conn.execute(f"DROP TABLE IF EXISTS {table}")
                 conn.executescript(SCHEMA)
+                _strip_retired_financial_outcomes(conn)
+                _drop_retired_outcome_columns(conn, postgres=True)
+                conn.execute("DELETE FROM application_state WHERE state_key IN ('operational_safety','risk_runtime')")
                 conn.execute("ALTER TABLE bet_signals ADD COLUMN IF NOT EXISTS settlement_status TEXT NOT NULL DEFAULT 'PENDING'")
                 conn.execute("UPDATE bet_signals SET settlement_status='COMMITTED' WHERE settlement_status='PENDING' AND payload::jsonb->>'settlement_status'='COMMITTED'")
                 conn.execute("CREATE INDEX IF NOT EXISTS bet_signals_settlement_created_idx ON bet_signals(settlement_status,created_at)")
                 conn.execute("CREATE INDEX IF NOT EXISTS bet_signals_target_round_created_idx ON bet_signals(target_round_id,created_at,signal_id)")
-                # Keep the historical column and values, but new executions
-                # no longer depend on a betting profile being present.
-                conn.execute("ALTER TABLE bet_executions ALTER COLUMN profile DROP NOT NULL")
                 conn.execute("ALTER TABLE collector_round_observation_events DROP CONSTRAINT IF EXISTS collector_round_observation_events_event_status_check")
                 conn.execute("""ALTER TABLE collector_round_observation_events
                     ADD CONSTRAINT collector_round_observation_events_event_status_check
@@ -623,11 +545,11 @@ class Repository:
                 conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS continuity_verified BOOLEAN NOT NULL DEFAULT FALSE")
                 conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS gap_before BOOLEAN NOT NULL DEFAULT FALSE")
                 conn.execute("ALTER TABLE aviator_rounds ADD COLUMN IF NOT EXISTS continuity_proof TEXT")
-                conn.execute("UPDATE aviator_rounds SET stored_at=COALESCE(stored_at,created_at)")
-                conn.execute("UPDATE aviator_rounds SET local_round_index=COALESCE(local_round_index,round_index)")
-                conn.execute("UPDATE aviator_rounds SET observed_at=COALESCE(observed_at,timestamp) WHERE round_id ~ '^aviator-[0-9a-f]{24}$'")
-                conn.execute("UPDATE aviator_rounds SET round_identity_type=COALESCE(round_identity_type,'COLLECTOR_OBSERVATION_HASH'), round_index_source=COALESCE(round_index_source,'LOCAL_SEQUENCE'), identity_confidence=COALESCE(identity_confidence,CASE WHEN continuity_verified THEN 'OVERLAP_VERIFIED_ORDER_ONLY' ELSE 'UNKNOWN' END), continuity_proof=COALESCE(continuity_proof,'LEGACY_UNVERIFIED')")
-                conn.execute("UPDATE aviator_rounds SET platform_timestamp=NULL WHERE round_id ~ '^aviator-[0-9a-f]{24}$'")
+                conn.execute("UPDATE aviator_rounds SET stored_at=created_at WHERE stored_at IS NULL")
+                conn.execute("UPDATE aviator_rounds SET local_round_index=round_index WHERE local_round_index IS NULL")
+                conn.execute("UPDATE aviator_rounds SET observed_at=timestamp WHERE observed_at IS NULL AND timestamp IS NOT NULL AND round_id ~ '^aviator-[0-9a-f]{24}$'")
+                conn.execute("UPDATE aviator_rounds SET round_identity_type=COALESCE(round_identity_type,'COLLECTOR_OBSERVATION_HASH'), round_index_source=COALESCE(round_index_source,'LOCAL_SEQUENCE'), identity_confidence=COALESCE(identity_confidence,CASE WHEN continuity_verified THEN 'OVERLAP_VERIFIED_ORDER_ONLY' ELSE 'UNKNOWN' END), continuity_proof=COALESCE(continuity_proof,'LEGACY_UNVERIFIED') WHERE round_identity_type IS NULL OR round_index_source IS NULL OR identity_confidence IS NULL OR continuity_proof IS NULL")
+                conn.execute("UPDATE aviator_rounds SET platform_timestamp=NULL WHERE platform_timestamp IS NOT NULL AND round_id ~ '^aviator-[0-9a-f]{24}$'")
                 conn.execute("""CREATE TABLE IF NOT EXISTS round_distribution_meta (
                     singleton SMALLINT PRIMARY KEY CHECK (singleton=1),
                     stream_id TEXT NOT NULL UNIQUE,
@@ -692,7 +614,12 @@ class Repository:
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
+            for table in RETIRED_EXECUTION_TABLES:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
             conn.executescript(SCHEMA)
+            _strip_retired_financial_outcomes(conn)
+            _drop_retired_outcome_columns(conn, postgres=False)
+            conn.execute("DELETE FROM application_state WHERE state_key IN ('operational_safety','risk_runtime')")
             bet_signal_columns = {row[1] for row in conn.execute("PRAGMA table_info(bet_signals)").fetchall()}
             if "settlement_status" not in bet_signal_columns:
                 conn.execute("ALTER TABLE bet_signals ADD COLUMN settlement_status TEXT NOT NULL DEFAULT 'PENDING'")
@@ -736,25 +663,6 @@ class Repository:
                         GROUP BY session_id,target_round_id,panel HAVING COUNT(*)>1 LIMIT 1""").fetchone()
                     if not duplicates:
                         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS shadow_trades_session_round_panel_idx ON shadow_trades(session_id,target_round_id,panel)")
-
-    def save_betting_mode(self, mode: str, payload: dict[str, Any]) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                "INSERT INTO betting_mode_state(singleton,mode,updated_at,payload) VALUES(1,?,?,?) "
-                "ON CONFLICT(singleton) DO UPDATE SET mode=excluded.mode, "
-                "updated_at=excluded.updated_at,payload=excluded.payload",
-                (mode, payload["updated_at"], json.dumps(payload)),
-            )
-
-    def load_betting_mode(self) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute(
-                "SELECT mode,updated_at,payload FROM betting_mode_state WHERE singleton=1"
-            ).fetchone()
-        if not row:
-            return None
-        return {"mode": row["mode"], "updated_at": row["updated_at"],
-                **json.loads(row["payload"])}
 
     def upsert_rounds(self, rows: list[dict[str, Any]]) -> None:
         if not rows:
@@ -885,10 +793,14 @@ class Repository:
     def round_history_status(self) -> dict[str, Any]:
         """Return the exact history count and two newest rounds without loading the full ledger."""
         table = "aviator_rounds" if self.database_url else "rounds"
+        verified_columns = ("stored_at,continuity_verified,gap_before,identity_confidence,round_index_source"
+                            if self.database_url else
+                            "NULL AS stored_at,0 AS continuity_verified,0 AS gap_before,"
+                            "'UNKNOWN' AS identity_confidence,'UNKNOWN' AS round_index_source")
         with self.connect() as conn:
             count_row = conn.execute(f"SELECT COUNT(*) AS round_count,MIN(timestamp) AS first_timestamp FROM {table}").fetchone()
             recent = conn.execute(
-                f"SELECT round_id,round_index,multiplier,timestamp FROM {table} "
+                f"SELECT round_id,round_index,multiplier,timestamp,{verified_columns} FROM {table} "
                 "ORDER BY round_index DESC LIMIT 2"
             ).fetchall()
 
@@ -900,6 +812,11 @@ class Repository:
                 "round_index": int(row["round_index"]),
                 "timestamp": self._db_time_text(row["timestamp"]),
                 "multiplier": float(row["multiplier"]),
+                "stored_at": self._db_time_text(row["stored_at"]),
+                "continuity_verified": bool(row["continuity_verified"]),
+                "gap_before": bool(row["gap_before"]),
+                "identity_confidence": row["identity_confidence"],
+                "round_index_source": row["round_index_source"],
             }
 
         ordered = list(reversed(recent))
@@ -1057,12 +974,6 @@ class Repository:
 
 
 
-
-    def reconciliation_for_execution(self, execution_id: str) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute("SELECT payload FROM reconciliation_records WHERE execution_id=?",
-                               (str(execution_id),)).fetchone()
-        return json.loads(row["payload"]) if row else None
 
 
 
@@ -1270,8 +1181,9 @@ class Repository:
         if not self.database_url:
             return None
         with self.connect() as conn:
-            row = conn.execute("""SELECT payload FROM round_distribution_events
-                WHERE stream_id=? AND round_index=? ORDER BY stream_sequence DESC LIMIT 1""",
+            row = conn.execute("""SELECT e.payload FROM round_distribution_events e
+                JOIN aviator_rounds r ON r.round_id=e.round_id AND r.round_index=e.round_index
+                WHERE e.stream_id=? AND e.round_index=? ORDER BY e.stream_sequence DESC LIMIT 1""",
                 (str(stream_id), int(round_index))).fetchone()
         return self._round_distribution_payload(row)
 
@@ -1849,8 +1761,8 @@ class Repository:
     def _save_rules_engine_snapshot(self, payload: dict[str, Any], updated_at: str) -> None:
         """Persist the engine snapshot and its durable, queryable rule ledger.
 
-        Selection intents are recorded as blocked audit-queue entries. This
-        method never authorizes or submits a platform action.
+        Each selected target and its canonical round outcome are recorded in
+        the durable SHADOW ledger.
         """
         # Session records already have their own durable table. Keep the
         # singleton application_state row compact and merge rule_sessions on
@@ -1909,9 +1821,8 @@ class Repository:
                         (session_id, session.get("mode", "UNKNOWN"), session.get("status", "UNKNOWN"),
                          session.get("started_at") or updated_at, updated_at, session_payload))
                 else:
-                    # If the persisted session body did not change, neither its
-                    # queryable ledgers nor the execution intents derived from
-                    # it need another pass through hundreds of saved events.
+                    # If the persisted session body did not change, its
+                    # queryable rule ledgers need no additional writes.
                     continue
                 for evaluation in session.get("evaluations", []):
                     source = evaluation.get("source_round") or {}
@@ -2024,102 +1935,24 @@ class Repository:
                             "target_round_index": (actual or {}).get("roundIndex") or expected.get("roundIndex"),
                             "multiplier": selection.get("actual_multiplier"),
                             "round_outcome": ("H" if selection.get("actual_multiplier") is not None
-                                              and float(selection["actual_multiplier"]) >= 2 else
+                                              and float(selection["actual_multiplier"]) > 2 else
                                               "L" if selection.get("actual_multiplier") is not None else None),
-                            "bet_result": "UNKNOWN",
                             "evidence_type": "CANONICAL_ROUND_RESULT_ONLY",
                             "recorded_at": selection.get("resolved_at") or updated_at,
                         }
                         outcome_id = hashlib.sha256(selection_id.encode("utf-8")).hexdigest()
                         if ledger_changed("target_outcome", selection_id, outcome_payload):
-                            previous_outcome = conn.execute(
-                                "SELECT bet_result,reconciled_at,payload FROM rule_target_outcomes WHERE selection_id=?",
-                                (selection_id,)).fetchone()
-                            if (previous_outcome and previous_outcome["reconciled_at"]
-                                    and previous_outcome["bet_result"] in {"WIN", "LOSS"}):
-                                # Rule-session snapshots may be saved after the platform
-                                # receipt. Preserve its financial result while refreshing
-                                # the independent canonical-round observation fields.
-                                previous_payload = json.loads(previous_outcome["payload"])
-                                outcome_payload["bet_result"] = previous_outcome["bet_result"]
-                                outcome_payload["financial_result"] = previous_payload.get("financial_result")
-                                outcome_payload["evidence_type"] = previous_payload.get("evidence_type")
                             conn.execute("""INSERT INTO rule_target_outcomes(
                                 outcome_id,selection_id,session_id,target_round_id,target_round_index,
-                                multiplier,round_outcome,bet_result,reconciled_at,payload)
-                                VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(selection_id) DO UPDATE SET
+                            multiplier,round_outcome,payload)
+                            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(selection_id) DO UPDATE SET
                                 target_round_id=excluded.target_round_id,target_round_index=excluded.target_round_index,
                                 multiplier=excluded.multiplier,round_outcome=excluded.round_outcome,
                                 payload=excluded.payload""",
                                 (outcome_id, selection_id, str(session_id), outcome_payload["target_round_id"],
                                  outcome_payload["target_round_index"], outcome_payload["multiplier"],
-                                 outcome_payload["round_outcome"], "UNKNOWN", outcome_payload["recorded_at"],
+                                 outcome_payload["round_outcome"],
                                  json.dumps(outcome_payload, sort_keys=True, separators=(",", ":"))))
-
-                    if selection_kind == "SHARED":
-                        target_stream = str(expected.get("streamId") or "")
-                        target_index = expected.get("roundIndex")
-                        if target_stream and isinstance(target_index, int) and not isinstance(target_index, bool):
-                            actual_target = selection.get("actual_target") or {}
-                            config = session.get("configuration_snapshot") or {}
-                            intent = dict(selection.get("execution_intent") or {})
-                            intent.update({
-                                "decision_id": selection_id,
-                                "source_round_id": source.get("roundId"),
-                                "target_round_id": actual_target.get("roundId") or intent.get("target_round_id"),
-                                "target_stream_id": target_stream,
-                                "target_round_index": target_index,
-                                "selected_rule_ids": selection.get("contributing_rule_ids")
-                                    or ([selection.get("rule_id")] if selection.get("rule_id") else []),
-                                "requested_stake": intent.get("requested_stake", config.get("requested_stake",
-                                    config.get("fixed_stake", config.get("fixed_stake_rwf", selection.get("stake_rwf"))))),
-                                "requested_stake_currency": intent.get("requested_stake_currency")
-                                    or config.get("stake_currency"),
-                                "cashout_target": 2.0,
-                                "created_at": intent.get("created_at") or selection.get("selected_at") or updated_at,
-                                "expires_at": selection.get("expires_at") or intent.get("expires_at")
-                                    or expected.get("expiresAt"),
-                                "session_id": str(session_id),
-                                "panel": int(intent.get("panel") or 0),
-                                "execution_status": "BLOCKED_READ_ONLY",
-                            })
-                            if not intent.get("intent_id"):
-                                intent["intent_id"] = hashlib.sha256(
-                                    f"{target_stream}\0{target_index}\0{intent['panel']}".encode("utf-8")
-                                ).hexdigest()
-                            intent.setdefault("blockers", [
-                                "REAL_MONEY_EXECUTION_DISABLED",
-                                "EXPLICIT_SESSION_AUTHORIZATION_REQUIRED",
-                                "TARGET_ROUND_ID_UNVERIFIED" if not intent["target_round_id"] else
-                                    "PLATFORM_ACCEPTANCE_NOT_VERIFIED",
-                                "BETTING_DEADLINE_UNVERIFIED",
-                                "BET_AMOUNT_CURRENCY_UNVERIFIED" if not intent["requested_stake_currency"] else
-                                    "STAKE_CURRENCY_NOT_RECONCILED",
-                                "CASHOUT_PLATFORM_ACKNOWLEDGEMENT_UNVERIFIED",
-                                "PLATFORM_ACCEPTANCE_AND_SETTLEMENT_UNVERIFIED",
-                            ])
-                            intent_json = json.dumps(intent, sort_keys=True, separators=(",", ":"))
-                            if ledger_changed("execution_intent", intent["intent_id"], intent_json):
-                                conn.execute("""INSERT OR IGNORE INTO rule_execution_intents(
-                                    intent_id,decision_id,selection_id,session_id,source_round_id,
-                                    target_stream_id,target_round_id,target_round_index,panel,requested_stake,
-                                    requested_stake_currency,cashout_target,execution_status,created_at,expires_at,payload)
-                                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                    (intent["intent_id"], selection_id, selection_id, str(session_id), source.get("roundId"),
-                                     target_stream, intent.get("target_round_id"), target_index, intent["panel"],
-                                     intent.get("requested_stake"),
-                                     intent["requested_stake_currency"], 2.0, intent["execution_status"],
-                                    intent["created_at"], intent["expires_at"], intent_json))
-                                # The exact completed target identity may become
-                                # available after the prospective intent was
-                                # recorded. Upgrade only that same immutable intent;
-                                # never replace another session's target reservation.
-                                conn.execute("""UPDATE rule_execution_intents SET
-                                    target_round_id=COALESCE(?,target_round_id),
-                                    expires_at=COALESCE(?,expires_at),payload=?
-                                    WHERE intent_id=?""",
-                                    (intent.get("target_round_id"), intent.get("expires_at"), intent_json,
-                                     intent["intent_id"]))
 
                 stop_events = list(session.get("stop_history") or [])
                 if not stop_events:
@@ -2153,28 +1986,6 @@ class Repository:
                         conn.execute("""INSERT OR IGNORE INTO rule_session_stop_events(
                             stop_event_id,session_id,reason,stopped_at,payload) VALUES(?,?,?,?,?)""",
                             (event_id, str(session_id), str(reason), str(stopped_at), event_json))
-                financials = {
-                    "session_id": str(session_id), "starting_balance": None, "current_balance": None,
-                    "balance_change": None, "realized_betting_pl": None,
-                    "win_count": 0, "loss_count": 0, "currency": None,
-                    "updated_at": updated_at,
-                    "rule_observation_summary": {
-                        "shadow_net_profit_rwf": session.get("net_profit_rwf"),
-                        "shadow_wins": session.get("total_wins", 0),
-                        "shadow_losses": session.get("total_losses", 0),
-                    },
-                    "actual_betting_financials_status": "NO_RECONCILED_BETS",
-                }
-                financials_fingerprint = {key: value for key, value in financials.items()
-                                          if key != "updated_at"}
-                if ledger_changed("financials", str(session_id), financials_fingerprint):
-                    conn.execute("""INSERT INTO rule_session_financials(
-                        session_id,starting_balance,current_balance,balance_change,realized_betting_pl,
-                        win_count,loss_count,currency,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(session_id) DO UPDATE SET updated_at=excluded.updated_at,payload=excluded.payload""",
-                        (str(session_id), None, None, None, None, 0, 0, None, updated_at,
-                         json.dumps(financials, sort_keys=True, separators=(",", ":"))))
-
         # Only record cache updates after the transaction committed. If the
         # transaction failed, a retry must execute every skipped ledger write.
         self._rules_engine_ledger_fingerprints.update(fingerprint_updates)
@@ -2213,50 +2024,6 @@ class Repository:
         selections = list(persisted.get("selections") or [])
         selections.extend(item for rows in (persisted.get("rule_selections") or {}).values()
                           for item in rows)
-        intent_rows = conn.execute(
-            "SELECT execution_status,payload FROM rule_execution_intents WHERE session_id=?",
-            (session_id,),
-        ).fetchall()
-        allowed_shadow_intent_states = {"BLOCKED_READ_ONLY", "REJECTED", "FAILED", "EXPIRED"}
-        for intent_row in intent_rows:
-            intent = json.loads(intent_row["payload"])
-            if (intent_row["execution_status"] not in allowed_shadow_intent_states
-                    or intent.get("platform_execution_id") or intent.get("execution_id")):
-                raise ValueError("SESSION_HAS_EXECUTION_EVIDENCE")
-            execution = conn.execute(
-                "SELECT 1 FROM bet_executions WHERE decision_id=? LIMIT 1",
-                (intent.get("decision_id"),),
-            ).fetchone()
-            if execution:
-                raise ValueError("SESSION_HAS_EXECUTION_EVIDENCE")
-
-        outcome = conn.execute(
-            "SELECT 1 FROM rule_target_outcomes WHERE session_id=? "
-            "AND bet_result IN ('WIN','LOSS') LIMIT 1", (session_id,),
-        ).fetchone()
-        if outcome:
-            raise ValueError("SESSION_HAS_RECONCILED_OUTCOMES")
-        financial_row = conn.execute(
-            "SELECT starting_balance,current_balance,balance_change,realized_betting_pl,"
-            "win_count,loss_count,currency,payload "
-            "FROM rule_session_financials WHERE session_id=?", (session_id,),
-        ).fetchone()
-        if financial_row:
-            financials = json.loads(financial_row["payload"])
-            financial_status = financials.get("actual_betting_financials_status")
-            has_reconciled_betting_values = (
-                financial_row["realized_betting_pl"] is not None
-                or int(financial_row["win_count"] or 0) > 0
-                or int(financial_row["loss_count"] or 0) > 0
-                or financial_status not in {None, "NO_RECONCILED_BETS"}
-            )
-            has_unclassified_financial_values = (
-                financial_status is None
-                and any(financial_row[key] is not None for key in (
-                    "starting_balance", "current_balance", "balance_change", "currency"))
-            )
-            if has_reconciled_betting_values or has_unclassified_financial_values:
-                raise ValueError("SESSION_HAS_RECONCILED_FINANCIALS")
         return {"persisted": persisted, "stored_status": stored_status,
                 "selections": selections}
 
@@ -2295,10 +2062,9 @@ class Repository:
                 session_id = candidate["session_id"]
                 persisted = candidate["persisted"]
                 selections = candidate["selections"]
-                # Keep blocked intents, stop events, and the immutable system audit trail.
+                # Keep stop events and the immutable system audit trail.
                 for table in ("rule_target_outcomes", "rule_selections", "rule_evaluations",
-                              "rules_engine_evaluations",
-                              "rule_session_financials", "rule_sessions"):
+                              "rules_engine_evaluations", "rule_sessions"):
                     conn.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
                 audit = {"session_id": session_id, "mode": persisted.get("mode"),
                          "status": candidate["stored_status"],
@@ -2327,405 +2093,6 @@ class Repository:
 
         return {"deleted_session_ids": [row["session_id"] for row in prepared],
                 "failures": failures}
-
-    def record_platform_balance_observation(self, observation: dict[str, Any]) -> dict[str, Any] | None:
-        amount = observation.get("balance")
-        if amount is None:
-            amount = observation.get("displayed_amount")
-        if (isinstance(amount, bool) or not isinstance(amount, (int, float))
-                or not __import__("math").isfinite(float(amount)) or amount < 0):
-            return None
-        observation_id = uuid.uuid4().hex
-        payload = {**observation, "observation_id": observation_id}
-        with self.connect() as conn:
-            conn.execute("""INSERT INTO platform_balance_observations(
-                observation_id,amount,currency,observed_at,provider_identity,session_identity,
-                observation_status,payload) VALUES(?,?,?,?,?,?,?,?)""",
-                (observation_id, float(amount), observation.get("currency"),
-                 str(observation.get("observed_at") or datetime.now(timezone.utc).isoformat()),
-                 observation.get("provider_identity"), observation.get("session_identity"),
-                 str(observation.get("observation_status") or
-                     ("VERIFIED_READ_ONLY" if observation.get("verified") else "UNVERIFIED_READ_ONLY")),
-                 json.dumps(payload, sort_keys=True, separators=(",", ":"))))
-        # The platform's own session identifier is kept separately from this
-        # application's rules/live session identifier. A missing provider ID
-        # does not get filled with a backend-generated value.
-        session_id = observation.get("application_session_id") or observation.get("session_identity")
-        if session_id and observation.get("verified") is True:
-            financials = self.reconciled_session_financials(str(session_id))
-            with self.connect() as conn:
-                old_row = conn.execute("SELECT payload FROM rule_session_financials WHERE session_id=?",
-                                        (str(session_id),)).fetchone()
-                old = json.loads(old_row["payload"]) if old_row else {}
-                starting = old.get("starting_balance")
-                if starting is None:
-                    starting = float(amount)
-                starting_currency = old.get("starting_balance_currency")
-                if starting_currency is None and old.get("starting_balance") is None:
-                    starting_currency = observation.get("currency")
-                currency = observation.get("currency")
-                comparable = bool(currency and starting_currency and starting_currency == currency)
-                balance_change = float(amount) - float(starting) if comparable else None
-                row = {**financials, "session_id": str(session_id),
-                       "starting_balance": starting, "current_balance": float(amount),
-                       "starting_balance_currency": starting_currency,
-                       "balance_change": balance_change,
-                       "currency": currency if comparable else None,
-                       "balance_currency_consistent": comparable,
-                       "updated_at": str(observation.get("observed_at") or datetime.now(timezone.utc).isoformat()),
-                       "balance_observation_id": observation_id}
-                realized = row.get("realized_betting_pl")
-                residual = (balance_change - float(realized)
-                            if balance_change is not None and isinstance(realized, (int, float)) else None)
-                row["non_betting_balance_movement"] = residual
-                row["balance_movement_reconciliation"] = (
-                    "UNCLASSIFIED_NON_BETTING_MOVEMENT" if residual is not None and abs(residual) > 0.005
-                    else "BALANCE_CHANGE_MATCHES_RECONCILED_BETS" if residual is not None else
-                    "UNAVAILABLE_CURRENCY_OR_RECONCILED_P_L")
-                conn.execute("""INSERT INTO rule_session_financials(
-                    session_id,starting_balance,current_balance,balance_change,realized_betting_pl,
-                    win_count,loss_count,currency,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(session_id) DO UPDATE SET
-                    starting_balance=excluded.starting_balance,current_balance=excluded.current_balance,
-                    balance_change=excluded.balance_change,realized_betting_pl=excluded.realized_betting_pl,
-                    win_count=excluded.win_count,loss_count=excluded.loss_count,currency=excluded.currency,
-                    updated_at=excluded.updated_at,payload=excluded.payload""",
-                    (str(session_id), starting, float(amount), balance_change,
-                     financials.get("realized_betting_pl"), financials.get("win_count", 0),
-                     financials.get("loss_count", 0), row["currency"], row["updated_at"],
-                     json.dumps(row, sort_keys=True, separators=(",", ":"))))
-        return payload
-
-    def latest_platform_balance_observation(self) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute("SELECT payload FROM platform_balance_observations ORDER BY observed_at DESC LIMIT 1").fetchone()
-        return json.loads(row["payload"]) if row else None
-
-    @staticmethod
-    def _verified_reconciled_platform_execution(value: dict[str, Any]) -> bool:
-        """Require accepted and settled receipt plus same-session verified balances."""
-        from app.betting.platform_state import (
-            PlatformBetState,
-            classify_platform_bet_result,
-            classify_platform_bet_state,
-        )
-
-        evidence = value.get("platform_evidence") or {}
-        result = classify_platform_bet_result(evidence)
-        accepted_stake = evidence.get("accepted_stake")
-        payout = evidence.get("payout")
-        return bool(
-            value.get("status") == "RECONCILED" and value.get("simulated") is not True
-            and classify_platform_bet_state(evidence) == PlatformBetState.ACCEPTED
-            and result in {"WIN", "LOSS"} and value.get("result") == result
-            and str(value.get("target_round_id")) == str(evidence.get("target_round_id"))
-            and value.get("balance_status") == "VERIFIED"
-            and _money_equal(accepted_stake, value.get("bet_amount"))
-            and _is_finite_money(payout)
-            and _signed_money_equal(value.get("profit_loss"), float(payout) - float(accepted_stake))
-            and (evidence.get("balance_currency") or evidence.get("platform_balance_currency"))
-                == (evidence.get("accepted_currency") or evidence.get("currency"))
-            and evidence.get("balance_session_identity") == evidence.get("session_identity")
-            and evidence.get("balance_before_verified") is True
-            and bool(evidence.get("balance_provider_identity"))
-            and bool(evidence.get("balance_observed_at"))
-            and _is_finite_money(evidence.get("platform_observed_balance"))
-            and _money_equal(value.get("balance_after"), evidence.get("platform_observed_balance"))
-        )
-
-    def _reconciled_session_executions(self, session_id: str) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute("SELECT payload FROM bet_executions WHERE status='RECONCILED'").fetchall()
-        outcomes = [json.loads(row["payload"]) for row in rows]
-        return [value for value in outcomes
-                if str(value.get("session_id") or "") == str(session_id)
-                and self._verified_reconciled_platform_execution(value)]
-
-    def reconciled_session_financials(self, session_id: str) -> dict[str, Any]:
-        """Aggregate only receipt-backed, balance-reconciled platform transactions."""
-        outcomes = self._reconciled_session_executions(session_id)
-        profits = [float(row["profit_loss"]) for row in outcomes]
-        currencies = {
-            str((row.get("platform_evidence") or {}).get("accepted_currency")
-                or (row.get("platform_evidence") or {}).get("currency"))
-            for row in outcomes
-        }
-        currency_consistent = len(currencies) == 1
-        wins = sum(1 for row in outcomes if row.get("result") == "WIN")
-        losses = sum(1 for row in outcomes if row.get("result") == "LOSS")
-        return {"realized_betting_pl": sum(profits) if profits and currency_consistent else None,
-                "win_count": wins, "loss_count": losses,
-                "reconciled_bets": len(outcomes),
-                "currency": next(iter(currencies)) if currency_consistent and currencies else None,
-                "currency_status": ("VERIFIED" if currency_consistent and currencies else
-                                    "MIXED" if currencies else "UNAVAILABLE"),
-                "actual_betting_financials_status": "RECONCILED" if outcomes else "NO_RECONCILED_BETS"}
-
-    def rule_execution_intent(self, decision_id: str) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute("SELECT payload FROM rule_execution_intents WHERE decision_id=?",
-                               (str(decision_id),)).fetchone()
-        return json.loads(row["payload"]) if row else None
-
-    def _rule_intent_matches_canonical_target(self, intent: dict[str, Any],
-                                              target_round_id: str) -> bool:
-        """Resolve an as-yet unnamed target only from its committed index/stream."""
-        target_index = intent.get("target_round_index")
-        stream_id = str(intent.get("target_stream_id") or "")
-        if (isinstance(target_index, bool) or not isinstance(target_index, int)
-                or not stream_id or not target_round_id):
-            return False
-        try:
-            with self.connect() as conn:
-                row = conn.execute("SELECT round_index FROM aviator_rounds WHERE round_id=?",
-                                   (str(target_round_id),)).fetchone()
-                meta = conn.execute("SELECT stream_id FROM round_distribution_meta WHERE singleton=1").fetchone()
-            return bool(row and meta and int(row["round_index"]) == target_index
-                        and str(meta["stream_id"]) == stream_id)
-        except Exception:
-            return False
-
-    def record_rule_execution_reconciliation(self, execution: dict[str, Any],
-                                             reconciliation: dict[str, Any]) -> dict[str, Any]:
-        """Link one verified receipt to its shared rule selection, idempotently."""
-        if (reconciliation.get("status") != "RECONCILED"
-                or reconciliation.get("outcome") not in {"WIN", "LOSS"}
-                or not self._verified_reconciled_platform_execution(execution)
-                or str(reconciliation.get("round_id")) != str(execution.get("target_round_id"))):
-            return {"ok": False, "reason": "verified_reconciliation_required"}
-        decision_id = str(execution.get("decision_id") or "")
-        intent = self.rule_execution_intent(decision_id)
-        if not intent:
-            return {"ok": False, "reason": "rule_execution_intent_not_found"}
-        session_id = str(intent.get("session_id") or "")
-        selection_id = str(intent.get("selection_id") or decision_id)
-        intent_target_id = str(intent.get("target_round_id") or "")
-        if not intent_target_id and self._rule_intent_matches_canonical_target(
-                intent, str(execution.get("target_round_id") or "")):
-            intent_target_id = str(execution.get("target_round_id"))
-            intent["target_round_id"] = intent_target_id
-        if (not session_id or str(execution.get("session_id") or "") != session_id
-                or str(intent.get("decision_id") or decision_id) != decision_id
-                or selection_id != decision_id
-                or intent_target_id != str(execution.get("target_round_id") or "")):
-            return {"ok": False, "reason": "rule_execution_intent_identity_mismatch"}
-
-        stamp = str(reconciliation.get("created_at") or execution.get("resolved_at") or
-                    datetime.now(timezone.utc).isoformat())
-        evidence = execution.get("platform_evidence") or {}
-        financial_result = {
-            "selection_id": selection_id, "session_id": session_id,
-            "execution_id": execution.get("execution_id"),
-            "target_round_id": execution.get("target_round_id"),
-            "result": execution.get("result"), "profit_loss": execution.get("profit_loss"),
-            "currency": evidence.get("accepted_currency") or evidence.get("currency"),
-            "reconciled_at": stamp,
-        }
-        with self.connect() as conn:
-            existing_row = conn.execute("SELECT bet_result,reconciled_at,payload FROM rule_target_outcomes WHERE selection_id=?",
-                                        (selection_id,)).fetchone()
-            if (existing_row and existing_row["reconciled_at"]
-                    and existing_row["bet_result"] in {"WIN", "LOSS"}):
-                saved = json.loads(existing_row["payload"])
-                prior = saved.get("financial_result") or {}
-                if prior.get("execution_id") != execution.get("execution_id"):
-                    return {"ok": False, "reason": "selection_already_has_financial_result"}
-                return {"ok": True, "duplicate": True, "session_id": session_id,
-                        "financials": self.reconciled_session_financials(session_id)}
-            intent["execution_status"] = "RECONCILED"
-            intent["platform_execution_id"] = execution.get("execution_id")
-            intent["financial_result"] = financial_result
-            intent["blockers"] = []
-            conn.execute("""UPDATE rule_execution_intents SET execution_status=?,target_round_id=?,payload=?
-                WHERE decision_id=?""",
-                         ("RECONCILED", intent_target_id,
-                          json.dumps(intent, sort_keys=True, separators=(",", ":")), decision_id))
-            previous_payload = json.loads(existing_row["payload"]) if existing_row else {}
-            target_multiplier = execution.get("result_multiplier")
-            outcome_payload = {
-                **previous_payload,
-                "selection_id": selection_id, "session_id": session_id,
-                "target_round_id": execution.get("target_round_id"),
-                "target_round_index": intent.get("target_round_index"),
-                "multiplier": target_multiplier,
-                "round_outcome": ("H" if isinstance(target_multiplier, (int, float))
-                                  and target_multiplier >= 2.0 else "L"),
-                "bet_result": execution.get("result"), "financial_result": financial_result,
-                "evidence_type": "RECEIPT_AND_BALANCE_RECONCILED",
-                "recorded_at": stamp,
-            }
-            outcome_id = hashlib.sha256(selection_id.encode("utf-8")).hexdigest()
-            conn.execute("""INSERT INTO rule_target_outcomes(
-                outcome_id,selection_id,session_id,target_round_id,target_round_index,
-                multiplier,round_outcome,bet_result,reconciled_at,payload)
-                VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(selection_id) DO UPDATE SET
-                target_round_id=excluded.target_round_id,target_round_index=excluded.target_round_index,
-                multiplier=excluded.multiplier,round_outcome=excluded.round_outcome,
-                bet_result=excluded.bet_result,reconciled_at=excluded.reconciled_at,payload=excluded.payload""",
-                (outcome_id, selection_id, session_id, execution.get("target_round_id"),
-                 intent.get("target_round_index"), target_multiplier, outcome_payload["round_outcome"],
-                 execution.get("result"), stamp,
-                json.dumps(outcome_payload, sort_keys=True, separators=(",", ":"))))
-        financials = self.sync_rule_session_financials(session_id, execution)
-        return {"ok": True, "duplicate": False, "session_id": session_id,
-                "financials": financials}
-
-    def sync_rule_session_financials(self, session_id: str,
-                                     execution: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Persist verified transaction totals without inventing a start balance."""
-        totals = self.reconciled_session_financials(session_id)
-        with self.connect() as conn:
-            row = conn.execute("SELECT payload FROM rule_session_financials WHERE session_id=?",
-                               (str(session_id),)).fetchone()
-        old = json.loads(row["payload"]) if row else {}
-        starting = old.get("starting_balance")
-        starting_currency = old.get("starting_balance_currency")
-        current = old.get("current_balance")
-        current_currency = old.get("current_balance_currency")
-        updated_at = old.get("updated_at")
-        evidence = (execution or {}).get("platform_evidence") or {}
-        if execution and _is_finite_money(execution.get("balance_after")) \
-                and execution.get("balance_status") == "VERIFIED":
-            current = float(execution["balance_after"])
-            current_currency = evidence.get("balance_currency") or evidence.get("accepted_currency")
-            updated_at = evidence.get("balance_observed_at") or execution.get("resolved_at")
-        comparable = bool(starting is not None and current is not None and starting_currency
-                          and current_currency and starting_currency == current_currency)
-        balance_change = float(current) - float(starting) if comparable else None
-        row_payload = {
-            **old, **totals, "session_id": str(session_id),
-            "starting_balance": starting, "starting_balance_currency": starting_currency,
-            "current_balance": current, "current_balance_currency": current_currency,
-            "balance_change": balance_change,
-            "currency": current_currency if comparable else totals.get("currency"),
-            "balance_currency_consistent": comparable,
-            "updated_at": updated_at or datetime.now(timezone.utc).isoformat(),
-            "non_betting_balance_movement": (balance_change - totals["realized_betting_pl"]
-                if balance_change is not None and totals.get("realized_betting_pl") is not None else None),
-        }
-        with self.connect() as conn:
-            conn.execute("""INSERT INTO rule_session_financials(
-                session_id,starting_balance,current_balance,balance_change,realized_betting_pl,
-                win_count,loss_count,currency,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                starting_balance=excluded.starting_balance,current_balance=excluded.current_balance,
-                balance_change=excluded.balance_change,realized_betting_pl=excluded.realized_betting_pl,
-                win_count=excluded.win_count,loss_count=excluded.loss_count,currency=excluded.currency,
-                updated_at=excluded.updated_at,payload=excluded.payload""",
-                (str(session_id), starting, current, balance_change, totals.get("realized_betting_pl"),
-                 totals["win_count"], totals["loss_count"], row_payload.get("currency"),
-                row_payload["updated_at"], json.dumps(row_payload, sort_keys=True, separators=(",", ":"))))
-        return row_payload
-
-    def bind_rule_session_starting_balance(self, session_id: str,
-                                           observation: dict[str, Any]) -> dict[str, Any] | None:
-        """Bind an existing verified read to the session; never synthesize a balance."""
-        amount = observation.get("balance", observation.get("displayed_amount"))
-        observation_id = observation.get("observation_id")
-        if (observation.get("verified") is not True or not observation_id
-                or not _is_finite_money(amount) or not observation.get("provider_identity")
-                or not observation.get("session_identity")):
-            return None
-        with self.connect() as conn:
-            stored = conn.execute("SELECT payload FROM platform_balance_observations WHERE observation_id=?",
-                                  (str(observation_id),)).fetchone()
-            if not stored:
-                return None
-            source = json.loads(stored["payload"])
-            if (source.get("verified") is not True
-                    or not _money_equal(source.get("balance", source.get("displayed_amount")), amount)
-                    or source.get("provider_identity") != observation.get("provider_identity")
-                    or source.get("session_identity") != observation.get("session_identity")):
-                return None
-            source["application_session_id"] = str(session_id)
-            source["session_starting_balance"] = True
-            conn.execute("UPDATE platform_balance_observations SET payload=? WHERE observation_id=?",
-                         (json.dumps(source, sort_keys=True, separators=(",", ":")), str(observation_id)))
-            old_row = conn.execute("SELECT payload FROM rule_session_financials WHERE session_id=?",
-                                   (str(session_id),)).fetchone()
-            old = json.loads(old_row["payload"]) if old_row else {}
-            if old.get("starting_balance") is not None:
-                return old
-            currency = source.get("currency")
-            totals = self.reconciled_session_financials(session_id)
-            stamp = str(source.get("observed_at") or datetime.now(timezone.utc).isoformat())
-            row = {**totals, "session_id": str(session_id),
-                   "starting_balance": float(amount), "current_balance": float(amount),
-                   "starting_balance_currency": currency, "current_balance_currency": currency,
-                   "balance_change": 0.0 if currency else None,
-                   "currency": currency, "balance_currency_consistent": bool(currency),
-                   "balance_observation_id": str(observation_id),
-                   "updated_at": stamp, "non_betting_balance_movement": None,
-                   "balance_movement_reconciliation": "SESSION_START_OBSERVATION"}
-            if old_row:
-                conn.execute("""UPDATE rule_session_financials SET starting_balance=?,current_balance=?,
-                    balance_change=?,realized_betting_pl=?,win_count=?,loss_count=?,currency=?,updated_at=?,payload=?
-                    WHERE session_id=? AND starting_balance IS NULL""",
-                    (float(amount), float(amount), row["balance_change"],
-                     totals.get("realized_betting_pl"), totals["win_count"], totals["loss_count"],
-                     currency, stamp, json.dumps(row, sort_keys=True, separators=(",", ":")),
-                     str(session_id)))
-            else:
-                conn.execute("""INSERT INTO rule_session_financials(
-                    session_id,starting_balance,current_balance,balance_change,realized_betting_pl,
-                    win_count,loss_count,currency,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                    (str(session_id), float(amount), float(amount), row["balance_change"],
-                     totals.get("realized_betting_pl"), totals["win_count"], totals["loss_count"],
-                     currency, stamp, json.dumps(row, sort_keys=True, separators=(",", ":"))))
-        return row
-
-    def list_reconciled_rule_executions(self, session_id: str) -> list[dict[str, Any]]:
-        result = []
-        for execution in self._reconciled_session_executions(session_id):
-            intent = self.rule_execution_intent(str(execution.get("decision_id") or ""))
-            target_matches = bool(intent and (
-                str(intent.get("target_round_id") or "") == str(execution.get("target_round_id"))
-                or self._rule_intent_matches_canonical_target(
-                    intent, str(execution.get("target_round_id") or ""))))
-            if intent and str(intent.get("session_id")) == str(session_id) and target_matches:
-                result.append(execution)
-        return result
-
-    def mark_rule_execution_pending(self, execution: dict[str, Any], reason: str) -> dict[str, Any] | None:
-        decision_id = str(execution.get("decision_id") or "")
-        intent = self.rule_execution_intent(decision_id)
-        target_matches = bool(intent and (
-            str(intent.get("target_round_id") or "") == str(execution.get("target_round_id") or "")
-            or self._rule_intent_matches_canonical_target(
-                intent, str(execution.get("target_round_id") or ""))))
-        if (not intent or str(intent.get("session_id") or "") != str(execution.get("session_id") or "")
-                or not target_matches):
-            return None
-        if intent.get("execution_status") == "RECONCILED":
-            return None
-        intent.update({"execution_status": "RECONCILIATION_PENDING",
-                       "platform_execution_id": execution.get("execution_id"),
-                       "reconciliation_blocker": str(reason)})
-        with self.connect() as conn:
-            conn.execute("UPDATE rule_execution_intents SET execution_status=?,payload=? WHERE decision_id=?",
-                         ("RECONCILIATION_PENDING",
-                          json.dumps(intent, sort_keys=True, separators=(",", ":")), decision_id))
-        return intent
-
-    def has_open_rule_session_executions(self, session_id: str) -> bool:
-        for execution in self.open_executions():
-            intent = self.rule_execution_intent(str(execution.get("decision_id") or ""))
-            if intent and str(intent.get("session_id") or "") == str(session_id):
-                return True
-        return False
-
-    def rules_session_financials(self, session_id: str) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute("SELECT payload FROM rule_session_financials WHERE session_id=?",
-                               (str(session_id),)).fetchone()
-        return json.loads(row["payload"]) if row else None
-
-    def list_rule_execution_intents(self, limit: int = 100) -> list[dict[str, Any]]:
-        bounded = max(1, min(int(limit), 1000))
-        with self.connect() as conn:
-            rows = conn.execute("SELECT payload FROM rule_execution_intents ORDER BY created_at DESC LIMIT ?",
-                                (bounded,)).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
 
     def save_application_state_once(self, key: str, payload: dict[str, Any], created_at: str) -> dict[str, Any]:
         with self.connect() as conn:
@@ -2812,227 +2179,10 @@ class Repository:
 
 
 
-    def decision_audit(self, decision_id: str) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute("SELECT payload FROM decision_audit WHERE decision_id = ? ORDER BY id", (decision_id,)).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
-
-    def list_decision_audit_snapshots(self, limit: int = 5000) -> list[dict[str, Any]]:
-        bounded = max(1, min(int(limit), 10000))
-        with self.connect() as conn:
-            rows = conn.execute("SELECT payload FROM decision_audit ORDER BY id DESC LIMIT ?", (bounded,)).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
-
-    def create_execution(self, execution: dict[str, Any]) -> bool:
-        """Atomically reserve decision+round. False means already reserved."""
-        with self.connect() as conn:
-            cur = conn.execute(
-                """INSERT OR IGNORE INTO bet_executions(
-                     execution_id, decision_id, target_round_id,
-                     bet_amount, cashout_target, status, simulated, created_at,
-                     updated_at, balance_before, payload)
-                   VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (execution["execution_id"], execution["decision_id"],
-                 execution["target_round_id"], execution["bet_amount"], execution["cashout_target"],
-                 execution["status"], int(bool(execution.get("simulated"))),
-                 execution["created_at"], execution["updated_at"],
-                 execution.get("balance_before"), json.dumps(execution)),
-            )
-            return cur.rowcount == 1
-
-    def update_execution(self, execution: dict[str, Any]) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """UPDATE bet_executions SET status=?, updated_at=?, placed_at=?,
-                     resolved_at=?, result_multiplier=?, balance_before=?,
-                     balance_after=?, profit_loss=?, error=?, payload=?
-                   WHERE execution_id=?""",
-                (execution["status"], execution["updated_at"], execution.get("placed_at"),
-                 execution.get("resolved_at"), execution.get("result_multiplier"),
-                 execution.get("balance_before"), execution.get("balance_after"),
-                 execution.get("profit_loss"), execution.get("error"),
-                 json.dumps(execution), execution["execution_id"]),
-            )
-
-    def execution_by_id(self, execution_id: str) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute("SELECT payload FROM bet_executions WHERE execution_id=?",
-                               (execution_id,)).fetchone()
-        return json.loads(row["payload"]) if row else None
-
-    def open_executions(self) -> list[dict[str, Any]]:
-        terminal = ("RECONCILED", "CLOSED", "FAILED", "EXPIRED", "REJECTED")
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT payload FROM bet_executions WHERE status NOT IN (?,?,?,?,?) ORDER BY created_at",
-                terminal,
-            ).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
-
-    def append_execution_event(self, execution_id: str, state: str,
-                               recorded_at: str, payload: dict[str, Any]) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO execution_events(execution_id,state,recorded_at,payload) VALUES(?,?,?,?)",
-                (execution_id, state, recorded_at, json.dumps(payload)),
-            )
-
-    def execution_events(self, execution_id: str) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT state,recorded_at,payload FROM execution_events WHERE execution_id=? ORDER BY id",
-                (execution_id,),
-            ).fetchall()
-        return [{**json.loads(row["payload"]), "state": row["state"],
-                 "recorded_at": row["recorded_at"]} for row in rows]
-
-    def append_ledger(self, row: dict[str, Any]) -> bool:
-        with self.connect() as conn:
-            cur = conn.execute(
-                """INSERT OR IGNORE INTO balance_ledger(
-                     ledger_id,execution_id,session_id,event_type,amount,
-                     internal_expected_balance,platform_observed_balance,
-                     reconciled_balance,balance_status,recorded_at,payload)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (row["ledger_id"], row.get("execution_id"), row.get("session_id"),
-                 row["event_type"], row.get("amount"), row.get("internal_expected_balance"),
-                 row.get("platform_observed_balance"), row.get("reconciled_balance"),
-                 row["balance_status"], row["recorded_at"], json.dumps(row)),
-            )
-            return cur.rowcount == 1
-
-    def list_ledger(self, limit: int = 100) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute("SELECT payload FROM balance_ledger ORDER BY recorded_at DESC LIMIT ?",
-                                (limit,)).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
-
-    def save_reconciliation(self, row: dict[str, Any], execution: dict[str, Any],
-                            ledger_rows: list[dict[str, Any]]) -> bool:
-        """Commit result, immutable reconciliation, and financial entries together."""
-        with self.connect() as conn:
-            cur = conn.execute(
-                """INSERT OR IGNORE INTO reconciliation_records(
-                     reconciliation_id,execution_id,round_id,status,outcome,created_at,payload)
-                   VALUES(?,?,?,?,?,?,?)""",
-                (row["reconciliation_id"], row["execution_id"], row["round_id"],
-                 row["status"], row["outcome"], row["created_at"], json.dumps(row)),
-            )
-            if cur.rowcount != 1:
-                return False
-            conn.execute(
-                """UPDATE bet_executions SET status=?,updated_at=?,resolved_at=?,
-                     result_multiplier=?,balance_after=?,profit_loss=?,error=?,payload=?
-                   WHERE execution_id=?""",
-                (execution["status"], execution["updated_at"], execution.get("resolved_at"),
-                 execution.get("result_multiplier"), execution.get("balance_after"),
-                 execution.get("profit_loss"), execution.get("error"),
-                 json.dumps(execution), execution["execution_id"]),
-            )
-            for item in ledger_rows:
-                conn.execute(
-                    """INSERT OR IGNORE INTO balance_ledger(
-                         ledger_id,execution_id,session_id,event_type,amount,
-                         internal_expected_balance,platform_observed_balance,
-                         reconciled_balance,balance_status,recorded_at,payload)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                    (item["ledger_id"], item.get("execution_id"), item.get("session_id"),
-                     item["event_type"], item.get("amount"), item.get("internal_expected_balance"),
-                     item.get("platform_observed_balance"), item.get("reconciled_balance"),
-                     item["balance_status"], item["recorded_at"], json.dumps(item)),
-                )
-            conn.execute(
-                "INSERT INTO system_audit_log(event_type,entity_id,recorded_at,payload) VALUES(?,?,?,?)",
-                ("RECONCILIATION", execution["execution_id"], row["created_at"], json.dumps(row)),
-            )
-        return True
-
-    def list_reconciliations(self, limit: int = 100) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute("SELECT payload FROM reconciliation_records ORDER BY created_at DESC LIMIT ?",
-                                (limit,)).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
-
-
-
-    def save_session_metrics(self, session_id: str, updated_at: str, payload: dict[str, Any]) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """INSERT INTO session_metrics(session_id,updated_at,payload) VALUES(?,?,?)
-                   ON CONFLICT(session_id) DO UPDATE SET updated_at=excluded.updated_at,payload=excluded.payload""",
-                (session_id, updated_at, json.dumps(payload)),
-            )
-
-    def list_session_metrics(self, limit: int = 50) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute("SELECT payload FROM session_metrics ORDER BY updated_at DESC LIMIT ?",
-                                (limit,)).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
-
-    def execution_for(self, decision_id: str, target_round_id: str) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute(
-                "SELECT payload FROM bet_executions WHERE decision_id=? AND target_round_id=?",
-                (decision_id, target_round_id),
-            ).fetchone()
-        return json.loads(row["payload"]) if row else None
-
-    def list_executions(self, limit: int = 50) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT payload FROM bet_executions ORDER BY created_at DESC LIMIT ?", (limit,),
-            ).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
-
-    def save_live_session(self, row: dict[str, Any]) -> bool:
-        with self.connect() as conn:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO live_sessions(session_id,started_at,ended_at,mode,snapshot,payload) VALUES(?,?,?,?,?,?)",
-                (row["session_id"], row["started_at"], row.get("ended_at"), row.get("mode", "LIVE_ACTIVE"),
-                 json.dumps(row.get("snapshot", {})), json.dumps(row)),
-            )
-            return cur.rowcount == 1
-
-    def update_live_session(self, row: dict[str, Any]) -> None:
-        with self.connect() as conn:
-            conn.execute("UPDATE live_sessions SET ended_at=?,mode=?,payload=? WHERE session_id=?",
-                         (row.get("ended_at"), row.get("mode"), json.dumps(row), row["session_id"]))
-
-    def list_live_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute("SELECT payload FROM live_sessions ORDER BY started_at DESC LIMIT ?", (limit,)).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
-
     def list_audit_log(self, limit: int = 100) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute("SELECT event_type,entity_id,recorded_at,payload FROM system_audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
-
-    def reconcile_incomplete_executions(self) -> int:
-        """Never retry an ambiguous placed operation after process restart."""
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        terminal = ("RECONCILED", "CLOSED", "FAILED", "EXPIRED", "REJECTED")
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT execution_id, payload FROM bet_executions WHERE status NOT IN (?,?,?,?,?)",
-                terminal,
-            ).fetchall()
-            for row in rows:
-                payload = json.loads(row["payload"])
-                payload.update(status="UNKNOWN", lifecycle_state="UNKNOWN", updated_at=now,
-                               error="restart_reconciliation_required")
-                conn.execute(
-                    "UPDATE bet_executions SET status='UNKNOWN', updated_at=?, error=?, payload=? WHERE execution_id=?",
-                    (now, payload["error"], json.dumps(payload), row["execution_id"]),
-                )
-        return len(rows)
-
-
-
-
-
-
 
     @staticmethod
     def _bet_signal_from_row(row) -> dict[str, Any] | None:
@@ -3127,6 +2277,9 @@ class Repository:
             if payload is None:
                 return None
             if payload.get("settlement_status") == "COMMITTED":
+                if payload.get("source_id") == "BEHAVIOUR_DETECTION":
+                    self._enqueue_behaviour_settlement(conn, payload,
+                        payload.get("settlement") or settlement)
                 return payload
             updated = dict(payload)
             updated["settlement_status"] = "COMMITTED"
@@ -3138,7 +2291,80 @@ class Repository:
             conn.execute("""UPDATE bet_signals SET payload=?,settlement_status='COMMITTED'
                 WHERE signal_id=? AND target_round_id=?""",
                 (encoded, str(signal_id), str(target_round_id)))
+            if updated.get("source_id") == "BEHAVIOUR_DETECTION":
+                self._enqueue_behaviour_settlement(conn, updated, settlement)
         return updated
+
+    @staticmethod
+    def _enqueue_behaviour_settlement(conn, signal: dict[str, Any],
+                                     settlement: dict[str, Any]) -> None:
+        evidence = settlement.get("evidence") if isinstance(settlement.get("evidence"), dict) else {}
+        committed_evidence = evidence.get("persistence_confirmation")
+        if isinstance(committed_evidence, dict):
+            # SHADOW first observes a round, then enriches it with the durable
+            # commit receipt. Behaviour requires the receipt as the settlement
+            # authority, so promote those fields instead of forwarding the
+            # earlier PENDING observation as top-level evidence.
+            evidence = {**evidence, **committed_evidence}
+        target_round_id = str(settlement.get("target_round_id") or signal.get("target_round_id") or "")
+        target_stream_id = str(settlement.get("target_stream_id") or evidence.get("stream_id")
+                               or signal.get("target_stream_id") or "")
+        target_round_index = int(settlement.get("target_round_index")
+                                 or signal.get("target_round_index") or 0)
+        event = {
+            "source_id": "BEHAVIOUR_DETECTION", "strategy_id": signal.get("strategy_id"),
+            "signal_id": str(signal.get("signal_id") or ""),
+            "session_id": str(signal.get("session_id") or ""),
+            "series_id": str(signal.get("series_id") or ""),
+            "part": str(signal.get("part") or ""),
+            "batch_id": str(signal.get("batch_id") or ""),
+            "configuration_version": int(signal.get("configuration_version") or 0),
+            "signal_target_round_id": str(signal.get("target_round_id") or ""),
+            "signal_lock_status": "DURABLY_LOCKED",
+            "settlement_status": "COMMITTED",
+            "target_round_id": target_round_id,
+            "target_round_identity": f"winner-predict:{target_round_id}",
+            "target_stream_id": target_stream_id,
+            "target_round_index": target_round_index,
+            "actual_multiplier": settlement.get("actual_multiplier"),
+            "result": str(settlement.get("result") or "").upper(),
+            "net_profit": settlement.get("profit_loss_rwf"),
+            "evidence": {**evidence, "event_type": evidence.get("event_type"),
+                         "durability": evidence.get("durability"),
+                         "continuity_status": evidence.get("continuity_status"),
+                         "target_round_id": target_round_id,
+                         "target_stream_id": target_stream_id,
+                         "target_round_index": target_round_index},
+        }
+        conn.execute("""INSERT INTO behaviour_strategy_settlement_outbox(
+            signal_id,status,payload,created_at) VALUES(?,?,?,?)
+            ON CONFLICT(signal_id) DO UPDATE SET payload=excluded.payload
+            WHERE behaviour_strategy_settlement_outbox.status='PENDING'""",
+            (event["signal_id"], "PENDING",
+             json.dumps(event, sort_keys=True, separators=(",", ":"), default=str),
+             datetime.now(timezone.utc).isoformat()))
+
+    def pending_behaviour_strategy_settlements(self, limit: int = 100) -> list[dict[str, Any]]:
+        bounded = min(max(int(limit), 1), 1000)
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT payload FROM behaviour_strategy_settlement_outbox
+                WHERE status='PENDING' ORDER BY created_at,signal_id LIMIT ?""", (bounded,)).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def behaviour_strategy_settlement_feedback(self, signal_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("""SELECT payload FROM behaviour_strategy_settlement_outbox
+                WHERE signal_id=? LIMIT 1""", (str(signal_id),)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def mark_behaviour_strategy_settlement_delivered(self, signal_id: str, *,
+            delivered: bool, error: str | None = None) -> None:
+        status = "DELIVERED" if delivered else "PENDING"
+        delivered_at = datetime.now(timezone.utc).isoformat() if delivered else None
+        with self.connect() as conn:
+            conn.execute("""UPDATE behaviour_strategy_settlement_outbox
+                SET status=?, attempts=attempts+1, last_error=?, delivered_at=? WHERE signal_id=?""",
+                (status, (str(error)[:500] if error else None), delivered_at, str(signal_id)))
 
     def pending_bet_signals(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Return a bounded oldest-first batch for settlement recovery."""
@@ -3204,12 +2430,18 @@ class Repository:
         return bool(row)
 
     def has_committed_round_distribution_index(self, stream_id: str, round_index: int) -> bool:
-        """Check whether a canonical committed event already occupies this stream index."""
+        """Check the authoritative round table, including rounds not yet distributed.
+
+        Historical distribution events can outlive a replaced round history and
+        reuse an index in the same stream. They do not prove the current target
+        has completed; the canonical round table does.
+        """
         if not self.database_url:
             return False
         with self.connect() as conn:
-            row = conn.execute("""SELECT 1 FROM round_distribution_events
-                WHERE stream_id=? AND round_index=? LIMIT 1""",
+            row = conn.execute("""SELECT 1 FROM aviator_rounds r
+                JOIN round_distribution_meta m ON m.singleton=1
+                WHERE m.stream_id=? AND r.round_index=? LIMIT 1""",
                 (str(stream_id), int(round_index))).fetchone()
         return bool(row)
 

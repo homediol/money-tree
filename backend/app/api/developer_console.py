@@ -210,25 +210,9 @@ async def _overview(request: Request) -> dict[str, Any]:
         engine_state = str(engine_status.get("status") or "").upper()
         rules_engine_state = engine_state if engine_state in {"READY", "NOT_CONFIGURED"} else "UNKNOWN"
 
-    modes = getattr(request.app.state, "betting_mode", None)
-    mode_name = getattr(modes, "mode", None) if modes is not None else None
-    selected_shadow_mode = mode_name == "SHADOW_REALISTIC"
-    transitioning = bool(modes is not None and getattr(modes, "transitioning", False))
-    if modes is None or not isinstance(mode_name, str) or not mode_name:
-        shadow_mode_state = "UNKNOWN"
-        shadow_mode_detail = "Mode status unavailable"
-    elif transitioning:
-        shadow_mode_state = "TRANSITIONING"
-        shadow_mode_detail = "A betting mode change is in progress"
-    elif selected_shadow_mode and rules_active:
-        shadow_mode_state = "ACTIVE"
-        shadow_mode_detail = "SHADOW_REALISTIC selected with an active Rules Engine session"
-    elif selected_shadow_mode:
-        shadow_mode_state = "SELECTED"
-        shadow_mode_detail = "SHADOW_REALISTIC selected; no active Rules Engine session"
-    else:
-        shadow_mode_state = "STOPPED"
-        shadow_mode_detail = "SHADOW_REALISTIC is not the selected betting mode"
+    shadow_mode_state = "ACTIVE" if rules_active else "STOPPED"
+    shadow_mode_detail = ("An active Rules Engine session is observing verified rounds."
+                          if rules_active else "No active Rules Engine session.")
 
     hub = _hub(request)
     try:

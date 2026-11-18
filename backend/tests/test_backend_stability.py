@@ -30,9 +30,13 @@ def test_external_collector_heartbeat_remains_owned_when_backend_stops(tmp_path,
     collector.status_path.write_text(json.dumps({
         "pid": __import__("os").getpid(), "collectorRunning": True,
         "heartbeatAt": heartbeat, "state": "COLLECTING", "loggedIn": True,
+        "roundHistoryHealth": {"state": "GAP_SUSPECTED", "coverage": "AMBIGUOUS_SNAPSHOT"},
     }))
     collector._external_process = lambda: (True, heartbeat)
-    assert collector.health_status()["running"] is True
+    status = collector.health_status()
+    assert status["running"] is True
+    assert status["round_history_health"]["state"] == "GAP_SUSPECTED"
+    assert status["round_history_health"]["coverage"] == "AMBIGUOUS_SNAPSHOT"
     assert collector.health_status()["status"] == "COLLECTING"
     asyncio.run(collector.stop())
     assert collector.health_status()["running"] is True

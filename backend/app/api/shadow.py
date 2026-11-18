@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/api/shadow", tags=["shadow"])
 
@@ -12,13 +11,12 @@ def shadow(request: Request): return request.app.state.shadow
 @router.post("/start")
 async def start(request: Request):
     body = await request.json()
-    result = await request.app.state.betting_mode.switch_shadow(
+    result = await shadow(request).start(
         goal_balance=body.get("goal_balance"),
         starting_balance=body.get("starting_balance"),
-        configuration=body.get("configuration"))
-    if not result.get("ok"):
-        return JSONResponse(status_code=409, content=result)
-    return result
+        configuration=body.get("configuration"),
+        health=request.app.state.system_health)
+    return {"ok": True, "status": result}
 
 
 @router.post("/stop")
@@ -27,11 +25,6 @@ async def stop(request: Request): return {"ok": True, "status": await shadow(req
 async def pause(request: Request): return {"ok": True, "status": await shadow(request).pause()}
 @router.post("/resume")
 async def resume(request: Request):
-    modes = request.app.state.betting_mode
-    if modes.mode != "SHADOW_REALISTIC" or not modes.shadow_ready:
-        return JSONResponse(status_code=409, content={"ok": False,
-            "error": "backend_mode_switch_required",
-            "message": "Shadow resume requires the authoritative mode switch"})
     try: return {"ok": True, "status": await shadow(request).resume(request.app.state.system_health)}
     except ValueError as exc: return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
 @router.get("/status")

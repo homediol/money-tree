@@ -6,7 +6,7 @@ import asyncio
 import math
 import time
 import uuid
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -35,11 +35,12 @@ class RoundDistributionHub:
     MAX_CONNECTIONS_PER_TOKEN = 4
     MAX_CONNECTIONS_TOTAL = 200
     REQUESTS_PER_MINUTE = 120
+    MAX_RATE_LIMIT_KEYS = 4096
 
     def __init__(self):
         self._lock = asyncio.Lock()
         self._subscribers: dict[str, Subscriber] = {}
-        self._requests: dict[str, deque[float]] = defaultdict(deque)
+        self._requests: OrderedDict[str, deque[float]] = OrderedDict()
         self._latencies: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=2000))
         self._slowest: dict[str, dict[str, Any]] = {}
         self._latest_stage: dict[str, dict[str, Any]] = {}
@@ -48,7 +49,12 @@ class RoundDistributionHub:
         self._committed_event_ids: set[str] = set()
         self._committed_event_order: deque[str] = deque()
         self._last_published: dict[str, Any] | None = None
+        self._last_published_observed: dict[str, Any] | None = None
+        self._last_observed_publish_at: str | None = None
+        self._last_publication_error: str | None = None
         self._delivery_lag_ms: deque[float] = deque(maxlen=2000)
+        self._verified_live_round_intervals_ms: deque[float] = deque(maxlen=200)
+        self._last_verified_live_round: tuple[str, float] | None = None
         self._reconnect_backlogs: deque[int] = deque(maxlen=1000)
         self._shutdown = False
         self._disconnects = 0
@@ -56,12 +62,17 @@ class RoundDistributionHub:
 
     def allow_request(self, token_id: str, now: float | None = None) -> tuple[bool, int]:
         now = time.monotonic() if now is None else float(now)
-        bucket = self._requests[str(token_id)]
+        key = str(token_id)[:256] or "unknown"
+        bucket = self._requests.pop(key, deque())
         while bucket and bucket[0] <= now - 60.0:
             bucket.popleft()
         if len(bucket) >= self.REQUESTS_PER_MINUTE:
+            self._requests[key] = bucket
             return False, max(1, math.ceil(60.0 - (now - bucket[0])))
         bucket.append(now)
+        self._requests[key] = bucket
+        while len(self._requests) > self.MAX_RATE_LIMIT_KEYS:
+            self._requests.popitem(last=False)
         return True, 0
 
     @staticmethod
@@ -151,6 +162,10 @@ class RoundDistributionHub:
                 self._remember_committed(observation_id)
             elif event_type == "round.observed" and observation_id in self._committed_event_ids:
                 return
+            elif event_type == "round.observed":
+                self._last_published_observed = dict(event)
+                self._last_observed_publish_at = datetime.now(timezone.utc).isoformat()
+                self._last_publication_error = None
             self._record_event_latencies(event)
             for subscriber in tuple(self._subscribers.values()):
                 if subscriber.closed:
@@ -171,6 +186,10 @@ class RoundDistributionHub:
                     notice = {"event_type": "stream.overflow", "stream_id": event.get("stream_id"),
                               "reason": "client_queue_full", "resume_with_rest": True}
                     subscriber.queue.put_nowait(notice)
+
+    def record_publication_error(self, error: Exception | str) -> None:
+        value = str(error)[:160]
+        self._last_publication_error = value
 
     def remember_replayed_commit(self, event: dict[str, Any]) -> None:
         """Suppress a queued pending duplicate after its committed replay was sent."""
@@ -253,6 +272,14 @@ class RoundDistributionHub:
         event_id = str(event.get("event_id") or observation_id)
         observed = self._timestamp_ms(event.get("observed_at"))
         if event.get("event_type") == "round.observed" and observation_id:
+            if (event.get("continuity_status") == "VERIFIED"
+                    and str(event.get("delivery_mode") or "").upper() == "LIVE"
+                    and observed is not None):
+                prior = self._last_verified_live_round
+                if prior and prior[0] != observation_id and observed > prior[1]:
+                    self._verified_live_round_intervals_ms.append(observed - prior[1])
+                if prior is None or observed > prior[1]:
+                    self._last_verified_live_round = (observation_id, observed)
             api_elapsed = event.get("api_receipt_to_sse_publication_ms")
             if isinstance(api_elapsed, (int, float)) and math.isfinite(float(api_elapsed)):
                 self._record_once("api_receipt_to_sse_publication_ms", event_id, float(api_elapsed))
@@ -300,11 +327,21 @@ class RoundDistributionHub:
                 "slowest_samples": dict(self._slowest),
                 "latest_samples": dict(self._latest_stage),
                 "delivery_lag_ms": self._summary(self._delivery_lag_ms),
+                # This is an empirical freshness basis from consecutive source
+                # timestamps on verified LIVE rounds. It intentionally has no
+                # fixed fallback threshold: until cadence is observed, the
+                # consumer must report WAITING_FOR_CADENCE.
+                "verified_live_round_interval_ms": self._summary(
+                    self._verified_live_round_intervals_ms),
                 "reconnect_backlog_events": {
                     "samples": len(self._reconnect_backlogs),
                     "last": self._reconnect_backlogs[-1] if self._reconnect_backlogs else None,
                     "p95": (sorted(self._reconnect_backlogs)[max(0, math.ceil(0.95 * len(self._reconnect_backlogs)) - 1)]
                             if self._reconnect_backlogs else None),
                 },
+                "last_published_observed": dict(self._last_published_observed or {}),
+                "last_observed_publish_at": self._last_observed_publish_at,
+                "last_publication_error": self._last_publication_error,
                 "last_published_round": self._last_published,
+                "delivery_ack_protocol": "UNAVAILABLE_SSE_HAS_NO_CLIENT_ACK",
             }

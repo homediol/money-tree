@@ -4,11 +4,11 @@ import test from 'node:test';
 
 const source = async (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
-test('betting UI preserves fixed stake, fixed cashout, and independent stop controls', async () => {
-  const [rules, live, betting] = await Promise.all([
+test('Rules Engine keeps live safety controls after the legacy pages are removed', async () => {
+  const [rules, live, app] = await Promise.all([
     source('../src/pages/RulesEngine.jsx'),
     source('../src/pages/LiveActivation.jsx'),
-    source('../src/pages/Betting.jsx'),
+    source('../src/main.jsx'),
   ]);
   assert.match(rules, /Fixed simulated stake \(RWF\)/);
   assert.match(rules, /htmlFor="rules-manager-win-limit"/);
@@ -30,11 +30,19 @@ test('betting UI preserves fixed stake, fixed cashout, and independent stop cont
   assert.doesNotMatch(rules, /enabled \? \[\.\.\.new Set\(\[\.\.\.previous, rule\.rule_id\]\)\]/);
   assert.match(rules, /const participatingRuleIds = selectedIds\.filter/);
   assert.match(rules, /rule_ids: participatingRuleIds/);
+  assert.match(rules, /updateStatusAfterSessionAction/);
+  assert.match(rules, /focusedSessionIdRef\.current = sessionId/);
+  assert.match(rules, /focusedSessionIdRef\.current = activeSessionId/);
+  assert.match(rules, /if \(operationInFlightRef\.current\) return/);
+  assert.match(rules, /operationInFlightRef\.current = true/);
+  assert.match(rules, /refreshAfter: false/);
+  assert.match(rules, /void refreshDashboard\(\)/);
+  assert.match(rules, /<LiveActivation dashboard=\{dashboard\} \/>/);
   assert.match(live, /Cashout target: 2\.00x/);
   assert.match(live, /Emergency stop/);
-  assert.match(betting, /run\('stop'\)/);
-  assert.match(betting, /Emergency stop/);
-  for (const text of [rules, live, betting]) {
+  assert.doesNotMatch(app, /label: 'Betting'|label: 'Bet Results'|label: 'Operations & Recovery'/);
+  assert.doesNotMatch(app, /path="\/(betting|results|operations)"/);
+  for (const text of [rules, live, app]) {
     assert.doesNotMatch(text, /RISK_WAITING|RISK_REJECTED|RISK_APPROVED|Risk profile/i);
   }
 });

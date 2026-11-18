@@ -38,8 +38,14 @@ SHADOW selections and cannot authorize execution.
 
 ## Services
 
-From the repository root, `npm start` runs the service supervisor. The
-collector, backend, and dashboard can also run separately:
+From the repository root, `npm start` runs the Node.js service supervisor for
+Winner Predict, Behaviour Detection, and the shared dashboard. Behaviour
+Detection's API, analysis worker, and configured Orbit collector are managed as
+local processes; startup does not use Docker. Its dedicated database must be
+available locally before the Behaviour service can become ready. To run only
+Behaviour Detection, use `npm run behaviour:start`.
+
+The Winner Predict collector, backend, and dashboard can also run separately:
 
 ```bash
 npm run collector
@@ -47,11 +53,23 @@ npm run backend
 npm run frontend
 ```
 
-The collector uses an OS lock to prevent duplicate collector owners. It owns the
-browser session used for Aviator history collection, persists canonical rounds
-to PostgreSQL, and uses its durable outbox when delivery is temporarily
-unavailable. Complete any login, CAPTCHA, or 2FA step in the collector's
-existing browser session.
+The collector uses an OS lock to prevent duplicate owners and collects Round
+History exclusively through the Orbit Data Watch API. It rediscovers the saved
+payouts watch, replays cursor-paginated readings, and stores canonical rounds in
+PostgreSQL with a durable delivery outbox. The authenticated owner SSE stream
+delivers each saved reading as soon as Orbit records it and reconnects after
+collector or backend restarts. Configure `ORBIT_API_BASE_URL` and
+`ORBIT_API_KEY` in `backend/.env`; the key stays server-side. Collection does
+not depend on an open Data Watch dashboard page or create a watch on restart.
+
+Orbit currently reads the selected Chrome page on the watch's saved interval
+(the existing watch is set to 1000 ms). The SSE connection removes collector
+polling after a reading is stored, but it cannot make Orbit observe page changes
+before its next browser read. Data Watch returns up to 200 selector matches per
+read; the collector reports a truncated reading if the page returns more. The
+saved Chrome connection and target game page must be available; collection
+reports the source as waiting or unhealthy and continues retrying while either
+is disconnected.
 
 Configure `backend/.env` from `backend/.env.example`. Production backend startup
 requires PostgreSQL (`REQUIRE_POSTGRES=true`). The legacy JSON round file is
@@ -69,12 +87,11 @@ endpoints `GET /api/v1/rounds/latest` and `GET /api/v1/rounds`; see the
 
 ## Dashboard
 
-- **Rules Engine:** configuration and evaluation status; initially zero rules,
+- **Rules Engine:** configuration and evaluation status, LIVE safety controls,
+  execution readiness, and verified financial summaries; initially zero rules,
   `NO_ACTION`, automatic execution `OFF`.
 - **Round History:** persisted real rounds and history status.
-- **Betting:** betting mode, safety controls, and emergency stop.
-- **Bet Results:** execution, balance, and reconciliation records.
-- **Operations & Recovery:** backend, collector, browser, and recovery status.
+- Recovery runs automatically during backend startup; shared execution and audit history remains available to backend reconciliation and safety services.
 - **Settings:** API access and backend/history status.
 - **Rules Signal API:** live health and BET signal monitoring, API checks,
   owner-managed scoped keys, and in-app integration documentation.

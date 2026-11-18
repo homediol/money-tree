@@ -23,6 +23,7 @@ function statusStyle(status) {
 }
 
 export default function RoundPerformanceDashboard() {
+  const [showDetails, setShowDetails] = useState(false);
   const [report, setReport] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -40,12 +41,33 @@ export default function RoundPerformanceDashboard() {
   }, []);
 
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => { void refresh(); }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer;
+    const poll = async () => {
+      await refresh();
+      if (!cancelled) timer = window.setTimeout(poll, POLL_INTERVAL_MS);
+    };
+    void poll();
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [refresh]);
 
-  const status = report?.end_to_end_target_status || 'UNKNOWN';
+  const configuredTargetMs = Number(report?.end_to_end_target_ms);
+  const targetMs = Number.isFinite(configuredTargetMs) && configuredTargetMs > 0
+    ? configuredTargetMs : 2000;
+  const endToEndMs = report?.end_to_end_latest_ms;
+  const hasEndToEndSample = endToEndMs !== null && endToEndMs !== undefined
+    && Number.isFinite(Number(endToEndMs));
+  const status = hasEndToEndSample
+    ? report?.end_to_end_target_status || 'UNKNOWN'
+    : 'UNKNOWN';
+  const targetLabel = targetMs.toLocaleString();
+  const targetMessage = hasEndToEndSample
+    ? status === 'GREEN'
+      ? `Within target · latest ${duration(endToEndMs)} / < ${targetLabel} ms`
+      : status === 'CRITICAL'
+        ? `At or above target · latest ${duration(endToEndMs)} / < ${targetLabel} ms`
+        : `Latest ${duration(endToEndMs)} · target < ${targetLabel} ms`
+    : `Awaiting correlated sample · target < ${targetLabel} ms`;
   const stages = Object.entries(report?.stages || {});
   const latest = report?.total_latest_ms;
 
@@ -60,75 +82,88 @@ export default function RoundPerformanceDashboard() {
           Correlated by round ID. Percentiles use measured samples from the running backend and collector.
         </p>
       </div>
-      <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold ${statusStyle(status)}`}>
-        <Gauge size={16} /> 2-second detection → Signal API target: {status}
+      <button type="button" aria-expanded={showDetails} aria-controls="round-performance-details"
+        onClick={() => setShowDetails((visible) => !visible)}
+        className="rounded-lg border border-zinc-700 px-3 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-800">
+        {showDetails ? 'Hide details' : 'View details'}
+      </button>
+    </div>
+
+    <div id="round-performance-details" hidden={!showDetails}>
+      <div className={`mt-4 inline-flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold ${statusStyle(status)}`}>
+        <Gauge size={16} />
+        <span>2-second detection → Signal API</span>
+        <span>{targetMessage}</span>
       </div>
+      {!hasEndToEndSample && <p className="mt-2 text-xs text-zinc-500">
+        A sample appears when the same round is correlated from collector observation through durable Signal API acceptance.
+      </p>}
+
+      <p className="mt-2 text-sm text-zinc-400">
+        Backend receive → final decision: <strong className="text-zinc-200">{report?.backend_path_status || 'UNKNOWN'}</strong>
+        {' · '}latest sample {duration(latest)}
+      </p>
+
+      {error && <div role="status" className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">{error}</div>}
+
+      <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm text-zinc-300">
+        <span>Slowest stage: <strong className="text-zinc-100">{report?.slowest_stage || 'No samples'}</strong></span>
+        <span>Rule queue: <strong className="text-zinc-100">{report?.queue?.depth ?? '—'}/{report?.queue?.capacity ?? '—'}</strong></span>
+        <span>Worker: <strong className="text-zinc-100">{report?.queue?.busy ? 'busy' : 'idle'}</strong></span>
+        <span>Dashboard updates: <strong className="text-zinc-100">{report?.dashboard_notifications?.depth ?? '—'}/{report?.dashboard_notifications?.capacity ?? '—'}</strong>
+          {' · '}coalesced {report?.dashboard_notifications?.coalesced ?? 0}</span>
+        <span>Backend round: <code className="text-cyan-200">{report?.total_latest_correlation_id || '—'}</code></span>
+        <span>Signal acceptance sample: <code className="text-cyan-200">{report?.end_to_end_latest_correlation_id || '—'}</code>
+          {' · '}{sampleTime(report?.end_to_end_latest_sampled_at)}</span>
+        <span>Collector: <strong className={report?.sample_freshness?.collector_current ? 'text-emerald-300' : 'text-amber-300'}>
+          {report?.sample_freshness?.collector_current ? 'current' : 'stale'}
+        </strong> · last round {sampleTime(report?.sample_freshness?.collector_last_round_at)}</span>
+        <span className="inline-flex items-center gap-1 text-zinc-500">
+          <RefreshCw size={12} /> Backend sample {sampleTime(report?.sample_freshness?.backend_latest_sample_at)}
+          · report {report?.updated_at ? sampleTime(report.updated_at) : loading ? 'loading' : 'no sample'}
+        </span>
+      </div>
+
+      <div className="mt-4 overflow-x-auto rounded-lg border border-zinc-800">
+        <table className="w-full min-w-[740px] border-collapse text-left text-xs">
+          <thead className="bg-zinc-950/70 text-zinc-400">
+            <tr>
+              <th className="px-3 py-2 font-medium">Stage</th>
+              <th className="px-3 py-2 font-medium">Average</th>
+              <th className="px-3 py-2 font-medium">P50</th>
+              <th className="px-3 py-2 font-medium">P95</th>
+              <th className="px-3 py-2 font-medium">P99</th>
+              <th className="px-3 py-2 font-medium">Maximum</th>
+              <th className="px-3 py-2 font-medium">Samples</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stages.map(([name, sample]) => <tr key={name} className="border-t border-zinc-800 text-zinc-200">
+              <td className="px-3 py-2">{name}</td>
+              <td className="px-3 py-2">{duration(sample?.average_ms)}</td>
+              <td className="px-3 py-2">{duration(sample?.p50_ms)}</td>
+              <td className="px-3 py-2">{duration(sample?.p95_ms)}</td>
+              <td className="px-3 py-2">{duration(sample?.p99_ms)}</td>
+              <td className="px-3 py-2">{duration(sample?.max_ms)}</td>
+              <td className="px-3 py-2">{sample?.samples ?? 0}</td>
+            </tr>)}
+            <tr className="border-t border-zinc-700 bg-zinc-950/50 font-semibold text-zinc-100">
+              <td className="px-3 py-2">TOTAL · backend receive to final decision</td>
+              <td className="px-3 py-2">{duration(report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.average_ms)}</td>
+              <td className="px-3 py-2">{duration(report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.p50_ms)}</td>
+              <td className="px-3 py-2">{duration(report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.p95_ms)}</td>
+              <td className="px-3 py-2">{duration(report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.p99_ms)}</td>
+              <td className="px-3 py-2">{duration(report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.max_ms)}</td>
+              <td className="px-3 py-2">{report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.samples ?? 0}</td>
+            </tr>
+            {!stages.length && <tr><td colSpan="7" className="px-3 py-6 text-center text-zinc-500">{loading ? 'Loading measured samples…' : 'No measured round samples yet.'}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="mt-3 text-xs text-zinc-500">
+        End-to-end uses the collector’s page-observation timestamp through durable Signal API acceptance on the local loopback path. Backend-only spans remain separate; the provider’s original result timestamp and downstream consumer acknowledgment are not exposed.
+      </p>
     </div>
-
-    <p className="mt-2 text-sm text-zinc-400">
-      Backend receive → final decision: <strong className="text-zinc-200">{report?.backend_path_status || 'UNKNOWN'}</strong>
-      {' · '}latest sample {duration(latest)}
-    </p>
-
-    {error && <div role="status" className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">{error}</div>}
-
-    <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm text-zinc-300">
-      <span>Slowest stage: <strong className="text-zinc-100">{report?.slowest_stage || 'No samples'}</strong></span>
-      <span>Rule queue: <strong className="text-zinc-100">{report?.queue?.depth ?? '—'}/{report?.queue?.capacity ?? '—'}</strong></span>
-      <span>Worker: <strong className="text-zinc-100">{report?.queue?.busy ? 'busy' : 'idle'}</strong></span>
-      <span>Dashboard updates: <strong className="text-zinc-100">{report?.dashboard_notifications?.depth ?? '—'}/{report?.dashboard_notifications?.capacity ?? '—'}</strong>
-        {' · '}coalesced {report?.dashboard_notifications?.coalesced ?? 0}</span>
-      <span>Backend round: <code className="text-cyan-200">{report?.total_latest_correlation_id || '—'}</code></span>
-      <span>Signal acceptance sample: <code className="text-cyan-200">{report?.end_to_end_latest_correlation_id || '—'}</code>
-        {' · '}{sampleTime(report?.end_to_end_latest_sampled_at)}</span>
-      <span>Collector: <strong className={report?.sample_freshness?.collector_current ? 'text-emerald-300' : 'text-amber-300'}>
-        {report?.sample_freshness?.collector_current ? 'current' : 'stale'}
-      </strong> · last round {sampleTime(report?.sample_freshness?.collector_last_round_at)}</span>
-      <span className="inline-flex items-center gap-1 text-zinc-500">
-        <RefreshCw size={12} /> Backend sample {sampleTime(report?.sample_freshness?.backend_latest_sample_at)}
-        · report {report?.updated_at ? sampleTime(report.updated_at) : loading ? 'loading' : 'no sample'}
-      </span>
-    </div>
-
-    <div className="mt-4 overflow-x-auto rounded-lg border border-zinc-800">
-      <table className="w-full min-w-[740px] border-collapse text-left text-xs">
-        <thead className="bg-zinc-950/70 text-zinc-400">
-          <tr>
-            <th className="px-3 py-2 font-medium">Stage</th>
-            <th className="px-3 py-2 font-medium">Average</th>
-            <th className="px-3 py-2 font-medium">P50</th>
-            <th className="px-3 py-2 font-medium">P95</th>
-            <th className="px-3 py-2 font-medium">P99</th>
-            <th className="px-3 py-2 font-medium">Maximum</th>
-            <th className="px-3 py-2 font-medium">Samples</th>
-          </tr>
-        </thead>
-        <tbody>
-          {stages.map(([name, sample]) => <tr key={name} className="border-t border-zinc-800 text-zinc-200">
-            <td className="px-3 py-2">{name}</td>
-            <td className="px-3 py-2">{duration(sample?.average_ms)}</td>
-            <td className="px-3 py-2">{duration(sample?.p50_ms)}</td>
-            <td className="px-3 py-2">{duration(sample?.p95_ms)}</td>
-            <td className="px-3 py-2">{duration(sample?.p99_ms)}</td>
-            <td className="px-3 py-2">{duration(sample?.max_ms)}</td>
-            <td className="px-3 py-2">{sample?.samples ?? 0}</td>
-          </tr>)}
-          <tr className="border-t border-zinc-700 bg-zinc-950/50 font-semibold text-zinc-100">
-            <td className="px-3 py-2">TOTAL · backend receive to final decision</td>
-            <td className="px-3 py-2">{duration(report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.average_ms)}</td>
-            <td className="px-3 py-2">{duration(report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.p50_ms)}</td>
-            <td className="px-3 py-2">{duration(report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.p95_ms)}</td>
-            <td className="px-3 py-2">{duration(report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.p99_ms)}</td>
-            <td className="px-3 py-2">{duration(report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.max_ms)}</td>
-            <td className="px-3 py-2">{report?.backend_latency_ms?.backend_receive_to_final_decision_ms?.samples ?? 0}</td>
-          </tr>
-          {!stages.length && <tr><td colSpan="7" className="px-3 py-6 text-center text-zinc-500">{loading ? 'Loading measured samples…' : 'No measured round samples yet.'}</td></tr>}
-        </tbody>
-      </table>
-    </div>
-
-    <p className="mt-3 text-xs text-zinc-500">
-      End-to-end uses the collector’s page-observation timestamp through durable Signal API acceptance on the local loopback path. Backend-only spans remain separate; the provider’s original result timestamp and downstream consumer acknowledgment are not exposed.
-    </p>
   </section>;
 }

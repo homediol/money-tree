@@ -1,9 +1,9 @@
-"""Small durable API-side handoff for pending round observations.
+"""Durable ingress journal for the shared verified Orbit round stream.
 
-The collector already has its own durable outbox. This local SQLite inbox lets
-the API acknowledge an observation and publish it to connected SSE clients
-without waiting for PostgreSQL. Rows remain available to reconnecting clients
-until a committed event is durably recorded in PostgreSQL.
+The collector has its own durable outbox. This API-side SQLite journal stores
+the canonical observed event before Rules Engine, Behaviour, SSE and PostgreSQL
+consume it. Per-consumer checkpoints allow independent ordered replay without
+making the Winner PostgreSQL write a relay between live modules.
 """
 
 from __future__ import annotations
@@ -65,6 +65,89 @@ class RoundObservationInbox:
         self.tombstone_limit = max(100, int(tombstone_limit))
         self._lock = threading.RLock()
         self.initialize()
+        # Keep one idle connection open so closing each short-lived worker
+        # connection does not force SQLite's last-connection WAL checkpoint
+        # on the round acknowledgement path. Background checkpoints and the
+        # collector's durable outbox remain responsible for recovery.
+        self._anchor = self._connect()
+
+    def close(self) -> None:
+        with self._lock:
+            anchor = self._anchor
+            self._anchor = None
+            if anchor is not None:
+                anchor.close()
+
+    def enqueue_fast_signal(self, signal: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        """Durably reserve a signal before fanout, independently of PostgreSQL."""
+        with self._lock:
+            connection = self._connect()
+            try:
+                connection.execute("PRAGMA synchronous=FULL")
+                connection.execute("INSERT OR IGNORE INTO fast_signal_outbox "
+                                   "(signal_id,session_id,target_id,signal_json) VALUES (?,?,?,?)",
+                                   (str(signal["signal_id"]), str(signal["session_id"]),
+                                    str(signal["target_round_id"]), json.dumps(signal)))
+                inserted = bool(connection.execute("SELECT changes()").fetchone()[0])
+                row = connection.execute("SELECT signal_json FROM fast_signal_outbox "
+                    "WHERE session_id=? AND target_id=?", (str(signal["session_id"]),
+                    str(signal["target_round_id"]))).fetchone()
+                if row is None:
+                    raise ObservationIdentityConflict("signal identity conflict")
+                return inserted, json.loads(row["signal_json"])
+            finally:
+                connection.close()
+
+    def pending_fast_signals(self, limit: int = 100) -> list[dict[str, Any]]:
+        connection = self._connect()
+        try:
+            rows = connection.execute("SELECT signal_json FROM fast_signal_outbox "
+                                      "WHERE persisted=0 ORDER BY rowid LIMIT ?", (limit,)).fetchall()
+            return [json.loads(row["signal_json"]) for row in rows]
+        finally:
+            connection.close()
+
+    def mark_fast_signal_persisted(self, signal_id: str) -> None:
+        connection = self._connect()
+        try:
+            connection.execute("UPDATE fast_signal_outbox SET persisted=1 WHERE signal_id=?", (signal_id,))
+        finally:
+            connection.close()
+
+    def commit_fast_signal_settlement(self, signal_id: str, settlement: dict[str, Any]) -> bool:
+        """Mirror one verified committed SHADOW result into the shared local outbox."""
+        if settlement.get("status") != "COMMITTED" or str(settlement.get("result") or "").upper() not in {"WIN", "LOSS"}:
+            raise ValueError("only committed WIN or LOSS settlements can be mirrored")
+        with self._lock:
+            connection = self._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT signal_json FROM fast_signal_outbox WHERE signal_id=?", (str(signal_id),)
+                ).fetchone()
+                if row is None:
+                    connection.rollback()
+                    return False
+                signal = json.loads(row["signal_json"])
+                existing = signal.get("settlement") if isinstance(signal, dict) else None
+                if signal.get("settlement_status") == "COMMITTED":
+                    if existing != settlement:
+                        connection.rollback()
+                        raise ObservationIdentityConflict("signal settlement identity conflict")
+                    connection.commit()
+                    return True
+                signal["settlement_status"] = "COMMITTED"
+                signal["settlement"] = dict(settlement)
+                connection.execute("UPDATE fast_signal_outbox SET signal_json=? WHERE signal_id=?",
+                    (json.dumps(signal, sort_keys=True, separators=(",", ":")), str(signal_id)))
+                connection.commit()
+                return True
+            except Exception:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+            finally:
+                connection.close()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
@@ -112,6 +195,14 @@ class RoundObservationInbox:
             try:
                 connection.execute("PRAGMA journal_mode=WAL")
                 connection.executescript("""
+                    CREATE TABLE IF NOT EXISTS fast_signal_outbox (
+                        signal_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        target_id TEXT NOT NULL,
+                        signal_json TEXT NOT NULL,
+                        persisted INTEGER NOT NULL DEFAULT 0,
+                        UNIQUE(session_id, target_id)
+                    );
                     CREATE TABLE IF NOT EXISTS round_observation_inbox (
                         inbox_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                         observation_id TEXT NOT NULL UNIQUE,
@@ -124,6 +215,10 @@ class RoundObservationInbox:
                         rules_processed INTEGER NOT NULL DEFAULT 0,
                         committed_event_json TEXT,
                         committed_rules_processed INTEGER NOT NULL DEFAULT 1,
+                        behaviour_processed INTEGER NOT NULL DEFAULT 0,
+                        behaviour_attempts INTEGER NOT NULL DEFAULT 0,
+                        behaviour_next_attempt_at REAL NOT NULL DEFAULT 0,
+                        behaviour_last_error TEXT,
                         pg_staged INTEGER NOT NULL DEFAULT 0,
                         attempts INTEGER NOT NULL DEFAULT 0,
                         next_attempt_at REAL NOT NULL DEFAULT 0,
@@ -156,19 +251,39 @@ class RoundObservationInbox:
                     # replay payload and explicitly resets this bit to zero.
                     connection.execute("ALTER TABLE round_observation_inbox "
                                        "ADD COLUMN committed_rules_processed INTEGER NOT NULL DEFAULT 1")
+                if "behaviour_processed" not in columns:
+                    connection.execute("ALTER TABLE round_observation_inbox "
+                                       "ADD COLUMN behaviour_processed INTEGER NOT NULL DEFAULT 0")
+                if "behaviour_attempts" not in columns:
+                    connection.execute("ALTER TABLE round_observation_inbox "
+                                       "ADD COLUMN behaviour_attempts INTEGER NOT NULL DEFAULT 0")
+                if "behaviour_next_attempt_at" not in columns:
+                    connection.execute("ALTER TABLE round_observation_inbox "
+                                       "ADD COLUMN behaviour_next_attempt_at REAL NOT NULL DEFAULT 0")
+                if "behaviour_last_error" not in columns:
+                    connection.execute("ALTER TABLE round_observation_inbox "
+                                       "ADD COLUMN behaviour_last_error TEXT")
                 connection.execute("""CREATE INDEX IF NOT EXISTS round_observation_inbox_rules_pending_idx
                     ON round_observation_inbox(status,rules_processed,inbox_sequence)""")
                 connection.execute("""CREATE INDEX IF NOT EXISTS round_observation_inbox_committed_rules_pending_idx
                     ON round_observation_inbox(status,committed_rules_processed,inbox_sequence)""")
-                # Older inbox versions did not track this stage. Replay only
-                # verified observations; unverified rows cannot create a rule
-                # decision and should not hold startup recovery open.
+                connection.execute("""CREATE INDEX IF NOT EXISTS round_observation_inbox_behaviour_pending_idx
+                    ON round_observation_inbox(behaviour_processed,behaviour_next_attempt_at,inbox_sequence)""")
+                connection.execute("""CREATE INDEX IF NOT EXISTS round_observation_inbox_behaviour_order_idx
+                    ON round_observation_inbox(json_extract(event_json,'$.stream_id'),
+                        CAST(json_extract(event_json,'$.round_index') AS INTEGER),
+                        behaviour_processed,behaviour_next_attempt_at)""")
+                # Older inbox versions did not track this stage. Replay
+                # verified observations and identified gap boundaries;
+                # unverified rows cannot update session state and should not
+                # hold startup recovery open.
                 connection.execute("""UPDATE round_observation_inbox
                     SET rules_processed=1
                     WHERE status='PENDING' AND rules_processed=0
                       AND (COALESCE(json_extract(event_json,'$.event_type'),'')!='round.observed'
                         OR COALESCE(json_extract(event_json,'$.durability'),'')!='PENDING'
-                        OR COALESCE(json_extract(event_json,'$.continuity_status'),'')!='VERIFIED')""")
+                        OR COALESCE(json_extract(event_json,'$.continuity_status'),'')
+                            NOT IN ('VERIFIED','GAP_BEFORE'))""")
                 if connection.execute(
                     "SELECT 1 FROM round_observation_inbox_counters WHERE singleton=1"
                 ).fetchone() is None:
@@ -197,13 +312,28 @@ class RoundObservationInbox:
             raise ValueError("round_observation_identity_missing_or_mismatched")
         if str(observation.get("round_id") or "") != round_id:
             raise ValueError("round_observation_identity_missing_or_mismatched")
+        if event.get("round_uid") is not None and str(event.get("round_uid")) != round_id:
+            raise ValueError("round_observation_identity_missing_or_mismatched")
+        if event.get("canonical_sequence") is not None:
+            try:
+                if int(event["canonical_sequence"]) != int(observation["round_index"]):
+                    raise ValueError("round_observation_sequence_mismatch")
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError("round_observation_sequence_mismatch") from None
         return observation_id, round_id
 
     @staticmethod
     def _requires_rule_processing(event: dict[str, Any]) -> bool:
         return (event.get("event_type") == "round.observed"
                 and event.get("durability") == "PENDING"
-                and event.get("continuity_status") == "VERIFIED")
+                and event.get("continuity_status") in {"VERIFIED", "GAP_BEFORE"})
+
+    @staticmethod
+    def _requires_behaviour_processing(event: dict[str, Any]) -> bool:
+        return (event.get("event_type") == "round.observed"
+                and event.get("durability") == "PENDING"
+                and event.get("continuity_status") in {"VERIFIED", "GAP_BEFORE"}
+                and str(event.get("delivery_mode") or "").upper() in {"LIVE", "RECOVERED"})
 
     def append(self, events: list[dict[str, Any]], observations: list[dict[str, Any]],
                *, received_at: str) -> dict[str, Any]:
@@ -227,7 +357,8 @@ class RoundObservationInbox:
                     observation_id, round_id = self._validate(event, observation)
                     event_json = self._canonical(event)
                     observation_json = self._canonical(observation)
-                    prior = connection.execute("""SELECT event_json,observation_json,status,rules_processed
+                    prior = connection.execute("""SELECT event_json,observation_json,status,rules_processed,
+                        behaviour_processed
                         FROM round_observation_inbox WHERE observation_id=? OR round_id=?""",
                         (observation_id, round_id)).fetchone()
                     if prior:
@@ -252,14 +383,26 @@ class RoundObservationInbox:
                                     f"round observation inbox capacity reached ({pending_records}/{self.max_records} records, "
                                     f"{pending_bytes - prior_bytes + event_bytes}/{self.max_bytes} bytes); no event was discarded")
                             rules_processed = int(prior["rules_processed"] or 0)
-                            if new_requires_rules and not prior_requires_rules:
+                            behaviour_processed = int(prior["behaviour_processed"] or 0)
+                            prior_continuity = str(prior_event.get("continuity_status") or "")
+                            new_continuity = str(event.get("continuity_status") or "")
+                            if (new_requires_rules
+                                    and (not prior_requires_rules
+                                         or prior_continuity != new_continuity)):
                                 rules_processed = 0
                             elif not new_requires_rules:
                                 rules_processed = 1
+                            if (self._requires_behaviour_processing(event)
+                                    and not self._requires_behaviour_processing(prior_event)):
+                                behaviour_processed = 0
+                            elif not self._requires_behaviour_processing(event):
+                                behaviour_processed = 1
                             connection.execute("""UPDATE round_observation_inbox
-                                SET event_json=?,observation_json=?,received_at=?,updated_at=?,rules_processed=?
+                                SET event_json=?,observation_json=?,received_at=?,updated_at=?,rules_processed=?,
+                                    behaviour_processed=?
                                 WHERE observation_id=?""",
-                                (event_json, observation_json, received_at, now, rules_processed, observation_id))
+                                (event_json, observation_json, received_at, now, rules_processed,
+                                 behaviour_processed, observation_id))
                             pending_bytes += event_bytes - prior_bytes
                             accepted.append(event)
                         else:
@@ -271,11 +414,13 @@ class RoundObservationInbox:
                             f"round observation inbox capacity reached ({pending_records}/{self.max_records} records, "
                             f"{pending_bytes}/{self.max_bytes} bytes); no event was discarded")
                     rules_processed = int(not self._requires_rule_processing(event))
+                    behaviour_processed = int(not self._requires_behaviour_processing(event))
                     connection.execute("""INSERT INTO round_observation_inbox
-                        (observation_id,round_id,event_json,observation_json,received_at,updated_at,rules_processed)
-                        VALUES(?,?,?,?,?,?,?)""",
+                        (observation_id,round_id,event_json,observation_json,received_at,updated_at,
+                         rules_processed,behaviour_processed)
+                        VALUES(?,?,?,?,?,?,?,?)""",
                         (observation_id, round_id, event_json, observation_json, received_at, now,
-                         rules_processed))
+                         rules_processed, behaviour_processed))
                     pending_records += 1
                     pending_bytes += event_bytes
                     accepted.append(event)
@@ -327,6 +472,106 @@ class RoundObservationInbox:
                 event["delivery_mode"] = "RECOVERED"
         return events
 
+    def pending_behaviour_events(self, *, limit: int = 100, stream_id: str | None = None,
+                                 now: float | None = None) -> list[tuple[str, dict[str, Any]]]:
+        """Read ordered, durable LIVE rounds awaiting the independent Behaviour projection."""
+        bounded = min(max(int(limit), 1), 500)
+        current = time.time() if now is None else float(now)
+        connection = self._connect()
+        try:
+            row = connection.execute("""SELECT current.observation_id,current.event_json,
+                    current.received_at,current.behaviour_next_attempt_at,
+                    (SELECT MAX(CAST(json_extract(later.event_json,'$.round_index') AS INTEGER))
+                     FROM round_observation_inbox AS later
+                     WHERE json_extract(later.event_json,'$.stream_id')=
+                               json_extract(current.event_json,'$.stream_id')
+                       AND COALESCE(json_extract(later.event_json,'$.event_type'),'')='round.observed'
+                       AND COALESCE(json_extract(later.event_json,'$.durability'),'')='PENDING'
+                       AND COALESCE(json_extract(later.event_json,'$.continuity_status'),'')
+                               IN ('VERIFIED','GAP_BEFORE')
+                       AND UPPER(COALESCE(json_extract(later.event_json,'$.delivery_mode'),''))
+                               IN ('LIVE','RECOVERED')) AS latest_verified_round_index
+                FROM round_observation_inbox AS current
+                WHERE current.behaviour_processed=0
+                  AND COALESCE(json_extract(current.event_json,'$.event_type'),'')='round.observed'
+                  AND COALESCE(json_extract(current.event_json,'$.durability'),'')='PENDING'
+                  AND COALESCE(json_extract(current.event_json,'$.continuity_status'),'') IN ('VERIFIED','GAP_BEFORE')
+                  AND UPPER(COALESCE(json_extract(current.event_json,'$.delivery_mode'),'')) IN ('LIVE','RECOVERED')
+                  AND (? IS NULL OR json_extract(current.event_json,'$.stream_id')=?)
+                ORDER BY CAST(json_extract(current.event_json,'$.round_index') AS INTEGER),
+                         current.inbox_sequence LIMIT 1""", (stream_id, stream_id)).fetchone()
+        finally:
+            connection.close()
+        if row is None or float(row["behaviour_next_attempt_at"] or 0) > current:
+            return []
+        event = json.loads(row["event_json"])
+        event["journal_received_at"] = row["received_at"]
+        event["latest_verified_round_index"] = int(row["latest_verified_round_index"]
+            or event.get("round_index") or 0)
+        return [(str(row["observation_id"]), event)]
+
+    def mark_behaviour_processed(self, observation_id: str) -> bool:
+        connection = self._connect()
+        try:
+            cursor = connection.execute("""UPDATE round_observation_inbox
+                SET behaviour_processed=1,behaviour_last_error=NULL,updated_at=?
+                WHERE observation_id=? AND behaviour_processed=0""",
+                (datetime.now(timezone.utc).isoformat(), str(observation_id)))
+            return cursor.rowcount > 0
+        finally:
+            connection.close()
+
+    def reconcile_behaviour_checkpoint(self, *, stream_id: str, round_id: str,
+                                       round_index: int) -> int:
+        """Ack retained events only through a round Behaviour proves it already has."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("""SELECT inbox_sequence FROM round_observation_inbox
+                WHERE round_id=? AND CAST(json_extract(event_json,'$.round_index') AS INTEGER)=?
+                  AND json_extract(event_json,'$.stream_id')=? LIMIT 1""",
+                (str(round_id), int(round_index), str(stream_id))).fetchone()
+            if row is None:
+                connection.execute("COMMIT")
+                return 0
+            cursor = connection.execute("""UPDATE round_observation_inbox
+                SET behaviour_processed=1,behaviour_last_error=NULL,updated_at=?
+                WHERE inbox_sequence<=? AND json_extract(event_json,'$.stream_id')=?
+                  AND behaviour_processed=0""",
+                (datetime.now(timezone.utc).isoformat(), int(row["inbox_sequence"]), str(stream_id)))
+            changed = int(cursor.rowcount)
+            connection.execute("COMMIT")
+            return changed
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
+    def defer_behaviour_event(self, observation_id: str, error: str) -> int:
+        """Persist retry state with bounded backoff; never block other consumers."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT behaviour_attempts FROM round_observation_inbox "
+                                     "WHERE observation_id=?", (str(observation_id),)).fetchone()
+            if row is None:
+                connection.execute("COMMIT")
+                return 0
+            attempts = int(row["behaviour_attempts"] or 0) + 1
+            delay = min(30.0, 0.25 * (2 ** min(attempts - 1, 7)))
+            connection.execute("""UPDATE round_observation_inbox SET behaviour_attempts=?,
+                behaviour_next_attempt_at=?,behaviour_last_error=?,updated_at=?
+                WHERE observation_id=?""", (attempts, time.time() + delay,
+                str(error)[:160], datetime.now(timezone.utc).isoformat(), str(observation_id)))
+            connection.execute("COMMIT")
+            return attempts
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
     def pending_rule_events_page(self, *, after_sequence: int = 0,
                                  limit: int = 500) -> dict[str, Any]:
         """Return unprocessed verified observations for ordered crash recovery."""
@@ -335,7 +580,9 @@ class RoundObservationInbox:
         connection = self._connect()
         try:
             rows = connection.execute("""SELECT inbox_sequence,event_json FROM round_observation_inbox
-                WHERE status='PENDING' AND rules_processed=0 AND inbox_sequence>?
+                WHERE rules_processed=0 AND (status='PENDING'
+                    OR (status='COMMITTED' AND committed_rules_processed=0))
+                  AND inbox_sequence>?
                 ORDER BY inbox_sequence LIMIT ?""", (cursor, bounded + 1)).fetchall()
         finally:
             connection.close()
@@ -396,7 +643,7 @@ class RoundObservationInbox:
                 connection.execute("BEGIN IMMEDIATE")
                 connection.executemany("""UPDATE round_observation_inbox
                     SET rules_processed=1,updated_at=?
-                    WHERE observation_id=? AND status='PENDING' AND rules_processed=0""",
+                    WHERE observation_id=? AND rules_processed=0""",
                     [(now, str(observation_id)) for stage, observation_id in receipts
                      if stage == "observed"])
                 connection.executemany("""UPDATE round_observation_inbox
@@ -475,6 +722,37 @@ class RoundObservationInbox:
         if len(identities) != 1:
             return None
         return events[-1]
+
+    def latest_pending_verified_round(self) -> dict[str, Any] | None:
+        """Return the newest verified live observation from the API inbox."""
+        connection = self._connect()
+        try:
+            row = connection.execute("""SELECT event_json FROM round_observation_inbox
+                WHERE status='PENDING'
+                  AND json_extract(event_json, '$.event_type')='round.observed'
+                  AND json_extract(event_json, '$.durability')='PENDING'
+                  AND json_extract(event_json, '$.continuity_status')='VERIFIED'
+                  AND json_extract(event_json, '$.delivery_mode')='LIVE'
+                ORDER BY inbox_sequence DESC LIMIT 1""").fetchone()
+        finally:
+            connection.close()
+        return json.loads(row["event_json"]) if row else None
+
+    def latest_verified_round_event(self) -> dict[str, Any] | None:
+        """Return the latest API round whether pending or just committed."""
+        connection = self._connect()
+        try:
+            row = connection.execute("""SELECT event_json,committed_event_json,status
+                FROM round_observation_inbox ORDER BY inbox_sequence DESC LIMIT 1""").fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        event = json.loads(row["committed_event_json"] or row["event_json"])
+        if (event.get("continuity_status") != "VERIFIED"
+                or str(event.get("delivery_mode") or "").upper() != "LIVE"):
+            return None
+        return event
 
     def pending_page(self, *, after_sequence: int = 0, limit: int = 100,
                      observation_id: str | None = None, recovered: bool = True) -> dict[str, Any]:
@@ -645,6 +923,7 @@ class RoundObservationInbox:
                     if cutoff > 0:
                         connection.execute("""DELETE FROM round_observation_inbox
                             WHERE status='COMMITTED' AND committed_rules_processed=1
+                              AND behaviour_processed=1
                               AND inbox_sequence<=?""", (cutoff,))
                 connection.execute("COMMIT")
             except Exception:
@@ -664,6 +943,23 @@ class RoundObservationInbox:
             committed_pending = connection.execute("""SELECT COUNT(*) AS n
                 FROM round_observation_inbox WHERE status='COMMITTED'
                   AND committed_rules_processed=0""").fetchone()
+            behaviour_pending = connection.execute("""SELECT COUNT(*) AS n
+                FROM round_observation_inbox WHERE behaviour_processed=0
+                  AND COALESCE(json_extract(event_json,'$.event_type'),'')='round.observed'
+                  AND COALESCE(json_extract(event_json,'$.durability'),'')='PENDING'
+                  AND COALESCE(json_extract(event_json,'$.continuity_status'),'') IN ('VERIFIED','GAP_BEFORE')
+                  AND UPPER(COALESCE(json_extract(event_json,'$.delivery_mode'),'')) IN ('LIVE','RECOVERED')""").fetchone()
+            rules_observed_pending = connection.execute("""SELECT COUNT(*) AS n
+                FROM round_observation_inbox WHERE rules_processed=0
+                  AND status='PENDING'
+                  AND COALESCE(json_extract(event_json,'$.event_type'),'')='round.observed'
+                  AND COALESCE(json_extract(event_json,'$.durability'),'')='PENDING'""").fetchone()
+            behaviour_checkpoint = connection.execute("""SELECT MAX(inbox_sequence) AS n
+                FROM round_observation_inbox WHERE behaviour_processed=1""").fetchone()
+            rules_checkpoint = connection.execute("""SELECT MAX(inbox_sequence) AS n
+                FROM round_observation_inbox WHERE rules_processed=1""").fetchone()
+            latest_inbox_sequence = connection.execute("""SELECT COALESCE(MAX(inbox_sequence),0) AS n
+                FROM round_observation_inbox""").fetchone()
         finally:
             connection.close()
         oldest = oldest_row["oldest_received_at"]
@@ -685,4 +981,10 @@ class RoundObservationInbox:
             "oldest_pending_observation_received_at": oldest,
             "retained_tombstones": int(total["n"] or 0) - int(counters["pending_records"] or 0),
             "committed_rules_pending": int(committed_pending["n"] or 0),
+            "rules_observed_pending": int(rules_observed_pending["n"] or 0),
+            "behaviour_pending": int(behaviour_pending["n"] or 0),
+            "behaviour_checkpoint": int(behaviour_checkpoint["n"] or 0),
+            "rules_checkpoint": int(rules_checkpoint["n"] or 0),
+            "latest_inbox_sequence": int(latest_inbox_sequence["n"] or 0),
+            "checkpoint_namespace": "LOCAL_SQLITE_INBOX_SEQUENCE_NOT_CANONICAL_ROUND_INDEX",
         }

@@ -36,12 +36,6 @@ class SystemOrchestrator:
         observation_monitor = getattr(self.app.state, "collector_observation_monitor", None)
         if observation_monitor is not None:
             self.tasks.append(self._task(observation_monitor(self.app), "collector-direct-observations"))
-        operations_monitor = getattr(self.app.state, "operations_monitor", None)
-        if operations_monitor is not None:
-            self.tasks.append(self._task(operations_monitor(self.app), "operations-monitor"))
-        balance_monitor = getattr(self.app.state, "platform_balance_monitor", None)
-        if balance_monitor is not None:
-            self.tasks.append(self._task(balance_monitor(self.app), "platform-balance"))
         self.started = True
 
     @staticmethod
@@ -74,17 +68,13 @@ class SystemOrchestrator:
                 pass
         self.tasks.clear()
         try:
-            await self.app.state.betting.shutdown()
-        except Exception:
-            log.exception("betting shutdown failed")
-        try:
             await self.app.state.history_collector.stop()
         except Exception:
             log.exception("history collector shutdown failed")
         self.started = False
 
     async def observe(self) -> dict:
-        """Ensure history observation is running without enabling betting."""
+        """Ensure history observation is running without starting SHADOW sessions."""
         return await self.app.state.history_collector.start()
 
     def status(self) -> dict:

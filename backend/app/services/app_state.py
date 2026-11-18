@@ -85,7 +85,7 @@ class AppState:
                 "round_id": str(getattr(row, "round_id", row.round_index)),
                 "multiplier": float(row.multiplier),
                 "timestamp": row.timestamp,
-                "target": int(float(row.multiplier) >= 2.0),
+                "target": int(float(row.multiplier) > 2.0),
             }
             for row in self.rounds.itertuples(index=False)
         ])

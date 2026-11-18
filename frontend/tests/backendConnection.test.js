@@ -78,3 +78,13 @@ test('prolonged initial failure is distinct from recovery after an established c
   }
   assert.equal(store.getBackendSnapshot().state, 'DISCONNECTED');
 });
+
+test('HTTP overload responses do not mark a reachable backend as disconnected', async () => {
+  const store = await loadConnectionStore(async () => healthyResponse());
+  assert.equal(store.shouldProbeBackendAfterRequestFailure({ response: { status: 503 } }), false);
+  assert.equal(store.shouldProbeBackendAfterRequestFailure({ response: { status: 500 } }), false);
+  assert.equal(store.shouldProbeBackendAfterRequestFailure({ response: { status: 502 } }), true);
+  assert.equal(store.shouldProbeBackendAfterRequestFailure({ response: { status: 504 } }), true);
+  assert.equal(store.shouldProbeBackendAfterRequestFailure({ code: 'ERR_NETWORK' }), true);
+  assert.equal(store.shouldProbeBackendAfterRequestFailure({ code: 'ERR_BACKEND_RECONNECTING' }), false);
+});

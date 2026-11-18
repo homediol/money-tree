@@ -1,0 +1,115 @@
+name: advanced-crash-behaviour
+
+services:
+  behaviour-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${BEHAVIOUR_DB_NAME:-behaviour_detection}
+      POSTGRES_USER: ${BEHAVIOUR_DB_USER:-behaviour_user}
+      POSTGRES_PASSWORD: ${BEHAVIOUR_DB_PASSWORD:?Run behaviour:setup to generate its independent database credential}
+    volumes:
+      - behaviour-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${BEHAVIOUR_DB_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BEHAVIOUR_DB_USER:-behaviour_user} -d ${BEHAVIOUR_DB_NAME:-behaviour_detection}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks: [behaviour-private]
+
+  behaviour-api:
+    build:
+      context: ./behaviour_detection
+    command: ["uvicorn", "behaviour_detection.api:app", "--host", "0.0.0.0", "--port", "8100"]
+    environment:
+      BEHAVIOUR_DB_NAME: ${BEHAVIOUR_DB_NAME:-behaviour_detection}
+      BEHAVIOUR_DB_USER: ${BEHAVIOUR_DB_USER:-behaviour_user}
+      BEHAVIOUR_DB_PASSWORD: ${BEHAVIOUR_DB_PASSWORD:?Run behaviour:setup to generate its independent database credential}
+      BEHAVIOUR_DB_HOST: behaviour-db
+      BEHAVIOUR_DB_PORT: 5432
+      BEHAVIOUR_API_HOST: 0.0.0.0
+      BEHAVIOUR_API_PORT: 8100
+      # The API gets only the non-secret endpoint to distinguish configured
+      # Orbit from missing collector health. The API key remains collector-only.
+      BEHAVIOUR_ORBIT_API_BASE_URL: ${BEHAVIOUR_ORBIT_CONTAINER_API_BASE_URL:-${BEHAVIOUR_ORBIT_API_BASE_URL:-}}
+      BEHAVIOUR_CORS_ORIGINS: ${BEHAVIOUR_CORS_ORIGINS:-["http://localhost:5173","http://localhost:5174","http://127.0.0.1:5173","http://127.0.0.1:5174"]}
+      BEHAVIOUR_LOG_LEVEL: ${BEHAVIOUR_LOG_LEVEL:-INFO}
+    ports:
+      - "127.0.0.1:${BEHAVIOUR_API_PORT:-8100}:8100"
+    depends_on:
+      behaviour-db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [behaviour-private]
+
+  behaviour-worker:
+    build:
+      context: ./behaviour_detection
+    command: ["python", "-m", "behaviour_detection.cli", "worker-run"]
+    environment:
+      BEHAVIOUR_DB_NAME: ${BEHAVIOUR_DB_NAME:-behaviour_detection}
+      BEHAVIOUR_DB_USER: ${BEHAVIOUR_DB_USER:-behaviour_user}
+      BEHAVIOUR_DB_PASSWORD: ${BEHAVIOUR_DB_PASSWORD:?Run behaviour:setup to generate its independent database credential}
+      BEHAVIOUR_DB_HOST: behaviour-db
+      BEHAVIOUR_DB_PORT: 5432
+      BEHAVIOUR_LOG_LEVEL: ${BEHAVIOUR_LOG_LEVEL:-INFO}
+    depends_on:
+      behaviour-db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [behaviour-private]
+
+  behaviour-collector:
+    build:
+      context: ./behaviour_detection
+    command: ["python", "-m", "behaviour_detection.cli", "collector-run"]
+    environment:
+      BEHAVIOUR_DB_NAME: ${BEHAVIOUR_DB_NAME:-behaviour_detection}
+      BEHAVIOUR_DB_USER: ${BEHAVIOUR_DB_USER:-behaviour_user}
+      BEHAVIOUR_DB_PASSWORD: ${BEHAVIOUR_DB_PASSWORD:?Run behaviour:setup to generate its independent database credential}
+      BEHAVIOUR_DB_HOST: behaviour-db
+      BEHAVIOUR_DB_PORT: 5432
+      BEHAVIOUR_ORBIT_API_BASE_URL: ${BEHAVIOUR_ORBIT_CONTAINER_API_BASE_URL:-${BEHAVIOUR_ORBIT_API_BASE_URL:-}}
+      BEHAVIOUR_ORBIT_API_KEY: ${BEHAVIOUR_ORBIT_API_KEY:-}
+      BEHAVIOUR_ORBIT_WATCH_ID: ${BEHAVIOUR_ORBIT_WATCH_ID:-}
+      BEHAVIOUR_ORBIT_POLL_SECONDS: ${BEHAVIOUR_ORBIT_POLL_SECONDS:-2}
+      BEHAVIOUR_ORBIT_PAGE_SIZE: ${BEHAVIOUR_ORBIT_PAGE_SIZE:-100}
+      BEHAVIOUR_ORBIT_CONNECT_TIMEOUT_SECONDS: ${BEHAVIOUR_ORBIT_CONNECT_TIMEOUT_SECONDS:-5}
+      BEHAVIOUR_ORBIT_REQUEST_TIMEOUT_SECONDS: ${BEHAVIOUR_ORBIT_REQUEST_TIMEOUT_SECONDS:-15}
+      BEHAVIOUR_LOG_LEVEL: ${BEHAVIOUR_LOG_LEVEL:-INFO}
+    depends_on:
+      behaviour-db:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: [orbit]
+    networks: [behaviour-private]
+
+  behaviour-import:
+    build:
+      context: ./behaviour_detection
+    command: ["python", "-m", "behaviour_detection.cli", "import-history", "--research-root", "/research"]
+    environment:
+      BEHAVIOUR_DB_NAME: ${BEHAVIOUR_DB_NAME:-behaviour_detection}
+      BEHAVIOUR_DB_USER: ${BEHAVIOUR_DB_USER:-behaviour_user}
+      BEHAVIOUR_DB_PASSWORD: ${BEHAVIOUR_DB_PASSWORD:?Run behaviour:setup to generate its independent database credential}
+      BEHAVIOUR_DB_HOST: behaviour-db
+      BEHAVIOUR_DB_PORT: 5432
+      BEHAVIOUR_IMPORT_BATCH_SIZE: ${BEHAVIOUR_IMPORT_BATCH_SIZE:-1000}
+    volumes:
+      - ./research_phase1_2026-11-13:/research:ro
+    depends_on:
+      behaviour-db:
+        condition: service_healthy
+    profiles: [import]
+    networks: [behaviour-private]
+
+volumes:
+  behaviour-postgres-data:
+    name: advanced-crash-behaviour-postgres-data
+
+networks:
+  behaviour-private:
+    name: advanced-crash-behaviour-private
+    driver: bridge

@@ -4,6 +4,7 @@ import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -11,11 +12,14 @@ import math
 import os
 import sqlite3
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Mapping
+from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -27,15 +31,14 @@ from fastapi.responses import JSONResponse
 from starlette.requests import ClientDisconnect
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import betting as betting_api, history, health, results, shadow
-from app.api import live as live_api, operations as operations_api, recovery as recovery_api
-from app.api import betting_mode as betting_mode_api, stability as stability_api
+from app.api import history, health, shadow
+from app.api import stability as stability_api
 from app.api import round_distribution as round_distribution_api
 from app.api import rules_engine as rules_engine_api
 from app.api import signals as signals_api
 from app.api import developer_console as developer_console_api
-from app.betting.config import get_betting_settings
-from app.betting.session import BettingManager, configure_default_manager
+from app.api import adie as adie_api
+from app.adie_engine import ADIEEngine
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.runtime import InstanceLock
@@ -43,16 +46,10 @@ from app.services.app_state import AppState
 from app.services.monitoring_engine import MonitoringEngine
 from app.services.system_health import SystemHealth
 from app.services.system_orchestrator import SystemOrchestrator
-from app.services.betting_mode import BettingModeManager
-from app.services.decision_dispatcher import DecisionDispatcher
 from app.services.shadow_signal_bridge import ShadowSignalBridge
+from app.services.request_admission import ApiRequestAdmission
 from app.shadow import ShadowManager
 from app.history_collector import HistoryCollectorManager
-from app.reconciliation import ReconciliationService
-from app.live import LiveActivationManager
-from app.services.operations import OperationsManager
-from app.services.disaster_recovery import DisasterRecoveryManager
-from app.services.emergency_stop import EmergencyStop
 from app.services.process_lifecycle import ProcessLifecycle
 from app.round_distribution import RoundDistributionHub
 from app.api.round_distribution import observed_round_event
@@ -60,10 +57,179 @@ from app.round_observation_inbox import (
     ObservationIdentityConflict, ObservationInboxCapacityError, RoundObservationInbox,
     run_round_observation_inbox,
 )
-from app.rules_engine import RulesEngine
+from app.rules_engine import RULE_PERFORMANCE_CHECKPOINT_ID, RulesEngine
 
 configure_logging()
 log = get_logger("APP")
+
+
+async def _forward_live_round_to_behaviour(app: FastAPI, event: dict) -> bool:
+    """Deliver one durable hub event to Behaviour's idempotent local inbox."""
+    if (event.get("event_type") != "round.observed"
+            or event.get("durability") != "PENDING"
+            or event.get("continuity_status") not in {"VERIFIED", "GAP_BEFORE"}
+            or str(event.get("delivery_mode") or "").upper() not in {"LIVE", "RECOVERED"}
+            or str(event.get("round_uid") or event.get("round_id") or "")
+                != str(event.get("round_id") or "")):
+        return True
+    started = time.perf_counter()
+    base_url = os.getenv("BEHAVIOUR_API_URL", "http://127.0.0.1:8100").rstrip("/")
+    boundary = getattr(app.state, "behaviour_live_boundary_at", None)
+    behaviour_provenance, recovery_reason = _behaviour_event_provenance(event, boundary)
+    event = {**event, "behaviour_provenance": behaviour_provenance,
+             "behaviour_recovery_reason": recovery_reason}
+    request = urllib.request.Request(
+        base_url + "/internal/round-observed",
+        data=json.dumps(event, separators=(",", ":")).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with await asyncio.to_thread(urllib.request.urlopen, request, timeout=2.5) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        log.info("[BEHAVIOUR_API_ROUND] round_id=%s status=%s inbox_status=%s promoted=%s elapsed_ms=%.1f",
+                 event.get("round_id"), result.get("status"), result.get("inbox_status"),
+                 result.get("promoted"), elapsed_ms)
+        return bool(result.get("ok")) and result.get("status") in {"STAGED", "DUPLICATE"}
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            detail = {"error": "behaviour_api_http_error"}
+        log.info("[BEHAVIOUR_API_ROUND] rejected round_id=%s status=%s detail=%s elapsed_ms=%.1f",
+                 event.get("round_id"), exc.code, detail.get("detail", detail),
+                 (time.perf_counter() - started) * 1000.0)
+        return False
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        log.info("[BEHAVIOUR_API_ROUND] deferred round_id=%s error=%s elapsed_ms=%.1f",
+                 event.get("round_id"), type(exc).__name__, elapsed_ms)
+        return False
+
+
+def _trusted_live_round_after_boundary(event: dict, boundary: str | None) -> bool:
+    """Require source-side Orbit timing as well as post-boundary journal receipt.
+
+    A round can be delivered to the backend after startup while still being an
+    old outbox replay. The collector's source reading and receipt timestamps
+    distinguish that case from a fresh authenticated SSE observation.
+    """
+    from datetime import datetime, timezone
+
+    metadata = event.get("source_metadata")
+    if (not isinstance(metadata, dict)
+            or metadata.get("source") != "ORBIT_DATA_WATCH_API"
+            or str(event.get("delivery_mode") or "").upper() != "LIVE"):
+        return False
+
+    def parse(value):
+        try:
+            result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        return result.astimezone(timezone.utc) if result.tzinfo is not None else None
+
+    boundary_at = parse(boundary)
+    journal_at = parse(event.get("journal_received_at"))
+    collector_at = parse(metadata.get("collector_received_at"))
+    reading_at = parse(metadata.get("reading_checked_at"))
+    return bool(boundary_at and journal_at and collector_at and reading_at
+                and journal_at >= boundary_at and collector_at >= boundary_at
+                and reading_at >= boundary_at)
+
+
+def _behaviour_event_provenance(event: dict, boundary: str | None) -> tuple[str, str | None]:
+    """Only the newest verified event in the durable inbox can create future intent."""
+    try:
+        behind_latest = (int(event.get("latest_verified_round_index") or 0)
+                         > int(event.get("round_index") or 0))
+    except (TypeError, ValueError, OverflowError):
+        behind_latest = True
+    live = (not behind_latest
+        and event.get("continuity_status") == "VERIFIED"
+        and str(event.get("delivery_mode") or "").upper() == "LIVE"
+        and _trusted_live_round_after_boundary(event, boundary))
+    if live:
+        return "LIVE_VERIFIED", None
+    return "RECOVERY_REPLAY", ("BACKLOG_AHEAD_OF_DECISION" if behind_latest else
+                                "LIVE_BOUNDARY_OR_PROVENANCE_UNVERIFIED")
+
+
+async def _run_behaviour_round_consumer(app: FastAPI) -> None:
+    """Replay the durable verified-round inbox to Behaviour independently of Rules/PG."""
+    inbox = getattr(app.state, "round_observation_inbox", None)
+    if inbox is None:
+        return
+    wakeup = app.state.behaviour_round_wakeup
+    while True:
+        stream_id = str(getattr(app.state, "round_stream_id", "") or "") or None
+        pending = await asyncio.to_thread(inbox.pending_behaviour_events, limit=1,
+                                          stream_id=stream_id)
+        if not pending:
+            try:
+                await asyncio.wait_for(wakeup.wait(), timeout=0.5)
+            except asyncio.TimeoutError:
+                pass
+            wakeup.clear()
+            continue
+        observation_id, event = pending[0]
+        try:
+            delivery_started = time.perf_counter()
+            delivered = await _forward_live_round_to_behaviour(app, event)
+            if delivered:
+                await asyncio.to_thread(inbox.mark_behaviour_processed, observation_id)
+                app.state.behaviour_round_last_delivered_at = datetime.now(timezone.utc).isoformat()
+                app.state.behaviour_round_last_delivered_id = str(event.get("round_uid") or event.get("round_id"))
+                app.state.behaviour_round_last_delivery_ms = round(
+                    (time.perf_counter() - delivery_started) * 1000.0, 3)
+                app.state.behaviour_round_last_error = None
+                continue
+            attempts = await asyncio.to_thread(inbox.defer_behaviour_event, observation_id,
+                                               "behaviour_inbox_not_acknowledged")
+            app.state.behaviour_round_last_error = "behaviour_inbox_not_acknowledged"
+            log.warning("[BEHAVIOUR_HUB_DELIVERY] deferred round_uid=%s attempts=%s",
+                        event.get("round_uid") or event.get("round_id"), attempts)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            attempts = await asyncio.to_thread(inbox.defer_behaviour_event, observation_id,
+                                               type(exc).__name__)
+            app.state.behaviour_round_last_error = type(exc).__name__
+            log.exception("[BEHAVIOUR_HUB_DELIVERY] consumer failed round_uid=%s attempts=%s",
+                          event.get("round_uid") or event.get("round_id"), attempts)
+        # Preserve per-round ordering: don't pass a failed event until its retry is due.
+        await asyncio.sleep(0)
+
+
+async def _reconcile_behaviour_round_checkpoint(app: FastAPI) -> int:
+    """Skip only inbox events covered by Behaviour's own durable contiguous checkpoint."""
+    inbox = getattr(app.state, "round_observation_inbox", None)
+    stream_id = str(getattr(app.state, "round_stream_id", "") or "")
+    if inbox is None or not stream_id:
+        return 0
+    base_url = os.getenv("BEHAVIOUR_API_URL", "http://127.0.0.1:8100").rstrip("/")
+    url = base_url + "/internal/round-checkpoint?stream_id=" + urllib.parse.quote(stream_id, safe="")
+
+    def fetch_checkpoint():
+        request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        checkpoint = await asyncio.to_thread(fetch_checkpoint)
+        if checkpoint.get("stream_id") != stream_id or not checkpoint.get("round_id"):
+            return 0
+        reconciled = await asyncio.to_thread(inbox.reconcile_behaviour_checkpoint,
+            stream_id=stream_id, round_id=str(checkpoint["round_id"]),
+            round_index=int(checkpoint["round_index"]))
+        if reconciled:
+            log.info("[BEHAVIOUR_HUB_REPLAY] reconciled prior inbox events=%s checkpoint=%s/%s",
+                     reconciled, checkpoint["round_index"], checkpoint["round_id"])
+        return reconciled
+    except Exception as exc:
+        # No checkpoint means replay remains pending and idempotent; never
+        # discard retained events just because Behaviour is temporarily offline.
+        log.info("[BEHAVIOUR_HUB_REPLAY] prior checkpoint unavailable error=%s", type(exc).__name__)
+        return 0
 
 
 class ConnectionManager:
@@ -94,6 +260,7 @@ manager = ConnectionManager()
 # fills. Keep the volatile queue deliberately small so overload is surfaced as
 # backpressure instead of hiding minutes of signal delay in RAM.
 ROUND_EVENT_QUEUE_CAPACITY = 512
+ROUND_COMMITTED_BRIDGE_QUEUE_CAPACITY = ROUND_EVENT_QUEUE_CAPACITY * 4
 RULES_DASHBOARD_NOTIFICATION_QUEUE_CAPACITY = 256
 RULES_STATE_PERSISTENCE_QUEUE_CAPACITY = 512
 ROUND_HISTORY_ANALYTICS_MIN_INTERVAL_SECONDS = 15.0
@@ -280,6 +447,19 @@ def _rules_state_persistence_queue(app: FastAPI):
     return queue
 
 
+def _committed_bridge_queue(app: FastAPI):
+    """Keep committed settlement work off the latency-sensitive round worker."""
+    queue = getattr(app.state, "committed_bridge_queue", None)
+    if queue is None:
+        queue = asyncio.Queue(maxsize=ROUND_COMMITTED_BRIDGE_QUEUE_CAPACITY)
+        app.state.committed_bridge_queue = queue
+    task = getattr(app.state, "committed_bridge_task", None)
+    if task is None or task.done():
+        app.state.committed_bridge_task = asyncio.create_task(
+            _run_committed_bridge_processor(app), name="committed-shadow-bridge-worker")
+    return queue
+
+
 def _remember_collector_detection_timestamps(app: FastAPI, events: list[dict], *,
                                              peer_is_loopback: bool) -> None:
     """Retain local collector detection epochs for post-commit end-to-end timing."""
@@ -291,6 +471,24 @@ def _remember_collector_detection_timestamps(app: FastAPI, events: list[dict], *
         app.state.collector_detection_timestamps = timestamps
     for event in events:
         round_id = str(event.get("round_id") or "")
+        source_metadata = event.get("source_metadata")
+        if isinstance(source_metadata, Mapping) and source_metadata.get("source") == "ORBIT_DATA_WATCH_API":
+            # Orbit checkedAt is a page-check timestamp, not a verified
+            # collector detection timestamp. Do not manufacture an E2E sample.
+            receipt = source_metadata.get("collector_received_at")
+            try:
+                parsed_receipt = datetime.fromisoformat(str(receipt).replace("Z", "+00:00"))
+                if round_id and parsed_receipt.tzinfo is not None:
+                    receipts = getattr(app.state, "collector_receipt_timestamps", None)
+                    if receipts is None:
+                        receipts = {}
+                        app.state.collector_receipt_timestamps = receipts
+                    receipts.setdefault(round_id, receipt)
+                    while len(receipts) > ROUND_EVENT_QUEUE_CAPACITY:
+                        receipts.pop(next(iter(receipts)))
+            except (ValueError, TypeError, OverflowError):
+                pass
+            continue
         observed_at = event.get("observed_at")
         if not round_id or not isinstance(observed_at, str):
             continue
@@ -448,7 +646,8 @@ async def _recover_pending_observed_rounds(app: FastAPI) -> int:
 
 
 def _target_already_completed(event: dict, marker: tuple | None) -> bool:
-    if str(event.get("delivery_mode") or "LIVE").upper() != "LIVE" or marker is None:
+    if (str(event.get("delivery_mode") or "LIVE").upper() != "LIVE"
+            or event.get("continuity_status") != "VERIFIED" or marker is None):
         return True
     try:
         return int(marker[0]) >= int(event.get("round_index") or 0) + 1
@@ -456,62 +655,165 @@ def _target_already_completed(event: dict, marker: tuple | None) -> bool:
         return True
 
 
+def _has_round_event_consumers(engine: Any, stage: str) -> bool:
+    """Include the report-only observer for commits without changing engine adapters."""
+    has_consumers = bool(engine.has_round_event_consumers())
+    return has_consumers or (
+        stage == "committed"
+        and getattr(engine, "_performance_observer_enabled", False) is True
+    )
+
+
 async def _process_round_event(app: FastAPI, stage: str, event: dict,
                                enqueued_ns: int, request_started_ns: int | None,
                                validation_finished_ns: int | None,
-                               worker_started_ns: int | None = None) -> tuple[bool, set[str]]:
+                               worker_started_ns: int | None = None) -> tuple[bool, set[str], dict | None]:
     engine = getattr(app.state, "rules_engine", None)
     repository = getattr(getattr(app.state, "wp", None), "repository", None)
     if engine is None or repository is None:
         raise RuntimeError("round event processor dependencies are unavailable")
+    # ADIE consumes the same durable, ordered observed stream as SHADOW rules.
+    # Its isolated worker and error boundary ensure a research failure cannot
+    # change the existing Rules Engine decision or its collector handoff.
+    if stage in {"observed", "committed"}:
+        adie = getattr(app.state, "adie_engine", None)
+        if adie is not None and adie.ready:
+            try:
+                executor = getattr(app.state, "adie_executor", None)
+                adie_event = dict(event)
+
+                def process_adie_event():
+                    # A queued ADIE operation may run after a later round has
+                    # already settled. Preserve the context record, but never
+                    # allow a late worker to create a backdated forecast.
+                    source_index = adie_event.get("round_index")
+                    marker = getattr(app.state, "latest_committed_round_marker", None)
+                    try:
+                        adie_event["adie_target_already_completed"] = (
+                            marker is not None and int(marker[0]) >= int(source_index) + 1)
+                    except (TypeError, ValueError, OverflowError):
+                        adie_event["adie_target_already_completed"] = True
+                    started = time.perf_counter_ns()
+                    result = adie.process_observed(adie_event, recovery=(stage == "committed"))
+                    return result, (time.perf_counter_ns() - started) / 1_000_000.0
+
+                loop = asyncio.get_running_loop()
+                future = (loop.run_in_executor(executor, process_adie_event)
+                          if executor is not None else asyncio.to_thread(process_adie_event))
+
+                def report_adie_result(done):
+                    try:
+                        result, duration_ms = done.result()
+                        selected = result.get("selected") if isinstance(result, dict) else None
+                        if selected:
+                            log.info("[ADIE_FORECAST_LOCKED] forecast_id=%s round_id=%s target=%s..%s status=%s",
+                                     selected["forecast_id"], event.get("round_id"),
+                                     selected["target_start_position"],
+                                     selected["target_end_position"],
+                                     selected["selection_status"])
+                        if duration_ms >= 1000:
+                            log.warning("[ADIE_ROUND_PROCESSING] stage=%s round_id=%s duration_ms=%.1f late_target=%s",
+                                        stage, event.get("round_id"), duration_ms,
+                                        bool(adie_event.get("adie_target_already_completed")))
+                    except Exception:
+                        log.exception("[ADIE] observed event processing failed; existing SHADOW path continues round_id=%s",
+                                      event.get("round_id"))
+
+                asyncio.ensure_future(future).add_done_callback(report_adie_result)
+            except Exception:
+                log.exception("[ADIE] observed event processing failed; existing SHADOW path continues round_id=%s",
+                              event.get("round_id"))
     if stage == "observed":
-        if event.get("continuity_status") != "VERIFIED":
-            return False, set()
+        if event.get("continuity_status") not in {"VERIFIED", "GAP_BEFORE"}:
+            return False, set(), None
         rules_executor = getattr(app.state, "round_processing_executor", None)
         if rules_executor is None:
-            has_consumers = await asyncio.to_thread(engine.has_round_event_consumers)
+            has_consumers = await asyncio.to_thread(_has_round_event_consumers,
+                                                   engine, stage)
         else:
             has_consumers = await asyncio.get_running_loop().run_in_executor(
-                rules_executor, engine.has_round_event_consumers)
+                rules_executor, partial(_has_round_event_consumers, engine, stage))
         if not has_consumers:
-            return False, set()
+            return False, set(), None
     elif stage == "committed":
         rules_executor = getattr(app.state, "round_processing_executor", None)
         if rules_executor is None:
-            has_consumers = await asyncio.to_thread(engine.has_round_event_consumers)
+            has_consumers = await asyncio.to_thread(_has_round_event_consumers,
+                                                   engine, stage)
         else:
             has_consumers = await asyncio.get_running_loop().run_in_executor(
-                rules_executor, engine.has_round_event_consumers)
+                rules_executor, partial(_has_round_event_consumers, engine, stage))
         if not has_consumers:
-            return False, set()
+            return False, set(), None
     correlation_id = str(event.get("correlation_id") or event.get("round_id") or "")
     event_stage_id = str(event.get("event_type") or stage)
     collector_detection_at = getattr(app.state, "collector_detection_timestamps", {}).get(
         correlation_id)
+    collector_receipt_at = getattr(app.state, "collector_receipt_timestamps", {}).get(correlation_id)
     worker_started_ns = (time.perf_counter_ns() if worker_started_ns is None
                          else worker_started_ns)
     marker_started_ns = time.perf_counter_ns()
     priority_executor = getattr(app.state, "signal_priority_executor", None)
-    if priority_executor is None:
+    metadata = event.get("source_metadata")
+    watch_observation = (stage == "observed" and isinstance(metadata, dict)
+                         and metadata.get("source") == "ORBIT_DATA_WATCH_API")
+    if watch_observation:
+        try:
+            observed = datetime.fromisoformat(str(event.get("observed_at") or "").replace("Z", "+00:00"))
+            received = datetime.fromisoformat(str(event.get("api_received_at") or "").replace("Z", "+00:00"))
+            if observed.tzinfo is None or received.tzinfo is None:
+                raise ValueError("missing timezone")
+            # Judge freshness when the API accepted the observation, not when
+            # this queued worker eventually evaluates it. A newer event may
+            # arrive while this one waits; that must not retroactively make a
+            # valid, ordered LIVE observation stale.
+            age = (received.astimezone(timezone.utc)
+                   - observed.astimezone(timezone.utc)).total_seconds()
+        except (ValueError, TypeError, OverflowError):
+            age = float("inf")
+        target_already_completed = (event.get("delivery_mode") != "LIVE"
+            or event.get("continuity_status") != "VERIFIED" or not -2 <= age <= 15)
+    elif stage == "committed":
+        # A committed round has already been durably written to PostgreSQL.
+        # Use the marker initialized at startup and advanced by the collector's
+        # commit transaction instead of making the ordered worker wait on a
+        # second PostgreSQL read. During DB stalls that redundant read used to
+        # block the only ordered worker and make live observed requests time out.
+        marker = getattr(app.state, "latest_committed_round_marker", None)
+        if marker is None:
+            marker = (await asyncio.to_thread(repository.latest_round_marker)
+                      if priority_executor is None else
+                      await asyncio.get_running_loop().run_in_executor(
+                          priority_executor, repository.latest_round_marker))
+        target_already_completed = _target_already_completed(event, marker)
+    elif priority_executor is None:
         marker = await asyncio.to_thread(repository.latest_round_marker)
+        target_already_completed = _target_already_completed(event, marker)
     else:
         marker = await asyncio.get_running_loop().run_in_executor(
             priority_executor, repository.latest_round_marker)
+        target_already_completed = _target_already_completed(event, marker)
     marker_finished_ns = time.perf_counter_ns()
-    target_already_completed = _target_already_completed(event, marker)
     received_ns = time.perf_counter_ns()
     received_at = datetime.now(timezone.utc).isoformat()
     rules_executor = getattr(app.state, "round_processing_executor", None)
+    performance_observer_deferred = (
+        stage == "committed"
+        and getattr(engine, "_performance_observer_enabled", False) is True
+        and callable(getattr(engine, "observe_rule_performance_round", None))
+    )
+    observe_kwargs = {
+        "target_already_completed": target_already_completed,
+        "defer_persistence": True,
+    }
+    if performance_observer_deferred:
+        observe_kwargs["defer_performance_observer"] = True
     if rules_executor is None:
         evaluation = await asyncio.to_thread(
-            engine.observe_round, event,
-            target_already_completed=target_already_completed,
-            defer_persistence=True)
+            engine.observe_round, event, **observe_kwargs)
     else:
         evaluation = await asyncio.get_running_loop().run_in_executor(
-            rules_executor, partial(engine.observe_round, event,
-                                    target_already_completed=target_already_completed,
-                                    defer_persistence=True))
+            rules_executor, partial(engine.observe_round, event, **observe_kwargs))
     persistence_session_ids = set(evaluation.pop("_deferred_persistence_session_ids", []))
     completed_ns = time.perf_counter_ns()
     hub = getattr(app.state, "round_distribution", None)
@@ -554,33 +856,41 @@ async def _process_round_event(app: FastAPI, stage: str, event: dict,
 
     bridge = getattr(app.state, "shadow_signal_bridge", None)
     observed_signal_accepted = False
+    committed_bridge_job = None
     if stage == "observed":
         if bridge is not None:
             bridge_result = await bridge.process_observed_round(
                 app, event, evaluation,
                 decision_started_ns=completed_ns,
                 backend_received_ns=request_started_ns,
-                collector_detection_at=collector_detection_at)
+                collector_detection_at=collector_detection_at, collector_receipt_at=collector_receipt_at)
             observed_signal_accepted = int(bridge_result.get("published") or 0) > 0
     else:
-        bridge_error = None
         if bridge is not None:
-            try:
-                await bridge.process_committed_round(
-                    app, event, evaluation,
-                    collector_detection_at=collector_detection_at)
-            except Exception as exc:
-                bridge_error = exc
-                log.exception("[SHADOW_SIGNAL] committed handoff failed source=%s",
-                              event.get("round_id"))
-        if (str(event.get("delivery_mode") or "LIVE").upper() == "LIVE"
-                and not target_already_completed):
-            dispatcher = getattr(app.state, "decision_dispatcher", None)
-            if dispatcher is not None:
-                evaluation["execution_dispatch"] = await dispatcher.dispatch_evaluation(
-                    evaluation, delivery_mode="LIVE", target_already_completed=False)
-        if bridge_error is not None:
-            raise bridge_error
+            bridge_sessions = []
+            for session_record in evaluation.get("sessions", []) if isinstance(evaluation, Mapping) else []:
+                if not isinstance(session_record, Mapping):
+                    continue
+                decision = session_record.get("decision")
+                if not isinstance(decision, Mapping) or decision.get("action") != "SELECT":
+                    continue
+                bridge_sessions.append({field: session_record.get(field) for field in (
+                    "session_id", "persistence_status", "source_round", "target_round", "decision",
+                )})
+            committed_bridge_job = {
+                "event": dict(event),
+                "evaluation": {"sessions": bridge_sessions},
+                "collector_detection_at": collector_detection_at,
+                "collector_receipt_at": collector_receipt_at,
+                "correlation_id": correlation_id,
+                "event_stage_id": event_stage_id,
+                "event_key": _round_event_key("committed", event),
+                "observation_id": str(event.get("observation_id") or event.get("round_id") or ""),
+                "enqueued_ns": enqueued_ns,
+                "queued_ns": time.perf_counter_ns(),
+                "persistence_session_ids": sorted(persistence_session_ids),
+                "performance_observer_deferred": performance_observer_deferred,
+            }
 
     bridge_finished_ns = time.perf_counter_ns()
     if hub is not None:
@@ -588,23 +898,41 @@ async def _process_round_event(app: FastAPI, stage: str, event: dict,
             hub.record_priority_latency(
                 "backend_receive_to_final_decision_ms", f"{correlation_id}:backend_receive_to_final_decision_ms",
                 (bridge_finished_ns - request_started_ns) / 1_000_000.0)
-        hub.record_priority_latency(
-            "backend_decision_and_signal_path_ms",
-            f"{correlation_id}:{event_stage_id}:backend_decision_and_signal_path_ms",
-            (bridge_finished_ns - enqueued_ns) / 1_000_000.0)
+        if stage == "observed" or committed_bridge_job is None:
+            hub.record_priority_latency(
+                "backend_decision_and_signal_path_ms",
+                f"{correlation_id}:{event_stage_id}:backend_decision_and_signal_path_ms",
+                (bridge_finished_ns - enqueued_ns) / 1_000_000.0)
 
         log.info("[ROUND_EVENT_WORKER] stage=%s correlation_id=%s round_id=%s queue_ms=%.3f evaluation_ms=%.3f total_ms=%.3f",
              stage, correlation_id, event.get("round_id"),
              max(0.0, (worker_started_ns - enqueued_ns) / 1_000_000.0),
              max(0.0, (completed_ns - received_ns) / 1_000_000.0),
              max(0.0, (bridge_finished_ns - enqueued_ns) / 1_000_000.0))
+    if performance_observer_deferred and committed_bridge_job is None:
+        observer_started_ns = time.perf_counter_ns()
+        observe_performance = partial(
+            engine.observe_rule_performance_round, event, defer_persistence=True)
+        if rules_executor is None:
+            performance_changed = await asyncio.to_thread(observe_performance)
+        else:
+            performance_changed = await asyncio.get_running_loop().run_in_executor(
+                rules_executor, observe_performance)
+        if performance_changed:
+            persistence_session_ids.add(RULE_PERFORMANCE_CHECKPOINT_ID)
+        if hub is not None:
+            hub.record_priority_latency(
+                "rule_performance_observer_ms",
+                f"{correlation_id}:rule_performance_observer_ms",
+                (time.perf_counter_ns() - observer_started_ns) / 1_000_000.0)
     _enqueue_rules_dashboard_notification(app, {
         "type": "rules-engine:evaluated", "evaluation": evaluation,
         "received_at": received_at,
     })
-    if stage == "committed":
+    if stage == "committed" and committed_bridge_job is None:
         getattr(app.state, "collector_detection_timestamps", {}).pop(correlation_id, None)
-    return True, persistence_session_ids
+        getattr(app.state, "collector_receipt_timestamps", {}).pop(correlation_id, None)
+    return True, persistence_session_ids, committed_bridge_job
 
 
 async def _run_rules_state_persistence_worker(app: FastAPI) -> None:
@@ -628,13 +956,14 @@ async def _run_rules_state_persistence_worker(app: FastAPI) -> None:
                 batch.append(queue.get_nowait())
             except asyncio.QueueEmpty:
                 break
-        stage_ids = [(item[0], item[1]) for item in batch]
+        stage_entries = [(stage, item[1], item[3]) for item in batch for stage in item[0]]
+        stage_ids = [(stage, observation_id)
+                     for stage, observation_id, _enqueued_ns in stage_entries]
         covered_keys = [item[2] for item in batch]
-        enqueue_times = [item[3] for item in batch]
         session_ids = set().union(*(set(item[4]) for item in batch))
         worker_started_ns = time.perf_counter_ns()
         queue_waits_ms = [max(0.0, (worker_started_ns - enqueued_ns) / 1_000_000.0)
-                          for enqueued_ns in enqueue_times]
+                          for _stage, _observation_id, enqueued_ns in stage_entries]
         attempts = 0
         try:
             while True:
@@ -689,6 +1018,100 @@ async def _run_rules_state_persistence_worker(app: FastAPI) -> None:
                 queue.task_done()
 
 
+async def _run_committed_bridge_processor(app: FastAPI) -> None:
+    """Settle committed results without holding the live decision worker."""
+    queue = getattr(app.state, "committed_bridge_queue", None)
+    if queue is None:
+        return
+    while True:
+        job = await queue.get()
+        attempt = 0
+        try:
+            while True:
+                try:
+                    bridge_started_ns = time.perf_counter_ns()
+                    bridge = getattr(app.state, "shadow_signal_bridge", None)
+                    if bridge is not None:
+                        await bridge.process_committed_round(
+                            app, job["event"], job["evaluation"],
+                            collector_detection_at=job.get("collector_detection_at"),
+                            collector_receipt_at=job.get("collector_receipt_at"))
+
+                    persistence_session_ids = set(job.get("persistence_session_ids") or [])
+                    if job.get("performance_observer_deferred"):
+                        engine = getattr(app.state, "rules_engine", None)
+                        observe_performance = getattr(engine, "observe_rule_performance_round", None)
+                        if callable(observe_performance):
+                            started_ns = time.perf_counter_ns()
+                            executor = getattr(app.state, "round_processing_executor", None)
+                            operation = partial(observe_performance, job["event"], defer_persistence=True)
+                            if executor is None:
+                                performance_changed = await asyncio.to_thread(operation)
+                            else:
+                                performance_changed = await asyncio.get_running_loop().run_in_executor(
+                                    executor, operation)
+                            if performance_changed:
+                                persistence_session_ids.add(RULE_PERFORMANCE_CHECKPOINT_ID)
+                            hub = getattr(app.state, "round_distribution", None)
+                            if hub is not None:
+                                hub.record_priority_latency(
+                                    "rule_performance_observer_ms",
+                                    f"{job['correlation_id']}:rule_performance_observer_ms",
+                                    (time.perf_counter_ns() - started_ns) / 1_000_000.0)
+
+                    observation_id = str(job.get("observation_id") or "")
+                    event_key = str(job.get("event_key") or "")
+                    persistence_queue = _rules_state_persistence_queue(app)
+                    if observation_id and event_key:
+                        await persistence_queue.put((
+                            ["observed", "committed"], observation_id, event_key,
+                            time.perf_counter_ns(), sorted(persistence_session_ids)))
+
+                    correlation_id = str(job.get("correlation_id") or "")
+                    getattr(app.state, "collector_detection_timestamps", {}).pop(correlation_id, None)
+                    getattr(app.state, "collector_receipt_timestamps", {}).pop(correlation_id, None)
+                    finished_ns = time.perf_counter_ns()
+                    hub = getattr(app.state, "round_distribution", None)
+                    if hub is not None:
+                        hub.record_priority_latency(
+                            "committed_bridge_queue_wait_ms",
+                            f"{correlation_id}:committed_bridge_queue_wait_ms",
+                            max(0.0, (bridge_started_ns - int(job.get("queued_ns") or bridge_started_ns))
+                                / 1_000_000.0))
+                        hub.record_priority_latency(
+                            "committed_bridge_processing_ms",
+                            f"{correlation_id}:committed_bridge_processing_ms",
+                            max(0.0, (finished_ns - bridge_started_ns)
+                                / 1_000_000.0))
+                        hub.record_priority_latency(
+                            "backend_decision_and_signal_path_ms",
+                            f"{correlation_id}:{job.get('event_stage_id')}:backend_decision_and_signal_path_ms",
+                            max(0.0, (finished_ns - int(job.get("enqueued_ns") or finished_ns))
+                                / 1_000_000.0))
+                    completion = getattr(app.state, "round_event_completion_waiters", {}).get(event_key)
+                    if completion is not None and not completion.done():
+                        completion.set_result({"decision_ready": True, "stage": "committed"})
+                    log.info("[COMMITTED_SHADOW_BRIDGE] correlation_id=%s queue_ms=%.3f total_ms=%.3f",
+                             correlation_id,
+                             max(0.0, (finished_ns - int(job.get("queued_ns") or finished_ns))
+                                 / 1_000_000.0),
+                             max(0.0, (finished_ns - int(job.get("enqueued_ns") or finished_ns))
+                                 / 1_000_000.0))
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    attempt += 1
+                    key = str(job.get("event_key") or "")
+                    attempts = getattr(app.state, "round_event_retry_attempts", {})
+                    attempts[key] = int(attempts.get(key, 0)) + 1
+                    log.exception("[COMMITTED_SHADOW_BRIDGE] retrying source=%s attempt=%s",
+                                  (job.get("event") or {}).get("round_id"), attempt)
+                    await asyncio.sleep(min(0.1 * (2 ** min(attempt - 1, 7)), 10.0))
+        finally:
+            queue.task_done()
+
+
 async def _run_round_event_processor(app: FastAPI) -> None:
     queue, queued_ids = _round_event_queue(app)
     while True:
@@ -697,18 +1120,41 @@ async def _run_round_event_processor(app: FastAPI) -> None:
         worker_started_ns = time.perf_counter_ns()
         app.state.round_event_processor_busy = True
         deferred_to_persistence = False
+        deferred_to_committed_bridge = False
         try:
             attempt = 0
             while True:
                 try:
-                    requires_checkpoint, persistence_session_ids = await _process_round_event(
+                    requires_checkpoint, persistence_session_ids, committed_bridge_job = await _process_round_event(
                         app, stage, event, enqueued_ns,
                         request_started_ns, validation_finished_ns,
                         worker_started_ns)
                     observation_id = str(event.get("observation_id") or event.get("round_id") or "")
-                    if requires_checkpoint and observation_id:
+                    # The verified observation is already durable in the inbox,
+                    # and the urgent signal has been dispatched before reaching
+                    # this point. Avoid a second full Rules Engine snapshot for
+                    # the same round: leave the observed row unacknowledged so
+                    # startup can replay it if the process stops before commit.
+                    # The committed checkpoint will cover and acknowledge both
+                    # stages atomically after the state is safely stored.
+                    defer_observed_checkpoint = (
+                        stage == "observed" and requires_checkpoint
+                        and bool(persistence_session_ids))
+                    if committed_bridge_job is not None:
+                        bridge_queue = _committed_bridge_queue(app)
+                        await bridge_queue.put(committed_bridge_job)
+                        deferred_to_committed_bridge = True
+                    elif defer_observed_checkpoint:
+                        # The ordered in-memory engine already consumed it. The
+                        # durable inbox remains the crash-recovery authority.
+                        queued_ids.discard(key)
+                        app.state.round_event_retry_attempts.pop(key, None)
+                    elif requires_checkpoint and observation_id:
                         persistence_queue = _rules_state_persistence_queue(app)
-                        await persistence_queue.put((stage, observation_id, key,
+                        covered_stages = [stage]
+                        if stage == "committed":
+                            covered_stages.insert(0, "observed")
+                        await persistence_queue.put((covered_stages, observation_id, key,
                                                      time.perf_counter_ns(),
                                                      sorted(persistence_session_ids)))
                         deferred_to_persistence = True
@@ -719,12 +1165,13 @@ async def _run_round_event_processor(app: FastAPI) -> None:
                                 app, inbox.mark_rules_processed_many, [(stage, observation_id)],
                                 priority=True)
                     completion = getattr(app.state, "round_event_completion_waiters", {}).get(key)
-                    if completion is not None and not completion.done():
+                    if (not deferred_to_committed_bridge and completion is not None
+                            and not completion.done()):
                         completion.set_result({
                             "decision_ready": bool(requires_checkpoint),
                             "stage": stage,
                         })
-                    if not deferred_to_persistence:
+                    if not deferred_to_persistence and not deferred_to_committed_bridge:
                         app.state.round_event_retry_attempts.pop(key, None)
                     break
                 except asyncio.CancelledError:
@@ -758,7 +1205,7 @@ async def _run_round_event_processor(app: FastAPI) -> None:
                     await asyncio.sleep(min(0.1 * (2 ** min(attempt - 1, 7)), 10.0))
         finally:
             app.state.round_event_processor_busy = False
-            if not deferred_to_persistence:
+            if not deferred_to_persistence and not deferred_to_committed_bridge:
                 queued_ids.discard(key)
                 _forget_round_event_completion(app, key)
             queue.task_done()
@@ -818,8 +1265,6 @@ async def process_history_update(app: FastAPI):
     if latest:
         if hasattr(app.state, "shadow"):
             await app.state.shadow.reconcile_round(latest)
-        if hasattr(app.state, "reconciliation"):
-            await app.state.reconciliation.reconcile_round(latest)
     try:
         distribution = await asyncio.to_thread(repository.round_distribution_snapshot)
         current_sequence = int(distribution.get("latest_sequence") or 0)
@@ -840,7 +1285,10 @@ async def process_history_update(app: FastAPI):
         # Rules are observational consumers. A rules persistence/evaluation
         # error is visible but must not interrupt collector/history delivery.
         log.exception("rules engine committed-event processing failed")
-        await manager.broadcast({"type": "rules-engine:error", "error": type(exc).__name__})
+        failed_round_id = str((latest or {}).get("round_id") or "")
+        await manager.broadcast({"type": "rules-engine:error", "error": type(exc).__name__,
+                                 "round_id": failed_round_id or None,
+                                 "correlation_id": failed_round_id or None})
     await manager.broadcast({"type": "history:new_round", "round": latest})
     if not repository.database_url:
         await manager.broadcast({"type": "history:updated", "history": {
@@ -1055,22 +1503,6 @@ def _collector_runtime_status() -> dict:
         "last_successful_collection": source.get("lastSuccessfulCollection"),
         "last_round_id": source.get("lastRoundId"),
         "last_round_index": source.get("lastRoundIndex"),
-        "cashout_initialization": source.get("cashout_initialization") or {
-            "target": "2.00", "auto_bet": "UNKNOWN", "status": "UNKNOWN",
-            "panel_1_cashout": "UNKNOWN", "panel_2_cashout": "UNKNOWN",
-            "panels": [], "updated_at": None,
-            "error_reason": "COLLECTOR_CASHOUT_INITIALIZATION_NOT_REPORTED",
-        },
-        "bet_amount_initialization": source.get("bet_amount_initialization") or {
-            "status": "UNKNOWN", "execution_panel": None, "requested_stake": None,
-            "requested_stake_currency": None, "platform_currency": None,
-            "observed_value": None, "updated_at": None,
-            "error_reason": "COLLECTOR_STAKE_INITIALIZATION_NOT_REPORTED",
-        },
-        "betting_ui_configuration": source.get("betting_ui_configuration") or {
-            "status": "UNKNOWN", "updated_at": None,
-            "error_reason": "COLLECTOR_BETTING_UI_CONFIGURATION_NOT_REPORTED",
-        },
         "authentication_state": source.get("authenticationState")
             if source.get("authenticationState") in {"AUTHENTICATED", "AUTH_REQUIRED", "UNKNOWN"}
             else "UNKNOWN",
@@ -1093,14 +1525,11 @@ def _collector_runtime_status() -> dict:
 async def monitor_health(app: FastAPI):
     while True:
         try:
-            await app.state.system_health.enforce_safety()
-            modes = getattr(app.state, "betting_mode", None)
-            if modes is not None:
-                await modes.monitor_safety()
-            lifecycle = getattr(app.state, "lifecycle", None)
-            if lifecycle is not None:
-                await manager.broadcast({"type": "backend:stability",
-                                         "stability": await backend_stability_snapshot(app)})
+            await app.state.system_health.refresh_and_emit()
+            # Full stability snapshots read up to 5,000 lifecycle rows and
+            # assemble several database backed views. That operator report
+            # must not run in this two-second event-loop monitor; the full
+            # snapshot remains available from /api/backend/stability.
             await asyncio.sleep(2)
         except asyncio.CancelledError:
             raise
@@ -1111,27 +1540,6 @@ async def monitor_health(app: FastAPI):
 
 
 
-
-
-async def monitor_platform_balance(app: FastAPI):
-    """Keep UI balance fresh using the collector's existing CDP browser."""
-    while True:
-        try:
-            await app.state.betting_mode._read_platform_balance()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.exception("read-only browser balance monitor failed; retrying")
-        await asyncio.sleep(5)
-
-
-async def monitor_operations(app: FastAPI):
-    while True:
-        try:
-            await app.state.operations.evaluate()
-        except Exception as exc:
-            log.error("operations evaluation failed: %s", exc)
-        await asyncio.sleep(15)
 
 
 async def initialize_app_state(settings, attempts: int = 3) -> AppState:
@@ -1152,12 +1560,13 @@ async def initialize_app_state(settings, attempts: int = 3) -> AppState:
 async def backend_stability_snapshot(app: FastAPI) -> dict:
     """Build a cheap, non-blocking stability view for the dashboard."""
     lifecycle = getattr(app.state, "lifecycle", None)
-    snapshot = lifecycle.status() if lifecycle is not None else {
+    snapshot = await asyncio.to_thread(lifecycle.status) if lifecycle is not None else {
         "status": "STARTING", "pid": os.getpid(), "ppid": os.getppid(),
     }
     history = getattr(app.state, "history_collector", None)
-    snapshot["collector"] = history.health_status() if history else {"status": "STARTING"}
-    current = _collector_runtime_status()
+    snapshot["collector"] = (await asyncio.to_thread(history.health_status)
+                              if history else {"status": "STARTING"})
+    current = await asyncio.to_thread(_collector_runtime_status)
     if current.get("collector_process_status") == "STOPPED":
         current["runtime_status"] = "STOPPED"
     elif (current.get("heartbeat_state") != "FRESH" or current.get("collection_fresh") is not True
@@ -1173,8 +1582,11 @@ async def backend_stability_snapshot(app: FastAPI) -> dict:
         snapshot["database"] = {"status": "STARTING"}
     else:
         try:
-            with repository.connect() as conn:
-                conn.execute("SELECT 1").fetchone()
+            def check_database():
+                with repository.connect() as conn:
+                    conn.execute("SELECT 1").fetchone()
+
+            await asyncio.to_thread(check_database)
             snapshot["database"] = {"status": "OK"}
         except Exception as exc:
             snapshot["database"] = {"status": "ERROR", "reason": str(exc)}
@@ -1219,12 +1631,18 @@ async def lifespan(app: FastAPI):
     signal_priority_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="round-signal-priority")
     round_persistence_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="round-rules-persistence")
     history_analytics_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="history-analytics")
+    adie_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="adie-observed-round")
     app.state.round_observation_inbox_executor = inbox_executor
     app.state.round_observation_inbox_priority_executor = inbox_priority_executor
     app.state.round_processing_executor = round_processing_executor
+    # Keep source sequence allocation and enqueue order in the same critical
+    # section so concurrent collector handoffs cannot reach the observer out
+    # of stream order.
+    app.state.round_event_commit_lock = asyncio.Lock()
     app.state.signal_priority_executor = signal_priority_executor
     app.state.round_persistence_executor = round_persistence_executor
     app.state.history_analytics_executor = history_analytics_executor
+    app.state.adie_executor = adie_executor
     orchestrator = None
     app.state.ready = False
     shutdown_reason = "graceful_lifespan_exit"
@@ -1249,9 +1667,7 @@ async def lifespan(app: FastAPI):
         app.state.round_distribution = RoundDistributionHub()
         app.state.backend_event_loop_monitor = asyncio.create_task(
             _monitor_backend_event_loop(app), name="backend-event-loop-latency-monitor")
-        # Provider game-phase evidence is volatile by design. A backend
-        # restart clears it so no previous betting window can satisfy a new
-        # LIVE readiness review.
+        # Provider phase evidence is volatile and must be refreshed after a restart.
         app.state.latest_provider_phase_observation = None
         inbox_path = Path(os.environ.get("COLLECTOR_OBSERVATION_SPOOL_PATH") or
                           (settings.data_path.parent / "backend" / "round-observation-inbox.sqlite3"))
@@ -1260,35 +1676,57 @@ async def lifespan(app: FastAPI):
             max_records=int(os.environ.get("COLLECTOR_OBSERVATION_SPOOL_MAX_RECORDS", "50000")),
             max_bytes=int(os.environ.get("COLLECTOR_OBSERVATION_SPOOL_MAX_BYTES", str(64 * 1024 * 1024))),
         )
+        # Events already in the journal at process startup are recovery replay,
+        # never newly occurring live decisions. A post-boundary event still
+        # requires the source's LIVE + VERIFIED classification below.
+        app.state.behaviour_live_boundary_at = datetime.now(timezone.utc).isoformat()
+        app.state.behaviour_round_wakeup = asyncio.Event()
+        app.state.behaviour_round_last_delivered_at = None
+        app.state.behaviour_round_last_delivered_id = None
+        app.state.behaviour_round_last_delivery_ms = None
+        app.state.behaviour_round_last_error = None
         app.state.started_monotonic = time.monotonic()
         app.state.wp = await initialize_app_state(settings)
+        try:
+            app.state.adie_engine = await asyncio.to_thread(ADIEEngine, app.state.wp.repository)
+            log.info("[ADIE] initialized policy=%s cohort=%s", app.state.adie_engine.status().get("policy_version"),
+                     app.state.adie_engine.status().get("cohort"))
+        except Exception:
+            # ADIE is optional to the existing prediction runtime.
+            app.state.adie_engine = None
+            log.exception("[ADIE] initialization failed; existing SHADOW remains available")
+        app.state.fast_signal_persistence_task = asyncio.create_task(
+            signals_api.run_fast_signal_persistence(app), name="fast-signal-persistence")
         lifecycle.bind_repository(app.state.wp.repository)
         app.state.round_stream_id = await asyncio.to_thread(
             app.state.wp.repository.round_distribution_stream_id)
+        # Reconcile against Behaviour's own durable checkpoint before the
+        # ordered consumer starts, so a backend restart does not replay every
+        # already-processed historic event ahead of the live tail.
+        await _reconcile_behaviour_round_checkpoint(app)
+        # Behaviour is a durable consumer of the verified inbox. It runs
+        # independently of the Rules Engine worker and PostgreSQL handoff.
+        app.state.behaviour_round_consumer_task = asyncio.create_task(
+            _run_behaviour_round_consumer(app), name="behaviour-verified-round-consumer")
         log.info("[DATA] Loaded %s canonical rounds", len(app.state.wp.rounds))
 
         repository = app.state.wp.repository
-        betting = BettingManager(get_betting_settings(), broadcaster=manager.broadcast,
-                                 repository=repository)
-        reconciled = repository.reconcile_incomplete_executions()
-        if reconciled:
-            log.warning("[EXECUTION] reconciled %s incomplete executions; none will be retried", reconciled)
-        app.state.betting = betting
-        configure_default_manager(betting)
-        app.state.emergency_stop = EmergencyStop(repository, broadcaster=manager.broadcast)
-        app.state.reconciliation = ReconciliationService(
-            repository, broadcaster=manager.broadcast, betting_manager=betting)
-        betting.reconciler = app.state.reconciliation
+        # Cache the latest canonical round once at startup. /round-persisted
+        # advances this after each PostgreSQL commit, so committed-stage replay
+        # never performs a blocking marker query on the ordered round worker.
+        app.state.latest_committed_round_marker = await asyncio.to_thread(
+            repository.latest_round_marker)
+        log.info("[ROUND_MARKER_CACHE] initialized round_index=%s",
+                 app.state.latest_committed_round_marker[0]
+                 if app.state.latest_committed_round_marker else None)
         app.state.history_collector = HistoryCollectorManager(
             settings.data_path, manager.broadcast,
             round_loader=repository.load_rounds if repository.database_url else None,
             repository=repository)
         app.state.shadow = ShadowManager(repository=repository, broadcaster=manager.broadcast)
-        app.state.shadow.emergency_stop = app.state.emergency_stop
         app.state.system_health = SystemHealth(
-            broadcaster=manager.broadcast, betting_manager=betting,
-            history_collector=app.state.history_collector, repository=repository,
-            emergency_stop=app.state.emergency_stop)
+            broadcaster=manager.broadcast, history_collector=app.state.history_collector,
+            repository=repository)
         app.state.rules_engine = RulesEngine(persistence=repository)
         app.state.shadow_signal_bridge = ShadowSignalBridge()
         app.state.shadow_signal_bridge_status = app.state.shadow_signal_bridge.status()
@@ -1296,39 +1734,15 @@ async def lifespan(app: FastAPI):
         # API inbox as well as PostgreSQL. The inbox can lead PostgreSQL by
         # several seconds while its consumer retries a slow commit.
         app.state.rules_engine.observation_inbox = app.state.round_observation_inbox
-        app.state.reconciliation.rules_engine = app.state.rules_engine
-        app.state.live = LiveActivationManager(app)
-        app.state.operations = OperationsManager(app)
-        app.state.disaster_recovery = DisasterRecoveryManager(app, app.state.operations)
-        app.state.betting_mode = BettingModeManager(app)
-        app.state.decision_dispatcher = DecisionDispatcher(app)
-        betting.execution_gate = app.state.betting_mode.final_execution_gate
-        betting.execution_failure_handler = app.state.betting_mode.handle_execution_failure
-        app.state.system_health.heartbeat("rules_engine", ok=False,
-            error="Rules Engine is not configured", metadata=app.state.rules_engine.status())
-        for component in ("emergency_stop", "executor", "reconciliation", "api"):
-            app.state.system_health.heartbeat(component, ok=True,
-                metadata={"initialized": True}, stale_after_s=3600)
-        betting.safety_gate = app.state.system_health.can_bet_now
+        app.state.system_health.heartbeat("rules_engine", ok=True,
+            metadata=app.state.rules_engine.status())
+        app.state.system_health.heartbeat("api", ok=True,
+            metadata={"initialized": True}, stale_after_s=3600)
         app.state.history_monitor = monitor_file
         app.state.collector_observation_monitor = monitor_collector_round_observations
         app.state.system_health_monitor = monitor_health
-        app.state.platform_balance_monitor = monitor_platform_balance
-        app.state.operations_monitor = monitor_operations
         orchestrator = SystemOrchestrator(app)
         app.state.orchestrator = orchestrator
-        try:
-            await app.state.disaster_recovery.recover("startup")
-        except Exception:
-            log.exception("startup recovery failed; continuing in safe mode")
-        known_rounds = {str(row["round_id"]): row for row in app.state.history_collector.rows()}
-        for execution in repository.open_executions():
-            observed = known_rounds.get(str(execution.get("target_round_id")))
-            if observed:
-                try:
-                    await app.state.reconciliation.reconcile_round(observed)
-                except Exception:
-                    log.exception("startup reconciliation failed execution=%s", execution.get("execution_id"))
         # The inbox accepted these events durably before the collector received
         # its HTTP acknowledgement. Resume their observed Rules Engine stage
         # before starting lower-priority monitors or accepting new rounds.
@@ -1345,6 +1759,20 @@ async def lifespan(app: FastAPI):
         raise
     finally:
         app.state.ready = False
+        behaviour_consumer_task = getattr(app.state, "behaviour_round_consumer_task", None)
+        if behaviour_consumer_task is not None and not behaviour_consumer_task.done():
+            behaviour_consumer_task.cancel()
+            try:
+                await behaviour_consumer_task
+            except asyncio.CancelledError:
+                pass
+        fast_signal_task = getattr(app.state, "fast_signal_persistence_task", None)
+        if fast_signal_task is not None:
+            fast_signal_task.cancel()
+            try:
+                await fast_signal_task
+            except asyncio.CancelledError:
+                pass
         log.info("backend graceful shutdown begin pid=%s", os.getpid())
         if orchestrator is not None:
             await orchestrator.shutdown()
@@ -1393,6 +1821,10 @@ async def lifespan(app: FastAPI):
         signal_priority_executor.shutdown(wait=True, cancel_futures=True)
         round_persistence_executor.shutdown(wait=True, cancel_futures=True)
         history_analytics_executor.shutdown(wait=True, cancel_futures=True)
+        adie_executor.shutdown(wait=True, cancel_futures=True)
+        inbox = getattr(app.state, "round_observation_inbox", None)
+        if callable(getattr(inbox, "close", None)):
+            inbox.close()
         repository = getattr(getattr(app.state, "wp", None), "repository", None)
         if repository is not None:
             repository.close()
@@ -1400,7 +1832,8 @@ async def lifespan(app: FastAPI):
         log.info("backend graceful shutdown complete pid=%s", os.getpid())
 
 
-app = FastAPI(title="Winner Predict", description="Aviator round history and betting safety console.", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Winner Predict", description="Aviator round history and SHADOW rules console.", version="1.0.0", lifespan=lifespan)
+app.state.api_request_admission = ApiRequestAdmission.from_environment()
 settings = get_settings()
 
 
@@ -1444,6 +1877,54 @@ async def public_api_validation_error(request: Request, exc: RequestValidationEr
 
 
 @app.middleware("http")
+async def api_request_admission(request: Request, call_next):
+    """Apply bounded rate and in-flight limits to API HTTP requests."""
+    path = request.url.path
+    if request.method.upper() == "OPTIONS" or not path.startswith("/api/"):
+        return await call_next(request)
+    admission = getattr(request.app.state, "api_request_admission", None)
+    if admission is None:
+        return JSONResponse(status_code=503, content={
+            "ok": False, "error": "api_admission_not_ready",
+        }, headers={"Retry-After": "1"})
+
+    authorization = request.headers.get("authorization", "")
+    if authorization:
+        client_key = "credential:" + hashlib.sha256(authorization.encode("utf-8")).hexdigest()
+    else:
+        client_key = "ip:" + (request.client.host if request.client else "unknown")
+    rate_allowed, retry_after = admission.allow_request(client_key)
+    if not rate_allowed:
+        request.state.api_admission_rejection = True
+        rejected_total = admission.record_rejection(429)
+        if rejected_total == 1 or rejected_total % 100 == 0:
+            log.warning("[API_ADMISSION] rate limited path=%s retry_after=%s total=%s",
+                        path, retry_after, rejected_total)
+        return JSONResponse(status_code=429, content={
+            "ok": False, "error": "api_rate_limit_exceeded",
+        }, headers={"Retry-After": str(retry_after)})
+    if not admission.try_acquire():
+        request.state.api_admission_rejection = True
+        rejected_total = admission.record_rejection(503)
+        if rejected_total == 1 or rejected_total % 100 == 0:
+            log.warning("[API_ADMISSION] overloaded path=%s total=%s", path, rejected_total)
+        return JSONResponse(status_code=503, content={
+            "ok": False, "error": "api_overloaded_retry",
+        }, headers={"Retry-After": "1"})
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+        admission.record_response(response.status_code,
+                                 (time.perf_counter() - started) * 1000.0)
+        return response
+    except Exception:
+        admission.record_response(500, (time.perf_counter() - started) * 1000.0)
+        raise
+    finally:
+        admission.release()
+
+
+@app.middleware("http")
 async def request_logging(request: Request, call_next):
     request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
     request.state.request_id = request_id
@@ -1461,11 +1942,11 @@ async def request_logging(request: Request, call_next):
         )
     elapsed = (time.perf_counter() - started) * 1000
     response.headers["X-Request-ID"] = request_id
-    if response.status_code >= 500:
+    if response.status_code >= 500 and not getattr(request.state, "api_admission_rejection", False):
         log.error("API failure request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
                   request_id, request.method, request.url.path,
                   response.status_code, elapsed)
-    elif request.url.path != "/health":
+    elif request.url.path != "/health" and elapsed >= 500:
         log.info("API request request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
                  request_id, request.method, request.url.path,
                  response.status_code, elapsed)
@@ -1778,6 +2259,7 @@ def _validate_direct_collector_observations(body: dict) -> list[dict]:
             "delivery_mode": delivery_mode,
             "local_appended_at": local_appended_at,
             "collector_http_started_at": collector_http_started_at,
+            "source_metadata": raw.get("source_metadata") if isinstance(raw.get("source_metadata"), dict) else None,
             "commit_acknowledged_at": raw.get("commit_acknowledged_at"),
             "observation_to_commit_ms": (float(raw["observation_to_commit_ms"])
                 if isinstance(raw.get("observation_to_commit_ms"), (int, float))
@@ -1835,7 +2317,7 @@ async def collector_round_observed(request: Request):
     # keeps the next target round from becoming visible before its source rule
     # decision has been made.
     rules_engine = getattr(request.app.state, "rules_engine", None)
-    if any(event.get("continuity_status") == "VERIFIED" for event in events) and rules_engine is None:
+    if any(event.get("continuity_status") in {"VERIFIED", "GAP_BEFORE"} for event in events) and rules_engine is None:
         log.error("[RULES_PRIORITY] Rules Engine unavailable; collector will retry durable observations")
         return JSONResponse(status_code=503, content={"ok": False,
             "error": "priority_rules_engine_unavailable"})
@@ -1848,6 +2330,9 @@ async def collector_round_observed(request: Request):
             priority=True)
         inbox_append_ms = round((time.perf_counter() - append_started) * 1000.0, 3)
         inbox_durable_at = datetime.now(timezone.utc).isoformat()
+        wakeup = getattr(request.app.state, "behaviour_round_wakeup", None)
+        if wakeup is not None:
+            wakeup.set()
     except ObservationIdentityConflict as exc:
         log.error("[COLLECTOR_EVENTS] API inbox rejected an identity conflict; collector retains it: %s", exc)
         return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
@@ -1862,7 +2347,32 @@ async def collector_round_observed(request: Request):
         })
 
     priority_events = [event for event in accepted["events"]
-                       if event.get("continuity_status") == "VERIFIED"]
+                       if event.get("continuity_status") in {"VERIFIED", "GAP_BEFORE"}]
+    latest_event = accepted["events"][-1] if accepted.get("events") else None
+    request.app.state.latest_verified_live_observation = (
+        dict(latest_event)
+        if isinstance(latest_event, dict)
+        and latest_event.get("continuity_status") == "VERIFIED"
+        and str(latest_event.get("delivery_mode") or "").upper() == "LIVE"
+        else None)
+    # Preserve the original verified round.observed envelope across its later
+    # PostgreSQL commit. Behaviour may finish analyzing that same fresh round
+    # a moment later; retaining this evidence lets SHADOW validate the still
+    # open immediate target without reconstructing or trusting a DB snapshot.
+    request.app.state.latest_live_observed_envelope = (
+        dict(latest_event)
+        if isinstance(latest_event, dict)
+        and latest_event.get("event_type") == "round.observed"
+        and latest_event.get("durability") == "PENDING"
+        and latest_event.get("continuity_status") == "VERIFIED"
+        and str(latest_event.get("delivery_mode") or "").upper() == "LIVE"
+        else None)
+    for event in priority_events:
+        metadata = event.get("source_metadata")
+        if (isinstance(metadata, dict) and metadata.get("source") == "ORBIT_DATA_WATCH_API"
+                and event.get("delivery_mode") == "LIVE"
+                and event.get("continuity_status") == "VERIFIED"):
+            request.app.state.latest_watch_observation = dict(event)
     client = getattr(request, "client", None)
     peer = client.host if client is not None else ""
     try:
@@ -1873,7 +2383,7 @@ async def collector_round_observed(request: Request):
     request_host = str(getattr(request_url, "hostname", "") or "").strip("[]").lower()
     peer_is_loopback = peer_is_loopback and request_host in {"127.0.0.1", "::1", "localhost"}
     _remember_collector_detection_timestamps(
-        request.app, accepted["events"], peer_is_loopback=peer_is_loopback)
+        request.app, observations, peer_is_loopback=peer_is_loopback)
     completion_waiters = []
     for event in priority_events:
         waiter = _round_event_completion_future(request.app, "observed", event)
@@ -1914,6 +2424,8 @@ async def collector_round_observed(request: Request):
             hub.record_priority_latency("api_receipt_to_sse_publication_ms",
                 str(event.get("event_id") or observation_id), publication_ms)
     except Exception as exc:
+        if hub is not None:
+            hub.record_publication_error(type(exc).__name__)
         log.exception("[ROUND_DISTRIBUTION] event is durable and queued for Rules Engine; fanout deferred category=%s",
                       type(exc).__name__)
         return JSONResponse(status_code=503, content={"ok": False,
@@ -1969,10 +2481,12 @@ async def collector_round_observed(request: Request):
 
     priority_evaluations = [
         {"round_id": str(event.get("round_id") or ""),
-         "status": ("DECISION_READY" if decision_ready_by_round.get(
+         "status": ("BOUNDARY_STATE_ADVANCED" if event.get("continuity_status") == "GAP_BEFORE"
+                    and decision_ready_by_round.get(str(event.get("round_id") or ""))
+                    else "DECISION_READY" if decision_ready_by_round.get(
                         str(event.get("round_id") or ""))
                     else "PROCESSED_NO_ACTIVE_SESSION"
-                    if event.get("continuity_status") == "VERIFIED"
+                    if event.get("continuity_status") in {"VERIFIED", "GAP_BEFORE"}
                     else "NOT_DISPATCHED_UNVERIFIED")}
         for event in accepted["events"]
     ]
@@ -2030,32 +2544,72 @@ async def collector_round_persisted(request: Request):
         for observation in observations:
             observation["commit_acknowledged_at"] = observation.get("commit_acknowledged_at") or body.get("commit_acknowledged_at")
             observation["delivery_mode"] = observation.get("delivery_mode") or "LIVE"
-        distributions = await asyncio.to_thread(
-            repository.persist_round_distribution_batch, observations,
-            int(os.environ.get("ROUND_STREAM_RETENTION", "100000")), stream_id=stream_id)
-        accepted = []
-        receipts = []
-        ordered_distributions = sorted(distributions,
-            key=lambda item: int(item.get("stream_sequence") or item.get("committed_sequence") or 0))
-        for distribution in ordered_distributions:
-            observation_id = str(distribution.get("observation_id") or distribution.get("round_id") or "")
-            receipts.append((observation_id,
-                             distribution.get("committed_sequence") or distribution["stream_sequence"],
-                             distribution))
-            accepted.append({"event_id": distribution["event_id"],
-                             "observation_id": observation_id,
-                             "round_id": distribution["round_id"],
-                             "committed_sequence": distribution["committed_sequence"]})
-        if inbox is not None:
-            await run_round_observation_inbox(request.app, inbox.mark_committed_many,
-                                               receipts, priority=True)
-        if not _enqueue_round_events(request.app, "committed", ordered_distributions):
-            log.error("[ROUND_EVENT_WORKER] committed queue full; collector will retry count=%s",
-                      len(ordered_distributions))
-            return JSONResponse(status_code=503, content={"ok": False,
-                "error": "round_event_processing_queue_full"})
+        commit_lock = request.app.state.round_event_commit_lock
+        async with commit_lock:
+            distributions = await asyncio.to_thread(
+                repository.persist_round_distribution_batch, observations,
+                int(os.environ.get("ROUND_STREAM_RETENTION", "100000")), stream_id=stream_id)
+            accepted = []
+            receipts = []
+            ordered_distributions = sorted(distributions,
+                key=lambda item: int(item.get("stream_sequence") or item.get("committed_sequence") or 0))
+            for distribution in ordered_distributions:
+                observation_id = str(distribution.get("observation_id") or distribution.get("round_id") or "")
+                receipts.append((observation_id,
+                                 distribution.get("committed_sequence") or distribution["stream_sequence"],
+                                 distribution))
+                accepted.append({"event_id": distribution["event_id"],
+                                 "observation_id": observation_id,
+                                 "round_id": distribution["round_id"],
+                                 "committed_sequence": distribution["committed_sequence"]})
+            if inbox is not None:
+                await run_round_observation_inbox(request.app, inbox.mark_committed_many,
+                                                   receipts, priority=True)
+            latest_distribution = ordered_distributions[-1] if ordered_distributions else None
+            request.app.state.latest_verified_live_observation = (
+                dict(latest_distribution)
+                if isinstance(latest_distribution, dict)
+                and latest_distribution.get("continuity_status") == "VERIFIED"
+                and str(latest_distribution.get("delivery_mode") or "").upper() == "LIVE"
+                else None)
+            # Advance the cache as soon as the PostgreSQL transaction and
+            # durable inbox acknowledgement succeed, even if volatile queue
+            # backpressure makes the collector retry the later processing step.
+            latest_marker = getattr(request.app.state, "latest_committed_round_marker", None)
+            for distribution in ordered_distributions:
+                try:
+                    marker = (
+                        int(distribution["round_index"]),
+                        str(distribution["round_id"]),
+                        str(distribution.get("platform_timestamp") or distribution.get("stored_at") or ""),
+                        float(distribution["multiplier"]),
+                    )
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if latest_marker is None or marker[0] >= int(latest_marker[0]):
+                    latest_marker = marker
+            request.app.state.latest_committed_round_marker = latest_marker
+            if not _enqueue_round_events(request.app, "committed", ordered_distributions):
+                log.error("[ROUND_EVENT_WORKER] committed queue full; collector will retry count=%s",
+                          len(ordered_distributions))
+                return JSONResponse(status_code=503, content={"ok": False,
+                    "error": "round_event_processing_queue_full"})
         for distribution in ordered_distributions:
             await request.app.state.round_distribution.publish(distribution)
+        # The durable round stream remains the replay source. This bounded
+        # WebSocket wakeup lets the existing dashboard refresh immediately.
+        if ordered_distributions:
+            pending = getattr(request.app.state, "round_ui_broadcast_tasks", None)
+            if pending is None:
+                pending = set()
+                request.app.state.round_ui_broadcast_tasks = pending
+            if len(pending) < 32:
+                task = asyncio.create_task(manager.broadcast({
+                    "type": "history:verified-rounds",
+                    "rounds": ordered_distributions,
+                }))
+                pending.add(task)
+                task.add_done_callback(pending.discard)
     except ValueError as exc:
         return JSONResponse(status_code=422, content={"ok": False, "error": str(exc)})
     except Exception as exc:
@@ -2102,16 +2656,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(history.router)
-app.include_router(betting_api.router)
-app.include_router(results.router)
 app.include_router(health.router)
 app.include_router(shadow.router)
-app.include_router(live_api.router)
-app.include_router(operations_api.router)
-app.include_router(recovery_api.router)
-app.include_router(betting_mode_api.router)
 app.include_router(stability_api.router)
 app.include_router(round_distribution_api.router)
+app.include_router(adie_api.router)
 app.include_router(rules_engine_api.router)
 app.include_router(signals_api.router)
 app.include_router(developer_console_api.router)
@@ -2125,7 +2674,6 @@ async def root():
         "service": "Winner Predict API",
         "status": "running",
         "docs": "/docs",
-        "betting_status": "/api/betting/status",
         "frontend": "http://localhost:5174",
     }
 
@@ -2169,16 +2717,25 @@ async def health(request: Request):
     database = {"status": "unavailable", "error": "repository not initialized"}
     repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
     if repository is not None:
+        backend_name = "postgresql" if repository.database_url else "sqlite"
+        monitor = getattr(request.app.state, "system_health", None)
         try:
-            with repository.connect() as conn:
-                conn.execute("SELECT 1").fetchone()
-            if repository.database_url:
-                database = {"status": "ok", "backend": "postgresql"}
-            else:
-                database = {"status": "ok", "backend": "sqlite", "path": str(repository.database_path)}
-        except Exception as exc:
-            database = {"status": "error", "error": "database_connection_failed"}
-            log.error("database health check failed category=%s", type(exc).__name__)
+            # /health is polled every 10 seconds. Do not acquire a PostgreSQL
+            # connection on this hot path; thread-pool/pool saturation made
+            # the liveness probe itself time out. Report the monitor's latest
+            # bounded-age DB heartbeat instead. /health/ready remains the
+            # direct dependency probe for operators and readiness checks.
+            components = monitor.snapshot().get("components", {}) if monitor else {}
+            db_component = components.get("database", {})
+            heartbeat_age = db_component.get("age_s")
+            db_fresh = (db_component.get("state") == "HEALTHY"
+                        and isinstance(heartbeat_age, (int, float))
+                        and heartbeat_age <= 60)
+            database = {"status": "ok" if db_fresh else
+                        "stale" if db_component.get("last_success") else "unknown",
+                        "backend": backend_name}
+        except Exception:
+            database = {"status": "unknown", "backend": backend_name}
     ready = bool(getattr(request.app.state, "ready", False))
     database_ok = database["status"] == "ok"
     payload = {
@@ -2203,8 +2760,19 @@ async def health(request: Request):
         "single_instance": (getattr(request.app.state, "instance_lock", None).status()
                             if getattr(request.app.state, "instance_lock", None) else None),
         "database": database,
-        "stability": (getattr(request.app.state, "lifecycle", None).status()
-                      if getattr(request.app.state, "lifecycle", None) else None),
+        # Full lifecycle.status() queries and serializes up to 5,000 history
+        # rows. Keep this frequently-polled endpoint lightweight; the complete
+        # diagnostic history remains available from /api/backend/stability.
+        "stability": ({
+            "status": "RUNNING",
+            "pid": os.getpid(),
+            "ppid": os.getppid(),
+            "started_at": getattr(request.app.state, "started_at", None),
+            "uptime_seconds": round(
+                time.monotonic() - getattr(request.app.state, "started_monotonic", time.monotonic()),
+                3,
+            ),
+        } if getattr(request.app.state, "lifecycle", None) else None),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
     log.info("health check backend=%s database=%s",
@@ -2227,8 +2795,11 @@ async def health_ready(request: Request):
     if repository is not None:
         backend = "postgresql" if getattr(repository, "database_url", None) else "sqlite"
         try:
-            with repository.connect() as conn:
-                conn.execute("SELECT 1").fetchone()
+            def check_database():
+                with repository.connect() as conn:
+                    conn.execute("SELECT 1").fetchone()
+
+            await asyncio.to_thread(check_database)
             database = "CONNECTED"
         except Exception:
             database = "DISCONNECTED"

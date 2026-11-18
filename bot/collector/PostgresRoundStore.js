@@ -70,13 +70,23 @@ export class PostgresRoundStore {
     this.storageRetryAt = 0;
     this.lastCommitAcknowledgedAt = null;
     this.lastCommittedRounds = [];
+    this.initPromise = null;
     // Collector history is project data: silently changing to a JSON file on
     // a database outage creates two diverging sources of truth. Require a
     // real database unless explicitly running a local isolated test.
     this.requirePostgres = process.env.REQUIRE_POSTGRES !== 'false';
   }
 
-  async init({ acquireCollectorLease = false } = {}) {
+  async init(options = {}) {
+    if (this.pool) return this.storageSnapshot();
+    if (this.initPromise) return this.initPromise;
+    const pending = this._initialize(options);
+    this.initPromise = pending;
+    try { return await pending; }
+    finally { if (this.initPromise === pending) this.initPromise = null; }
+  }
+
+  async _initialize({ acquireCollectorLease = false } = {}) {
     try {
       const connectionString = this.connectionString || process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.WINNER_DATABASE_URL;
       if (!connectionString && !process.env.PGHOST) {
@@ -122,11 +132,11 @@ export class PostgresRoundStore {
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS continuity_verified BOOLEAN NOT NULL DEFAULT FALSE`);
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS gap_before BOOLEAN NOT NULL DEFAULT FALSE`);
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ADD COLUMN IF NOT EXISTS continuity_proof TEXT`);
-      await this.pool.query(`UPDATE ${this.tableIdent} SET stored_at = COALESCE(stored_at, created_at)`);
-      await this.pool.query(`UPDATE ${this.tableIdent} SET local_round_index = COALESCE(local_round_index, round_index)`);
-      await this.pool.query(`UPDATE ${this.tableIdent} SET observed_at = COALESCE(observed_at, timestamp) WHERE round_id ~ '^aviator-[0-9a-f]{24}$'`);
-      await this.pool.query(`UPDATE ${this.tableIdent} SET round_identity_type = COALESCE(round_identity_type, 'COLLECTOR_OBSERVATION_HASH'), round_index_source = COALESCE(round_index_source, 'LOCAL_SEQUENCE'), identity_confidence = COALESCE(identity_confidence, CASE WHEN continuity_verified THEN 'OVERLAP_VERIFIED_ORDER_ONLY' ELSE 'UNKNOWN' END), continuity_proof = COALESCE(continuity_proof, 'LEGACY_UNVERIFIED')`);
-      await this.pool.query(`UPDATE ${this.tableIdent} SET platform_timestamp = NULL WHERE round_id ~ '^aviator-[0-9a-f]{24}$'`);
+      await this.pool.query(`UPDATE ${this.tableIdent} SET stored_at = created_at WHERE stored_at IS NULL AND created_at IS NOT NULL`);
+      await this.pool.query(`UPDATE ${this.tableIdent} SET local_round_index = round_index WHERE local_round_index IS NULL AND round_index IS NOT NULL`);
+      await this.pool.query(`UPDATE ${this.tableIdent} SET observed_at = timestamp WHERE observed_at IS NULL AND timestamp IS NOT NULL AND round_id ~ '^aviator-[0-9a-f]{24}$'`);
+      await this.pool.query(`UPDATE ${this.tableIdent} SET round_identity_type = COALESCE(round_identity_type, 'COLLECTOR_OBSERVATION_HASH'), round_index_source = COALESCE(round_index_source, 'LOCAL_SEQUENCE'), identity_confidence = COALESCE(identity_confidence, CASE WHEN continuity_verified THEN 'OVERLAP_VERIFIED_ORDER_ONLY' ELSE 'UNKNOWN' END), continuity_proof = COALESCE(continuity_proof, 'LEGACY_UNVERIFIED') WHERE round_identity_type IS NULL OR round_index_source IS NULL OR identity_confidence IS NULL OR continuity_proof IS NULL`);
+      await this.pool.query(`UPDATE ${this.tableIdent} SET platform_timestamp = NULL WHERE platform_timestamp IS NOT NULL AND round_id ~ '^aviator-[0-9a-f]{24}$'`);
       await this.pool.query(`UPDATE ${this.tableIdent} SET round_id = COALESCE(round_id, 'aviator-' || round_index::text) WHERE round_id IS NULL`);
       await this.pool.query(`ALTER TABLE ${this.tableIdent} ALTER COLUMN round_id SET NOT NULL`);
       await this.pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${this.table}_round_id_idx ON ${this.tableIdent} (round_id)`);
@@ -173,25 +183,6 @@ export class PostgresRoundStore {
     return this.usingFileFallback ? 'data/roundhistory.json' : 'PostgreSQL';
   }
 
-  async executionRecoveryStatus() {
-    if (!this.pool || this.usingFileFallback) {
-      return { safe: false, status: 'UNKNOWN', reason: 'authoritative PostgreSQL is unavailable' };
-    }
-    try {
-      const result = await this.pool.query(`
-        SELECT execution_id, status FROM bet_executions
-        WHERE status NOT IN ('RECONCILED', 'CLOSED', 'FAILED', 'EXPIRED', 'REJECTED')
-        ORDER BY created_at LIMIT 1
-      `);
-      const unresolved = result.rows?.[0];
-      return unresolved
-        ? { safe: false, status: 'RECONCILIATION_REQUIRED', executionId: String(unresolved.execution_id), executionStatus: String(unresolved.status) }
-        : { safe: true, status: 'CLEAR' };
-    } catch (error) {
-      return { safe: false, status: 'UNKNOWN', reason: `execution state could not be verified: ${error.message}` };
-    }
-  }
-
   async _acquireCollectorLease() {
     this.collectorLease = await this.pool.connect();
     const lease = await this.collectorLease.query(
@@ -222,6 +213,26 @@ export class PostgresRoundStore {
     }
     await this.pool.end?.();
     this.pool = null;
+  }
+
+  /** Drop a broken pool so the collector can reacquire its lease and retry safely. */
+  async markUnavailable(error) {
+    this.storageError = error || new Error('PostgreSQL connection unavailable');
+    this.storageRetryAt = Date.now() + Math.max(1000,
+      Math.min(60000, Number(process.env.COLLECTOR_STORAGE_RETRY_MS) || 5000));
+    const brokenPool = this.pool;
+    try {
+      await this.close();
+    } catch (closeError) {
+      log.warn(`PostgreSQL broken-pool cleanup failed: ${formatError(closeError)}`);
+      try { await brokenPool?.end?.(); }
+      catch (poolError) { log.warn(`PostgreSQL pool shutdown after connection loss failed: ${formatError(poolError)}`); }
+      this.pool = null;
+      this.collectorLease?.release?.();
+      this.collectorLease = null;
+    }
+    this.usingFileFallback = false;
+    return this.storageSnapshot();
   }
 
   async loadRounds() {
@@ -636,6 +647,17 @@ export class PostgresRoundStore {
           collectorState.warmup_status, this.sessionId || collectorState.collector_session_id || null]);
       }
 
+      // PostgreSQL delivers NOTIFY only after this transaction commits. The
+      // payload is a wake hint: consumers replay authoritative rows by index.
+      if (insertedRounds.length) {
+        const latestInserted = insertedRounds.at(-1);
+        await client.query("SELECT pg_notify('winner_predict_verified_round', $1)", [JSON.stringify({
+          event_version: 1,
+          round_id: latestInserted.round_id,
+          round_index: latestInserted.round_index,
+          stored_at: latestInserted.stored_at,
+        })]);
+      }
       await client.query('COMMIT');
       const commitAcknowledgedAt = new Date().toISOString();
       this.lastCommitAcknowledgedAt = commitAcknowledgedAt;

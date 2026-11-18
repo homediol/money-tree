@@ -5,14 +5,12 @@ import { classifyError } from './RetryManager.js';
 import { isAviatorRoute } from './LoginManager.js';
 
 export class RecoveryManager {
-  constructor({ stateMachine, browserManager, loginManager, frameManager = null, health, executionRecoveryCheck = null }) {
+  constructor({ stateMachine, browserManager, loginManager, frameManager = null, health }) {
     this.sm = stateMachine;
     this.browser = browserManager;
     this.login = loginManager;
     this.frameManager = frameManager;
     this.health = health;
-    this.executionRecoveryCheck = executionRecoveryCheck;
-    this.browser.setExecutionSafetyCheck?.(executionRecoveryCheck);
     this._recoveryPromise = null;
     this._pendingVerification = false;
   }
@@ -85,17 +83,6 @@ export class RecoveryManager {
         }
       }
       if (!this.browser.isAlive()) {
-        if (this.executionRecoveryCheck) {
-          const executionState = await this.executionRecoveryCheck();
-          if (!executionState?.safe) {
-            this.health.setRecovery?.('EXECUTION_RECONCILIATION_REQUIRED', {
-              reasonCode: 'BROWSER_RESTART_BLOCKED_BY_EXECUTION_STATE', evidence: executionState || { status: 'UNKNOWN' },
-            });
-            throw Object.assign(new Error('Browser restart is paused until unresolved execution state is reconciled'), {
-              code: 'EXECUTION_RECONCILIATION_REQUIRED', evidence: executionState || { status: 'UNKNOWN' },
-            });
-          }
-        }
         // Level 5 is allowed only after browser disconnection is observable.
         this.sm.transition(State.RESTART_BROWSER, 'browser-disconnected-confirmed');
         this.health.recordBrowserRestart();

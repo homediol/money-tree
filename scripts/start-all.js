@@ -5,9 +5,10 @@
  * Starts and supervises the project services in the correct order:
  *
  *  1. backend/bot_api.py             — existing bot control API (port 5001)
- *  2. round history collector       — single owned collector/browser
+ *  2. Orbit round history collector — single owned API collector
  *  3. backend/main.py                — Winner Predict FastAPI API (port 8000)
- *  4. frontend (vite dev)            — React dashboard (port 5174)
+ *  4. Behaviour Detection runtime    — independent local API, worker, read-only database sync
+ *  5. frontend (vite dev)            — React dashboard (port 5174)
  *
  * Usage: npm start, or npm run backend for only the port-8000 API.
  */
@@ -23,6 +24,7 @@ const ROOT    = path.resolve(__dirname, "..");
 const BACKEND = path.join(ROOT, "backend");
 const BOT_DIR = path.join(ROOT, "bot");
 const FRONTEND = path.join(ROOT, "frontend");
+const BEHAVIOUR_RUNTIME = path.join(ROOT, "scripts", "behaviour-runtime.js");
 
 // The Python backend reads backend/.env itself. Share the same database
 // configuration with the Node collector so both use one PostgreSQL history.
@@ -84,6 +86,8 @@ const BACKEND_PY = (() => {
   }
   return PYTHON_BIN;
 })();
+const UVICORN_LIMIT_CONCURRENCY = Math.max(32, Math.min(512,
+  Number.parseInt(process.env.WINNER_UVICORN_LIMIT_CONCURRENCY || "256", 10) || 256));
 
 function runSetup(cmd, args, cwd = ROOT) {
   console.log(`\x1b[90m[runner]\x1b[0m setup: ${cmd} ${args.join(" ")}`);
@@ -132,7 +136,9 @@ const SERVICES = [
   {
     name:    "backend",
     cmd:     BACKEND_PY,
-    args:    ["-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+    args:    ["-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000",
+      "--limit-concurrency", String(UVICORN_LIMIT_CONCURRENCY),
+      "--timeout-keep-alive", "5"],
     cwd:     BACKEND,
     color:   "\x1b[96m",   // bright cyan
     port:    8000,
@@ -146,7 +152,6 @@ const SERVICES = [
       "/api/backend/capabilities",
       "/api/history/status",
       "/api/rules-engine/status",
-      "/api/rules-engine/ui-setup",
       // Signal consumers and the Rules Engine integration must be loaded by
       // the supervised FastAPI worker before it passes compatibility checks.
       "/api/v1/signals/latest",
@@ -159,14 +164,22 @@ const SERVICES = [
       "/api/v1/publisher/heartbeat",
       "/api/v1/console/access",
     ],
-    requiredCapabilities: [
-      "receipt_reconciliation_to_rule_session",
-      "rule_execution_reconciliation_recovery",
-    ],
     restart: true,
     // Restart only after the managed API child exits. launch() rechecks the
     // port owner and required API routes before spawning, so a surviving or
     // unrelated backend is never duplicated or replaced without proof.
+  },
+  {
+    name:    "behaviour-runtime",
+    cmd:     NODE_BIN,
+    args:    [BEHAVIOUR_RUNTIME],
+    cwd:     ROOT,
+    color:   "\x1b[33m",
+    port:    8100,
+    healthPath: "/health/live",
+    expectedService: "advanced-crash-behaviour",
+    optional: true,
+    restart: true,
   },
   {
     name:    "frontend",
@@ -185,6 +198,18 @@ const scheduledTimers = new Set();
 let shuttingDown = false;
 const lifecyclePath = path.join(ROOT, "data", "backend_lifecycle.jsonl");
 const collectorPidPath = path.join(ROOT, "data", "bot", "collector-supervisor.json");
+const behaviourStopRequestPath = path.join(ROOT, "data", "behaviour", "stop-request.json");
+
+function consumeBehaviourStopRequest(pid) {
+  try {
+    const request = JSON.parse(fs.readFileSync(behaviourStopRequestPath, "utf8"));
+    if (Number(request.pid) !== Number(pid) || Number(request.supervisor_pid) !== process.pid) return false;
+    fs.unlinkSync(behaviourStopRequestPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function existingCollectorPid() {
   // Direct `npm run collector` starts publish this heartbeat too. Verify the
@@ -197,7 +222,7 @@ function existingCollectorPid() {
         && Number.isFinite(heartbeat) && Date.now() - heartbeat < 20000) {
       process.kill(pid, 0);
       if (process.platform !== "linux"
-          || fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("roundhistory-collector.js")) return pid;
+          || fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("orbit-roundhistory-collector.js")) return pid;
     }
   } catch (error) {
     if (error?.code !== "ENOENT" && error?.code !== "ESRCH") {
@@ -211,7 +236,7 @@ function existingCollectorPid() {
     process.kill(pid, 0);
     if (process.platform === "linux") {
       const command = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
-      if (!command.includes("roundhistory-collector.js")) return null;
+      if (!command.includes("orbit-roundhistory-collector.js")) return null;
     }
     return pid;
   } catch (error) {
@@ -298,8 +323,8 @@ function probeJson(port, pathname, headers = {}, timeoutMs = 5000) {
 
 async function expectedServiceOwnsPort(svc) {
   if (!svc.healthPath || !svc.expectedService) return true;
-  // /health verifies PostgreSQL and includes lifecycle diagnostics; allow for
-  // a slow but responsive database instead of treating it as an unknown owner.
+  // /health is a lightweight cached readiness snapshot. Allow the current
+  // service time to respond before treating the port owner as unknown.
   const response = await probeJson(svc.port, svc.healthPath, {}, 20000);
   if (!response) return null;
   const actualService = response?.data?.service;
@@ -426,7 +451,7 @@ function stopAll(code = 0) {
 }
 
 function scheduleRestart(svc) {
-  if (shuttingDown || svc.optional || svc.restart === false) return;
+  if (shuttingDown || svc.restart === false) return;
   const state = stateFor(svc);
   state.restartAttempts += 1;
   const delay = Math.min(1000 * (2 ** (state.restartAttempts - 1)), 30000);
@@ -467,13 +492,13 @@ function launch(svc, restarting = false) {
             // A backend port conflict must not shut down independently useful
             // services such as the history collector. Never replace an owner
             // we cannot prove belongs to this checkout.
-            if (svc.name !== "backend") stopAll(1);
+            if (svc.name !== "backend" && !svc.optional) stopAll(1);
             return;
           }
           if (ownerMatches === null) {
             console.error(`${label(svc)} ${timestamp()} could not verify the service on port ${svc.port}; leaving it untouched`);
             resolve(null);
-            if (svc.name !== "backend") stopAll(1);
+            if (svc.name !== "backend" && !svc.optional) stopAll(1);
             return;
           }
           let compatible = true;
@@ -583,6 +608,10 @@ function launch(svc, restarting = false) {
             });
             return;
           }
+          if (svc.name === "behaviour-runtime" && consumeBehaviourStopRequest(child.pid)) {
+            console.log(`${label(svc)} ${timestamp()} stopped by request; automatic restart suppressed`);
+            return;
+          }
           const uptimeSeconds = Math.round((Date.now() - state.startedAt) / 1000);
           if (uptimeSeconds > 60) state.restartAttempts = 0;
           if (svc.name === "backend") {
@@ -626,7 +655,7 @@ function launch(svc, restarting = false) {
     ? "\x1b[1m\x1b[37m║   Winner Predict — API Only            ║\x1b[0m"
     : backendOnly
     ? "\x1b[1m\x1b[37m║   Winner Predict — Backend Supervisor ║\x1b[0m"
-    : "\x1b[1m\x1b[37m║   Winner Predict — Starting Services ║\x1b[0m");
+    : "\x1b[1m\x1b[37m║ Winner Predict + Behaviour Detection ║\x1b[0m");
   console.log("\x1b[1m\x1b[37m╚══════════════════════════════════════╝\x1b[0m");
   console.log(`  Python  : ${PYTHON_BIN}`);
   console.log(`  Node    : ${NODE_BIN}`);
@@ -656,6 +685,9 @@ function launch(svc, restarting = false) {
     if (svc.name === "bot-api") {
       svc.cmd = backendPython;
     }
+  }
+  try { fs.unlinkSync(behaviourStopRequestPath); } catch (error) {
+    if (error?.code !== "ENOENT") console.warn(`[runner] ${timestamp()} could not clear stale Behaviour stop request: ${error.message}`);
   }
 
   for (const svc of selectedServices) {

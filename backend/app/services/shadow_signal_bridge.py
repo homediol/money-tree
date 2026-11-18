@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import json
 import logging
 import math
+import os
 from typing import Any, Mapping
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import HTTPException
 
@@ -26,6 +29,68 @@ def _is_verified_observation(event: Mapping[str, Any]) -> bool:
             and event.get("continuity_status") == "VERIFIED")
 
 
+async def _deliver_behaviour_settlement(app: Any, payload: Mapping[str, Any]) -> bool:
+    """Deliver a committed settlement from the durable SHADOW outbox to Behaviour."""
+    signal_id = str(payload.get("signal_id") or "")
+    repository = signals_api._repository(app)
+    marker = getattr(repository, "mark_behaviour_strategy_settlement_delivered", None)
+    inbox = getattr(app.state, "round_observation_inbox", None)
+    if not signal_id or not callable(marker):
+        return False
+    try:
+        if inbox is not None:
+            mirrored_settlement = {
+                "status": str(payload.get("settlement_status") or ""),
+                "result": str(payload.get("result") or "").upper(),
+                "target_round_id": payload.get("target_round_id"),
+                "target_round_index": payload.get("target_round_index"),
+                "target_stream_id": payload.get("target_stream_id"),
+                "actual_multiplier": payload.get("actual_multiplier"),
+                "profit_loss_rwf": payload.get("net_profit"),
+                "evidence": dict(payload.get("evidence") or {}),
+            }
+            mirrored = await asyncio.to_thread(inbox.commit_fast_signal_settlement,
+                                                signal_id, mirrored_settlement)
+            if not mirrored:
+                # The mirror can already contain the canonical settlement
+                # under a resolved round identity while the durable SHADOW
+                # outbox still carries its original index-only target. Do not
+                # let that projection conflict suppress delivery to Behaviour;
+                # its locked-signal and committed-evidence checks are the
+                # authoritative idempotency gate.
+                log.info("[SHADOW_SETTLEMENT_FEEDBACK] mirror not updated; sending authoritative receipt signal=%s",
+                         signal_id)
+
+        base = os.getenv("BEHAVIOUR_LOCAL_API_URL", "http://127.0.0.1:8100").rstrip("/")
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        secret = os.getenv("BEHAVIOUR_SHADOW_SHARED_SECRET", "").strip()
+        if secret:
+            headers["X-Behaviour-Shadow-Secret"] = secret
+        request = UrlRequest(base + "/api/v1/behaviour/internal/shadow-settlement",
+            data=json.dumps(dict(payload), separators=(",", ":"), default=str).encode("utf-8"),
+            headers=headers, method="POST")
+
+        def send():
+            with urlopen(request, timeout=2.0) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        result = await asyncio.to_thread(send)
+        delivered = isinstance(result, dict) and result.get("status") in {"RECORDED", "ALREADY_RECORDED"}
+        if not delivered:
+            raise RuntimeError("behaviour_settlement_ack_invalid")
+        await asyncio.to_thread(marker, signal_id, delivered=True)
+        return True
+    except Exception as exc:
+        try:
+            await asyncio.to_thread(marker, signal_id, delivered=False,
+                                    error=f"{type(exc).__name__}:{exc}")
+        except Exception:
+            log.exception("[SHADOW_SETTLEMENT_FEEDBACK] could not persist retry status signal=%s", signal_id)
+        log.info("[SHADOW_SETTLEMENT_FEEDBACK] deferred signal=%s error=%s",
+                 signal_id, type(exc).__name__)
+        return False
+
+
 class ShadowSignalBridge:
     """Publish persisted Shadow selections through the existing signal service."""
 
@@ -35,6 +100,7 @@ class ShadowSignalBridge:
             "last_signal_id": None, "last_decision_id": None, "last_target_round_id": None,
             "last_target_round_index": None, "last_target_identity_status": None,
             "last_error": None, "published_count": 0, "duplicate_count": 0,
+            "last_publication_error": None, "last_failed_decision_id": None,
             "settled_count": 0,
         }
         self._settlement_recovery_task: asyncio.Task | None = None
@@ -69,7 +135,8 @@ class ShadowSignalBridge:
 
     async def process_committed_round(self, app: Any, event: Mapping[str, Any],
                                       evaluation: Mapping[str, Any] | None = None, *,
-                                      collector_detection_at: str | None = None) -> dict[str, Any]:
+                                      collector_detection_at: str | None = None,
+                                      collector_receipt_at: str | None = None) -> dict[str, Any]:
         """Settle prior signals and publish any new committed TRUE selection."""
         if not _is_committed_verified(event):
             return {"status": "IGNORED_UNCOMMITTED_EVENT", "published": 0, "settled": 0}
@@ -94,7 +161,7 @@ class ShadowSignalBridge:
                 continue
             result = await self._publish_selection(
                 app, event, session_record,
-                collector_detection_at=collector_detection_at)
+                collector_detection_at=collector_detection_at, collector_receipt_at=collector_receipt_at)
             if result == "PUBLISHED":
                 published += 1
             elif result == "DUPLICATE":
@@ -119,7 +186,8 @@ class ShadowSignalBridge:
                                      evaluation: Mapping[str, Any], *,
                                      decision_started_ns: int | None = None,
                                      backend_received_ns: int | None = None,
-                                     collector_detection_at: str | None = None) -> dict[str, Any]:
+                                     collector_detection_at: str | None = None,
+                                     collector_receipt_at: str | None = None) -> dict[str, Any]:
         """Publish SHADOW selections on the fast verified-observation path.
 
         Waiting for the PostgreSQL batch handoff can mean the next round is
@@ -140,7 +208,8 @@ class ShadowSignalBridge:
                                                    observed_source=True,
                                                    decision_started_ns=decision_started_ns,
                                                    backend_received_ns=backend_received_ns,
-                                                   collector_detection_at=collector_detection_at)
+                                                   collector_detection_at=collector_detection_at,
+                                                   collector_receipt_at=collector_receipt_at)
             if result == "PUBLISHED":
                 published += 1
             elif result == "DUPLICATE":
@@ -161,7 +230,8 @@ class ShadowSignalBridge:
                                  observed_source: bool = False,
                                  decision_started_ns: int | None = None,
                                  backend_received_ns: int | None = None,
-                                 collector_detection_at: str | None = None) -> str:
+                                 collector_detection_at: str | None = None,
+                                 collector_receipt_at: str | None = None) -> str:
         decision = session_record.get("decision")
         if not isinstance(decision, Mapping) or decision.get("action") != "SELECT":
             return "SKIPPED"
@@ -259,8 +329,8 @@ class ShadowSignalBridge:
         # The Spribe frame does not expose the synthetic data-aviator-* marker
         # used by the optional phase observer. Preserve verified provider IDs
         # when present; otherwise publish a simulation-only stream/index target.
-        # The external publisher route and execution dispatcher still require
-        # provider proof, so this fallback cannot authorize a real wager.
+        # Provider proof still gates external target publication. This fallback
+        # is only enough to retain the local SHADOW simulation target.
         phase = getattr(app.state, "latest_provider_phase_observation", None)
         phase_source_index = None
         phase_target_index = None
@@ -294,12 +364,25 @@ class ShadowSignalBridge:
         target_id = (provider_target_id if provider_target_verified
                      else f"shadow-index:{stream_id}:{expected_index}")
 
-        selected_rules = signals_api._currently_enabled_selected(engine, detail)
+        # Active sessions evaluate their frozen rule_ids snapshot. Global rule
+        # toggles configure future sessions and may change after this decision
+        # was produced; using them here would discard a valid session result.
+        selected_rules = signals_api._session_snapshot_selected(detail)
         matched_rules = [str(rule_id) for rule_id in matched]
-        if not selected_rules or not set(matched_rules).issubset(set(selected_rules)):
+        selection_rules = (selection.get("contributing_rule_ids")
+                           or selection.get("matched_rule_ids")
+                           if isinstance(selection, Mapping) else None)
+        valid_selection_rules = (
+            isinstance(selection_rules, list)
+            and all(isinstance(rule_id, str) and rule_id for rule_id in selection_rules)
+            and len(selection_rules) == len(set(selection_rules))
+        )
+        if (not selected_rules or not set(matched_rules).issubset(set(selected_rules))
+                or not valid_selection_rules
+                or set(matched_rules) != set(selection_rules)):
             self._update(app, state="REJECTED_INVALID_DECISION", last_error="TRUE_RULES_NOT_IN_ACTIVE_SELECTION")
-            log.error("[SHADOW_SIGNAL] rejected SELECT whose TRUE rules are not active session rules session=%s selection=%s",
-                      session_id, selection_id)
+            log.error("[SHADOW_SIGNAL] rejected SELECT outside active session snapshot session=%s selection=%s true_rules=%s session_rules=%s saved_selection_rules=%s",
+                      session_id, selection_id, matched_rules, selected_rules, selection_rules)
             return "SKIPPED"
 
         reasons = decision.get("contributor_reasons")
@@ -333,9 +416,13 @@ class ShadowSignalBridge:
                 observed_source_event=event if source_is_verified_observation else None,
                 decision_started_ns=(decision_started_ns if observed_source else None),
                 backend_received_ns=(backend_received_ns if observed_source else None),
-                collector_detection_at=collector_detection_at)
+                collector_detection_at=collector_detection_at,
+                collector_receipt_at=collector_receipt_at,
+                trusted_selection_id=selection_id)
         except HTTPException as exc:
             detail_error = exc.detail.get("error") if isinstance(exc.detail, dict) else str(exc.detail)
+            self._update(app, last_publication_error=str(detail_error or "signal_publish_failed"),
+                         last_failed_decision_id=selection_id)
             if detail_error in {"target_round_already_completed", "shadow_target_round_already_completed"}:
                 return self._skip_stale_selection(app, session_id, selection_id, target_id)
             self._update(app, state="RETRYING" if exc.status_code >= 500 else "BLOCKED",
@@ -391,7 +478,23 @@ class ShadowSignalBridge:
         engine = getattr(app.state, "rules_engine", None)
         settled = 0
         for signal in signals:
-            if not isinstance(signal, dict) or signal.get("settlement_status") == "COMMITTED":
+            if not isinstance(signal, dict):
+                continue
+            if signal.get("settlement_status") == "COMMITTED":
+                if signal.get("source_id") == "BEHAVIOUR_DETECTION":
+                    try:
+                        await asyncio.to_thread(repository.update_bet_signal_settlement,
+                            str(signal.get("signal_id") or ""),
+                            str(signal.get("target_round_id") or target_round_id),
+                            signal.get("settlement") or {})
+                        feedback = await asyncio.to_thread(
+                            repository.behaviour_strategy_settlement_feedback,
+                            str(signal.get("signal_id") or ""))
+                        if isinstance(feedback, dict):
+                            await _deliver_behaviour_settlement(app, feedback)
+                    except Exception:
+                        log.exception("[SHADOW_SETTLEMENT_FEEDBACK] committed result recovery failed signal=%s",
+                                      signal.get("signal_id"))
                 continue
             decision_id = str(signal.get("decision_id") or "")
             session_id = str(signal.get("session_id") or "")
@@ -446,7 +549,11 @@ class ShadowSignalBridge:
                 "target_stream_id": str(event.get("stream_id") or ""),
                 "target_round_index": event_index, "actual_multiplier": event_multiplier,
                 "result": selection["status"], "settled_at": selection.get("settled_at"),
-                "evidence": dict(evidence),
+                "profit_loss_rwf": selection.get("profit_loss_rwf"),
+                "evidence": {**dict(evidence),
+                    "target_round_id": target_round_id,
+                    "target_stream_id": str(event.get("stream_id") or ""),
+                    "target_round_index": event_index},
             }
             try:
                 updated = await asyncio.to_thread(repository.update_bet_signal_settlement,
@@ -460,6 +567,12 @@ class ShadowSignalBridge:
                 settled += 1
                 log.info("[SHADOW_SIGNAL] result committed signal=%s target=%s result=%s multiplier=%s",
                          signal.get("signal_id"), target_round_id, settlement["result"], event_multiplier)
+                if updated.get("source_id") == "BEHAVIOUR_DETECTION":
+                    feedback = await asyncio.to_thread(
+                        repository.behaviour_strategy_settlement_feedback,
+                        str(signal.get("signal_id") or ""))
+                    if isinstance(feedback, dict):
+                        await _deliver_behaviour_settlement(app, feedback)
         return settled
 
     def _schedule_pending_settlement_recovery(self, app: Any) -> None:
@@ -497,7 +610,7 @@ class ShadowSignalBridge:
                 if isinstance(latest, Mapping):
                     latest_at = str(latest.get("timestamp") or "")
                     current_at = str(self._status.get("last_published_at") or "")
-                    if latest_at and latest_at >= current_at:
+                    if latest_at and latest_at > current_at:
                         changes.update({
                             "last_published_at": latest_at,
                             "last_signal_id": latest.get("signal_id"),
@@ -576,6 +689,16 @@ class ShadowSignalBridge:
         settled = 0
         for event, signals in events.values():
             settled += await self._settle_signals_for_target(app, event, signals)
+        feedback_loader = getattr(repository, "pending_behaviour_strategy_settlements", None)
+        if callable(feedback_loader):
+            try:
+                feedback_events = await asyncio.to_thread(feedback_loader, 100)
+            except Exception:
+                log.exception("[SHADOW_SETTLEMENT_FEEDBACK] retry outbox lookup failed")
+                feedback_events = []
+            for feedback_event in feedback_events:
+                if isinstance(feedback_event, dict):
+                    await _deliver_behaviour_settlement(app, feedback_event)
         return settled
 
     async def recover_for_open_phase(self, app: Any, phase: Mapping[str, Any]) -> dict[str, Any]:

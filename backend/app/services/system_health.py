@@ -1,14 +1,13 @@
-"""Central health model and final betting safety gate.
+"""Central health model and SHADOW readiness gate.
 
 Health is evidence based: a component is never reported healthy until it has
-produced a successful heartbeat.  The monitor is deliberately independent of
-the history collector so stopping betting cannot stop observation.
+produced a successful heartbeat. The monitor observes the history collector
+without controlling it.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import math
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -39,18 +38,14 @@ class ComponentHealth:
 
 class SystemHealth:
     COMPONENTS = (
-        "browser", "history", "database", "rules_engine", "emergency_stop",
-        "executor", "reconciliation", "api",
+        "browser", "history", "database", "rules_engine", "api",
     )
 
     def __init__(self, *, broadcaster: Callable[[dict], Awaitable[None]] | None = None,
-                 betting_manager=None, history_collector=None, repository=None,
-                 emergency_stop=None):
+                 history_collector=None, repository=None):
         self.broadcaster = broadcaster
-        self.betting_manager = betting_manager
         self.history_collector = history_collector
         self.repository = repository
-        self.emergency_stop = emergency_stop
         self.started_at = time.time()
         self.state = "STARTING"
         self.reason = "health checks have not completed"
@@ -58,11 +53,6 @@ class SystemHealth:
         self._last_snapshot: dict[str, Any] | None = None
         self._last_alert_key: str | None = None
         self._lock = asyncio.Lock()
-        self._browser_observation: dict[str, Any] | None = None
-
-    def record_browser_observation(self, observation: dict[str, Any]) -> None:
-        """Retain current read-only UI evidence, independently of a bet session."""
-        self._browser_observation = dict(observation)
 
     @staticmethod
     def _reason_text(reason: Any) -> str:
@@ -72,30 +62,6 @@ class SystemHealth:
             return json.dumps(reason, sort_keys=True, default=str)
         except (TypeError, ValueError):
             return str(reason)
-
-    def browser_observation(self) -> dict[str, Any]:
-        observation = dict(self._browser_observation or {})
-        try:
-            age = time.time() - datetime.fromisoformat(observation["observed_at"]).timestamp()
-        except (KeyError, TypeError, ValueError):
-            age = None
-        fresh = age is not None and 0 <= age <= 20
-        balance = observation.get("balance")
-        numeric_balance = (isinstance(balance, (int, float)) and not isinstance(balance, bool)
-                           and math.isfinite(balance) and balance >= 0)
-        balance_verified = bool(observation.get("balance_verified", observation.get("verified"))
-                                and numeric_balance and fresh)
-        observation.update(age_s=age, fresh=fresh,
-                           verified=bool(observation.get("session_verified", observation.get("verified"))
-                                         and fresh),
-                           balance_verified=balance_verified)
-        if not balance_verified:
-            observation["balance"] = None
-        if not observation["verified"]:
-            observation["error"] = observation.get("error") or (
-                "browser session observation stale" if age is not None and not fresh
-                else "execution browser idle; authenticated session is unverified")
-        return observation
 
     async def emit(self, payload: dict) -> None:
         if self.broadcaster:
@@ -130,8 +96,7 @@ class SystemHealth:
         if self.history_collector is None:
             return False, "history collector unavailable", {}
         try:
-            # Execution safety still verifies the canonical persisted history,
-            # not only the collector's lightweight sidecar health signal.
+            # SHADOW decisions require recent canonical history.
             status = self.history_collector.status()
             latest = status.get("latest") or {}
             stamp = latest.get("timestamp")
@@ -176,7 +141,7 @@ class SystemHealth:
     def refresh(self) -> dict[str, Any]:
         now = time.time()
         reasons: list[str] = []
-        # Database is authoritative for execution safety.
+        # The database must be reachable before SHADOW results can be trusted.
         db_started = time.perf_counter()
         try:
             if self.repository is None:
@@ -200,65 +165,21 @@ class SystemHealth:
         if not history_ok:
             reasons.append(history_reason or "history unavailable")
 
-        if self.betting_manager is not None:
-            try:
-                bs = self.betting_manager.status()
-                mode = bs.get("mode")
-                browser_ok = mode == "SIMULATION" or (
-                    bs.get("browser_status") in {"CONNECTED", "READY"} and bool(bs.get("last_ui_ready"))
-                    and bs.get("authentication_state") == "AUTHENTICATED"
-                )
-                observation = self.browser_observation()
-                # A preflight UI read may establish browser health while idle.
-                # An active REAL executor must still verify its own session.
-                use_observation = not bs.get("automatic_enabled") and mode != "SIMULATION"
-                if use_observation:
-                    browser_ok = bool(observation.get("verified") and observation.get("ui_ready")
-                                      and observation.get("browser_status") in {"CONNECTED", "READY"})
-                browser_waiting = (not browser_ok and not bs.get("automatic_enabled")
-                                   and not bs.get("last_error"))
-                browser_reason = None if browser_ok else (
-                    (observation.get("error") or "betting panel is not UI-ready") if browser_waiting
-                    else bs.get("last_error") or "browser not connected and UI-ready"
-                )
-                browser_metadata = {"mode": mode, "browser_status": bs.get("browser_status"),
-                                    "ui_ready": bs.get("last_ui_ready"),
-                                    "balance": bs.get("current_balance"),
-                                    "session_verified": browser_ok and mode != "SIMULATION",
-                                    "balance_verified": False}
-                if use_observation:
-                    browser_metadata.update({key: observation.get(key) for key in (
-                        "browser_status", "ui_ready", "balance", "balance_text", "observed_at", "source")})
-                    browser_metadata["session_verified"] = observation.get("verified", False)
-                    browser_metadata["balance_verified"] = observation.get("balance_verified", False)
-                self.heartbeat("browser", ok=browser_ok,
-                               waiting=browser_waiting, error=browser_reason,
-                               metadata=browser_metadata, stale_after_s=20)
-                if not browser_ok and mode == "REAL" and bs.get("automatic_enabled"):
-                    reasons.append("browser unsafe")
-                # An active execution is expected while a round is in flight;
-                # unresolved UNKNOWN/RECONCILIATION_PENDING is unsafe.
-                open_rows = self.repository.open_executions() if self.repository else []
-                recon_ok = not any(x.get("status") in {"UNKNOWN", "RECONCILIATION_PENDING"} for x in open_rows)
-                self.heartbeat("reconciliation", ok=recon_ok,
-                               error=None if recon_ok else "unresolved execution requires reconciliation",
-                               metadata={"open_executions": len(open_rows) if self.repository else None},
-                               stale_after_s=30)
-                if not recon_ok:
-                    reasons.append("reconciliation unresolved")
-                self.heartbeat("executor", ok=True, metadata={"state": bs.get("state")}, stale_after_s=30)
-                stop_latched = bool(getattr(self.emergency_stop, "latched", False))
-                self.heartbeat("emergency_stop", ok=not stop_latched,
-                               error="emergency stop latched" if stop_latched else None,
-                               stale_after_s=30)
-                if stop_latched:
-                    reasons.append("emergency stop latched")
-            except Exception as exc:
-                self.heartbeat("executor", ok=False, error=str(exc))
-                reasons.append("executor status unavailable")
+        try:
+            collector_state = self.history_collector.status() if self.history_collector else {}
+            no_browser_source = collector_state.get("data_source") == "ORBIT_DATA_WATCH_API"
+            browser_connected = collector_state.get("browser_connected")
+            browser_ok = no_browser_source or browser_connected is True
+            self.heartbeat("browser", ok=browser_ok,
+                waiting=not browser_ok and browser_connected is None,
+                error=None if browser_ok else "collector browser is unavailable",
+                metadata={"browser_connected": browser_connected,
+                          "not_required": no_browser_source}, stale_after_s=120)
+        except Exception as exc:
+            self.heartbeat("browser", ok=False, error=str(exc), waiting=True)
 
         if reasons:
-            self.state = "PAUSED" if self.betting_manager and self.betting_manager.session else "DEGRADED"
+            self.state = "DEGRADED"
             self.reason = "; ".join(dict.fromkeys(self._reason_text(reason) for reason in reasons))
         elif all(c.last_success is not None for c in self._components.values() if c.name in {"database", "history"}):
             self.state, self.reason = "HEALTHY", None
@@ -275,21 +196,14 @@ class SystemHealth:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "uptime_s": round(now - self.started_at, 3),
             "components": {name: c.public(now) for name, c in self._components.items()},
-            "can_bet": self.can_bet_now(),
+            "can_shadow": self.can_shadow(),
         }
 
-    def can_bet_now(self, *, mode: str | None = None) -> dict[str, Any]:
-        mode = mode or (self.betting_manager.status().get("mode") if self.betting_manager else "REAL")
-        required = ["database", "history", "reconciliation", "emergency_stop"]
-        if mode != "SIMULATION":
-            required.append("browser")
+    def can_shadow(self) -> dict[str, Any]:
+        required = ["database", "history"]
         blocked = []
         for name in required:
             c = self._components[name]
-            if (name == "browser" and (c.metadata or {}).get("source") == "existing_cdp_page_read_only"
-                    and not self.browser_observation().get("verified")):
-                blocked.append("browser:" + self.browser_observation().get("error", "session unverified"))
-                continue
             if c.last_success is None or c.state != "HEALTHY":
                 blocked.append(f"{name}:{c.last_error or c.state.lower()}")
             elif c.last_heartbeat is None or time.time() - c.last_heartbeat > c.stale_after_s:
@@ -298,28 +212,8 @@ class SystemHealth:
         return {"allowed": allowed, "state": self.state, "reasons": blocked,
                 "checked_at": datetime.now(timezone.utc).isoformat()}
 
-    async def enforce_safety(self) -> dict[str, Any]:
+    async def refresh_and_emit(self) -> dict[str, Any]:
         async with self._lock:
             result = await asyncio.to_thread(self.refresh)
-            if self.betting_manager and self.betting_manager.session:
-                session = self.betting_manager.session
-                if session.mode.value == "REAL" and not self.can_bet_now(mode="REAL").get("allowed"):
-                    if session.state.is_active:
-                        session.request_stop("health_safety_pause")
-                        key = f"{self.state}:{self.reason}"
-                        if key != self._last_alert_key:
-                            self._last_alert_key = key
-                            event = {"type": "health:alert", "severity": "CRITICAL",
-                                     "state": self.state, "reason": self.reason}
-                            if self.repository:
-                                try:
-                                    with self.repository.connect() as conn:
-                                        conn.execute(
-                                            "INSERT INTO system_audit_log(event_type,entity_id,recorded_at,payload) VALUES(?,?,datetime('now'),?)",
-                                            ("HEALTH_ALERT", None, json.dumps(event)),
-                                        )
-                                except Exception:
-                                    pass
-                            await self.emit(event)
             await self.emit({"type": "health:updated", "health": result})
             return result

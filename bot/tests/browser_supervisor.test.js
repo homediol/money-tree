@@ -574,17 +574,6 @@ test('game-provider outage does not repeat login or navigate the authenticated p
   assert.equal(fixture.restarts, 0);
 });
 
-test('browser restart waits for unresolved execution reconciliation', async () => {
-  const fixture = recoveryFixture({ browserAlive: false });
-  fixture.recovery.executionRecoveryCheck = async () => ({ safe: false, status: 'RECONCILIATION_REQUIRED' });
-
-  await assert.rejects(
-    fixture.recovery.recover(new Error('browser disconnected'), fixture.page),
-    error => error.code === 'EXECUTION_RECONCILIATION_REQUIRED',
-  );
-  assert.equal(fixture.restarts, 0);
-});
-
 test('storage failures never invoke browser or page recovery', async () => {
   const fixture = recoveryFixture({ browserAlive: false });
   await assert.rejects(fixture.recovery.recover(new Error('PostgreSQL database unavailable'), fixture.page));
@@ -599,7 +588,6 @@ test('shutdown preservation leaves the shared Aviator page open', async () => {
   browser._context = { pages: () => [] };
   browser._historyPage = { isClosed: () => false, close: async () => { closedPages += 1; } };
   browser._aviatorPage = browser._historyPage;
-  browser._bettingPage = browser._aviatorPage;
   browser._ownsBrowser = true;
   browser._persistSession = async () => {};
   browser._persistMetadata = () => {};

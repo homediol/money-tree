@@ -1,4 +1,4 @@
-"""Backend-owned lifecycle and read model for the Playwright history collector."""
+"""Backend read model for the externally supervised Orbit history collector."""
 from __future__ import annotations
 
 import asyncio
@@ -19,18 +19,12 @@ from app.core.logging import get_logger
 log = get_logger("HISTORY")
 Broadcaster = Callable[[dict], Awaitable[None]]
 ROOT = Path(__file__).resolve().parents[2]
-CASHOUT_INITIALIZATION_UNKNOWN = {
-    "target": "2.00", "auto_bet": "UNKNOWN", "status": "UNKNOWN",
-    "panel_1_cashout": "UNKNOWN", "panel_2_cashout": "UNKNOWN",
-    "panels": [], "updated_at": None,
-    "error_reason": "COLLECTOR_CASHOUT_INITIALIZATION_NOT_REPORTED",
-}
 
 
 class HistoryCollectorManager:
-    """Own one Node collector subprocess; the Node side owns BrowserManager."""
+    """Observe the externally supervised Orbit API collector process."""
 
-    STATES = {"STARTING", "CONNECTING", "AUTH_REQUIRED", "WAITING_FOR_AVIATOR", "COLLECTING",
+    STATES = {"STARTING", "CONNECTING", "AUTH_REQUIRED", "WAITING_FOR_AVIATOR", "WAITING_FOR_SOURCE", "COLLECTING",
               "OFFLINE", "RECOVERING", "STORAGE_UNAVAILABLE", "STOPPING", "STALE", "UNKNOWN"}
 
     def __init__(self, data_path: Path, broadcaster: Broadcaster | None = None, round_loader=None,
@@ -44,7 +38,7 @@ class HistoryCollectorManager:
         # hooks only observe its heartbeat; backend startup/restart must never
         # start, stop, or own its browser.
         self.external = True
-        self.entrypoint = ROOT / "bot" / "roundhistory-collector.js"
+        self.entrypoint = ROOT / "bot" / "orbit-roundhistory-collector.js"
         self.broadcaster = broadcaster
         self.process: asyncio.subprocess.Process | None = None
         self.state = "STOPPED"
@@ -182,7 +176,7 @@ class HistoryCollectorManager:
                     return None, heartbeat
                 if not command.strip():
                     return None, heartbeat
-                if "roundhistory-collector.js" not in command:
+                if "orbit-roundhistory-collector.js" not in command:
                     return False, heartbeat
             return True, heartbeat
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
@@ -218,24 +212,10 @@ class HistoryCollectorManager:
                 heartbeat_age = None
         heartbeat_stale_after = float(os.environ.get("COLLECTOR_HEARTBEAT_STALE_SECONDS", "20"))
         heartbeat_state = "UNKNOWN" if heartbeat_age is None else "STALE" if heartbeat_age > heartbeat_stale_after else "FRESH"
-        # Browser topology and betting-control values are point-in-time
-        # observations. A stopped collector or dead heartbeat cannot vouch
-        # for the browser last recorded in its sidecar.
+        # Browser topology is a point-in-time observation. A stopped
+        # collector or dead heartbeat cannot vouch for the last saved browser.
         observation_current = process_status == "RUNNING" and heartbeat_state == "FRESH"
         browser_pages = node.get("browser_pages") or {}
-        cashout_initialization = node.get("cashout_initialization") or {
-            **CASHOUT_INITIALIZATION_UNKNOWN,
-        }
-        bet_amount_initialization = node.get("bet_amount_initialization") or {
-            "status": "UNKNOWN", "execution_panel": None, "requested_stake": None,
-            "requested_stake_currency": None, "platform_currency": None,
-            "observed_value": None, "updated_at": None,
-            "error_reason": "COLLECTOR_STAKE_INITIALIZATION_NOT_REPORTED",
-        }
-        betting_ui_configuration = node.get("betting_ui_configuration") or {
-            "status": "UNKNOWN", "updated_at": None,
-            "error_reason": "COLLECTOR_BETTING_UI_CONFIGURATION_NOT_REPORTED",
-        }
         authentication_state = node.get("authenticationState")
         if authentication_state not in {"AUTHENTICATED", "AUTH_REQUIRED", "UNKNOWN"}:
             authentication_state = "UNKNOWN"
@@ -245,22 +225,8 @@ class HistoryCollectorManager:
                 "aviator_page_count": None, "aviator_target_id": None,
                 "aviator_page_state": "UNKNOWN", "game_frame_count": None,
                 "game_frame_state": "UNKNOWN", "page_role": "SHARED_AVIATOR",
-                "history_target_id": None, "betting_target_id": None,
+                "history_target_id": None,
                 "topology_verified": False,
-                "error_reason": "COLLECTOR_OBSERVATION_NOT_CURRENT",
-            }
-            cashout_initialization = {
-                **CASHOUT_INITIALIZATION_UNKNOWN,
-                "error_reason": "COLLECTOR_OBSERVATION_NOT_CURRENT",
-            }
-            bet_amount_initialization = {
-                "status": "UNKNOWN", "execution_panel": None, "requested_stake": None,
-                "requested_stake_currency": None, "platform_currency": None,
-                "observed_value": None, "updated_at": None,
-                "error_reason": "COLLECTOR_OBSERVATION_NOT_CURRENT",
-            }
-            betting_ui_configuration = {
-                "status": "UNKNOWN", "updated_at": None,
                 "error_reason": "COLLECTOR_OBSERVATION_NOT_CURRENT",
             }
             authentication_state = "UNKNOWN"
@@ -289,6 +255,7 @@ class HistoryCollectorManager:
         snapshot = {
             "status": state, "running": running, "collector_process_status": process_status,
             "process_verified": process_status != "UNKNOWN", "paused": self._paused,
+            "collector_reported_running": node.get("collectorRunning") is True,
             "started_at": self.started_at, "last_error": self.last_error,
             "auth_required": bool(node.get("authRequired", False)),
             "auth_required_reason": node.get("authRequiredReason"),
@@ -311,16 +278,18 @@ class HistoryCollectorManager:
             "network": node.get("network", {"status": "UNKNOWN"}),
             "backend": node.get("backend", {"status": "UNKNOWN"}),
             "storage": node.get("storage", {"status": "UNKNOWN"}),
-            "cashout_initialization": cashout_initialization,
-            "bet_amount_initialization": bet_amount_initialization,
-            "betting_ui_configuration": betting_ui_configuration,
-            "authentication_state": authentication_state,
             "browser_pages": browser_pages,
             "backlog_size": int((node.get("storage") or {}).get("backlog_size", 0) or 0),
             "last_recovery": node.get("lastRecovery"),
             "last_error": node.get("lastError") or self.last_error,
             "observed_at": datetime.now(timezone.utc).isoformat(),
-            "data_source": "collector_observation",
+            "data_source": node.get("dataSource", "collector_observation"),
+            "orbit_api": node.get("orbitApi", {"status": "NOT_CONFIGURED"}),
+            "round_history_health": node.get("roundHistoryHealth", {
+                "state": "UNKNOWN", "coverage": "UNKNOWN", "backlogCount": None,
+                "latestFrontendRoundId": None,
+            }),
+            "last_successful_sync": (node.get("orbitApi") or {}).get("lastSuccessfulSync"),
         }
         if process_status == "STOPPED":
             snapshot["reason"] = node.get("lastError") or "history collector process is stopped"
@@ -356,6 +325,28 @@ class HistoryCollectorManager:
             count = len(rows)
             latest = rows[-1] if rows else None
             previous = rows[-2] if len(rows) > 1 else None
+        if latest:
+            # The collector process may have restarted after this row was
+            # committed. Rehydrate persisted-round fields from PostgreSQL
+            # without treating the database row as a fresh browser observation.
+            if not health.get("last_persisted_round"):
+                health["last_persisted_round"] = latest.get("round_id")
+            if not health.get("last_persisted_at"):
+                health["last_persisted_at"] = latest.get("stored_at") or latest.get("timestamp")
+            if not health.get("last_update"):
+                health["last_update"] = latest.get("timestamp")
+            round_health = health.get("round_history_health")
+            if isinstance(round_health, dict):
+                if not round_health.get("latestPersistedRoundId"):
+                    round_health["latestPersistedRoundId"] = latest.get("round_id")
+                if not round_health.get("lastPersistedAt"):
+                    round_health["lastPersistedAt"] = latest.get("stored_at") or latest.get("timestamp")
+                if (round_health.get("latestAcceptedVerifiedMultiplier") is None
+                        and latest.get("continuity_verified") is True):
+                    round_health["latestAcceptedVerifiedMultiplier"] = latest.get("multiplier")
+                round_health["latestDatabaseRoundVerified"] = latest.get("continuity_verified") is True
+                round_health["latestDatabaseRoundGapBefore"] = latest.get("gap_before") is True
+                round_health["latestDatabaseRoundIndex"] = latest.get("round_index")
         return {
             **health,
             "count": count, "latest": latest, "previous": previous,

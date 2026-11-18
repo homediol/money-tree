@@ -115,7 +115,7 @@ class RoundHistoryLoader:
             duplicates = before - len(frame)
             frame["timestamp_dt"] = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True)
             frame = frame.sort_values(["round_index", "timestamp_dt"], na_position="last").reset_index(drop=True)
-            frame["target"] = (frame["multiplier"] >= 2.0).astype(int)
+            frame["target"] = (frame["multiplier"] > 2.0).astype(int)
         else:
             frame = self._empty_frame()
 

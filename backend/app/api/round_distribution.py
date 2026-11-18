@@ -171,6 +171,27 @@ def _sse(event: dict, *, event_id: str | None = None) -> str:
 
 
 async def _send_event(hub, event: dict, stream_id: str) -> str:
+    event = dict(event)
+    round_id = str(event.get("round_uid") or event.get("round_id") or "")
+    if round_id:
+        event.setdefault("round_uid", round_id)
+        event.setdefault("round_id", round_id)
+        event.setdefault("source", (event.get("source_metadata") or {}).get("source")
+                          if isinstance(event.get("source_metadata"), dict)
+                          else "ORBIT_DATA_WATCH_API")
+        event.setdefault("provider_round_id", event.get("platform_round_id"))
+        event.setdefault("provider_sequence", event.get("platform_round_index"))
+        if event.get("canonical_sequence") is None:
+            event["canonical_sequence"] = event.get("round_index") or event.get("stream_sequence")
+        if event.get("classification") is None and isinstance(event.get("multiplier"), (int, float)):
+            multiplier = float(event["multiplier"])
+            event["classification"] = ("HIGH" if multiplier > 2.0 else
+                                        "LOW" if multiplier < 2.0 else "EXACT")
+        event.setdefault("source_timestamp", event.get("platform_timestamp") or event.get("observed_at"))
+        continuity = str(event.get("continuity_status") or "")
+        event.setdefault("verification_status", "VERIFIED" if continuity in {"VERIFIED", "GAP_BEFORE"}
+                         else "UNVERIFIED")
+        event.setdefault("verified_at", event.get("published_at") or event.get("observed_at"))
     cursor = ""
     if event.get("event_type") == "round.persisted" and event.get("stream_sequence") is not None:
         cursor = f"{stream_id}:{int(event['stream_sequence'])}"
@@ -390,6 +411,49 @@ async def round_stream_clock(request: Request):
             "clock_reference": "API_SYSTEM_UTC"}
 
 
+def _collector_health_from_payload(collector: dict) -> str:
+    running = collector.get("collectorRunning")
+    if running is False:
+        return "OFFLINE"
+    orbit_source = collector.get("dataSource") == "ORBIT_DATA_WATCH_API"
+    if collector.get("authRequired") is True or (not orbit_source and collector.get("loggedIn") is False):
+        return "AUTH_REQUIRED"
+
+    def age(value):
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    heartbeat_age = age(collector.get("heartbeatAt"))
+    if orbit_source:
+        orbit = collector.get("orbitApi") if isinstance(collector.get("orbitApi"), dict) else {}
+        source_check_age = age(orbit.get("lastSourceCheckAt"))
+        if (running is not True or heartbeat_age is None or heartbeat_age > 20
+                or source_check_age is None or source_check_age > 120
+                or orbit.get("status") != "CONNECTED"
+                or orbit.get("streamStatus") != "CONNECTED"
+                or orbit.get("sourceStatus") != "HEALTHY"
+                or orbit.get("lastError")):
+            return "STALE" if running is True else "UNKNOWN"
+        return "HEALTHY"
+
+    collection_age = age(collector.get("lastSuccessfulCollection"))
+    if (running is not True or heartbeat_age is None or heartbeat_age > 20
+            or collection_age is None or collection_age > 120
+            or collector.get("loggedIn") is not True
+            or collector.get("browserConnected") is not True
+            or collector.get("pageConnected") is not True
+            or collector.get("frameConnected") is not True):
+        return "STALE" if running is True else "UNKNOWN"
+    return "HEALTHY"
+
+
 def _collector_status_payload(request: Request, stream: dict, metrics: dict) -> dict:
     path = Path(__file__).resolve().parents[3] / "data" / "bot" / "status.json"
     try:
@@ -397,34 +461,7 @@ def _collector_status_payload(request: Request, stream: dict, metrics: dict) -> 
         collector = raw if isinstance(raw, dict) else {}
     except (OSError, json.JSONDecodeError):
         collector = {}
-    running = collector.get("collectorRunning")
-    if running is False:
-        state = "OFFLINE"
-    elif collector.get("authRequired") is True or collector.get("loggedIn") is False:
-        state = "AUTH_REQUIRED"
-    else:
-        def age(field):
-            value = collector.get(field)
-            if not value:
-                return None
-            try:
-                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                return (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
-            except (TypeError, ValueError, OverflowError):
-                return None
-        heartbeat_age = age("heartbeatAt")
-        collection_age = age("lastSuccessfulCollection")
-        if (running is not True or heartbeat_age is None or heartbeat_age > 20
-                or collection_age is None or collection_age > 120
-                or collector.get("loggedIn") is not True
-                or collector.get("browserConnected") is not True
-                or collector.get("pageConnected") is not True
-                or collector.get("frameConnected") is not True):
-            state = "STALE" if running is True else "UNKNOWN"
-        else:
-            state = "HEALTHY"
+    state = _collector_health_from_payload(collector)
     latest = stream.get("latest") or {}
     continuity = latest.get("continuity_status", "UNKNOWN")
     round_delivery = (collector.get("storage", {}).get("round_delivery")
@@ -537,34 +574,7 @@ def _collector_health_state(request: Request) -> str:
             collector = {}
     except (OSError, json.JSONDecodeError):
         collector = {}
-    running = collector.get("collectorRunning")
-    if running is False:
-        return "OFFLINE"
-    if collector.get("authRequired") is True or collector.get("loggedIn") is False:
-        return "AUTH_REQUIRED"
-
-    def age(field: str) -> float | None:
-        value = collector.get(field)
-        if not value:
-            return None
-        try:
-            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
-        except (TypeError, ValueError, OverflowError):
-            return None
-
-    heartbeat_age = age("heartbeatAt")
-    collection_age = age("lastSuccessfulCollection")
-    if (running is not True or heartbeat_age is None or heartbeat_age > 20
-            or collection_age is None or collection_age > 120
-            or collector.get("loggedIn") is not True
-            or collector.get("browserConnected") is not True
-            or collector.get("pageConnected") is not True
-            or collector.get("frameConnected") is not True):
-        return "STALE" if running is True else "UNKNOWN"
-    return "HEALTHY"
+    return _collector_health_from_payload(collector)
 
 
 @router.get("/collector/status")
@@ -901,6 +911,13 @@ def observed_round_event(observation: dict, stream_id: str) -> dict:
                          "VERIFIED" if observation.get("continuity_verified") is True else "UNVERIFIED")
     round_id = str(observation["round_id"])
     observation_id = str(observation.get("observation_id") or round_id)
+    source_metadata = (observation.get("source_metadata")
+                       if isinstance(observation.get("source_metadata"), dict) else {})
+    source_name = str(source_metadata.get("source") or "ORBIT_DATA_WATCH_API")
+    source_timestamp = observation.get("platform_timestamp") or observation.get("observed_at")
+    provider_sequence = observation.get("platform_round_index")
+    verification_status = ("VERIFIED" if continuity_status in {"VERIFIED", "GAP_BEFORE"}
+                           else "UNVERIFIED")
     return {
         "schema_version": "1.0",
         "correlation_id": round_id,
@@ -913,10 +930,23 @@ def observed_round_event(observation: dict, stream_id: str) -> dict:
         "committed_sequence": None,
         "observation_id": observation_id,
         "round_id": round_id,
+        # round_id is the collector's durable canonical identity today. Orbit
+        # does not expose a provider round ID/sequence through this source.
+        # Keep the explicit alias so every consumer persists the same UID.
+        "round_uid": round_id,
+        "source": source_name,
+        "provider_round_id": (str(platform_id) if platform_id is not None else None),
+        "provider_sequence": (int(provider_sequence) if provider_sequence is not None else None),
+        "canonical_sequence": int(observation["round_index"]),
         "identity_source": identity_source,
         "multiplier": float(observation["multiplier"]),
+        "classification": ("HIGH" if float(observation["multiplier"]) > 2.0 else
+                           "LOW" if float(observation["multiplier"]) < 2.0 else "EXACT"),
+        "source_timestamp": source_timestamp,
         "platform_timestamp": observation.get("platform_timestamp"),
         "observed_at": observation.get("observed_at"),
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "verification_status": verification_status,
         "stored_at": None,
         # This pending envelope is handed to Rules Engine before fanout. The
         # actual in-process enqueue time lives in the API response/metrics;
@@ -925,6 +955,7 @@ def observed_round_event(observation: dict, stream_id: str) -> dict:
         "durability": "PENDING",
         "continuity_status": continuity_status,
         "delivery_mode": observation.get("delivery_mode") or "LIVE",
+        "source_metadata": observation.get("source_metadata"),
         "timing_uncertainty": {"next_round_open": "UNKNOWN"},
         "round_index": int(observation["round_index"]),
         "platform_round_id": str(platform_id) if platform_id is not None else None,

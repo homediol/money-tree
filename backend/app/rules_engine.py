@@ -1,16 +1,16 @@
 """Prospective, shadow-only Rules Engine migrated from aviator-shadow-experiment-node.
 
-The registry freezes source semantics by mode.  Engines own their state; the
+The registry freezes source semantics by mode. Engines own their state; the
 coordinator is the only component allowed to create a combined selection.
-No code in this module can authorize or submit a real-money action.
 """
 from __future__ import annotations
 
 from copy import deepcopy
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import hashlib
+import logging
 import math
 import re
 from threading import RLock
@@ -19,71 +19,86 @@ from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 ENGINE_VERSION = "WINNER_RULES_ENGINE_SHADOW_V1"
+log = logging.getLogger(__name__)
 STATE_KEY = "rules_engine_state_v1"
 WINDOW_SIZE = 50
+RULE_PERFORMANCE_WINDOW_SIZE = 100
+RULE_PERFORMANCE_IDLE_RESET_SECONDS = 300
 H_THRESHOLD = 2.0
+RULE_LOSS_LIMIT = 2
+RULE_CYCLE_MAX_TARGETS = 3
 NET_OUTCOME_LIMIT_REASONS = {"WIN_LIMIT_REACHED", "LOSS_LIMIT_REACHED"}
+SESSION_LIMIT_STOP_REASONS = {*NET_OUTCOME_LIMIT_REASONS, "MAX_SELECTIONS_REACHED",
+                             "PROFIT_TARGET_REACHED", "AUTO_NEXT_RESULT_LIMIT_REACHED"}
 MODES = {"START_CHECK", "LEGACY_SEPARATE_TRACKER", "FIVE_RULE_TRACKER", "ALL_RULES_TOGETHER"}
 COMBINED_POLICY_ID = "USER_PLAYING_POLICY"
 START_CHECK_POLICY_ID = "USER_PLAYING_POLICY_START_CHECK"
 LEGACY_POLICY_ID = "USER_PLAYING_POLICY_LEGACY_TRACKER"
 SPECIAL_SKIP_POLICY_IDS = {START_CHECK_POLICY_ID, COMBINED_POLICY_ID}
+RULE_PERFORMANCE_CHECKPOINT_ID = "__rule_performance_observer__"
 
 
 def _research_definitions() -> list[dict[str, Any]]:
     return [
         {
-            "rule_id": "RECENT_5_H_GE_4", "version": "1.0.0",
+            "rule_id": "RECENT_5_H_GE_4", "version": "2.0.0",
             "name": "Recent 5: at least 4 H", "mode": "FIVE_RULE_TRACKER|ALL_RULES_TOGETHER",
             "parameters": {}, "target_offset": 1, "history_required": 5,
             "condition": {"window": 5, "outcome": "H", "operator": ">=", "count": 4,
-                          "includes_source": True, "latest_source_must_be_h": False},
+                          "includes_source": True, "latest_source_must_be_h": False,
+                          "maximum_selections": 1, "loss_limit": RULE_LOSS_LIMIT},
             "initial_state": {"status": "WARMING_UP", "pending_target": None, "failure_count": 0,
                               "recovery_count": 0},
             "transition_rules": ["Use the latest five consecutive verified completed outcomes including source.",
-                                 "TRUE at four or more H; FALSE only when the verified window is ready.",
-                                 "Each TRUE requests source round + 1 once; only its own request resolves its state."],
+                                 "A fresh 4-of-5 H entry starts one target; the signal must clear before it can start again.",
+                                 "Two settled losses for this rule pause it until a fresh entry signal."],
             "reason_rw": "H 4 muri rounds 5: condition yujujwe.",
         },
         {
-            "rule_id": "PATTERN_LH", "version": "1.0.0",
+            "rule_id": "PATTERN_LH", "version": "2.0.0",
             "name": "Pattern LH", "mode": "FIVE_RULE_TRACKER|ALL_RULES_TOGETHER",
             "parameters": {}, "target_offset": 1, "history_required": 2,
-            "condition": {"pattern": ["L", "H"], "includes_source": True},
+            "condition": {"pattern": ["L", "H"], "includes_source": True,
+                          "maximum_selections": 1, "loss_limit": RULE_LOSS_LIMIT},
             "initial_state": {"status": "WARMING_UP", "pending_target": None, "failure_count": 0,
                               "recovery_count": 0},
-            "transition_rules": ["TRUE exactly for the latest verified pair L,H.",
-                                 "Each TRUE requests the immediately following target once."],
+            "transition_rules": ["A fresh verified L,H signal starts one target; clear and reappear before restarting.",
+                                 "Two settled losses for this rule pause it until a fresh L,H entry."],
             "reason_rw": "Rounds ebyiri ziheruka ni L,H.",
         },
         {
-            "rule_id": "PATTERN_HH", "version": "1.0.0",
+            "rule_id": "PATTERN_HH", "version": "2.0.0",
             "name": "Pattern HH", "mode": "FIVE_RULE_TRACKER|ALL_RULES_TOGETHER",
             "parameters": {}, "target_offset": 1, "history_required": 2,
             "condition": {"pattern": ["H", "H"], "includes_source": True,
-                          "reevaluate_each_source": True, "overlap_allowed": True},
+                          "reevaluate_each_source": True, "overlap_allowed": False,
+                          "maximum_selections": 1, "loss_limit": RULE_LOSS_LIMIT},
             "initial_state": {"status": "WARMING_UP", "pending_target": None, "failure_count": 0,
                               "recovery_count": 0},
-            "transition_rules": ["TRUE exactly for the latest verified pair H,H.",
-                                 "Repeated HH pairs may request successive distinct targets."],
+            "transition_rules": ["A fresh verified H,H signal starts one target; one continuous H streak is one entry.",
+                                 "The H signal must break before another H,H cycle can start.",
+                                 "Two settled losses for this rule pause it until a fresh H,H entry."],
             "reason_rw": "Rounds ebyiri ziheruka ni H,H.",
         },
         {
-            "rule_id": "SOURCE_H_MULT_2_3", "version": "1.0.0",
-            "name": "Source multiplier [2, 3)", "mode": "FIVE_RULE_TRACKER|ALL_RULES_TOGETHER",
+            "rule_id": "SOURCE_H_MULT_2_3", "version": "2.0.0",
+            "name": "Source multiplier (2, 3)", "mode": "FIVE_RULE_TRACKER|ALL_RULES_TOGETHER",
             "parameters": {}, "target_offset": 1, "history_required": 1,
-            "condition": {"minimum_inclusive": 2.0, "maximum_exclusive": 3.0},
+            "condition": {"minimum_exclusive": 2.0, "maximum_exclusive": 3.0,
+                          "maximum_selections": 1, "loss_limit": RULE_LOSS_LIMIT},
             "initial_state": {"status": "WAIT", "pending_target": None, "failure_count": 0,
                               "recovery_count": 0},
-            "transition_rules": ["TRUE when the original source multiplier is >=2.00 and <3.00.",
-                                 "Each TRUE requests the immediately following target once."],
+            "transition_rules": ["A fresh source multiplier >2.00 and <3.00 starts one target.",
+                                 "The signal must clear before it can start again.",
+                                 "Two settled losses for this rule pause it until a fresh entry signal."],
             "reason_rw": "Igikubo cya source kiri hagati ya 2.00 na 3.00.",
         },
         {
-            "rule_id": "AFTER_HH_CONTINUE_MAX_3", "version": "1.0.0",
+            "rule_id": "AFTER_HH_CONTINUE_MAX_3", "version": "2.0.0",
             "name": "After HH: continue for at most 3 targets", "mode": "FIVE_RULE_TRACKER|ALL_RULES_TOGETHER",
             "parameters": {}, "target_offset": 1, "history_required": 2,
             "condition": {"trigger_pattern": ["H", "H"], "maximum_selections": 3,
+                          "loss_limit": RULE_LOSS_LIMIT,
                           "ignore_triggers_while_active": True, "stop_on_ww_or_ll": False,
                           "rearm_after_third_resolved_target": True},
             "initial_state": {"cycle_mode": "IDLE", "cycle": None, "pending_target": None,
@@ -91,8 +106,9 @@ def _research_definitions() -> list[dict[str, Any]]:
             "transition_rules": ["Idle verified HH requests target one and starts a private cycle.",
                                  "After each owned target resolves, request the next consecutive target up to three.",
                                  "Ignore HH while active; do not reset or extend the cycle.",
-                                 "Complete and rearm from the third resolved target source regardless of result.",
-                                 "Do not apply STANDARD first-WIN or WW/LL stopping."],
+                                 "Two settled losses for this rule stop its cycle immediately.",
+                                 "After two losses, wait for the HH entry to clear and appear again.",
+                                 "Complete and rearm after the third resolved target; wait for HH to clear before a new cycle."],
             "reason_rw": "HH yabonetse; itegeko risaba target ikurikira.",
         },
     ]
@@ -109,7 +125,7 @@ SPECIAL_SKIP_POLICY_RULE = (
 )
 
 START_CHECK_POLICY = {
-    "rule_id": START_CHECK_POLICY_ID, "version": "AVIATOR_2X_CONSECUTIVE_STOP_V3",
+    "rule_id": START_CHECK_POLICY_ID, "version": "AVIATOR_2X_CONSECUTIVE_STOP_V4",
     "name": "Start a Check: source legacy policy", "mode": "START_CHECK",
     "parameters": {"stake_rwf": 100, "cashout_multiplier": 2.0, "window_size": WINDOW_SIZE,
                     "profit_target_rwf": 400},
@@ -117,7 +133,7 @@ START_CHECK_POLICY = {
     "condition": {"standard_trigger": ["L", "H"], "trigger_h_counts_as_previous_result": True,
                   "standard_stop": ["HH", "LL"], "two_bet_wins_activates_after_two_failed_ll_cycles": True,
                   "two_bet_wins_stop": "two consecutive selected H outcomes",
-                  "h_loss_win_special_skip": True},
+                  "h_loss_win_special_skip": True, "loss_limit": RULE_LOSS_LIMIT},
     "initial_state": {"rule_state": "WAIT_LOW", "mode": "STANDARD", "previous_outcome": None,
                       "failed_cycle_count": 0, "consecutive_bet_wins": 0, "pending_target": None},
     "transition_rules": ["WAIT_LOW waits for L; WAIT_HIGH waits for H.",
@@ -126,12 +142,13 @@ START_CHECK_POLICY = {
                           SPECIAL_SKIP_POLICY_RULE,
                           "Two consecutive LL-ending STANDARD cycles activate TWO_BET_WINS.",
                           "TWO_BET_WINS stops after two consecutive selected H outcomes; trigger H is not a bet.",
+                          "Two settled losses pause this policy until a new L,H entry.",
                           "A +400 profit target can stop new selections while the 50-round window continues observing."],
     "source_semantics_note": "Distinct from All Rules Together; preserves rule-reducer.js behavior.",
 }
 
 LEGACY_SINGLE_TRACKER_POLICY = {
-    "rule_id": LEGACY_POLICY_ID, "version": "AVIATOR_2X_CONSECUTIVE_STOP_V3",
+    "rule_id": LEGACY_POLICY_ID, "version": "AVIATOR_2X_CONSECUTIVE_STOP_V4",
     "name": "Legacy separate tracker: single rule", "mode": "LEGACY_SEPARATE_TRACKER",
     "parameters": {"stake_rwf": 100, "cashout_multiplier": 2.0, "window_size": WINDOW_SIZE,
                     "profit_target_rwf": 400},
@@ -144,7 +161,7 @@ LEGACY_SINGLE_TRACKER_POLICY = {
 }
 
 COMBINED_POLICY = {
-    "rule_id": COMBINED_POLICY_ID, "version": "AVIATOR_2X_CONSECUTIVE_STOP_V3",
+    "rule_id": COMBINED_POLICY_ID, "version": "AVIATOR_2X_CONSECUTIVE_STOP_V4",
     "name": "Accepted user playing policy", "mode": "ALL_RULES_TOGETHER",
     "parameters": {}, "target_offset": 1,
     "condition": {"standard_trigger": ["L", "H"], "trigger_h_counts_as_selected_result": False,
@@ -154,7 +171,8 @@ COMBINED_POLICY = {
                   "two_bet_wins_activates_after_two_consecutive_standard_ll_cycles": True,
                   "two_bet_wins_trigger_h_counts_as_selected_result": False,
                   "two_bet_wins_continue_until": ["HH", "LL"],
-                  "two_bet_wins_ll_keeps_mode": True, "two_bet_wins_hh_clears_mode": True},
+                  "two_bet_wins_ll_keeps_mode": True, "two_bet_wins_hh_clears_mode": True,
+                  "loss_limit": RULE_LOSS_LIMIT},
     "initial_state": {"rule_state": "WAIT_LOW", "mode": "STANDARD", "failed_cycle_count": 0,
                       "pending_target": None, "selected_result_streak": []},
     "transition_rules": ["WAIT_LOW waits for L; WAIT_HIGH waits for H.",
@@ -163,6 +181,7 @@ COMBINED_POLICY = {
                           SPECIAL_SKIP_POLICY_RULE,
                           "Two consecutive STANDARD LL cycles activate TWO_BET_WINS; a successful STANDARD cycle resets that streak.",
                           "TWO_BET_WINS keeps mode after LL and clears to STANDARD after selected HH.",
+                          "Two settled losses pause this policy until a new L,H entry.",
                           "Only this policy's own matching combined selection advances selected-result counters."],
     "source_semantics_note": "Accepted All Rules Together contract; nested mode, not a duplicate rule instance.",
 }
@@ -194,6 +213,10 @@ def _multiplier(value: Any) -> float | None:
 
 def classify_outcome(value: Any) -> str | None:
     number = _multiplier(value)
+    # The shared Rules Engine's 2x settlement convention counts an exact
+    # 2.00x result as HIGH/WIN. Behaviour's rolling classification keeps EXACT
+    # distinct for dominance calculations; that separate descriptive class
+    # must not turn an exact cashout target into a SHADOW loss.
     return None if number is None else ("H" if number >= H_THRESHOLD else "L")
 
 
@@ -238,6 +261,18 @@ def _expected(row: Mapping[str, Any]) -> dict[str, Any]:
             "expectedImmediateSuccessorOf": _reference(row)}
 
 
+def _with_rule_lifecycle(state: dict[str, Any]) -> dict[str, Any]:
+    state.setdefault("cycle_mode", "IDLE")
+    state.setdefault("cycle", None)
+    state.setdefault("entry_signal_latched", False)
+    state.setdefault("loss_limit_losses", 0)
+    state.setdefault("loss_limit_blocked", False)
+    state.setdefault("loss_limit_reached_at", None)
+    state.setdefault("loss_limit_reached_round_index", None)
+    state.setdefault("loss_limit_terminal_round_index", None)
+    return state
+
+
 def _fresh_engine(rule_id: str) -> dict[str, Any]:
     if rule_id in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID}:
         state = {"rule_state": "WAIT_LOW", "mode": "STANDARD", "previous_outcome": None,
@@ -247,19 +282,19 @@ def _fresh_engine(rule_id: str) -> dict[str, Any]:
             state.update({"special_skip_active": False, "special_skip_after_round_index": None,
                           "special_skip_win_count": 0,
                           "special_skip_terminal_round_index": None})
-        return state
+        return _with_rule_lifecycle(state)
     if rule_id == COMBINED_POLICY_ID:
-        return {"rule_state": "WAIT_LOW", "mode": "STANDARD", "previous_outcome": None,
+        return _with_rule_lifecycle({"rule_state": "WAIT_LOW", "mode": "STANDARD", "previous_outcome": None,
                 "failed_cycle_count": 0, "consecutive_bet_wins": 0, "pending_selection_id": None,
                 "pending_target": None, "selected_outcomes": [], "cycle_number": 0,
                 "failure_count": 0, "recovery_count": 0,
                 "special_skip_active": False, "special_skip_after_round_index": None,
-                "special_skip_win_count": 0, "special_skip_terminal_round_index": None}
+                "special_skip_win_count": 0, "special_skip_terminal_round_index": None})
     state = {"pending_selection_id": None, "pending_target": None, "failure_count": 0,
              "recovery_count": 0, "selected_wins": 0, "selected_losses": 0}
     if rule_id == "AFTER_HH_CONTINUE_MAX_3":
         state.update({"cycle_mode": "IDLE", "cycle": None})
-    return state
+    return _with_rule_lifecycle(state)
 
 
 def _result(rule_id: str, version: str, session: Mapping[str, Any], source: Mapping[str, Any],
@@ -296,7 +331,10 @@ def _history_is_contiguous(history: list[dict[str, Any]], count: int, stream_id:
     if len(tail) != count:
         return None
     for i, row in enumerate(tail):
-        if row.get("continuity_status") != "VERIFIED" or row.get("outcome") not in {"H", "L"}:
+        starts_segment = (i == 0 and row.get("continuity_status") == "GAP_BEFORE"
+                          and row.get("continuity_boundary") is True)
+        if ((row.get("continuity_status") != "VERIFIED" and not starts_segment)
+                or row.get("outcome") not in {"H", "L"}):
             return None
         if row.get("stream_id") != stream_id:
             return None
@@ -315,8 +353,8 @@ class RulesEngine:
         "STREAM_IDENTITY_CHANGED",
     }
 
-    def __init__(self, persistence: Any | None = None) -> None:
-        self._rules: tuple[Any, ...] = ()  # compatibility: no executable real-money rules
+    def __init__(self, persistence: Any | None = None, *,
+                 performance_observer: bool = True) -> None:
         self._lock = RLock()
         self._persistence = persistence
         self.observation_inbox: Any | None = None
@@ -326,6 +364,9 @@ class RulesEngine:
         self.rule_configuration: dict[str, dict[str, Any]] = {}
         self.presets: dict[str, dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
+        self._performance_observer_enabled = performance_observer
+        self._performance_observers: dict[str, dict[str, Any]] = {}
+        self._performance_observer_error: str | None = None
         self.evaluation_count = 0
         self._persistence_generation = 0
         self._delivery_metrics: dict[str, deque[float]] = {
@@ -337,20 +378,25 @@ class RulesEngine:
         self._delivery_metric_order: dict[str, deque[str]] = {
             key: deque() for key in self._delivery_metrics
         }
+        self._last_status_latency_metrics: dict[str, Any] = {}
         if persistence is not None:
             saved = persistence.load_application_state(STATE_KEY)
             if isinstance(saved, dict) and saved.get("engine_version") == ENGINE_VERSION:
                 self._restore(saved)
+                performance_window_migrated = self._upgrade_rule_performance_windows()
                 prime_ledger_cache = getattr(persistence, "prime_rules_engine_ledger_cache", None)
+                ledger_cache_primed = False
                 if callable(prime_ledger_cache):
                     # The restored application snapshot and its queryable
                     # ledger were committed together for current-format data.
                     # Seed the incremental writer so the first new round does
                     # not replay durable history. Migrate any sessions found
                     # only in a legacy snapshot during startup.
-                    if prime_ledger_cache(self._snapshot()):
-                        self._persist()
-            self.recover_execution_reconciliation()
+                    ledger_cache_primed = bool(prime_ledger_cache(self._snapshot()))
+                if ledger_cache_primed:
+                    self._persist()
+                elif performance_window_migrated:
+                    self._persist(session_ids={RULE_PERFORMANCE_CHECKPOINT_ID})
 
     @staticmethod
     def not_configured(rule_id: str) -> dict[str, Any]:
@@ -386,7 +432,6 @@ class RulesEngine:
                     "decision": "RULE_MATCH" if true_legacy else "NO_ACTION",
                     "reason": "RULE_MATCH" if true_legacy else "NO_RULE_MATCHED",
                     "rules_configured": len(rows), "rules_enabled": enabled_legacy,
-                    "automatic_execution": "OFF", "can_bet": False,
                     "preview_only": True, "selection_created": False}
         seen: set[str] = set()
         enabled: list[dict[str, Any]] = []
@@ -426,21 +471,34 @@ class RulesEngine:
         return {"result": bool(true_ids), "true_rule_ids": true_ids, "rule_evaluations": deepcopy(rows),
                 "decision": decision,
                 "reason": "RULE_MATCHED" if true_ids else ("NO_RULE_MATCHED" if n_enabled else "NOT_CONFIGURED"),
-                "rules_configured": len(rows), "rules_enabled": n_enabled,
-                "automatic_execution": "OFF", "can_bet": False}
+                "rules_configured": len(rows), "rules_enabled": n_enabled}
 
     @staticmethod
     def _no_action(rows: Any, reason: str) -> dict[str, Any]:
         values = list(rows)
         return {"result": False, "true_rule_ids": [], "rule_evaluations": deepcopy(values),
                 "decision": "BLOCKED" if reason in {"TARGET_MISMATCH", "TRUE_WITHOUT_TARGET"} else "NO_ACTION",
-                "reason": reason, "rules_configured": len(values), "rules_enabled": 0,
-                "automatic_execution": "OFF", "can_bet": False}
+                "reason": reason, "rules_configured": len(values), "rules_enabled": 0}
 
     def _snapshot(self, *, session_ids: set[str] | None = None) -> dict[str, Any]:
         sessions = (self.sessions if session_ids is None else
                     {session_id: self.sessions[session_id] for session_id in session_ids
                      if session_id in self.sessions})
+        observer_state = {}
+        if self._performance_observer_enabled:
+            observer_state = {
+                rule_id: {
+                    "engine": observer["engine"]._snapshot(),
+                    "history": deepcopy(observer.get("history") or []),
+                    "context": deepcopy(observer.get("context") or []),
+                    "last_event": deepcopy(observer.get("last_event")),
+                    "segment_start_round_index": int(observer.get("segment_start_round_index") or 0),
+                    "rounds_processed": int(observer.get("rounds_processed") or 0),
+                    "manual_reset_at": observer.get("manual_reset_at"),
+                    "manual_reset_round_index": observer.get("manual_reset_round_index"),
+                }
+                for rule_id, observer in self._performance_observers.items()
+            }
         return {"engine_version": ENGINE_VERSION, "_rules_engine_generation": self._persistence_generation,
                 "configuration_version": self.configuration_version,
                 "rule_configuration": deepcopy(self.rule_configuration), "presets": deepcopy(self.presets),
@@ -448,7 +506,9 @@ class RulesEngine:
                 # holds the engine lock through serialization, so copying every
                 # nested round/evaluation record here only adds a second full
                 # traversal of the session payload without improving safety.
-                "sessions": dict(sessions), "last_evaluation": deepcopy(self.last_evaluation),
+                "sessions": dict(sessions), "rule_performance_observers": observer_state,
+                "rule_performance_observer_error": self._performance_observer_error,
+                "last_evaluation": deepcopy(self.last_evaluation),
                 "last_evaluation_at": self.last_evaluation_at, "evaluation_count": self.evaluation_count}
 
     def persist_current_snapshot(self, *, session_ids: set[str] | None = None) -> dict[str, float]:
@@ -490,6 +550,30 @@ class RulesEngine:
         self.rule_configuration = deepcopy(state.get("rule_configuration") or {})
         self.presets = deepcopy(state.get("presets") or {})
         self.sessions = deepcopy(state.get("sessions") or {})
+        self._performance_observers = {}
+        self._performance_observer_error = state.get("rule_performance_observer_error")
+        if self._performance_observer_enabled:
+            for rule_id, saved in (state.get("rule_performance_observers") or {}).items():
+                if not isinstance(saved, Mapping):
+                    continue
+                observer_engine = RulesEngine(None, performance_observer=False)
+                observer_engine._restore(deepcopy(saved.get("engine") or {}))
+                saved_history = deepcopy(saved.get("history") or [])
+                # Older observer snapshots treated gaps in the global stream
+                # sequence as missing rounds. Those empty windows contain no
+                # evaluations or outcomes; remove only those false boundaries.
+                saved_history = [window for window in saved_history
+                    if not self._is_empty_false_collector_gap(window)]
+                self._performance_observers[str(rule_id)] = {
+                    "engine": observer_engine,
+                    "history": saved_history,
+                    "context": deepcopy(saved.get("context") or []),
+                    "last_event": deepcopy(saved.get("last_event")),
+                    "segment_start_round_index": int(saved.get("segment_start_round_index") or 0),
+                    "rounds_processed": int(saved.get("rounds_processed") or 0),
+                    "manual_reset_at": saved.get("manual_reset_at"),
+                    "manual_reset_round_index": saved.get("manual_reset_round_index"),
+                }
         # Old snapshots may contain controls from the removed loss-limit
         # subsystem. Keep result history but discard those controls on load.
         removed_controls = {
@@ -513,6 +597,114 @@ class RulesEngine:
                 for key in removed_controls:
                     options.pop(key, None)
         for session in self.sessions.values():
+            saved_selections = session.get("selections")
+            if isinstance(saved_selections, list):
+                normalized_selections: list[dict[str, Any]] = []
+                selection_positions: dict[str, int] = {}
+                for selection in saved_selections:
+                    if not isinstance(selection, dict):
+                        continue
+                    selection_id = str(selection.get("selection_id") or selection.get("decision_id") or "")
+                    if not selection_id:
+                        normalized_selections.append(selection)
+                        continue
+                    position = selection_positions.get(selection_id)
+                    if position is None:
+                        selection_positions[selection_id] = len(normalized_selections)
+                        normalized_selections.append(selection)
+                        continue
+                    previous = normalized_selections[position]
+                    # The same shared target was accidentally persisted twice
+                    # by older builds. Keep one identity and retain its most
+                    # advanced settlement fields.
+                    if previous.get("status") == "PENDING" and selection.get("status") != "PENDING":
+                        normalized_selections[position] = {**previous, **selection}
+                    else:
+                        for key, value in selection.items():
+                            if previous.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+                                previous[key] = value
+                if len(normalized_selections) != len(saved_selections):
+                    session["selections"] = normalized_selections
+            if "total_cancelled" not in session:
+                selections = session.get("selections") or []
+                cancelled_ids = {str(row.get("selection_id") or row.get("decision_id"))
+                    for row in selections if isinstance(row, Mapping)
+                    and row.get("status") == "CANCELLED"
+                    and (row.get("selection_id") or row.get("decision_id"))}
+                anonymous_cancelled = sum(1 for row in selections
+                    if isinstance(row, Mapping) and row.get("status") == "CANCELLED"
+                    and not (row.get("selection_id") or row.get("decision_id")))
+                session["total_cancelled"] = len(cancelled_ids) + anonymous_cancelled
+            if session.get("status") in {"RUNNING", "SETTLING", "PAUSED"}:
+                engines = session.setdefault("engines", {})
+                versions = session.setdefault("rule_versions", {})
+                manifest_changed = False
+                for rule_id in session.get("rule_ids") or []:
+                    if rule_id not in self._performance_rule_ids():
+                        continue
+                    rule_state = engines.get(rule_id)
+                    if not isinstance(rule_state, dict):
+                        rule_state = _fresh_engine(rule_id)
+                        engines[rule_id] = rule_state
+                    lifecycle_defaults = _fresh_engine(rule_id)
+                    for key in ("cycle_mode", "cycle", "entry_signal_latched",
+                                "loss_limit_losses", "loss_limit_blocked",
+                                "loss_limit_reached_at", "loss_limit_reached_round_index",
+                                "loss_limit_terminal_round_index"):
+                        default = lifecycle_defaults[key]
+                        if key == "entry_signal_latched":
+                            cycle = rule_state.get("cycle")
+                            default = bool(rule_state.get("pending_selection_id")
+                                           or (isinstance(cycle, Mapping) and cycle.get("active")))
+                        if key not in rule_state:
+                            rule_state[key] = deepcopy(default)
+                    if (rule_id in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}
+                            and rule_state.get("rule_state") == "PLAYING"
+                            and not (rule_state.get("cycle") or {}).get("active")):
+                        # Older running policy sessions did not persist an
+                        # explicit cycle. Rebuild its open cycle from the
+                        # reducer state and in-flight target.
+                        pending_id = rule_state.get("pending_selection_id")
+                        selections = session.get("rule_selections", {}).get(rule_id) or []
+                        pending = next((item for item in selections
+                                        if item.get("selection_id") == pending_id), None)
+                        selected_outcomes = list(rule_state.get("selected_outcomes") or [])
+                        cycle_start = pending or next((item for item in reversed(selections)
+                                                       if item.get("status") in {"WIN", "LOSS"}), None)
+                        entry_ref = (cycle_start or {}).get("source_round") or {}
+                        cycle_id = str(uuid5(NAMESPACE_URL, "winner-predict-restored-cycle:" + ":".join((
+                            str(session.get("session_id") or ""), rule_id,
+                            str(rule_state.get("cycle_number") or 1),
+                            str(entry_ref.get("roundId", entry_ref.get("round_id")) or "unknown"),
+                        ))))
+                        cycle = {
+                            "cycle_id": cycle_id, "active": True, "status": "ACTIVE",
+                            "requested_count": len(selected_outcomes) + int(bool(pending_id)),
+                            "resolved_count": len(selected_outcomes),
+                            "loss_count": sum(value == "L" for value in selected_outcomes),
+                            "maximum_targets": None,
+                            "end_condition": "Policy stop transition or two losses; then wait for a fresh entry.",
+                            "entry_round_id": entry_ref.get("roundId", entry_ref.get("round_id")),
+                            "started_at": (cycle_start or {}).get("selected_at"),
+                            "restored_from_policy_state": True,
+                        }
+                        rule_state["cycle"] = cycle
+                        rule_state["cycle_mode"] = "POLICY_CYCLE"
+                        if pending is not None:
+                            pending.setdefault("rule_cycle_ids", {})[rule_id] = cycle_id
+                    previous_version = versions.get(rule_id)
+                    current_version = self._version(rule_id)
+                    if previous_version != current_version:
+                        old_key = self._performance_configuration_key(
+                            rule_id, rule_version=previous_version) if previous_version else None
+                        saved_key = (session.get("rule_configuration_keys") or {}).get(rule_id)
+                        if old_key is not None and saved_key == old_key:
+                            session.setdefault("rule_configuration_keys", {})[rule_id] = (
+                                self._performance_configuration_key(rule_id))
+                        versions[rule_id] = current_version
+                        manifest_changed = True
+                if manifest_changed:
+                    session["manifest"] = self._manifest(session.get("rule_ids") or [])
             config = session.get("configuration_snapshot")
             if isinstance(config, dict):
                 if config.get("net_outcome_limit_version") != 1:
@@ -536,6 +728,7 @@ class RulesEngine:
                 elif (session.get("selection_status") == "STOPPED"
                       and session.get("selection_stop_reason")):
                     session["status"] = "SETTLING"
+            self._sync_automatic_candidate_lifecycle(session)
         self.last_evaluation = deepcopy(state.get("last_evaluation"))
         self.last_evaluation_at = state.get("last_evaluation_at")
         self.evaluation_count = int(state.get("evaluation_count") or 0)
@@ -546,6 +739,636 @@ class RulesEngine:
             # Persist stop-state normalization without deleting any historical
             # stop events, so stale reasons do not return after the next boot.
             self._persist()
+
+    def _upgrade_rule_performance_windows(self) -> bool:
+        """Convert fixed observer batches to rolling windows without losing live progress."""
+        changed = False
+        for rule_id, observer in self._performance_observers.items():
+            engine = observer.get("engine")
+            if not isinstance(engine, RulesEngine):
+                continue
+            for session in engine.sessions.values():
+                if session.get("status") not in {"RUNNING", "SETTLING"}:
+                    changed = self._trim_performance_observer_ledger(session) or changed
+                    continue
+                configuration = session.get("configuration_snapshot")
+                if isinstance(configuration, dict):
+                    already_rolling = (configuration.get("performance_window_size")
+                                       == RULE_PERFORMANCE_WINDOW_SIZE
+                                       and configuration.get("run_until_stopped") is True
+                                       and session.get("window_size") is None)
+                    configuration.update({"window_size": None, "max_observed_rounds": None,
+                                           "run_until_stopped": True,
+                                           "performance_window_size": RULE_PERFORMANCE_WINDOW_SIZE})
+                    session["window_size"] = None
+                    session["run_until_stopped"] = True
+                    if session.get("performance_segment_start_round_index") is None:
+                        boundary = (session.get("start_boundary") or {}).get("roundIndex")
+                        try:
+                            session["performance_segment_start_round_index"] = int(boundary) + 1
+                        except (TypeError, ValueError, OverflowError):
+                            session["performance_segment_start_round_index"] = int(
+                                observer.get("segment_start_round_index") or 0)
+                    if not already_rolling:
+                        changed = True
+                changed = self._trim_performance_observer_ledger(session) or changed
+            history = observer.get("history") or []
+            latest = observer.get("last_event") or {}
+            if (history and history[-1].get("completed_window") is True
+                    and not history[-1].get("interruption_reason")
+                    and history[-1].get("performance_configuration_key")
+                        == self._performance_configuration_key(rule_id)
+                    and str(history[-1].get("stream_id") or "")
+                        == str(latest.get("stream_id") or "")
+                    and str(history[-1].get("last_round_index") or "")
+                        == str(latest.get("round_index") or "")
+                    and self._performance_event_is_recent(latest)):
+                if self._rehydrate_rolling_performance_window(observer, rule_id, latest):
+                    changed = True
+        return changed
+
+    @staticmethod
+    def _performance_event_is_recent(event: Mapping[str, Any]) -> bool:
+        timestamp = _parse_time(event.get("api_received_at") or event.get("observed_at"))
+        if timestamp is None:
+            return False
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds()
+        return -60 <= age <= RULE_PERFORMANCE_IDLE_RESET_SECONDS
+
+    def _rehydrate_rolling_performance_window(self, observer: dict[str, Any], rule_id: str,
+                                               latest: Mapping[str, Any]) -> bool:
+        """Seed the new rolling window from canonical committed rounds after a full batch."""
+        snapshot_reader = getattr(self._persistence, "round_distribution_snapshot", None)
+        event_reader = getattr(self._persistence, "round_distribution_events", None)
+        if not callable(snapshot_reader) or not callable(event_reader):
+            return False
+        try:
+            snapshot = snapshot_reader()
+            stream_id = str(snapshot.get("stream_id") or "")
+            latest_sequence = int(snapshot.get("latest_sequence") or 0)
+            after_sequence = max(int(snapshot.get("earliest_sequence") or 1) - 1,
+                                 latest_sequence - 500)
+            events = event_reader(stream_id, after_sequence, latest_sequence, limit=500)
+        except Exception:
+            return False
+        committed = [row for row in events if isinstance(row, Mapping)
+                     and row.get("event_type") == "round.persisted"
+                     and row.get("durability") == "COMMITTED"
+                     and row.get("continuity_status") == "VERIFIED"
+                     and row.get("stream_id") == stream_id]
+        if len(committed) < RULE_PERFORMANCE_WINDOW_SIZE + 5:
+            return False
+        tail = committed[-(RULE_PERFORMANCE_WINDOW_SIZE + 5):]
+        try:
+            indices = [int(row.get("round_index")) for row in tail]
+            sequences = [int(row.get("stream_sequence")) for row in tail]
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if (any(right != left + 1 for left, right in zip(indices, indices[1:]))
+                or any(right <= left for left, right in zip(sequences, sequences[1:]))
+                or tail[-1].get("round_id") != latest.get("round_id")
+                or tail[-1].get("stream_id") != latest.get("stream_id")):
+            return False
+        prestart = tail[:5]
+        replay = tail[5:]
+        first_timestamp = _parse_time(replay[0].get("observed_at")
+                                      or replay[0].get("api_received_at"))
+        if first_timestamp is None:
+            return False
+        if first_timestamp.tzinfo is None:
+            first_timestamp = first_timestamp.replace(tzinfo=timezone.utc)
+        started_at = (first_timestamp.astimezone(timezone.utc)
+                      - timedelta(microseconds=1)).isoformat()
+        engine = observer["engine"]
+        self._configure_performance_engine(rule_id, engine)
+        options = {"window_size": None, "max_observed_rounds": None,
+                   "run_until_stopped": True,
+                   "performance_window_size": RULE_PERFORMANCE_WINDOW_SIZE,
+                   "profit_target_enabled": False,
+                   "win_limit_enabled": False,
+                   "loss_limit_enabled": False,
+                   "auto_next_check_enabled": False,
+                   "auto_next_on_limit_enabled": False,
+                   "fixed_stake_rwf": 100, "stake_currency": "RWF"}
+        previous_sessions = engine.sessions
+        engine.sessions = {}
+        try:
+            created = engine.start_session(mode=self._performance_mode(rule_id),
+                rule_ids=[rule_id], boundary=prestart[-1], prestart_context=prestart,
+                options=options, now=started_at)
+            session = engine.sessions[created["session_id"]]
+            session["performance_configuration_key"] = self._performance_configuration_key(rule_id)
+            session["performance_segment_start_round_index"] = indices[5]
+            session["configuration_snapshot"].update({
+                "window_size": None, "max_observed_rounds": None,
+                "run_until_stopped": True,
+                "performance_window_size": RULE_PERFORMANCE_WINDOW_SIZE,
+            })
+            for event in replay:
+                engine.observe_round(event, target_already_completed=False)
+        except Exception:
+            engine.sessions = previous_sessions
+            return False
+        observer["context"] = deepcopy(replay[-5:])
+        history = observer.get("history") or []
+        if history and history[-1].get("completed_window") is True:
+            history.pop()
+        return True
+
+    @staticmethod
+    def _performance_rule_ids() -> list[str]:
+        return [START_CHECK_POLICY_ID, LEGACY_POLICY_ID,
+                *[row["rule_id"] for row in RESEARCH_RULES], COMBINED_POLICY_ID]
+
+    @staticmethod
+    def _performance_mode(rule_id: str) -> str:
+        if rule_id == START_CHECK_POLICY_ID:
+            return "START_CHECK"
+        if rule_id == LEGACY_POLICY_ID:
+            return "LEGACY_SEPARATE_TRACKER"
+        if rule_id == COMBINED_POLICY_ID:
+            return "ALL_RULES_TOGETHER"
+        return "FIVE_RULE_TRACKER"
+
+    def _performance_configuration_key(self, rule_id: str, *, rule_version: str | None = None) -> str:
+        definition = self._definition(rule_id)
+        config = self.rule_configuration.get(rule_id) or {}
+        effective = {"rule_version": rule_version or definition["version"],
+                     "parameters": config.get("parameters") or definition.get("parameters") or {}}
+        encoded = json.dumps(effective, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _ensure_automatic_rule_candidates(self, session: dict[str, Any]) -> None:
+        """Keep every policy in an automatic session's mode available for recovery."""
+        allowed = self._allowed_rules(str(session.get("mode") or ""))
+        rule_ids = session.setdefault("rule_ids", [])
+        changed = False
+        for rule_id in self._performance_rule_ids():
+            if rule_id not in allowed:
+                continue
+            if rule_id not in rule_ids:
+                rule_ids.append(rule_id)
+                changed = True
+            session.setdefault("rule_versions", {}).setdefault(rule_id, self._version(rule_id))
+            session.setdefault("engines", {}).setdefault(rule_id, _fresh_engine(rule_id))
+            session.setdefault("rule_selections", {}).setdefault(rule_id, [])
+            session.setdefault("rule_configuration_keys", {}).setdefault(
+                rule_id, self._performance_configuration_key(rule_id))
+        if changed:
+            session["manifest"] = self._manifest(rule_ids)
+
+    @staticmethod
+    def _sync_automatic_candidate_lifecycle(session: dict[str, Any]) -> None:
+        """Refresh visible per-rule cycle/stop state without changing its score."""
+        choice = session.get("automatic_rule_choice")
+        if not isinstance(choice, dict):
+            return
+        engines = session.get("engines") or {}
+        for candidate in choice.get("candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            state = engines.get(candidate.get("rule_id")) or {}
+            cycle = state.get("cycle") or {}
+            candidate.update({
+                "loss_limit": RULE_LOSS_LIMIT,
+                "loss_limit_losses": int(state.get("loss_limit_losses") or 0),
+                "loss_limit_blocked": bool(state.get("loss_limit_blocked")),
+                "loss_limit_reached_round_index": state.get("loss_limit_reached_round_index"),
+                "entry_signal_latched": bool(state.get("entry_signal_latched")),
+                "rule_state": state.get("rule_state"),
+                "cycle_status": cycle.get("status") or "IDLE",
+                "cycle_active": bool(cycle.get("active")),
+                "cycle_requested_targets": int(cycle.get("requested_count") or 0),
+                "cycle_resolved_targets": int(cycle.get("resolved_count") or 0),
+                "cycle_loss_count": int(cycle.get("loss_count") or 0),
+                "cycle_maximum_targets": cycle.get("maximum_targets"),
+                "cycle_end_condition": cycle.get("end_condition"),
+                "cycle_end_reason": cycle.get("end_reason"),
+            })
+
+    def _automatically_enable_qualified_rule(self, rule_id: str) -> bool:
+        """Persist the enabled state when an automatic candidate earns its way back."""
+        current = self.rule_configuration.get(rule_id) or {}
+        if current.get("configured") is True and current.get("enabled") is True:
+            return False
+        parameters = deepcopy(current.get("parameters") or {})
+        if rule_id in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID}:
+            defaults = {"profit_target_enabled": True, "profit_target_rwf": 400,
+                        "window_size": WINDOW_SIZE, "auto_next_check_enabled": False,
+                        "auto_next_on_limit_enabled": False}
+            defaults.update(parameters)
+            parameters = defaults
+        else:
+            parameters = {}
+        self.configuration_version += 1
+        self.rule_configuration[rule_id] = {
+            "configured": True,
+            "enabled": True,
+            "version": self.configuration_version,
+            "parameters": parameters,
+        }
+        return True
+
+    @staticmethod
+    def _performance_event_checkpoint(event: Mapping[str, Any]) -> dict[str, Any]:
+        fields = ("stream_id", "stream_sequence", "round_id", "round_index", "multiplier",
+                  "event_type", "durability", "continuity_status", "observed_at",
+                  "api_received_at", "delivery_mode")
+        return {key: deepcopy(event.get(key)) for key in fields if event.get(key) is not None}
+
+    def _performance_observer(self, rule_id: str) -> dict[str, Any]:
+        observer = self._performance_observers.get(rule_id)
+        if observer is None:
+            observer = {"engine": RulesEngine(None, performance_observer=False),
+                        "history": [], "context": [], "last_event": None,
+                        "segment_start_round_index": 0,
+                        "rounds_processed": 0,
+                        "manual_reset_at": None,
+                        "manual_reset_round_index": None}
+            self._performance_observers[rule_id] = observer
+        return observer
+
+    def _configure_performance_engine(self, rule_id: str, engine: "RulesEngine") -> None:
+        source_config = self.rule_configuration.get(rule_id) or {}
+        definition = self._definition(rule_id)
+        params = deepcopy(source_config.get("parameters") or definition.get("parameters") or {})
+        engine.configuration_version = max(engine.configuration_version, self.configuration_version, 1)
+        engine.rule_configuration[rule_id] = {
+            "configured": True, "enabled": True,
+            "version": int(source_config.get("version") or engine.configuration_version),
+            "parameters": params,
+        }
+
+    @staticmethod
+    def _performance_window(session: Mapping[str, Any], rule_id: str, *,
+                            interruption: str | None = None) -> dict[str, Any]:
+        configuration = session.get("configuration_snapshot") or {}
+        raw_window_size = configuration.get("performance_window_size", RULE_PERFORMANCE_WINDOW_SIZE)
+        window_size = (int(raw_window_size) if isinstance(raw_window_size, int)
+                       and not isinstance(raw_window_size, bool) and raw_window_size > 0
+                       else RULE_PERFORMANCE_WINDOW_SIZE)
+        start_index = session.get("performance_segment_start_round_index")
+        if start_index is None:
+            boundary = (session.get("start_boundary") or {}).get("roundIndex")
+            try:
+                start_index = int(boundary) + 1
+            except (TypeError, ValueError, OverflowError):
+                start_index = 1
+        try:
+            start_index = int(start_index)
+            last_round_index = int(session.get("last_round_index") or 0)
+        except (TypeError, ValueError, OverflowError):
+            start_index = 1
+            last_round_index = 0
+        window_start_index = max(start_index, last_round_index - window_size + 1)
+
+        def source_index(row: Mapping[str, Any]) -> int | None:
+            source = row.get("source_round") or row.get("sourceRound") or {}
+            value = source.get("roundIndex", source.get("round_index")) if isinstance(source, Mapping) else None
+            try:
+                return int(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+        selections = list((session.get("rule_selections") or {}).get(rule_id) or [])
+        if not selections:
+            selections = [item for item in session.get("selections") or []
+                          if rule_id in (item.get("matched_rule_ids")
+                                         or item.get("contributing_rule_ids") or [])]
+        selections = [item for item in selections
+                      if window_start_index <= (source_index(item) or 0) <= last_round_index]
+        wins = sum(str(item.get("status") or item.get("result") or "").upper() == "WIN" for item in selections)
+        losses = sum(str(item.get("status") or item.get("result") or "").upper() == "LOSS" for item in selections)
+        pending = sum(str(item.get("status") or item.get("result") or "").upper()
+                      in {"PENDING", "UNKNOWN", ""} for item in selections)
+        eligible_checks = false_checks = recovered_rounds = 0
+        observed_indices: set[int] = set()
+        for evaluation in session.get("evaluations") or []:
+            index = source_index(evaluation)
+            if index is None or not window_start_index <= index <= last_round_index:
+                continue
+            observed_indices.add(index)
+            commit_evidence = evaluation.get("commit_evidence") or {}
+            if str(commit_evidence.get("delivery_mode") or "").upper() == "RECOVERED":
+                recovered_rounds += 1
+            for check in evaluation.get("rule_evaluations") or []:
+                if check.get("rule_id") != rule_id:
+                    continue
+                eligible = check.get("eligible", check.get("result"))
+                eligible_checks += eligible is True
+                false_checks += eligible is False
+        status = RulesEngine._effective_session_status(session)
+        observed_rounds = min(window_size, max(len(observed_indices),
+            min(window_size, int(session.get("observed_rounds") or 0))))
+        complete = interruption is None and observed_rounds >= window_size and pending == 0
+        return {
+            "rule_id": rule_id, "name": RulesEngine._definition(rule_id)["name"],
+            "session_id": session.get("session_id"), "mode": session.get("mode"),
+            "stream_id": session.get("last_stream_id"),
+            "last_round_index": session.get("last_round_index"),
+            "performance_configuration_key": session.get("performance_configuration_key"),
+            "session_status": ("INTERRUPTED" if interruption else status),
+            "started_at": session.get("started_at"), "ended_at": session.get("ended_at"),
+            "observed_rounds": observed_rounds, "window_size": window_size,
+            "rolling_window": True, "window_start_round_index": window_start_index,
+            "window_end_round_index": last_round_index,
+            "wins": wins, "losses": losses, "pending": pending,
+            "eligible_checks": eligible_checks, "false_checks": false_checks,
+            "recovered_rounds": recovered_rounds,
+            "direct_selections": wins + losses + pending, "shared_attributions": 0,
+            "settled": wins + losses, "net": wins - losses,
+            "completed_window": complete, "interruption_reason": interruption,
+        }
+
+    @staticmethod
+    def _is_empty_false_collector_gap(window: Any) -> bool:
+        if not isinstance(window, Mapping) or window.get("interruption_reason") != "COLLECTOR_EVENT_GAP":
+            return False
+        try:
+            return all(int(window.get(key) or 0) == 0 for key in (
+                "observed_rounds", "eligible_checks", "false_checks", "wins", "losses"))
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    def _archive_performance_windows(self, observer: dict[str, Any], rule_id: str, *,
+                                     interruption: str | None = None,
+                                     force: bool = False) -> None:
+        engine = observer["engine"]
+        for session_id, session in list(engine.sessions.items()):
+            status = engine._effective_session_status(session)
+            has_pending = self._pending_shared_result_count(session) > 0
+            terminal = status in {"COMPLETED", "MANUALLY_STOPPED", "RESET", "RECONFIGURED", "PAUSED"}
+            if not force and (not terminal or has_pending):
+                continue
+            window = self._performance_window(session, rule_id, interruption=interruption)
+            observer["history"].append(window)
+            observer["history"] = observer["history"][-250:]
+            engine.sessions.pop(session_id, None)
+
+    def _start_performance_window(self, observer: dict[str, Any], rule_id: str,
+                                  boundary: Mapping[str, Any]) -> None:
+        engine = observer["engine"]
+        self._configure_performance_engine(rule_id, engine)
+        options = {
+            "window_size": None,
+            "max_observed_rounds": None,
+            "run_until_stopped": True,
+            "performance_window_size": RULE_PERFORMANCE_WINDOW_SIZE,
+            "profit_target_enabled": False,
+            "win_limit_enabled": False,
+            "loss_limit_enabled": False,
+            "auto_next_check_enabled": False,
+            "auto_next_on_limit_enabled": False,
+            "fixed_stake_rwf": 100, "stake_currency": "RWF",
+        }
+        created = engine.start_session(
+            mode=self._performance_mode(rule_id), rule_ids=[rule_id], boundary=boundary,
+            prestart_context=deepcopy(observer.get("context") or []), options=options,
+        )
+        session = engine.sessions[created["session_id"]]
+        session["performance_configuration_key"] = self._performance_configuration_key(rule_id)
+        session["performance_segment_start_round_index"] = int(boundary["round_index"]) + 1
+        session["window_size"] = None
+        session["run_until_stopped"] = True
+        session["configuration_snapshot"].update({
+            "window_size": None, "max_observed_rounds": None,
+            "run_until_stopped": True,
+            "performance_window_size": RULE_PERFORMANCE_WINDOW_SIZE,
+        })
+
+    @staticmethod
+    def _trim_performance_observer_ledger(session: dict[str, Any]) -> bool:
+        """Bound private observer history to the rolling window plus a small cushion."""
+        if ((session.get("configuration_snapshot") or {}).get("performance_window_size")
+                != RULE_PERFORMANCE_WINDOW_SIZE):
+            return False
+        changed = False
+        evaluations = session.get("evaluations") or []
+        if len(evaluations) > RULE_PERFORMANCE_WINDOW_SIZE + 5 or any(
+                isinstance(row, Mapping) and ("state_snapshot" in row or len(row) > 5)
+                for row in evaluations[-(RULE_PERFORMANCE_WINDOW_SIZE + 5):]):
+            compact = []
+            for row in evaluations[-(RULE_PERFORMANCE_WINDOW_SIZE + 5):]:
+                if not isinstance(row, Mapping):
+                    continue
+                checks = [{"rule_id": check.get("rule_id"),
+                           "eligible": check.get("eligible", check.get("result"))}
+                          for check in (row.get("rule_evaluations") or [])
+                          if isinstance(check, Mapping) and check.get("rule_id")]
+                evidence = row.get("commit_evidence") or {}
+                compact.append({
+                    "source_round": row.get("source_round") or {},
+                    "evaluated_at": row.get("evaluated_at"),
+                    "rule_evaluations": checks,
+                    "commit_evidence": ({"delivery_mode": evidence.get("delivery_mode")}
+                                         if isinstance(evidence, Mapping) else {}),
+                })
+            session["evaluations"] = compact
+            changed = True
+        for key, keep in (("decisions", 0), ("selections", 200)):
+            rows = session.get(key) or []
+            if len(rows) > keep:
+                session[key] = rows[-keep:] if keep else []
+                changed = True
+        rule_selections = session.get("rule_selections") or {}
+        trimmed_rule_selections = {
+            rule_id: rows[-200:] if len(rows) > 200 else rows
+            for rule_id, rows in rule_selections.items()
+        }
+        if any(len(rows or []) > 200 for rows in rule_selections.values()):
+            session["rule_selections"] = trimmed_rule_selections
+            changed = True
+        event_records = session.get("event_records")
+        if isinstance(event_records, dict) and event_records:
+            pending = {key: value for key, value in event_records.items()
+                       if isinstance(value, Mapping)
+                       and value.get("persistence_status") == "PENDING"}
+            if len(pending) != len(event_records):
+                session["event_records"] = pending
+                changed = True
+        return changed
+
+    def _observe_rule_performance_round(self, event: Mapping[str, Any]) -> bool:
+        """Track each registered rule in an isolated, report-only collector session."""
+        if not self._performance_observer_enabled:
+            return False
+        changed = False
+        checkpoint = self._performance_event_checkpoint(event)
+        stream_id = str(checkpoint.get("stream_id") or "")
+        round_id = str(checkpoint.get("round_id") or "")
+        try:
+            sequence = int(checkpoint.get("stream_sequence") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not stream_id or not round_id or sequence < 1:
+            return False
+
+        for rule_id in self._performance_rule_ids():
+            observer = self._performance_observer(rule_id)
+            engine = observer["engine"]
+            current_key = self._performance_configuration_key(rule_id)
+            if any(row.get("performance_configuration_key") != current_key
+                   for row in engine.sessions.values()):
+                self._archive_performance_windows(
+                    observer, rule_id, interruption="CONFIGURATION_CHANGED", force=True)
+                engine.sessions.clear()
+                observer["segment_start_round_index"] = int(checkpoint.get("round_index") or 0)
+                changed = True
+            prior = observer.get("last_event") or {}
+            prior_stream = str(prior.get("stream_id") or "")
+            try:
+                prior_sequence = int(prior.get("stream_sequence") or 0)
+            except (TypeError, ValueError, OverflowError):
+                prior_sequence = 0
+            try:
+                round_index = int(checkpoint.get("round_index") or 0)
+                prior_round_index = int(prior.get("round_index") or 0)
+            except (TypeError, ValueError, OverflowError):
+                round_index = prior_round_index = 0
+            if prior_stream == stream_id and sequence <= prior_sequence:
+                # Ordered inbox replay is idempotent. A conflicting or older
+                # event must not rewrite already scored source/target pairs.
+                if sequence < prior_sequence:
+                    continue
+                same_committed_round = (
+                    str(prior.get("round_id") or "") == round_id
+                    and prior_round_index == round_index
+                    and _multiplier(prior.get("multiplier")) == _multiplier(checkpoint.get("multiplier"))
+                )
+                if same_committed_round:
+                    continue
+                self._archive_performance_windows(
+                    observer, rule_id, interruption="ROUND_IDENTITY_CONFLICT", force=True)
+                engine.sessions.clear()
+                observer["context"] = []
+                observer["segment_start_round_index"] = round_index + 1
+                observer["last_event"] = {**checkpoint, "continuity_status": "CONFLICT"}
+                observer["rounds_processed"] = int(observer.get("rounds_processed") or 0) + 1
+                changed = True
+                continue
+
+            continuity = checkpoint.get("continuity_status")
+            stream_changed = bool(prior_stream and prior_stream != stream_id)
+            round_gap = bool(prior_stream == stream_id and prior_round_index
+                             and round_index != prior_round_index + 1)
+            idle_reset = False
+            if (str(checkpoint.get("delivery_mode") or "LIVE").upper() != "RECOVERED"
+                    and prior_stream == stream_id and prior_sequence and sequence > prior_sequence):
+                current_at = _parse_time(checkpoint.get("api_received_at")
+                                         or checkpoint.get("observed_at"))
+                prior_at = _parse_time(prior.get("api_received_at")
+                                       or prior.get("observed_at"))
+                if current_at is not None and prior_at is not None:
+                    if current_at.tzinfo is None:
+                        current_at = current_at.replace(tzinfo=timezone.utc)
+                    if prior_at.tzinfo is None:
+                        prior_at = prior_at.replace(tzinfo=timezone.utc)
+                    idle_seconds = (current_at.astimezone(timezone.utc)
+                                    - prior_at.astimezone(timezone.utc)).total_seconds()
+                    idle_reset = idle_seconds > RULE_PERFORMANCE_IDLE_RESET_SECONDS
+            if idle_reset:
+                self._archive_performance_windows(
+                    observer, rule_id, interruption="INACTIVE_FEED", force=True)
+                engine.sessions.clear()
+                observer["context"] = []
+                observer["segment_start_round_index"] = round_index + 1
+                changed = True
+            if stream_changed or round_gap:
+                reason = ("STREAM_CHANGED" if stream_changed else
+                          "ROUND_INDEX_GAP")
+                self._archive_performance_windows(observer, rule_id,
+                                                  interruption=reason, force=True)
+                engine.sessions.clear()
+                observer["context"] = []
+                observer["segment_start_round_index"] = round_index + 1
+                changed = True
+
+            if continuity != "VERIFIED":
+                # Let the isolated ledger mark any outstanding target as
+                # skipped by the committed gap, then retain that partial
+                # window as interrupted. It cannot bridge unknown rounds.
+                if engine.sessions:
+                    engine.observe_round(event, target_already_completed=False)
+                    self._archive_performance_windows(observer, rule_id,
+                                                      interruption="ROUND_GAP", force=True)
+                    engine.sessions.clear()
+                observer["context"] = []
+                observer["segment_start_round_index"] = round_index + 1
+                observer["last_event"] = checkpoint
+                observer["rounds_processed"] = int(observer.get("rounds_processed") or 0) + 1
+                changed = True
+                continue
+
+            active = any(engine._effective_session_status(session) in {"RUNNING", "SETTLING"}
+                         for session in engine.sessions.values())
+            skip_current = False
+            if not active:
+                boundary = (checkpoint if idle_reset or stream_changed or round_gap else
+                            prior if prior.get("continuity_status") == "VERIFIED" and prior_stream == stream_id
+                            else checkpoint)
+                self._start_performance_window(observer, rule_id, boundary)
+                try:
+                    boundary_sequence = int(boundary.get("stream_sequence") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    boundary_sequence = 0
+                skip_current = boundary_sequence == sequence
+            if not skip_current:
+                engine.observe_round(event, target_already_completed=False)
+                for observed_session in engine.sessions.values():
+                    self._trim_performance_observer_ledger(observed_session)
+                behavior_context = self._adaptive_context_signature(
+                    [*(observer.get("context") or []), checkpoint])
+                for observed_session in engine.sessions.values():
+                    for evaluation in observed_session.get("evaluations") or []:
+                        ref = evaluation.get("source_round") or {}
+                        if (ref.get("streamId", ref.get("stream_id")) == stream_id
+                                and ref.get("roundIndex", ref.get("round_index")) == round_index):
+                            evaluation["behavior_context"] = behavior_context
+                    for selection in list(observed_session.get("selections") or []) + [
+                            item for group in (observed_session.get("rule_selections") or {}).values()
+                            for item in group]:
+                        ref = selection.get("source_round") or {}
+                        if (ref.get("streamId", ref.get("stream_id")) == stream_id
+                                and ref.get("roundIndex", ref.get("round_index")) == round_index):
+                            selection["behavior_context"] = behavior_context
+
+            context = observer.setdefault("context", [])
+            if not context or context[-1].get("round_id") != round_id:
+                context.append(deepcopy(checkpoint))
+                observer["context"] = context[-5:]
+            observer["last_event"] = checkpoint
+            observer["rounds_processed"] = int(observer.get("rounds_processed") or 0) + 1
+
+            # Keep one observer session alive. Its performance view is a rolling
+            # 100-round slice; 100/100 is full, not a reason to reset its cursor.
+            # Only a continuity interruption or a prolonged feed idle archives it.
+            self._archive_performance_windows(observer, rule_id)
+            changed = True
+        return changed
+
+    def observe_rule_performance_round(self, event: Mapping[str, Any], *,
+                                       defer_persistence: bool = False) -> bool:
+        """Update the report-only observer after latency-sensitive signal work."""
+        if (not self._performance_observer_enabled
+                or event.get("event_type") != "round.persisted"
+                or event.get("durability") != "COMMITTED"):
+            return False
+        with self._lock:
+            try:
+                changed = self._observe_rule_performance_round(event)
+                self._performance_observer_error = None
+            except Exception as exc:
+                # Reporting must not block or reject delivery of a committed
+                # signal. The durable inbox can replay the event after error.
+                self._performance_observer_error = type(exc).__name__
+                changed = True
+                log.exception("rule performance collector observer failed round=%s",
+                              event.get("round_id"))
+            if changed and not defer_persistence:
+                self._persist(session_ids={RULE_PERFORMANCE_CHECKPOINT_ID})
+            return changed
 
     def _persist(self, *, session_ids: set[str] | None = None) -> dict[str, float]:
         if self._persistence is not None:
@@ -606,116 +1429,6 @@ class RulesEngine:
                 "p95_ms": percentile(0.95), "p99_ms": percentile(0.99),
                 "max_ms": round(ordered[-1], 3)}
 
-    def _apply_reconciled_financials(self, session: dict[str, Any], execution: Mapping[str, Any],
-                                    financials: Mapping[str, Any], at: str) -> None:
-        execution_id = str(execution.get("execution_id") or "")
-        reconciled = session.setdefault("reconciled_financials", {
-            "reconciled_execution_ids": [], "realized_betting_pl": None,
-            "currency": None, "currency_status": None, "win_count": 0,
-            "loss_count": 0, "reconciled_bets": 0,
-        })
-        ids = list(reconciled.get("reconciled_execution_ids") or [])
-        if execution_id and execution_id not in ids:
-            ids.append(execution_id)
-        reconciled.update({"reconciled_execution_ids": ids,
-                           "realized_betting_pl": financials.get("realized_betting_pl"),
-                           "currency": financials.get("currency"),
-                           "currency_status": financials.get("currency_status"),
-                           "win_count": int(financials.get("win_count") or 0),
-                           "loss_count": int(financials.get("loss_count") or 0),
-                           "reconciled_bets": int(financials.get("reconciled_bets") or 0),
-                           "updated_at": at})
-        selection_id = str(execution.get("decision_id") or "")
-        selection = next((item for item in session.get("selections", [])
-                          if str(item.get("selection_id")) == selection_id), None)
-        if selection is not None:
-            selection["financial_result"] = {
-                "status": "RECONCILED", "result": execution.get("result"),
-                "execution_id": execution_id, "profit_loss": execution.get("profit_loss"),
-                "currency": reconciled.get("currency"), "reconciled_at": at,
-            }
-
-    def record_financial_reconciliation(self, execution: Mapping[str, Any],
-                                        reconciliation: Mapping[str, Any], *,
-                                        persist: bool = True) -> dict[str, Any]:
-        """Apply one receipt-backed real transaction to its shared rule session."""
-        if self._persistence is None or execution.get("simulated") is True:
-            return {"ok": False, "reason": "real_rule_session_reconciliation_unavailable"}
-        record = getattr(self._persistence, "record_rule_execution_reconciliation", None)
-        if not callable(record):
-            return {"ok": False, "reason": "rule_reconciliation_store_unavailable"}
-        saved = record(dict(execution), dict(reconciliation))
-        if not saved.get("ok"):
-            return saved
-        session_id = str(saved.get("session_id") or "")
-        with self._lock:
-            session = self.sessions.get(session_id)
-            if session is None:
-                return {"ok": False, "reason": "rule_session_not_restored", "session_id": session_id}
-            self._apply_reconciled_financials(
-                session, execution, saved.get("financials") or {},
-                str(reconciliation.get("created_at") or execution.get("resolved_at") or _now()),
-            )
-            if persist:
-                self._persist(session_ids={session_id})
-            financial_snapshot = deepcopy(session.get("reconciled_financials"))
-            result = {"ok": True, "duplicate": bool(saved.get("duplicate")),
-                      "session_id": session_id, "financials": financial_snapshot}
-        return result
-
-    def block_unknown_execution_reconciliation(self, execution: Mapping[str, Any],
-                                               reason: str) -> dict[str, Any]:
-        """Pause one rule session for an unresolved transaction without counting it."""
-        if self._persistence is None:
-            return {"ok": False, "reason": "rule_reconciliation_store_unavailable"}
-        mark_pending = getattr(self._persistence, "mark_rule_execution_pending", None)
-        if not callable(mark_pending):
-            return {"ok": False, "reason": "rule_reconciliation_store_unavailable"}
-        intent = mark_pending(dict(execution), reason)
-        if not intent:
-            return {"ok": False, "reason": "rule_execution_intent_not_found"}
-        session_id = str(intent.get("session_id") or "")
-        with self._lock:
-            session = self.sessions.get(session_id)
-            if session is None:
-                return {"ok": False, "reason": "rule_session_not_restored", "session_id": session_id}
-            session.update({"status": "PAUSED", "selection_status": "STOPPED",
-                            "unresolved_execution_id": execution.get("execution_id"),
-                            "unresolved_execution_reason": reason})
-            self._record_session_stop(session, "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION", _now(),
-                "EXECUTION_RECONCILIATION", stop_selection=True,
-                details={"execution_id": execution.get("execution_id"), "reason": reason})
-            self._persist(session_ids={session_id})
-            return {"ok": True, "session_id": session_id, "reason": reason}
-
-    def recover_execution_reconciliation(self) -> None:
-        """Restore receipt totals and unresolved-execution pauses after restart."""
-        if self._persistence is None:
-            return
-        list_reconciled = getattr(self._persistence, "list_reconciled_rule_executions", None)
-        open_executions = getattr(self._persistence, "open_executions", None)
-        get_intent = getattr(self._persistence, "rule_execution_intent", None)
-        if not callable(list_reconciled):
-            return
-        changed = False
-        for session_id in list(self.sessions):
-            for execution in list_reconciled(session_id):
-                result = execution.get("result")
-                event = {"status": "RECONCILED", "outcome": result,
-                         "round_id": execution.get("target_round_id"),
-                         "created_at": execution.get("resolved_at") or _now()}
-                applied = self.record_financial_reconciliation(execution, event, persist=False)
-                changed = changed or applied.get("ok") is True
-        if callable(open_executions) and callable(get_intent):
-            for execution in open_executions():
-                intent = get_intent(str(execution.get("decision_id") or ""))
-                if intent and str(intent.get("session_id") or "") in self.sessions:
-                    blocked = self.block_unknown_execution_reconciliation(
-                        execution, str(execution.get("error") or "restart_reconciliation_required"))
-                    changed = changed or blocked.get("ok") is True
-        if changed:
-            self._persist()
-
     def registry(self) -> dict[str, Any]:
         rows = [deepcopy(START_CHECK_POLICY), deepcopy(LEGACY_SINGLE_TRACKER_POLICY),
                 *deepcopy(RESEARCH_RULES), deepcopy(COMBINED_POLICY)]
@@ -762,8 +1475,6 @@ class RulesEngine:
                         "auto_next_on_limit_enabled"):
                 if not isinstance(defaults[key], bool):
                     raise ValueError("INVALID_BOOLEAN_PARAMETER")
-            if defaults["auto_next_check_enabled"] and defaults["auto_next_on_limit_enabled"]:
-                raise ValueError("AUTO_NEXT_TRIGGERS_MUTUALLY_EXCLUSIVE")
             for enabled_key, amount_key in (("profit_target_enabled", "profit_target_rwf"),):
                 if defaults[enabled_key] and (isinstance(defaults[amount_key], bool)
                     or not isinstance(defaults[amount_key], int) or defaults[amount_key] <= 0):
@@ -787,15 +1498,33 @@ class RulesEngine:
                 or any(rule_id not in valid for rule_id in rule_ids)):
             raise ValueError("INVALID_PRESET_RULES")
         preset_options = deepcopy(dict(options or {}))
+        session_window = preset_options.get(
+            "max_observed_rounds", preset_options.get("window_size", WINDOW_SIZE))
+        requested_run_until_stopped = preset_options.get(
+            "run_until_stopped", session_window is None)
+        if not isinstance(requested_run_until_stopped, bool):
+            raise ValueError("INVALID_BOOLEAN_PARAMETER")
+        run_until_stopped = requested_run_until_stopped or session_window is None
+        if session_window is not None and (
+                isinstance(session_window, bool) or not isinstance(session_window, int)
+                or session_window < 1):
+            raise ValueError("INVALID_WINDOW_SIZE")
+        if run_until_stopped:
+            session_window = None
+            preset_options.update({"auto_next_check_enabled": False,
+                                   "auto_next_on_limit_enabled": False,
+                                   "auto_next_limits_enabled": False,
+                                   "auto_next_win_count": None,
+                                   "auto_next_loss_count": None})
+        preset_options["window_size"] = session_window
+        preset_options["max_observed_rounds"] = session_window
+        preset_options["run_until_stopped"] = run_until_stopped
         if mode in {"START_CHECK", "LEGACY_SEPARATE_TRACKER", "ALL_RULES_TOGETHER"}:
             preset_options.setdefault("auto_next_check_enabled", False)
             preset_options.setdefault("auto_next_on_limit_enabled", False)
             if (not isinstance(preset_options["auto_next_check_enabled"], bool)
                     or not isinstance(preset_options["auto_next_on_limit_enabled"], bool)):
                 raise ValueError("INVALID_BOOLEAN_PARAMETER")
-            if (preset_options["auto_next_check_enabled"]
-                    and preset_options["auto_next_on_limit_enabled"]):
-                raise ValueError("AUTO_NEXT_TRIGGERS_MUTUALLY_EXCLUSIVE")
         else:
             preset_options.pop("auto_next_on_limit_enabled", None)
         for key in (
@@ -808,10 +1537,14 @@ class RulesEngine:
             preset_options.pop(key, None)
         if mode == "ALL_RULES_TOGETHER":
             self._validate_net_outcome_limits(preset_options)
+            self._validate_auto_next_result_limits(preset_options)
             preset_options["net_outcome_limit_version"] = 1
         else:
             preset_options.pop("loss_limit_enabled", None)
             preset_options.pop("loss_limit_count", None)
+            preset_options.pop("auto_next_limits_enabled", None)
+            preset_options.pop("auto_next_win_count", None)
+            preset_options.pop("auto_next_loss_count", None)
         value = {"name": name.strip(), "mode": mode, "rule_ids": list(rule_ids),
                  "options": preset_options, "configuration_version": self.configuration_version,
                  "saved_at": _now()}
@@ -833,6 +1566,727 @@ class RulesEngine:
         return set()
 
     @staticmethod
+    def _performance_signal_momentum(session: Mapping[str, Any], rule_id: str,
+                                     *, sample_size: int = 3) -> dict[str, Any]:
+        """Compare TRUE-signal rates in the latest and preceding three checks."""
+        checks_by_round: dict[int, bool] = {}
+        for evaluation in session.get("evaluations") or []:
+            if not isinstance(evaluation, Mapping):
+                continue
+            source = evaluation.get("source_round") or {}
+            raw_index = source.get("roundIndex", source.get("round_index")) \
+                if isinstance(source, Mapping) else None
+            try:
+                round_index = int(raw_index)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            for check in evaluation.get("rule_evaluations") or []:
+                if not isinstance(check, Mapping) or check.get("rule_id") != rule_id:
+                    continue
+                signal = check.get("eligible", check.get("result"))
+                if isinstance(signal, bool):
+                    checks_by_round[round_index] = signal
+                break
+        checks = sorted(checks_by_round.items())
+        recent = checks[-sample_size:]
+        previous = checks[-2 * sample_size:-sample_size]
+        recent_hits = sum(signal for _, signal in recent)
+        previous_hits = sum(signal for _, signal in previous)
+        momentum_pp = None
+        trend = "UNKNOWN"
+        if len(recent) == sample_size and len(previous) == sample_size:
+            momentum_pp = round((recent_hits - previous_hits) * 100 / sample_size, 1)
+            if recent_hits > previous_hits and recent_hits >= 2:
+                trend = "RISING"
+            elif recent_hits < previous_hits and previous_hits >= 2:
+                trend = "FALLING"
+            else:
+                trend = "STEADY"
+        return {"signal_trend": trend, "signal_momentum_pp": momentum_pp,
+                "recent_signal_hits": recent_hits, "recent_signal_checks": len(recent),
+                "previous_signal_hits": previous_hits, "previous_signal_checks": len(previous),
+                "signal_sample_count": len(checks)}
+
+    @staticmethod
+    def _performance_outcome_momentum(session: Mapping[str, Any], rule_id: str,
+                                      window: Mapping[str, Any], *,
+                                      sample_size: int = 3,
+                                      minimum_sample: int = 2) -> dict[str, Any]:
+        """Compare recent settled outcome rates inside the active 100-round window."""
+        try:
+            start_index = int(window.get("window_start_round_index") or 0)
+            end_index = int(window.get("window_end_round_index") or 0)
+        except (TypeError, ValueError, OverflowError):
+            start_index = end_index = 0
+
+        selections = list((session.get("rule_selections") or {}).get(rule_id) or [])
+        if not selections:
+            selections = [item for item in session.get("selections") or []
+                          if rule_id in (item.get("matched_rule_ids")
+                                         or item.get("contributing_rule_ids") or [])]
+
+        outcomes_by_round: dict[int, int] = {}
+        for selection in selections:
+            source = selection.get("source_round") or selection.get("sourceRound") or {}
+            raw_index = (source.get("roundIndex", source.get("round_index"))
+                         if isinstance(source, Mapping) else None)
+            try:
+                round_index = int(raw_index)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not start_index <= round_index <= end_index:
+                continue
+            status = str(selection.get("status") or selection.get("result") or "").upper()
+            if status == "WIN":
+                outcomes_by_round[round_index] = 1
+            elif status == "LOSS":
+                outcomes_by_round[round_index] = -1
+
+        outcomes = [outcomes_by_round[index] for index in sorted(outcomes_by_round)]
+        recent = outcomes[-sample_size:]
+        previous = outcomes[-2 * sample_size:-sample_size]
+        recent_wins = sum(value > 0 for value in recent)
+        recent_losses = sum(value < 0 for value in recent)
+        previous_wins = sum(value > 0 for value in previous)
+        previous_losses = sum(value < 0 for value in previous)
+        trend = "INSUFFICIENT"
+        momentum_pp = None
+        if len(recent) >= minimum_sample and len(previous) >= minimum_sample:
+            recent_rate = recent_wins / len(recent)
+            previous_rate = previous_wins / len(previous)
+            momentum_pp = round((recent_rate - previous_rate) * 100, 1)
+            if momentum_pp > 0:
+                trend = "RISING"
+            elif momentum_pp <= -20:
+                trend = "FALLING"
+            else:
+                trend = "STEADY"
+        return {
+            "performance_trend": trend,
+            "performance_momentum_pp": momentum_pp,
+            "recent_outcome_wins": recent_wins,
+            "recent_outcome_losses": recent_losses,
+            "recent_outcome_count": len(recent),
+            "recent_outcome_net": recent_wins - recent_losses,
+            "previous_outcome_wins": previous_wins,
+            "previous_outcome_losses": previous_losses,
+            "previous_outcome_count": len(previous),
+            "previous_outcome_net": previous_wins - previous_losses,
+            "outcome_sample_count": len(outcomes),
+            "outcome_momentum_sample_size": sample_size,
+            "outcome_momentum_minimum_sample": minimum_sample,
+        }
+
+    @staticmethod
+    def _adaptive_context_signature(history: list[Mapping[str, Any]]) -> str:
+        return "".join(str(row.get("outcome") or "").upper()
+                       for row in history[-3:]
+                       if str(row.get("outcome") or "").upper() in {"H", "L"})
+
+    @staticmethod
+    def _adaptive_selection_identity(selection: Mapping[str, Any]) -> tuple[str, int, int] | None:
+        source = selection.get("source_round") or selection.get("sourceRound") or {}
+        target = selection.get("actual_target") or selection.get("expected_target") or {}
+        try:
+            stream = str(source.get("streamId", source.get("stream_id")) or "")
+            source_index = int(source.get("roundIndex", source.get("round_index")) or 0)
+            target_index = int(target.get("roundIndex", target.get("round_index")) or 0)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return (stream, source_index, target_index) if stream and source_index > 0 and target_index > 0 else None
+
+    def _adaptive_rule_evidence(self, session: Mapping[str, Any], rule_id: str,
+                                source: Mapping[str, Any], context: str) -> dict[str, Any]:
+        stream = str(source.get("stream_id") or "")
+        source_index = int(source.get("round_index") or 0)
+        reset_index = int(session.get("adaptive_performance_reset_round_index") or 0)
+        records: dict[tuple[str, int, int], dict[str, Any]] = {}
+        signals: set[int] = set()
+        observer = self._performance_observers.get(rule_id) or {}
+        observed_engine = observer.get("engine")
+        for observed in (getattr(observed_engine, "sessions", {}) or {}).values():
+            if (observed.get("last_stream_id") != stream
+                    or observed.get("performance_configuration_key") != self._performance_configuration_key(rule_id)):
+                continue
+            rows = list(observed.get("selections") or [])
+            rows.extend(item for values in (observed.get("rule_selections") or {}).values() for item in values)
+            for item in rows:
+                status = str(item.get("status") or item.get("result") or "").upper()
+                identity = self._adaptive_selection_identity(item)
+                if identity and identity[0] == stream and status in {"WIN", "LOSS"}:
+                    records[identity] = {"identity": identity, "result": status,
+                                         "context": item.get("behavior_context")}
+            for evaluation in observed.get("evaluations") or []:
+                ref = evaluation.get("source_round") or {}
+                try:
+                    index = int(ref.get("roundIndex", ref.get("round_index")) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if any(check.get("rule_id") == rule_id
+                       and check.get("eligible", check.get("result")) is True
+                       for check in evaluation.get("rule_evaluations") or []):
+                    signals.add(index)
+        for item in (session.get("rule_selections") or {}).get(rule_id, []):
+            status = str(item.get("status") or item.get("result") or "").upper()
+            identity = self._adaptive_selection_identity(item)
+            if (identity and identity[0] == stream and identity[1] > reset_index
+                    and status in {"WIN", "LOSS"}):
+                records.setdefault(identity, {"identity": identity, "result": status,
+                                              "context": item.get("behavior_context")})
+        for evaluation in session.get("evaluations") or []:
+            ref = evaluation.get("source_round") or {}
+            try:
+                index = int(ref.get("roundIndex", ref.get("round_index")) or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if index > reset_index and index >= source_index - 49 and any(check.get("rule_id") == rule_id
+                and check.get("eligible", check.get("result")) is True
+                for check in evaluation.get("rule_evaluations") or []):
+                signals.add(index)
+
+        ordered = sorted(records.values(), key=lambda item: item["identity"][1])
+        cutoff_50 = source_index - 49
+        rolling = [item for item in ordered if item["identity"][1] >= cutoff_50]
+        recent = [item for item in rolling if item["identity"][1] >= source_index - 9]
+        medium = [item for item in rolling if item["identity"][1] < source_index - 9]
+        older = [item for item in ordered if item["identity"][1] < cutoff_50]
+        archived = []
+        for row in observer.get("history") or []:
+            try:
+                window_end = int(row.get("window_end_round_index") or row.get("last_round_index") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (row.get("stream_id") == stream
+                    and window_end > reset_index
+                    and row.get("performance_configuration_key") == self._performance_configuration_key(rule_id)
+                    and window_end < cutoff_50):
+                archived.append(row)
+        old_wins = sum(item["result"] == "WIN" for item in older) + sum(int(row.get("wins") or 0) for row in archived)
+        old_losses = sum(item["result"] == "LOSS" for item in older) + sum(int(row.get("losses") or 0) for row in archived)
+
+        def counts(items: list[dict[str, Any]]) -> tuple[int, int]:
+            return sum(item["result"] == "WIN" for item in items), sum(item["result"] == "LOSS" for item in items)
+
+        wins, losses = counts(rolling)
+        recent_wins, recent_losses = counts(recent)
+        medium_wins, medium_losses = counts(medium)
+        total_history_wins = wins + old_wins
+        total_history_losses = losses + old_losses
+        all_history_sample = total_history_wins + total_history_losses
+        baseline = total_history_wins / all_history_sample if all_history_sample else 0.5
+        total = wins + losses
+        posterior = (wins + 6 * baseline) / (total + 6) if total else baseline
+        recent_n, medium_n = recent_wins + recent_losses, medium_wins + medium_losses
+        recent_rate = recent_wins / recent_n if recent_n else baseline
+        medium_rate = medium_wins / medium_n if medium_n else baseline
+        long_n = old_wins + old_losses
+        long_rate = old_wins / long_n if long_n else baseline
+        context_rows = [item for item in rolling if isinstance(item.get("context"), str)
+            and len(item["context"]) == len(context)
+            and sum(a != b for a, b in zip(item["context"], context)) <= 1]
+        context_wins, context_losses = counts(context_rows)
+        context_n = context_wins + context_losses
+        context_rate = (context_wins + 4 * baseline) / (context_n + 4) if context_n else baseline
+        stability = max(0.0, 1 - min(1.0, (abs(recent_rate - medium_rate)
+                                            + abs(medium_rate - long_rate)) / 1.5))
+        confidence = total / (total + 12)
+        blended = 0.50 * posterior + 0.25 * recent_rate + 0.15 * medium_rate + 0.10 * long_rate
+        score = (baseline + confidence * (blended - baseline)
+                 + min(0.25, context_n / (context_n + 12) * 0.25) * (context_rate - baseline)
+                 + max(-0.08, min(0.08, recent_rate - medium_rate)) * 0.15
+                 - (1 - stability) * 0.12)
+        return {
+            "rolling_50": {"wins": wins, "losses": losses, "settled": total,
+                           "net": wins - losses, "window_start_round_index": cutoff_50,
+                           "window_end_round_index": source_index,
+                           "win_rate": round(wins / total, 4) if total else None},
+            "recent": {"wins": recent_wins, "losses": recent_losses, "settled": recent_n,
+                       "win_rate": round(recent_rate, 4) if recent_n else None},
+            "medium": {"wins": medium_wins, "losses": medium_losses, "settled": medium_n,
+                       "win_rate": round(medium_rate, 4) if medium_n else None},
+            "long_term": {"wins": old_wins, "losses": old_losses, "settled": long_n,
+                          "win_rate": round(long_rate, 4) if long_n else None,
+                          "archived_windows": len(archived)},
+            "all_history": {"wins": wins + old_wins, "losses": losses + old_losses,
+                            "settled": total + long_n, "net": wins - losses + old_wins - old_losses},
+            "baseline_win_rate": round(baseline, 4), "baseline_sample_count": all_history_sample,
+            "posterior_win_rate": round(posterior, 4),
+            "context_evidence": {"context": context, "similar_samples": context_n,
+                                 "wins": context_wins, "losses": context_losses,
+                                 "adjusted_win_rate": round(context_rate, 4)},
+            "confidence": round(confidence, 4), "stability": round(stability, 4),
+            "momentum": round(recent_rate - medium_rate, 4),
+            "score": round(max(0.0, min(1.0, score)), 4),
+            "signal_rounds_50": len({index for index in signals if index >= cutoff_50}),
+            "signal_rate_50": round(len({index for index in signals if index >= cutoff_50}) / 50, 4),
+            "performance_round_index": (observer.get("last_event") or {}).get("round_index"),
+            "performance_feed_fresh": bool(
+                (observer.get("last_event") or {}).get("stream_id") == stream
+                and (observer.get("last_event") or {}).get("continuity_status") == "VERIFIED"
+                and 0 <= source_index - int((observer.get("last_event") or {}).get("round_index") or 0) <= 5),
+            "signal_round_set": sorted(index for index in signals if index >= cutoff_50),
+        }
+
+    def _adaptive_baseline_comparison(self, session: Mapping[str, Any]) -> dict[str, Any]:
+        def target_key(item: Mapping[str, Any]) -> tuple[str, int] | None:
+            target = item.get("actual_target") or item.get("expected_target") or {}
+            try:
+                stream = str(target.get("streamId", target.get("stream_id")) or "")
+                index = int(target.get("roundIndex", target.get("round_index")) or 0)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return (stream, index) if stream and index > 0 else None
+
+        portfolio: dict[tuple[str, int], str] = {}
+        fixed: dict[str, dict[tuple[str, int], str]] = {}
+        for rule_id, rows in (session.get("rule_selections") or {}).items():
+            fixed[rule_id] = {}
+            for item in rows or []:
+                result = str(item.get("status") or item.get("result") or "").upper()
+                key = target_key(item)
+                if key and result in {"WIN", "LOSS"}:
+                    fixed[rule_id][key] = result
+                    portfolio.setdefault(key, result)
+        # The per-rule observer runs every registered policy independently,
+        # even when Adaptive did not select it. Use those forward ledgers for
+        # the fixed-rule comparator so it is not biased toward Adaptive's
+        # chosen candidates. Compare only on target rounds the portfolio
+        # actually covered.
+        for rule_id in session.get("rule_ids") or []:
+            observer = self._performance_observers.get(rule_id) or {}
+            observer_engine = observer.get("engine")
+            for observed_session in (getattr(observer_engine, "sessions", {}) or {}).values():
+                if (observed_session.get("mode") != session.get("mode")
+                        or observed_session.get("performance_configuration_key")
+                           != self._performance_configuration_key(rule_id)):
+                    continue
+                rows = list(observed_session.get("selections") or [])
+                rows.extend(item for values in (observed_session.get("rule_selections") or {}).values()
+                            for item in values or [])
+                for item in rows:
+                    result = str(item.get("status") or item.get("result") or "").upper()
+                    key = target_key(item)
+                    if key and result in {"WIN", "LOSS"}:
+                        fixed.setdefault(rule_id, {}).setdefault(key, result)
+        automatic: dict[tuple[str, int], str] = {}
+        for item in session.get("adaptive_automatic_baseline_selections") or []:
+            result = str(item.get("status") or item.get("result") or "").upper()
+            key = target_key(item)
+            if key and result in {"WIN", "LOSS"}:
+                automatic[key] = result
+        for other in self.sessions.values():
+            if (other.get("session_id") == session.get("session_id")
+                    or other.get("adaptive_rule_selection") is True
+                    or other.get("automatic_rule_selection") is not True
+                    or other.get("mode") != session.get("mode")):
+                continue
+            for item in other.get("selections") or []:
+                result = str(item.get("status") or item.get("result") or "").upper()
+                key = target_key(item)
+                if key and result in {"WIN", "LOSS"}:
+                    automatic[key] = result
+
+        def summary(reference: Mapping[tuple[str, int], str], *, scope: Mapping[tuple[str, int], str] | None = None) -> dict[str, Any]:
+            keys = set(reference) if scope is None else set(reference) & set(scope)
+            outcomes = [reference[key] for key in keys]
+            wins, losses = outcomes.count("WIN"), outcomes.count("LOSS")
+            return {"status": "AVAILABLE" if outcomes else "NO_OVERLAPPING_TARGETS",
+                    "wins": wins, "losses": losses, "net": wins - losses,
+                    "settled_targets": len(outcomes),
+                    "win_rate": round(wins / len(outcomes), 4) if outcomes else None}
+
+        fixed_rows = [(rule_id, summary(outcomes, scope=portfolio))
+                      for rule_id, outcomes in fixed.items()]
+        fixed_rows = [item for item in fixed_rows if item[1]["settled_targets"]]
+        best_fixed = max(fixed_rows, key=lambda item: (
+            item[1]["net"], item[1]["settled_targets"], item[0]), default=None)
+        return {"comparison_scope": "MATCHING_VERIFIED_TARGET_ROUNDS",
+            "adaptive_portfolio": summary(portfolio),
+            "fixed_rule": ({"rule_id": best_fixed[0], **best_fixed[1]} if best_fixed else
+                           {"status": "COLLECTING_FORWARD_OUTCOMES", "settled_targets": 0}),
+            "automatic": summary(automatic, scope=portfolio)}
+
+    def _adaptive_rule_choice(self, session: dict[str, Any], source: Mapping[str, Any],
+                              history: list[Mapping[str, Any]], at: str) -> dict[str, Any]:
+        self._ensure_automatic_rule_candidates(session)
+        context = self._adaptive_context_signature(history)
+        previous = session.get("adaptive_rule_choice") or {}
+        incumbents = set(previous.get("rule_ids") or [])
+        candidates: list[dict[str, Any]] = []
+        for rule_id in session.get("rule_ids") or []:
+            state = session.get("engines", {}).get(rule_id) or {}
+            cycle = state.get("cycle") or {}
+            row: dict[str, Any] = {"rule_id": rule_id, "available": True,
+                "selected": False, "validated": False, "evidence_status": "EXPLORATORY",
+                "reason": "EXPLORATORY_INSUFFICIENT_SETTLED_EVIDENCE",
+                "loss_limit": RULE_LOSS_LIMIT,
+                "loss_limit_losses": int(state.get("loss_limit_losses") or 0),
+                "loss_limit_blocked": bool(state.get("loss_limit_blocked")),
+                "cycle_status": cycle.get("status") or "IDLE"}
+            blocked = bool(state.get("loss_limit_blocked") and state.get("entry_signal_latched"))
+            waiting = bool(rule_id not in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}
+                           and state.get("entry_signal_latched") and not cycle.get("active"))
+            if blocked or waiting:
+                row.update({"available": False, "reason": "RULE_WAITING_FOR_NEW_ENTRY"})
+            elif session.get("rule_configuration_keys", {}).get(rule_id) != self._performance_configuration_key(rule_id):
+                row.update({"available": False, "reason": "SESSION_RULE_CONFIGURATION_CHANGED"})
+            else:
+                evidence = self._adaptive_rule_evidence(session, rule_id, source, context)
+                row.update({key: value for key, value in evidence.items() if key != "signal_round_set"})
+                row["signal_round_set"] = evidence["signal_round_set"]
+                sample = int(evidence["rolling_50"]["settled"])
+                baseline = float(evidence["baseline_win_rate"])
+                row["validated"] = bool(evidence.get("performance_feed_fresh") is True
+                    and sample >= 8 and evidence["score"] >= baseline + 0.035
+                    and evidence["confidence"] >= 0.35 and evidence["stability"] >= 0.45)
+                row["evidence_status"] = ("VALIDATED" if row["validated"] else
+                    "DEVELOPING" if sample >= 3 else "EXPLORATORY")
+                row["reason"] = "BASELINE_ADJUSTED_STABLE_EDGE" if row["validated"] else (
+                    "DEVELOPING_EVIDENCE" if sample else "EXPLORATORY_INSUFFICIENT_SETTLED_EVIDENCE")
+            candidates.append(row)
+
+        available = [row for row in candidates if row["available"]]
+        baseline = sum(float(row.get("baseline_win_rate") or 0.5) for row in available) / len(available) if available else 0.5
+        ranked = sorted(available, key=lambda row: (
+            -(float(row.get("score") or 0.5) + (0.015 if row["rule_id"] in incumbents else 0)), row["rule_id"]))
+        selected: list[dict[str, Any]] = []
+        for row in ranked:
+            incumbent = row["rule_id"] in incumbents
+            score = float(row.get("score") or 0.5)
+            if not (row["validated"] and score >= baseline + 0.02) and not (incumbent and score >= baseline - 0.06):
+                if incumbent:
+                    row["reason"] = "REMOVED_AFTER_EDGE_DECAY_OR_UNSTABLE_EVIDENCE"
+                continue
+            signals = set(row.get("signal_round_set") or [])
+            duplicate = next((prior for prior in selected if signals and prior.get("signal_round_set")
+                and len(signals & set(prior["signal_round_set"])) / len(signals | set(prior["signal_round_set"])) >= 0.8), None)
+            if duplicate:
+                overlap = len(signals & set(duplicate["signal_round_set"])) / len(signals | set(duplicate["signal_round_set"]))
+                row["maximum_signal_overlap"] = round(overlap, 4)
+                if not (incumbent and score > float(duplicate.get("score") or 0) + 0.10):
+                    row.update({"reason": "EXCLUDED_HIGH_SIGNAL_OVERLAP",
+                                "overlaps_rule_id": duplicate["rule_id"]})
+                    continue
+                selected.remove(duplicate)
+                duplicate.update({"selected": False, "reason": "REMOVED_FOR_STRONGER_DIVERSE_CANDIDATE"})
+            row.update({"selected": True,
+                        "reason": "RETAINED_WITH_HYSTERESIS" if incumbent and not row["validated"]
+                                  else "DIVERSE_VALIDATED_EDGE"})
+            selected.append(row)
+        if not selected and available:
+            fallback = max(available, key=lambda row: (float(row.get("score") or 0.5), row["rule_id"]))
+            fallback.update({"selected": True, "validated": False,
+                             "evidence_status": "EXPLORATORY", "reason": "EXPLORATORY_BEST_AVAILABLE"})
+            selected = [fallback]
+        selected_ids = [row["rule_id"] for row in selected]
+        previous_ids = list(previous.get("rule_ids") or [])
+        changed = selected_ids != previous_ids
+        if changed:
+            session["adaptive_selection_version"] = int(session.get("adaptive_selection_version") or 0) + 1
+        decision = {"rule_ids": selected_ids,
+            "reason": ("NO_ELIGIBLE_RULES" if not selected_ids else
+                       "EXPLORATORY_BEST_AVAILABLE" if not any(row["validated"] for row in selected) else
+                       "ADAPTIVE_PORTFOLIO_UPDATED" if changed else "ADAPTIVE_PORTFOLIO_RETAINED"),
+            "source_round_index": int(source.get("round_index") or 0), "evaluated_at": at,
+            "context": {"high_low_signature": context, "source_outcome": source.get("outcome"),
+                        "window_rounds": 50, "baseline_win_rate": round(baseline, 4)},
+            "selection_version": int(session.get("adaptive_selection_version") or 0),
+            "decision_sequence": len(session.get("adaptive_decisions") or []) + 1,
+            "added": [{"rule_id": rid, "reason": next(row["reason"] for row in selected if row["rule_id"] == rid)}
+                      for rid in selected_ids if rid not in previous_ids],
+            "removed": [{"rule_id": rid, "reason": next((row["reason"] for row in candidates
+                        if row["rule_id"] == rid), "NO_LONGER_SELECTED")}
+                        for rid in previous_ids if rid not in selected_ids],
+            "candidates": [{key: value for key, value in row.items() if key != "signal_round_set"}
+                           for row in candidates]}
+        session["adaptive_rule_choice"] = decision
+        session["active_rule_ids"] = selected_ids
+        session.setdefault("adaptive_decisions", []).append(deepcopy(decision))
+        session["adaptive_baseline_comparison"] = self._adaptive_baseline_comparison(session)
+        return decision
+
+    def _adaptive_automatic_baseline_proposals(self, session: dict[str, Any],
+            source: Mapping[str, Any], history: list[Mapping[str, Any]], at: str
+    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+        engines = session.setdefault("adaptive_automatic_baseline_engines", {})
+        for rule_id in session.get("rule_ids") or []:
+            engines.setdefault(rule_id, _fresh_engine(rule_id))
+        baseline_session = {
+            "session_id": f"{session['session_id']}:automatic-baseline",
+            "mode": session["mode"], "rule_ids": list(session.get("rule_ids") or []),
+            "rule_versions": deepcopy(session.get("rule_versions") or {}),
+            "rule_configuration_keys": deepcopy(session.get("rule_configuration_keys") or {}),
+            "configuration_snapshot": deepcopy(session.get("configuration_snapshot") or {}),
+            "engines": engines, "manifest": deepcopy(session.get("manifest") or []),
+        }
+        # Run the unchanged Automatic chooser against a private configuration
+        # copy, so its normal re-enable behavior cannot mutate live rule config.
+        baseline_engine = RulesEngine(None, performance_observer=False)
+        baseline_engine.rule_configuration = deepcopy(self.rule_configuration)
+        baseline_engine.configuration_version = self.configuration_version
+        baseline_engine._performance_observers = self._performance_observers
+        baseline_engine._performance_observer_error = self._performance_observer_error
+        choice = baseline_engine._automatic_rule_choice(baseline_session, source)
+        baseline_proposals = []
+        for rule_id in choice.get("rule_ids") or []:
+            proposal = self._proposal(baseline_session, rule_id, source, history, at)
+            proposal["enabled"] = True
+            proposal["selected_by_automatic_baseline"] = True
+            if proposal.get("eligible") is True:
+                baseline_proposals.append(proposal)
+        session["adaptive_automatic_baseline_choice"] = deepcopy(choice)
+        session.setdefault("adaptive_automatic_baseline_decisions", []).append({
+            "source_round_index": int(source.get("round_index") or 0),
+            "evaluated_at": at, "choice": deepcopy(choice),
+            "selected_rule_ids": [], "action": "WAIT",
+        })
+        session["adaptive_automatic_baseline_engines"] = engines
+        return baseline_session, choice, baseline_proposals
+
+    def _record_adaptive_automatic_baseline(self, session: dict[str, Any],
+            baseline_session: dict[str, Any], choice: Mapping[str, Any],
+            proposals: list[dict[str, Any]], source: Mapping[str, Any], at: str) -> None:
+        true_rows = [row for row in proposals if row.get("eligible") is True]
+        decision = (session.get("adaptive_automatic_baseline_decisions") or [])[-1:]
+        if not true_rows:
+            if decision:
+                decision[0].update({"selected_rule_ids": [], "action": "WAIT"})
+            return
+        rule_ids = [row["rule_id"] for row in true_rows]
+        base_id = _stable_selection_id(session, source, rule_ids)
+        selection_id = str(uuid5(NAMESPACE_URL, f"adaptive-automatic-baseline:{base_id}"))
+        selection = {"selection_id": selection_id, "decision_id": selection_id,
+            "session_id": session["session_id"], "source_round": _reference(source),
+            "expected_target": _expected(source), "contributing_rule_ids": rule_ids,
+            "matched_rule_ids": rule_ids, "selected_at": at, "status": "PENDING",
+            "result": "PENDING", "baseline_selection": True}
+        for proposal in true_rows:
+            self._commit_contributor(baseline_session, proposal, selection)
+        session.setdefault("adaptive_automatic_baseline_selections", []).append(selection)
+        session["adaptive_automatic_baseline_engines"] = baseline_session["engines"]
+        if decision:
+            decision[0].update({"selection_id": selection_id,
+                "selected_rule_ids": rule_ids, "action": "SELECT"})
+
+    def _automatic_rule_choice(self, session: dict[str, Any], source: Mapping[str, Any]) -> dict[str, Any]:
+        """Choose qualifying policies from settled outcomes available before this source decision."""
+        result: dict[str, Any] = {"rule_ids": [], "reason": "NO_QUALIFIED_RULE",
+                                  "source_round_index": source["round_index"], "candidates": []}
+        if self._performance_observer_error:
+            result["reason"] = "PERFORMANCE_OBSERVER_UNAVAILABLE"
+            return result
+        self._ensure_automatic_rule_candidates(session)
+        for rule_id in session["rule_ids"]:
+            candidate: dict[str, Any] = {"rule_id": rule_id, "qualified": False}
+            result["candidates"].append(candidate)
+            rule_state = session.get("engines", {}).get(rule_id) or {}
+            cycle_state = rule_state.get("cycle") or {}
+            candidate.update({"loss_limit_losses": int(rule_state.get("loss_limit_losses") or 0),
+                              "loss_limit": RULE_LOSS_LIMIT,
+                              "loss_limit_blocked": bool(rule_state.get("loss_limit_blocked")),
+                              "loss_limit_reached_round_index": rule_state.get("loss_limit_reached_round_index"),
+                              "entry_signal_latched": bool(rule_state.get("entry_signal_latched")),
+                              "rule_state": rule_state.get("rule_state"),
+                              "cycle_status": cycle_state.get("status") or "IDLE",
+                              "cycle_active": bool(cycle_state.get("active")),
+                              "cycle_requested_targets": int(cycle_state.get("requested_count") or 0),
+                              "cycle_resolved_targets": int(cycle_state.get("resolved_count") or 0),
+                              "cycle_loss_count": int(cycle_state.get("loss_count") or 0),
+                              "cycle_maximum_targets": cycle_state.get("maximum_targets"),
+                              "cycle_end_condition": cycle_state.get("end_condition"),
+                              "cycle_end_reason": cycle_state.get("end_reason")})
+            if rule_state.get("loss_limit_blocked"):
+                if rule_id in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}:
+                    fresh_entry = (rule_state.get("rule_state") == "WAIT_HIGH"
+                                   and source.get("outcome") == "H")
+                else:
+                    fresh_entry = not rule_state.get("entry_signal_latched")
+                if not fresh_entry:
+                    candidate["reason"] = "RULE_LOSS_LIMIT_WAITING_FOR_NEW_ENTRY"
+                    candidate["loss_limit_losses"] = int(rule_state.get("loss_limit_losses") or 0)
+                    continue
+            elif (rule_id not in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}
+                  and rule_state.get("entry_signal_latched")
+                  and not ((rule_state.get("cycle") or {}).get("active"))):
+                candidate["reason"] = "RULE_WAITING_FOR_NEW_ENTRY"
+                continue
+            current_key = self._performance_configuration_key(rule_id)
+            if session.get("rule_configuration_keys", {}).get(rule_id) != current_key:
+                candidate["reason"] = "SESSION_RULE_CONFIGURATION_CHANGED"
+                continue
+            observer = self._performance_observers.get(rule_id)
+            latest = (observer or {}).get("last_event") or {}
+            lag = source["round_index"] - int(latest.get("round_index") or 0)
+            if (latest.get("stream_id") != source["stream_id"]
+                    or latest.get("continuity_status") != "VERIFIED" or not 0 <= lag <= 5
+                    or (lag == 0 and latest.get("round_id") != source["round_id"])):
+                candidate["reason"] = "PERFORMANCE_FEED_LAGGING"
+                continue
+            candidate["performance_round_index"] = latest["round_index"]
+            active_windows = [row for row in observer["engine"].sessions.values()
+                              if row.get("last_stream_id") == source["stream_id"]
+                              and row.get("performance_configuration_key") == current_key
+                              and int(row.get("last_round_index") or 0)
+                                  >= int(observer.get("segment_start_round_index") or 0)]
+            if not active_windows:
+                candidate["reason"] = "NO_RECENT_SETTLED_RESULTS"
+                continue
+            # Decide from the active 100-round policy window only. Archived
+            # windows can explain history, but old positive results must not
+            # keep a rule selected after its current window turns weak.
+            window_session = max(active_windows, key=lambda row: int(row.get("last_round_index") or 0))
+            window = self._performance_window(window_session, rule_id)
+            window_round = int(window.get("last_round_index") or 0)
+            if (window.get("stream_id") != source["stream_id"] or window_round < 1
+                    or source["round_index"] - window_round > RULE_PERFORMANCE_WINDOW_SIZE):
+                candidate["reason"] = "NO_RECENT_SETTLED_RESULTS"
+                continue
+            settled = int(window.get("settled") or 0)
+            wins = int(window.get("wins") or 0)
+            losses = int(window.get("losses") or 0)
+            net = int(window.get("net") or 0)
+            candidate.update({"settled": settled, "wins": wins, "losses": losses,
+                              "net_wins": net, "windows": 1,
+                              "window_rounds": int(window.get("observed_rounds") or 0),
+                              "window_size": int(window.get("window_size") or RULE_PERFORMANCE_WINDOW_SIZE),
+                              "window_mode": "ROLLING",
+                              "window_start_round_index": window.get("window_start_round_index"),
+                              "window_end_round_index": window.get("window_end_round_index"),
+                              "recovered_rounds": int(window.get("recovered_rounds") or 0),
+                              "window_last_round_index": window_round})
+            outcome_momentum = self._performance_outcome_momentum(
+                window_session, rule_id, window)
+            signal_momentum = self._performance_signal_momentum(window_session, rule_id)
+            candidate.update(outcome_momentum)
+            candidate.update(signal_momentum)
+            # Recent outcomes can qualify a recovering rule before its full
+            # rolling net turns positive. A material outcome decline or a
+            # falling TRUE-signal rate removes confidence despite old wins.
+            if outcome_momentum["performance_trend"] == "FALLING":
+                candidate["reason"] = "PERFORMANCE_MOMENTUM_FALLING"
+                continue
+            if outcome_momentum["performance_trend"] == "RISING":
+                candidate["qualified"] = True
+                candidate["reason"] = "PERFORMANCE_MOMENTUM_RISING"
+                recent_rate = (outcome_momentum["recent_outcome_wins"]
+                               / max(1, outcome_momentum["recent_outcome_count"]))
+                candidate["score"] = round(
+                    0.5 + recent_rate * 0.25
+                    + max(0.0, outcome_momentum["performance_momentum_pp"] or 0) / 400,
+                    4)
+                candidate["automatically_reenabled"] = self._automatically_enable_qualified_rule(rule_id)
+                continue
+            if signal_momentum["signal_trend"] == "FALLING":
+                candidate["reason"] = "SIGNAL_MOMENTUM_FALLING"
+                continue
+            if signal_momentum["signal_trend"] == "RISING":
+                candidate["qualified"] = True
+                candidate["reason"] = "SIGNAL_MOMENTUM_RISING"
+                candidate["score"] = round(
+                    signal_momentum["recent_signal_hits"] / max(1, signal_momentum["recent_signal_checks"])
+                    + max(0, signal_momentum["signal_momentum_pp"]) / 100, 4)
+                candidate["automatically_reenabled"] = self._automatically_enable_qualified_rule(rule_id)
+                continue
+            if settled < 3:
+                candidate["reason"] = "INSUFFICIENT_POSITIVE_EVIDENCE"
+                continue
+            if net <= 0:
+                candidate["reason"] = "NO_POSITIVE_NET"
+                continue
+            candidate["qualified"] = True
+            candidate["reason"] = "POSITIVE_SETTLED_EDGE"
+            candidate["score"] = round(net / settled, 4)
+            candidate["automatically_reenabled"] = self._automatically_enable_qualified_rule(rule_id)
+        qualified = [row for row in result["candidates"] if row["qualified"]]
+        qualified.sort(key=lambda row: (-row["score"], -row["net_wins"], row["rule_id"]))
+        # Keep every independently qualified rule active. The shared
+        # coordinator still creates at most one target-bound selection when
+        # several chosen rules match the same source round.
+        if qualified:
+            result["rule_ids"] = [row["rule_id"] for row in qualified]
+            result["reason"] = ("MULTIPLE_RULES_QUALIFIED" if len(qualified) > 1
+                                else qualified[0]["reason"])
+        elif (any(row.get("reason") == "PERFORMANCE_FEED_LAGGING" for row in result["candidates"])
+              and all(row.get("reason") in {"PERFORMANCE_FEED_LAGGING", "RULE_DISABLED"}
+                      for row in result["candidates"])):
+            result["reason"] = "PERFORMANCE_FEED_LAGGING"
+        return result
+
+    def preview_rule_selection(self, *, mode: str, selection_mode: str,
+                               source: Mapping[str, Any] | None,
+                               history: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+        """Preview the live chooser without creating or mutating a SHADOW session."""
+        if selection_mode not in {"automatic", "adaptive"}:
+            raise ValueError("INVALID_RULE_SELECTION_PREVIEW_MODE")
+        if mode not in MODES:
+            raise ValueError("INVALID_SESSION_CONFIGURATION")
+        allowed = self._allowed_rules(mode)
+        rule_ids = [rule_id for rule_id in self._performance_rule_ids() if rule_id in allowed]
+        if source is None:
+            return {"status": "WAITING_FOR_VERIFIED_ROUND", "selection_mode": selection_mode,
+                    "mode": mode, "source_round": None, "selected_rule_ids": [],
+                    "reason": "WAITING_FOR_VERIFIED_ROUND",
+                    "candidates": [{"rule_id": rule_id, "selected": False,
+                        "reason": "WAITING_FOR_VERIFIED_ROUND"} for rule_id in rule_ids]}
+
+        normalized_source = _identity(source, require_sequence=False)
+        if (not normalized_source or source.get("event_type") != "round.persisted"
+                or source.get("durability") != "COMMITTED"
+                or source.get("continuity_status") != "VERIFIED"):
+            return {"status": "WAITING_FOR_VERIFIED_ROUND", "selection_mode": selection_mode,
+                    "mode": mode, "source_round": None, "selected_rule_ids": [],
+                    "reason": "WAITING_FOR_VERIFIED_ROUND",
+                    "candidates": [{"rule_id": rule_id, "selected": False,
+                        "reason": "WAITING_FOR_VERIFIED_ROUND"} for rule_id in rule_ids]}
+
+        normalized_history = []
+        for item in list(history or []) + [source]:
+            row = _identity(item, require_sequence=False)
+            if (row and row["stream_id"] == normalized_source["stream_id"]
+                    and row["continuity_status"] == "VERIFIED"
+                    and row["durability"] == "COMMITTED"):
+                if not normalized_history or row["round_index"] > normalized_history[-1]["round_index"]:
+                    normalized_history.append(row)
+        normalized_history = normalized_history[-5:]
+        if not normalized_history or normalized_history[-1]["round_id"] != normalized_source["round_id"]:
+            normalized_history.append(normalized_source)
+
+        with self._lock:
+            preview_session = {
+                "session_id": "selection-preview", "mode": mode, "rule_ids": rule_ids,
+                "rule_versions": {rule_id: self._version(rule_id) for rule_id in rule_ids},
+                "rule_configuration_keys": {rule_id: self._performance_configuration_key(rule_id)
+                    for rule_id in rule_ids},
+                "engines": {rule_id: _fresh_engine(rule_id) for rule_id in rule_ids},
+                "rule_selections": {rule_id: [] for rule_id in rule_ids},
+                "selections": [], "evaluations": [], "adaptive_rule_choice": None,
+                "adaptive_decisions": [], "adaptive_selection_version": 0,
+                "active_rule_ids": [],
+            }
+            preview_engine = self
+            if selection_mode == "automatic":
+                # Automatic can mark a disabled policy for re-enabling after it
+                # qualifies. Run that logic against a private config copy here.
+                preview_engine = RulesEngine(None, performance_observer=False)
+                preview_engine.rule_configuration = deepcopy(self.rule_configuration)
+                preview_engine.configuration_version = self.configuration_version
+                preview_engine._performance_observers = self._performance_observers
+                preview_engine._performance_observer_error = self._performance_observer_error
+                choice = preview_engine._automatic_rule_choice(preview_session, normalized_source)
+            else:
+                choice = self._adaptive_rule_choice(
+                    preview_session, normalized_source, normalized_history, _now())
+            candidates = [{key: value for key, value in row.items() if key != "signal_round_set"}
+                          for row in choice.get("candidates") or []]
+            return {"status": "READY", "selection_mode": selection_mode, "mode": mode,
+                    "source_round": {"round_id": normalized_source["round_id"],
+                        "round_index": normalized_source["round_index"],
+                        "outcome": normalized_source["outcome"]},
+                    "evaluated_at": _now(), "selected_rule_ids": list(choice.get("rule_ids") or []),
+                    "reason": choice.get("reason"), "selection_version": choice.get("selection_version"),
+                    "candidates": candidates}
+
+    @staticmethod
     def _validate_net_outcome_limits(options: dict[str, Any]) -> None:
         for enabled_key, count_key in (
             ("win_limit_enabled", "win_limit_count"),
@@ -848,6 +2302,24 @@ class RulesEngine:
             else:
                 options[count_key] = None
 
+    @staticmethod
+    def _validate_auto_next_result_limits(options: dict[str, Any]) -> None:
+        options.setdefault("auto_next_limits_enabled", False)
+        if not isinstance(options["auto_next_limits_enabled"], bool):
+            raise ValueError("INVALID_BOOLEAN_PARAMETER")
+        counts = ("auto_next_win_count", "auto_next_loss_count")
+        if options["auto_next_limits_enabled"] and not any(options.get(key) is not None for key in counts):
+            raise ValueError("AUTO_NEXT_RESULT_LIMIT_REQUIRED")
+        for key in counts:
+            count = options.get(key)
+            if count is None:
+                continue
+            if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+                raise ValueError("INVALID_RESULT_COUNT_LIMIT")
+        if not options["auto_next_limits_enabled"]:
+            for key in counts:
+                options[key] = None
+
     def start_session(self, *, mode: str, rule_ids: list[str], boundary: Mapping[str, Any],
                       prestart_context: list[Mapping[str, Any]] | None = None,
                       options: Mapping[str, Any] | None = None, now: str | None = None,
@@ -858,21 +2330,64 @@ class RulesEngine:
             raise ValueError("INVALID_SESSION_REPLACEMENT")
         if mode not in MODES or not isinstance(rule_ids, list) or len(set(rule_ids)) != len(rule_ids):
             raise ValueError("INVALID_SESSION_CONFIGURATION")
+        requested_options = dict(options or {})
+        requested_session_window = requested_options.get(
+            "max_observed_rounds", requested_options.get("window_size", WINDOW_SIZE))
+        requested_run_until_stopped = requested_options.get(
+            "run_until_stopped", requested_session_window is None)
+        if not isinstance(requested_run_until_stopped, bool):
+            raise ValueError("INVALID_BOOLEAN_PARAMETER")
+        run_until_stopped = requested_run_until_stopped or requested_session_window is None
+        if run_until_stopped:
+            # The explicit user choice removes only the round cap. Configured
+            # result/profit/selection limits remain active and stop the run.
+            requested_options["window_size"] = None
+            requested_options["max_observed_rounds"] = None
+            # Do not create a successor session automatically from this mode.
+            requested_options.update({"auto_next_check_enabled": False,
+                                      "auto_next_on_limit_enabled": False,
+                                      "auto_next_limits_enabled": False,
+                                      "auto_next_win_count": None,
+                                      "auto_next_loss_count": None})
+        automatic_rule_selection = requested_options.get("automatic_rule_selection", False)
+        adaptive_rule_selection = requested_options.get("adaptive_rule_selection", False)
+        behaviour_detection_enabled = requested_options.get("behaviour_detection_enabled", False)
+        if not isinstance(automatic_rule_selection, bool) or not isinstance(adaptive_rule_selection, bool):
+            raise ValueError("INVALID_BOOLEAN_PARAMETER")
+        if not isinstance(behaviour_detection_enabled, bool):
+            raise ValueError("INVALID_BOOLEAN_PARAMETER")
+        if automatic_rule_selection and adaptive_rule_selection:
+            raise ValueError("RULE_SELECTION_MODES_ARE_MUTUALLY_EXCLUSIVE")
+        if automatic_rule_selection:
+            if rule_ids:
+                raise ValueError("AUTOMATIC_RULE_SELECTION_REQUIRES_NO_FIXED_RULES")
+            rule_ids = [rule_id for rule_id in self._performance_rule_ids()
+                        if rule_id in self._allowed_rules(mode)]
+        if adaptive_rule_selection:
+            if rule_ids:
+                raise ValueError("ADAPTIVE_RULE_SELECTION_REQUIRES_NO_FIXED_RULES")
+            rule_ids = [rule_id for rule_id in self._performance_rule_ids()
+                        if rule_id in self._allowed_rules(mode)]
         allowed = self._allowed_rules(mode)
         if any(rule_id not in allowed for rule_id in rule_ids):
             raise ValueError("RULE_NOT_ALLOWED_IN_MODE")
         for rule_id in rule_ids:
             configured = self.rule_configuration.get(rule_id)
-            if not configured or configured.get("configured") is not True or configured.get("enabled") is not True:
+            if not (automatic_rule_selection or adaptive_rule_selection) and (not configured or configured.get("configured") is not True or configured.get("enabled") is not True):
                 raise ValueError("RULE_NOT_ENABLED")
         if not rule_ids:
             # A zero-rule session is legal and reports NO_ACTION; it never selects.
             pass
-        start = _identity(boundary)
-        if not start or boundary.get("event_type") != "round.persisted" or boundary.get("durability") != "COMMITTED" \
+        watch_boundary = (boundary.get("event_type") == "round.observed"
+                          and boundary.get("durability") == "PENDING"
+                          and boundary.get("delivery_mode") == "LIVE"
+                          and isinstance(boundary.get("source_metadata"), Mapping)
+                          and boundary["source_metadata"].get("source") == "ORBIT_DATA_WATCH_API")
+        start = _identity(boundary, require_sequence=not watch_boundary)
+        if not start or (not watch_boundary and (boundary.get("event_type") != "round.persisted" or boundary.get("durability") != "COMMITTED")) \
                 or boundary.get("continuity_status") != "VERIFIED":
             raise ValueError("VERIFIED_COMMITTED_BOUNDARY_REQUIRED")
-        opts = dict(options or {})
+        opts = requested_options
         window_size = opts.get("window_size", WINDOW_SIZE)
         if mode in {"START_CHECK", "LEGACY_SEPARATE_TRACKER"}:
             expected_policy = START_CHECK_POLICY_ID if mode == "START_CHECK" else LEGACY_POLICY_ID
@@ -882,7 +2397,6 @@ class RulesEngine:
             defaults = {"window_size": WINDOW_SIZE, "stake_rwf": 100, "cashout_multiplier": 2.0,
                         "profit_target_enabled": True, "profit_target_rwf": 400,
                         "auto_next_check_enabled": False, "auto_next_on_limit_enabled": False,
-                        "execution_panel": None,
                         "stake_currency": "RWF"}
             defaults.update(configured)
             defaults.update(opts)
@@ -915,20 +2429,13 @@ class RulesEngine:
                     or not isinstance(max_selections, int) or max_selections < 1):
                 raise ValueError("INVALID_MAX_SELECTIONS")
             self._validate_net_outcome_limits(opts)
+            self._validate_auto_next_result_limits(opts)
             opts["net_outcome_limit_version"] = 1
         else:
             retained = dict(opts)
             opts = {"window_size": retained.get("max_observed_rounds", window_size),
-                    "execution_panel": retained.get("execution_panel", 0),
                     "stake_currency": retained.get("stake_currency", "RWF")}
             opts["fixed_stake_rwf"] = retained.get("fixed_stake_rwf", 100)
-        if (opts.get("auto_next_check_enabled") is True
-                and opts.get("auto_next_on_limit_enabled") is True):
-            raise ValueError("AUTO_NEXT_TRIGGERS_MUTUALLY_EXCLUSIVE")
-        execution_panel = opts.get("execution_panel")
-        if execution_panel is not None and (isinstance(execution_panel, bool) or execution_panel not in (0, 1)):
-            raise ValueError("INVALID_EXECUTION_PANEL")
-        opts["execution_panel"] = execution_panel
         if "stake_currency" in opts and opts["stake_currency"] is not None:
             currency = str(opts["stake_currency"]).strip().upper()
             if not re.fullmatch(r"[A-Z]{3}", currency):
@@ -954,8 +2461,13 @@ class RulesEngine:
             opts.pop("loss_limit_enabled", None)
             opts.pop("loss_limit_count", None)
         window_size = opts.get("max_observed_rounds", opts.get("window_size", WINDOW_SIZE))
-        if isinstance(window_size, bool) or not isinstance(window_size, int) or not 1 <= window_size <= 100000:
+        if window_size is not None and (isinstance(window_size, bool)
+                or not isinstance(window_size, int) or window_size < 1):
             raise ValueError("INVALID_WINDOW_SIZE")
+        opts["window_size"] = window_size
+        opts["max_observed_rounds"] = window_size
+        opts["run_until_stopped"] = window_size is None
+        opts["behaviour_detection_enabled"] = behaviour_detection_enabled
         context: list[dict[str, Any]] = []
         for item in prestart_context or []:
             row = _identity(item, require_sequence=False)
@@ -970,9 +2482,27 @@ class RulesEngine:
         snapshot_version = max(1, self.configuration_version)
         session = {
             "session_id": session_id, "mode": mode, "status": "RUNNING", "selection_status": "ACTIVE",
+            "strategy_id": ("BEHAVIOUR_ROLLING_HIGH" if behaviour_detection_enabled else
+                            "ADAPTIVE" if adaptive_rule_selection else
+                            "AUTOMATIC" if automatic_rule_selection else "RULES"),
             "started_at": now, "ended_at": None, "window_size": window_size,
+            "run_until_stopped": window_size is None,
             "configuration_version": snapshot_version, "configuration_snapshot": deepcopy(opts),
             "rule_ids": list(rule_ids), "rule_versions": {rid: self._version(rid) for rid in rule_ids},
+            "behaviour_detection_enabled": behaviour_detection_enabled,
+            "rule_configuration_keys": ({rid: self._performance_configuration_key(rid)
+                                         for rid in rule_ids}
+                                        if automatic_rule_selection or adaptive_rule_selection else {}),
+            "automatic_rule_selection": automatic_rule_selection,
+            "adaptive_rule_selection": adaptive_rule_selection,
+            "active_rule_ids": [], "automatic_rule_choice": None,
+            "adaptive_rule_choice": None, "adaptive_decisions": [],
+            "adaptive_selection_version": 0,
+            "adaptive_automatic_baseline_choice": None,
+            "adaptive_automatic_baseline_decisions": [],
+            "adaptive_automatic_baseline_selections": [],
+            "adaptive_automatic_baseline_engines": ({rid: _fresh_engine(rid) for rid in rule_ids}
+                if adaptive_rule_selection else {}),
             "manifest": self._manifest(rule_ids),
             "start_boundary": _reference(start) | {"streamSequence": start["stream_sequence"]},
             "synchronization_point": _reference(synchronization_point),
@@ -982,16 +2512,15 @@ class RulesEngine:
             "context": context, "engines": engines, "observed_rounds": 0,
             "prestart_skipped_rounds": 0,
             "selections": [], "rule_selections": {rid: [] for rid in rule_ids},
+            "adaptive_signal_selections": [],
             "evaluations": [], "decisions": [], "total_wins": 0, "total_losses": 0,
+            "total_cancelled": 0,
             "net_profit_rwf": 0, "selection_stop_reason": None, "stop_reason": None,
-            "reconciled_financials": {"realized_betting_pl": None, "currency": None,
-                                       "win_count": 0, "loss_count": 0,
-                                       "reconciled_bets": 0, "reconciled_execution_ids": []},
             "auto_next_armed": False, "auto_next_trigger": None,
+            "limit_stop_latched": False,
             "auto_next_armed_at": None, "auto_next_block_reason": None,
             "auto_next_boundary": None, "auto_next_context": [],
             "auto_next_start_round_id": None,
-            "automatic_execution": "OFF",
         }
         with self._lock:
             dirty_session_ids = {session_id}
@@ -1036,19 +2565,11 @@ class RulesEngine:
                 selections = list(replaceable.get("selections") or [])
                 selections.extend(item for rows in (replaceable.get("rule_selections") or {}).values()
                                   for item in rows)
-                pending_shadow_outcomes = sum(item.get("status") == "PENDING" for item in selections)
-                if (self._has_pending_event_records(replaceable)
-                        or replaceable.get("unresolved_execution_id")):
-                    raise ValueError("SESSION_REQUIRES_RECONCILIATION")
-                has_open = getattr(self._persistence, "has_open_rule_session_executions", None)
-                if callable(has_open):
-                    try:
-                        if has_open(str(replace_session_id)):
-                            raise ValueError("SESSION_REQUIRES_RECONCILIATION")
-                    except ValueError:
-                        raise
-                    except Exception as exc:
-                        raise ValueError("SESSION_RECONCILIATION_STATUS_UNAVAILABLE") from exc
+                pending_shadow_outcomes = sum(
+                    str(item.get("status") or item.get("result") or "").upper() == "PENDING"
+                    for item in selections)
+                if self._has_pending_event_records(replaceable):
+                    raise ValueError("SESSION_HAS_PENDING_EVENTS")
             elif conflicts:
                 raise ValueError("SESSION_ALREADY_ACTIVE_FOR_MODE")
             # A manually started run owns the next boundary.  Do not also
@@ -1161,9 +2682,6 @@ class RulesEngine:
         expected_target = selection.get("expected_target")
         if isinstance(expected_target, dict):
             expected_target["roundId"] = source.get("round_id")
-        intent = selection.get("execution_intent")
-        if isinstance(intent, dict):
-            intent["target_round_id"] = source.get("round_id")
         return {"decision_id": selection.get("decision_id"),
                 "selection_id": selection.get("selection_id"),
                 "source_round_id": selection.get("source_round_id"),
@@ -1186,6 +2704,8 @@ class RulesEngine:
         rows = list(session.get("selections") or [])
         rows.extend(selection for group in (session.get("rule_selections") or {}).values()
                     for selection in group)
+        rows.extend(session.get("adaptive_signal_selections") or [])
+        rows.extend(session.get("adaptive_automatic_baseline_selections") or [])
         for selection in rows:
             actual_target = selection.get("actual_target") or {}
             if (selection.get("status") not in {"WIN", "LOSS"}
@@ -1263,10 +2783,27 @@ class RulesEngine:
             session["total_losses"] = losses
             config = session["configuration_snapshot"]
             if session["mode"] == "ALL_RULES_TOGETHER":
-                self._reconcile_net_outcome_limit_stop(session, wins, losses, at, source)
+                # Per-window automatic-next limits use the session's settled
+                # net outcome. Their counts are separate from the legacy
+                # stop controls, so keep those controls from preempting them.
+                if config.get("auto_next_limits_enabled") is not True:
+                    self._reconcile_net_outcome_limit_stop(session, wins, losses, at, source)
                 if config.get("max_selections") and len(session["selections"]) >= config["max_selections"]:
                     self._stop_selecting(session, "MAX_SELECTIONS_REACHED", at, source,
                                          stop_source="MAX_SELECTIONS")
+                if config.get("auto_next_limits_enabled") is True:
+                    reached = self._reconcile_custom_window_result_limit_stop(
+                        session, wins, losses, at, source)
+                    win_limit = config.get("auto_next_win_count")
+                    loss_limit = config.get("auto_next_loss_count")
+                    net_outcome = wins - losses
+                    if session.get("selection_status") == "ACTIVE" and reached:
+                        self._stop_selecting(session, "AUTO_NEXT_RESULT_LIMIT_REACHED", at, source,
+                            stop_source="AUTO_NEXT_RESULT_LIMIT",
+                            stop_details={"reached": reached, "settled_wins": wins,
+                                "settled_losses": losses, "win_count_limit": win_limit,
+                                "loss_count_limit": loss_limit,
+                                "net_outcome": net_outcome})
                 self._arm_auto_next_after_limit(
                     session, session.get("selection_stop_reason"), at, source)
             if session["mode"] in {"START_CHECK", "LEGACY_SEPARATE_TRACKER"}:
@@ -1285,27 +2822,123 @@ class RulesEngine:
                     "actual_multiplier": source["multiplier"], "actual_target": _reference(source),
                     "resolved_at": at,
                     "target_persistence_status": source.get("durability", "UNKNOWN")})
+                if session.get("adaptive_rule_selection") is True:
+                    settled.append({"selection_id": selection.get("selection_id"),
+                        "rule_id": rule_id,
+                        "source_round_id": (selection.get("source_round") or {}).get("roundId"),
+                        "target_round_id": source.get("round_id"), "result": result,
+                        "settled_at": at, "independent_rule_outcome": True})
                 state = session["engines"][rule_id]
                 if state.get("pending_selection_id") == selection.get("selection_id"):
                     self._advance_selected_state(session, rule_id, state, source, result, selection, at)
                     state["pending_selection_id"] = None
                     state["pending_target"] = None
+        for envelope in session.get("adaptive_signal_selections") or []:
+            if envelope.get("status") != "PENDING" or not self._selection_targets(envelope, source):
+                continue
+            result = "WIN" if source["outcome"] == "H" else "LOSS"
+            envelope.update({"status": result, "result": result,
+                "actual_multiplier": source["multiplier"], "actual_target": _reference(source),
+                "resolved_at": at, "target_persistence_status": source.get("durability", "UNKNOWN")})
+        if session.get("adaptive_rule_selection") is True:
+            baseline_engines = session.get("adaptive_automatic_baseline_engines") or {}
+            for selection in session.get("adaptive_automatic_baseline_selections") or []:
+                if selection.get("status") != "PENDING" or not self._selection_targets(selection, source):
+                    continue
+                result = "WIN" if source["outcome"] == "H" else "LOSS"
+                selection.update({"status": result, "result": result,
+                    "actual_multiplier": source["multiplier"], "actual_target": _reference(source),
+                    "resolved_at": at, "target_persistence_status": source.get("durability", "UNKNOWN")})
+                for rule_id in selection.get("contributing_rule_ids") or []:
+                    state = baseline_engines.get(rule_id)
+                    if state and state.get("pending_selection_id") == selection.get("selection_id"):
+                        self._advance_selected_state(session, rule_id, state, source, result, selection, at)
+                        state["pending_selection_id"] = None
+                        state["pending_target"] = None
+                settled.append({"selection_id": selection.get("selection_id"),
+                    "target_round_id": source.get("round_id"), "result": result,
+                    "settled_at": at, "automatic_baseline": True})
+            wins, losses, _pending, unique_targets = self._adaptive_session_result_counts(session)
+            session["total_wins"] = wins
+            session["total_losses"] = losses
+            stake = float((session.get("configuration_snapshot") or {}).get("fixed_stake_rwf") or 100)
+            session["net_profit_rwf"] = round((wins - losses) * stake, 2)
+            configuration = session.get("configuration_snapshot") or {}
+            if session.get("mode") == "ALL_RULES_TOGETHER":
+                if configuration.get("auto_next_limits_enabled") is not True:
+                    self._reconcile_net_outcome_limit_stop(session, wins, losses, at, source)
+                maximum = configuration.get("max_selections")
+                if isinstance(maximum, int) and not isinstance(maximum, bool) and unique_targets >= maximum:
+                    self._stop_selecting(session, "MAX_SELECTIONS_REACHED", at, source,
+                                         stop_source="MAX_SELECTIONS")
+                if configuration.get("auto_next_limits_enabled") is True:
+                    self._reconcile_custom_window_result_limit_stop(session, wins, losses, at, source)
+                self._arm_auto_next_after_limit(session, session.get("selection_stop_reason"), at, source)
+            if (session.get("mode") in {"START_CHECK", "LEGACY_SEPARATE_TRACKER"}
+                    and configuration.get("profit_target_enabled") is True
+                    and session["net_profit_rwf"] >= configuration.get("profit_target_rwf", 400)):
+                self._stop_selecting(session, "PROFIT_TARGET_REACHED", at, source,
+                                     stop_source="PROFIT_TARGET")
+                self._arm_auto_next_after_limit(session, session.get("selection_stop_reason"), at, source)
+        if (session.get("limit_stop_latched") is True
+                and session.get("status") == "SETTLING"
+                and self._pending_selection_count(session) == 0):
+            session["status"] = "COMPLETED"
+            session["ended_at"] = at
         return settled
 
     def _advance_selected_state(self, session: dict[str, Any], rule_id: str, state: dict[str, Any],
                                 source: dict[str, Any], result: str, selection: dict[str, Any], at: str) -> None:
+        self._advance_selected_state_transition(session, rule_id, state, source, result, selection, at)
+        if rule_id in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}:
+            cycle = state.get("cycle")
+            if cycle and cycle.get("active") and state.get("rule_state") != "PLAYING":
+                cycle.update({"active": False, "status": "COMPLETED",
+                              "ended_at": at, "end_round_index": source.get("round_index"),
+                              "end_reason": "POLICY_STOP_TRANSITION"})
+                state["cycle_mode"] = "IDLE"
+
+    def _advance_selected_state_transition(self, session: dict[str, Any], rule_id: str,
+                                           state: dict[str, Any], source: dict[str, Any],
+                                           result: str, selection: dict[str, Any], at: str) -> None:
         state["selected_wins"] = int(state.get("selected_wins", 0)) + (result == "WIN")
         state["selected_losses"] = int(state.get("selected_losses", 0)) + (result == "LOSS")
         outcome = "H" if result == "WIN" else "L"
-        if rule_id == "AFTER_HH_CONTINUE_MAX_3":
-            cycle = state.get("cycle")
-            if cycle and cycle.get("active") and cycle.get("cycle_id") == selection.get("cycle_id"):
-                cycle["resolved_count"] += 1
-                cycle["last_result"] = result
-                if cycle["resolved_count"] >= 3:
-                    cycle["active"] = False
-                    cycle["status"] = "COMPLETED"
-                    state["cycle_mode"] = "IDLE"
+        if result == "LOSS":
+            state["loss_limit_losses"] = int(state.get("loss_limit_losses") or 0) + 1
+        cycle = state.get("cycle")
+        cycle_id = (selection.get("rule_cycle_ids") or {}).get(rule_id) or selection.get("cycle_id")
+        if cycle and cycle.get("active") and cycle.get("cycle_id") == cycle_id:
+            cycle["resolved_count"] = int(cycle.get("resolved_count") or 0) + 1
+            cycle["loss_count"] = int(cycle.get("loss_count") or 0) + (result == "LOSS")
+            cycle["last_result"] = result
+            cycle["last_target_round_id"] = source.get("round_id")
+            maximum = (int(_research_by_id[rule_id]["condition"].get("maximum_selections") or 1)
+                       if rule_id in _research_by_id else None)
+            if maximum is not None and cycle["resolved_count"] >= maximum:
+                cycle.update({"active": False, "status": "COMPLETED",
+                              "ended_at": at, "end_round_index": source["round_index"],
+                              "end_reason": "MAXIMUM_TARGETS_REACHED"})
+                state["cycle_mode"] = "IDLE"
+        if int(state.get("loss_limit_losses") or 0) >= RULE_LOSS_LIMIT:
+            state.update({"loss_limit_blocked": True, "loss_limit_reached_at": at,
+                          "loss_limit_reached_round_index": source.get("round_index"),
+                          "loss_limit_terminal_round_index": source.get("round_index"),
+                          "entry_signal_latched": True, "cycle_mode": "BLOCKED_UNTIL_NEW_ENTRY"})
+            if cycle and cycle.get("active"):
+                cycle.update({"active": False, "status": "LOSS_LIMIT_REACHED",
+                              "ended_at": at, "end_round_index": source.get("round_index"),
+                              "end_reason": "LOSS_LIMIT_REACHED"})
+            if rule_id in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}:
+                state.update({"rule_state": "WAIT_LOW", "mode": "STANDARD",
+                              "previous_outcome": None, "failed_cycle_count": 0,
+                              "consecutive_bet_wins": 0, "selected_outcomes": [],
+                              "special_skip_active": False,
+                              "special_skip_after_round_index": None,
+                              "special_skip_win_count": 0,
+                              "special_skip_terminal_round_index": None})
+            return
+        if rule_id in _research_by_id:
             return
         if rule_id not in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}:
             return
@@ -1427,7 +3060,7 @@ class RulesEngine:
 
     @staticmethod
     def _resume_after_round_gap(session: dict[str, Any], row: Mapping[str, Any], at: str,
-                                expected_index: int) -> None:
+                                expected_index: int, *, skip_boundary_target: bool = False) -> None:
         """Start a clean verified history segment after a committed index gap."""
         received_index = int(row.get("round_index") or 0)
         remaining_late_transitions = []
@@ -1438,8 +3071,10 @@ class RulesEngine:
                 target_index = int(item.get("target_round_index") or 0)
             except (TypeError, ValueError, OverflowError):
                 continue
+            target_is_boundary = skip_boundary_target and target_index == received_index
             if (item.get("target_stream_id") != row.get("stream_id")
-                    or target_index >= received_index):
+                    or target_index > received_index
+                    or (target_index == received_index and not target_is_boundary)):
                 remaining_late_transitions.append(item)
                 continue
             raw_proposal = item.get("proposal")
@@ -1486,7 +3121,9 @@ class RulesEngine:
                 except (TypeError, ValueError, OverflowError):
                     continue
                 target_stream = target.get("streamId", target.get("stream_id"))
-                if target_stream == row.get("stream_id") and target_index < received_index:
+                target_was_skipped = (target_index < received_index
+                                      or (skip_boundary_target and target_index == received_index))
+                if target_stream == row.get("stream_id") and target_was_skipped:
                     selection.update({"status": "SKIPPED_GAP", "result": None,
                                       "settlement_status": "SKIPPED_GAP",
                                       "settlement_phase": "ROUND_GAP",
@@ -1502,9 +3139,9 @@ class RulesEngine:
         for rule_id in session.get("rule_ids") or []:
             fresh = _fresh_engine(rule_id)
             previous = previous_states.get(rule_id) or {}
-            # Keep cumulative result and health counters, while dropping stale
-            # pattern history and pending state from the broken segment.
-            for key in ("selected_wins", "selected_losses", "failure_count", "recovery_count"):
+            # Keep cumulative results, but reset consecutive failures and
+            # pattern state because they belong to the broken segment.
+            for key in ("selected_wins", "selected_losses", "recovery_count"):
                 if key in previous:
                     fresh[key] = previous[key]
             pending_id = previous.get("pending_selection_id")
@@ -1514,12 +3151,20 @@ class RulesEngine:
             reset_states[rule_id] = fresh
         session["engines"] = reset_states
         session["context"] = []
-        session["last_continuity_gap"] = {
+        gap = {
             "expected_index": int(expected_index),
             "received_index": received_index,
+            "missing_from_index": int(expected_index) if received_index > expected_index else None,
+            "missing_to_index": received_index - 1 if received_index > expected_index else None,
             "round_id": row.get("round_id"),
             "resumed_at": at,
         }
+        session["last_continuity_gap"] = gap
+        session.setdefault("continuity_gap_history", []).append(deepcopy(gap))
+        session["continuity_gap_history"] = session["continuity_gap_history"][-100:]
+        log.warning("SHADOW_CONTINUITY_GAP session_id=%s stream_id=%s missing_from=%s missing_to=%s boundary_round_id=%s boundary_index=%s",
+                    session.get("session_id"), row.get("stream_id"), gap["missing_from_index"],
+                    gap["missing_to_index"], row.get("round_id"), received_index)
         manual_pause = (session.get("status") == "PAUSED"
                         and session.get("stop_reason") == "MANUAL_PAUSE")
         resumed_status = ("PAUSED" if manual_pause else
@@ -1608,7 +3253,8 @@ class RulesEngine:
         return resolution
 
     def _resolve_deferred_late_targets(self, session: dict[str, Any], row: Mapping[str, Any],
-                                       at: str) -> bool:
+                                       at: str, *, observed_stage: bool = False,
+                                       source_metadata: Mapping[str, Any] | None = None) -> bool:
         pending = session.get("late_target_transitions") or []
         if not pending:
             return False
@@ -1637,6 +3283,9 @@ class RulesEngine:
                 # lacked continuity proof or its event was missed. Do this
                 # before allowing a later source to evaluate stale policy state.
                 checker = getattr(self._persistence, "round_continuity_for_indices", None)
+                if (observed_stage and isinstance(source_metadata, Mapping)
+                        and source_metadata.get("source") == "ORBIT_DATA_WATCH_API"):
+                    checker = None
                 if callable(checker):
                     try:
                         persisted = checker([target_index])
@@ -1716,6 +3365,18 @@ class RulesEngine:
         if session.get("selection_status") == "ACTIVE":
             ref = self._source_round(source)
             stop_source = stop_source or "RULE_ENGINE"
+            if ((session.get("configuration_snapshot") or {}).get("run_until_stopped") is True
+                    and reason in SESSION_LIMIT_STOP_REASONS):
+                self._record_session_stop(session, reason, at, stop_source, source,
+                    stop_selection=True, details=stop_details)
+                session["limit_stop_latched"] = True
+                if self._pending_selection_count(session) > 0:
+                    session["status"] = "SETTLING"
+                else:
+                    session["status"] = "COMPLETED"
+                    session["ended_at"] = at
+                self._sync_automatic_candidate_lifecycle(session)
+                return
             event = self._append_stop_event(session, reason, at, stop_source, ref,
                                             "SELECTION", stop_details)
             session.update({"selection_status": "STOPPED", "selection_stop_reason": reason,
@@ -1728,6 +3389,7 @@ class RulesEngine:
                 # The collector continues resolving pending targets and
                 # completing the observation window, but new selections stop.
                 session["status"] = "SETTLING"
+            self._sync_automatic_candidate_lifecycle(session)
 
     def _reconcile_net_outcome_limit_stop(self, session: dict[str, Any], wins: int, losses: int,
                                           at: str, source: Mapping[str, Any]) -> None:
@@ -1737,6 +3399,8 @@ class RulesEngine:
         as already-pending selections settle, so its active fields and status
         must be cleared without deleting that historical event.
         """
+        if session.get("limit_stop_latched") is True:
+            return
         config = session.get("configuration_snapshot") or {}
         net_stop = self._net_outcome_stop_reason(wins, losses, config)
         active_reason = session.get("selection_stop_reason")
@@ -1803,6 +3467,10 @@ class RulesEngine:
                                    at: str, source: Mapping[str, Any]) -> None:
         if session.get("configuration_snapshot", {}).get("auto_next_on_limit_enabled") is not True:
             return
+        # Per-window WIN/LOSS rules always finish their current window. The
+        # immediate trigger continues to apply to legacy configured stops.
+        if reason == "AUTO_NEXT_RESULT_LIMIT_REACHED":
+            return
         # Keep the first configured trigger. In particular, a maximum-selection
         # limit is armed when its final selection is created; settlement of
         # that selection must not move the next-check boundary one round later.
@@ -1836,19 +3504,33 @@ class RulesEngine:
             RulesEngine._record_auto_next_boundary(session, source)
 
     @staticmethod
+    def _auto_next_window_trigger_enabled(session: Mapping[str, Any]) -> bool:
+        configuration = session.get("configuration_snapshot") or {}
+        custom_limit_reached = RulesEngine._custom_window_result_limit_reached(session)
+        return configuration.get("auto_next_check_enabled") is True or custom_limit_reached
+
+    @staticmethod
+    def _custom_window_result_limit_reached(session: Mapping[str, Any]) -> bool:
+        configuration = session.get("configuration_snapshot") or {}
+        return (configuration.get("auto_next_limits_enabled") is True
+            and session.get("selection_stop_reason") == "AUTO_NEXT_RESULT_LIMIT_REACHED"
+            and session.get("selection_stop_source") == "AUTO_NEXT_RESULT_LIMIT")
+
+    @staticmethod
     def _recover_auto_next_boundary(session: dict[str, Any]) -> None:
         """Recover a legacy armed boundary only from matching commit evidence."""
         configuration = session.get("configuration_snapshot") or {}
         window_auto_next = (session.get("status") == "COMPLETED"
             and session.get("auto_next_trigger") in {None, "WINDOW_COMPLETED"}
-            and configuration.get("auto_next_check_enabled") is True)
+            and RulesEngine._auto_next_window_trigger_enabled(session))
         limit_auto_next = (session.get("status") in {"SETTLING", "COMPLETED"}
             and session.get("auto_next_trigger") == "LIMIT_REACHED"
             and configuration.get("auto_next_on_limit_enabled") is True
             and session.get("selection_stop_source") in {
-                "PROFIT_TARGET", "NET_OUTCOME_LIMIT", "MAX_SELECTIONS"}
+                "PROFIT_TARGET", "NET_OUTCOME_LIMIT", "MAX_SELECTIONS", "AUTO_NEXT_RESULT_LIMIT"}
             and session.get("selection_stop_reason") in {
                 "PROFIT_TARGET_REACHED", "MAX_SELECTIONS_REACHED",
+                "AUTO_NEXT_RESULT_LIMIT_REACHED",
                 *NET_OUTCOME_LIMIT_REASONS})
         if (session.get("auto_next_armed") is not True
                 and session.get("auto_next_block_reason") == "AUTO_NEXT_COMMITTED_BOUNDARY_UNAVAILABLE"
@@ -1922,7 +3604,58 @@ class RulesEngine:
             return _result(rid, session["rule_versions"][rid], session, source, expected, None,
                            "PENDING_TARGET", reason, {"pendingTarget": state.get("pending_target")}, before, state, at)
         if rid in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}:
-            return self._policy_proposal(session, rid, source, expected, at, before)
+            proposal = self._policy_proposal(session, rid, source, expected, at, before)
+            transition = proposal["proposal"].get("relevantInputs", {}).get("transition") or {}
+            transition_type = transition.get("type")
+            policy_cycle = state.get("cycle") or {}
+            if transition_type in {"TRIGGER", "CONTINUE", "SPECIAL_SKIP_BET"}:
+                proposal["proposal"]["relevantInputs"]["ruleCycle"] = {
+                    "action": "START" if transition_type == "TRIGGER" else "CONTINUE",
+                    "cycle_id": policy_cycle.get("cycle_id"),
+                    "active": bool(policy_cycle.get("active")),
+                    "maximum_targets": None,
+                    "end_condition": "Policy stop transition or two losses; then wait for a fresh entry.",
+                }
+            proposal["proposal"]["relevantInputs"]["lossLimit"] = {
+                "losses": int(state.get("loss_limit_losses") or 0),
+                "limit": RULE_LOSS_LIMIT,
+                "blocked": bool(state.get("loss_limit_blocked")),
+            }
+            if transition_type == "TRIGGER":
+                if state.get("entry_signal_latched") and not state.get("loss_limit_blocked"):
+                    reason = "L,H entry signal was already used; waiting for a new L,H cycle."
+                    proposal.update({"eligible": False, "result": False,
+                                     "status": "WAITING_FOR_NEW_ENTRY", "reason": reason})
+                    proposal["proposal"].update({"eligible": False,
+                                                  "status": "WAITING_FOR_NEW_ENTRY", "reason": reason})
+                    transition["type"] = "ENTRY_ALREADY_USED"
+                elif state.get("loss_limit_blocked") and state.get("entry_signal_latched"):
+                    reason = "LOSS_LIMIT_WAITING_FOR_NEW_ENTRY"
+                    proposal.update({"eligible": False, "result": False,
+                                     "status": reason, "reason": reason})
+                    proposal["proposal"].update({"eligible": False,
+                                                  "status": reason, "reason": reason})
+                    transition["type"] = "ENTRY_ALREADY_USED"
+                else:
+                    if state.get("loss_limit_blocked"):
+                        proposal["proposal"]["relevantInputs"]["lossLimitRearmed"] = True
+            elif transition_type not in {"CONTINUE", "SPECIAL_SKIP_ARMED", "SPECIAL_SKIP_BET"}:
+                state["entry_signal_latched"] = False
+            if state.get("loss_limit_blocked"):
+                if transition_type != "TRIGGER":
+                    reason = "LOSS_LIMIT_WAITING_FOR_NEW_ENTRY"
+                    proposal.update({"eligible": False, "result": False,
+                                     "status": reason, "reason": reason})
+                    proposal["proposal"].update({"eligible": False,
+                                                  "status": reason, "reason": reason})
+            elif transition_type == "ENTRY_ALREADY_USED":
+                pass
+            after = proposal["state_snapshot"]["after"]
+            for key in ("entry_signal_latched", "loss_limit_losses", "loss_limit_blocked",
+                        "loss_limit_reached_at", "loss_limit_reached_round_index"):
+                after[key] = deepcopy(state.get(key))
+            proposal["proposal"]["privateState"]["after"] = deepcopy(after)
+            return proposal
         definition = _research_by_id[rid]
         tail = _history_is_contiguous(history, definition["history_required"], source["stream_id"])
         if tail is None:
@@ -1945,24 +3678,74 @@ class RulesEngine:
             reason = "Rounds ebyiri ziheruka ni H,H." if matched else "Rounds ebyiri ziheruka si H,H."
         elif rid == "SOURCE_H_MULT_2_3":
             number = source["multiplier"]
-            matched = 2.0 <= number < 3.0
-            reason = "Igikubo cya source kiri hagati ya 2.00 na 3.00." if matched else "Igikubo cya source kiri hanze ya [2.00, 3.00)."
+            matched = 2.0 < number < 3.0
+            reason = "Igikubo cya source kiri hejuru ya 2.00 ariko munsi ya 3.00." if matched else "Igikubo cya source kiri hanze ya (2.00, 3.00)."
         else:
             cycle = state.get("cycle")
             if cycle and cycle.get("active"):
-                matched = int(cycle.get("requested_count", 0)) < 3
+                matched = int(cycle.get("requested_count", 0)) < RULE_CYCLE_MAX_TARGETS
                 cycle_id = cycle.get("cycle_id")
                 reason = "Cycle ya HH irasaba target ikurikiraho." if matched else "Cycle ya HH yarasabiye targets eshatu."
             else:
                 matched = values == ["H", "H"]
                 reason = "HH yabonetse; itegeko risaba target ikurikira." if matched else "HH ntiraboneka ku source."
+        cycle = state.get("cycle")
+        continuing_after_trigger = rid == "AFTER_HH_CONTINUE_MAX_3" and bool(cycle and cycle.get("active"))
+        cycle_action = None
+        rearmed = False
+        if not matched and not continuing_after_trigger:
+            state["entry_signal_latched"] = False
+            if cycle and cycle.get("active"):
+                cycle.update({"active": False, "status": "ENTRY_SIGNAL_ENDED",
+                              "ended_at": at, "end_round_index": source["round_index"],
+                              "end_reason": "ENTRY_SIGNAL_CLEARED"})
+                state["cycle_mode"] = "IDLE"
+        else:
+            if state.get("loss_limit_blocked"):
+                if state.get("entry_signal_latched"):
+                    matched = False
+                    reason = "LOSS_LIMIT_WAITING_FOR_NEW_ENTRY"
+                else:
+                    rearmed = True
+            if matched:
+                maximum = max(1, int(definition["condition"].get("maximum_selections") or 1))
+                if cycle and cycle.get("active"):
+                    if int(cycle.get("requested_count", 0)) >= maximum:
+                        cycle.update({"active": False, "status": "MAX_TARGETS_REACHED",
+                                      "ended_at": at, "end_round_index": source["round_index"],
+                                      "end_reason": "MAXIMUM_TARGETS_REACHED"})
+                        state["cycle_mode"] = "IDLE"
+                        matched = False
+                        reason = f"Maximum {maximum} target(s) reached; waiting for a fresh entry."
+                    else:
+                        cycle_action = "CONTINUE"
+                        cycle_id = cycle.get("cycle_id")
+                        state["entry_signal_latched"] = True
+                elif state.get("entry_signal_latched"):
+                    matched = False
+                    reason = "Entry signal was already used; waiting for it to clear and appear again."
+                else:
+                    cycle_action = "START"
+                    reason = f"Fresh entry signal; start target 1 of {maximum}."
+            elif state.get("loss_limit_blocked"):
+                reason = "LOSS_LIMIT_WAITING_FOR_NEW_ENTRY"
         inputs = {"history": [{"roundId": item["round_id"], "roundIndex": item["round_index"],
                                 "multiplier": item["multiplier"], "outcome": item["outcome"]} for item in tail],
                   "condition": deepcopy(definition["condition"])}
         if rid == "AFTER_HH_CONTINUE_MAX_3":
             inputs["continuationCycle"] = deepcopy(state.get("cycle"))
+        if cycle_action:
+            inputs["ruleCycle"] = {"action": cycle_action, "cycle_id": cycle_id,
+                                    "maximum_targets": int(definition["condition"].get("maximum_selections") or 1)}
+        inputs["lossLimit"] = {"losses": int(state.get("loss_limit_losses") or 0),
+                                "limit": RULE_LOSS_LIMIT,
+                                "blocked": bool(state.get("loss_limit_blocked")),
+                                "rearmed": rearmed}
+        status = ("LOSS_LIMIT_WAITING_FOR_ENTRY" if reason == "LOSS_LIMIT_WAITING_FOR_NEW_ENTRY"
+                  else "WAITING_FOR_NEW_ENTRY" if "waiting for" in reason.lower()
+                  else "TRUE" if matched else "FALSE")
         return _result(rid, definition["version"], session, source, expected, matched,
-                       "TRUE" if matched else "FALSE", reason, inputs, before, state, at)
+                       status, reason, inputs, before, state, at)
 
     def _policy_proposal(self, session: dict[str, Any], rid: str, source: dict[str, Any],
                          expected: dict[str, Any], at: str, before: dict[str, Any]) -> dict[str, Any]:
@@ -1973,6 +3756,12 @@ class RulesEngine:
         reason = "Rule iracyategereje L."
         transition: dict[str, Any] | None = None
         after = deepcopy(state)
+        loss_limit_terminal_round_index = state.get("loss_limit_terminal_round_index")
+        try:
+            is_loss_limit_terminal_round = (loss_limit_terminal_round_index is not None
+                and int(source["round_index"]) == int(loss_limit_terminal_round_index))
+        except (TypeError, ValueError, OverflowError):
+            is_loss_limit_terminal_round = False
         terminal_round_index = state.get("special_skip_terminal_round_index")
         try:
             is_special_loss_terminal_round = (
@@ -1981,7 +3770,13 @@ class RulesEngine:
                 and int(source["round_index"]) == int(terminal_round_index))
         except (TypeError, ValueError, OverflowError):
             is_special_loss_terminal_round = False
-        if is_special_loss_terminal_round:
+        if is_loss_limit_terminal_round:
+            # A target settlement may close a policy on this same verified
+            # round. Do not reuse that result as a fresh entry observation.
+            after["loss_limit_terminal_round_index"] = None
+            reason = "Loss limit closed the cycle; the terminal round is not reprocessed as an entry."
+            transition = {"type": "LOSS_LIMIT_TERMINAL_ROUND"}
+        elif is_special_loss_terminal_round:
             # Settlement already closed the cycle; ignore this same source as
             # a new WAIT_LOW observation, then consume the one-round marker.
             after["special_skip_terminal_round_index"] = None
@@ -2037,29 +3832,63 @@ class RulesEngine:
         target["contributorRuleId"] = rid
         state["pending_selection_id"] = selection["selection_id"]
         state["pending_target"] = target
-        if rid == "AFTER_HH_CONTINUE_MAX_3":
+        if rid in _research_by_id:
+            relevant = proposal["proposal"].get("relevantInputs", {})
+            cycle_action = (relevant.get("ruleCycle") or {}).get("action")
+            if relevant.get("lossLimit", {}).get("rearmed") is True:
+                state.update({"loss_limit_blocked": False, "loss_limit_losses": 0,
+                              "loss_limit_reached_at": None,
+                              "loss_limit_reached_round_index": None})
             cycle = state.get("cycle")
-            if not cycle or not cycle.get("active"):
+            if cycle_action == "START" or not cycle or not cycle.get("active"):
                 cycle = {"cycle_id": str(uuid4()), "active": True, "status": "ACTIVE",
-                         "requested_count": 0, "resolved_count": 0, "started_at": selection["selected_at"]}
+                         "requested_count": 0, "resolved_count": 0, "loss_count": 0,
+                         "maximum_targets": int((relevant.get("ruleCycle") or {}).get("maximum_targets")
+                                                 or 1),
+                         "end_condition": ((relevant.get("ruleCycle") or {}).get("end_condition")
+                                           or "Maximum targets resolved or entry signal clears."),
+                         "entry_round_id": selection["source_round"]["roundId"],
+                         "started_at": selection["selected_at"]}
                 state["cycle"] = cycle
-                state["cycle_mode"] = "CONTINUE_MAX_3"
+                state["cycle_mode"] = ("CONTINUE_MAX_3" if rid == "AFTER_HH_CONTINUE_MAX_3"
+                                        else "SIGNAL_CYCLE")
             cycle["requested_count"] += 1
             cycle["last_source_round_id"] = selection["source_round"]["roundId"]
-            selection["cycle_id"] = cycle["cycle_id"]
+            selection.setdefault("rule_cycle_ids", {})[rid] = cycle["cycle_id"]
+            state["entry_signal_latched"] = True
         elif rid in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID, COMBINED_POLICY_ID}:
             relevant = proposal["proposal"].get("relevantInputs", {})
-            if relevant.get("transition", {}).get("type") == "TRIGGER":
+            transition_type = relevant.get("transition", {}).get("type")
+            if transition_type in {"TRIGGER", "CONTINUE", "SPECIAL_SKIP_BET"}:
+                cycle = state.get("cycle")
+                if transition_type == "TRIGGER" or not cycle or not cycle.get("active"):
+                    cycle = {"cycle_id": str(uuid4()), "active": True, "status": "ACTIVE",
+                             "requested_count": 0, "resolved_count": 0, "loss_count": 0,
+                             "maximum_targets": None,
+                             "end_condition": "Policy stop transition or two losses; then wait for a fresh entry.",
+                             "entry_round_id": selection["source_round"]["roundId"],
+                             "started_at": selection["selected_at"]}
+                    state["cycle"] = cycle
+                    state["cycle_mode"] = "POLICY_CYCLE"
+                cycle["requested_count"] = int(cycle.get("requested_count") or 0) + 1
+                selection.setdefault("rule_cycle_ids", {})[rid] = cycle["cycle_id"]
+            if transition_type == "TRIGGER":
+                if relevant.get("lossLimitRearmed") is True:
+                    state.update({"loss_limit_blocked": False, "loss_limit_losses": 0,
+                                  "loss_limit_reached_at": None,
+                                  "loss_limit_reached_round_index": None})
                 state["rule_state"] = "PLAYING"
                 state["previous_outcome"] = "H" if rid in {START_CHECK_POLICY_ID, LEGACY_POLICY_ID} else None
                 state["selected_outcomes"] = []
                 state["cycle_number"] = int(state.get("cycle_number", 0)) + 1
-            elif relevant.get("transition", {}).get("type") == "CONTINUE":
+                state["entry_signal_latched"] = True
+            elif transition_type == "CONTINUE":
                 state["rule_state"] = "PLAYING"
 
     def observe_round(self, event: Mapping[str, Any], *, now: str | None = None,
                       target_already_completed: bool = False,
-                      defer_persistence: bool = False) -> dict[str, Any]:
+                      defer_persistence: bool = False,
+                      defer_performance_observer: bool = False) -> dict[str, Any]:
         """Consume a verified observed or committed event, preserving its two stages."""
         processing_started_ns = time.perf_counter_ns()
         lock_wait_ms = 0.0
@@ -2075,9 +3904,10 @@ class RulesEngine:
             event = {}
         observed_stage = (event.get("event_type") == "round.observed" and event.get("durability") == "PENDING")
         committed_stage = (event.get("event_type") == "round.persisted" and event.get("durability") == "COMMITTED")
+        source_gap_boundary = event.get("continuity_status") == "GAP_BEFORE"
         row = _identity(event, require_sequence=not observed_stage)
         trusted = bool(row and (observed_stage or committed_stage)
-                       and event.get("continuity_status") == "VERIFIED")
+                       and event.get("continuity_status") in {"VERIFIED", "GAP_BEFORE"})
         if row is not None and trusted:
             # _identity intentionally keeps only round identity fields. Preserve
             # the verified delivery evidence too, so auto-next can freeze the
@@ -2127,11 +3957,30 @@ class RulesEngine:
                                                   "true_rule_ids": [], "selection_id": None}})
                 evaluation = {"decision": "BLOCKED", "result": False, "reason": status,
                               "source_round": invalid_ref, "rule_evaluations": [], "true_rule_ids": [],
-                              "sessions": sessions, "automatic_execution": "OFF", "can_bet": False,
+                              "sessions": sessions,
                               "evaluated_at": at}
                 self.last_evaluation, self.last_evaluation_at = evaluation, at
                 self._persist(session_ids=set())
                 return deepcopy(evaluation)
+            performance_changed = False
+            if (committed_stage and self._performance_observer_enabled
+                    and not defer_performance_observer):
+                try:
+                    performance_changed = self._observe_rule_performance_round(event)
+                    self._performance_observer_error = None
+                except Exception as exc:
+                    # Report-only analytics must never block normal SHADOW
+                    # evaluation or delivery. The durable inbox can replay a
+                    # missed observer boundary after a restart.
+                    self._performance_observer_error = type(exc).__name__
+                    performance_changed = True
+                    log.exception("rule performance collector observer failed round=%s",
+                                  event.get("round_id"))
+            if performance_changed:
+                # The state writer persists this compact observer alongside
+                # normal session updates and acknowledges the durable inbox
+                # only after the snapshot commits.
+                dirty_session_ids.add(RULE_PERFORMANCE_CHECKPOINT_ID)
             # Auto-next must be based on a PostgreSQL-committed contiguous
             # round. An observed/pending event cannot start another session.
             if committed_stage:
@@ -2141,7 +3990,7 @@ class RulesEngine:
             for session in list(self.sessions.values()):
                 if session.get("last_stream_id") != row["stream_id"]:
                     continue
-                if committed_stage:
+                if committed_stage and not source_gap_boundary:
                     # Commit confirmation is immutable evidence for an already
                     # settled target, including sessions that have since ended.
                     if self._mark_target_persistence_committed(session, row):
@@ -2164,16 +4013,20 @@ class RulesEngine:
                     and isinstance(record.get("source_round"), Mapping)
                     and record["source_round"].get("streamId") == row["stream_id"]
                     and record["source_round"].get("roundId") == row["round_id"]), None)
-                has_pending_target = any(
+                has_pending_target = not source_gap_boundary and any(
                     selection.get("status") == "PENDING" and self._selection_targets(selection, row)
-                    for selection in session.get("selections", []))
+                    for selection in list(session.get("selections", []))
+                    + (list(session.get("adaptive_automatic_baseline_selections") or [])
+                       if session.get("adaptive_rule_selection") is True else []))
                 # A replay can settle outstanding work only if that target
                 # event has not already been consumed. This prevents a late
                 # or corrupt selection row from being backdated onto history.
                 resolve_started_ns = time.perf_counter_ns()
-                settled_items = ([] if known_round is not None
+                settled_items = ([] if known_round is not None or source_gap_boundary
                                  else self._resolve(session, row, at))
-                if self._resolve_deferred_late_targets(session, row, at):
+                if not source_gap_boundary and self._resolve_deferred_late_targets(
+                        session, row, at, observed_stage=observed_stage,
+                        source_metadata=event.get("source_metadata")):
                     dirty_session_ids.add(str(session["session_id"]))
                 resolve_elapsed_ms = (time.perf_counter_ns() - resolve_started_ns) / 1_000_000.0
                 selected_result_evaluation_ms += resolve_elapsed_ms
@@ -2183,15 +4036,17 @@ class RulesEngine:
                     two_bet_wins_transition_ms += resolve_elapsed_ms
                 if settled_items or has_pending_target:
                     dirty_session_ids.add(str(session["session_id"]))
-                if settled_items:
+                visible_settlements = [item for item in settled_items
+                                       if item.get("automatic_baseline") is not True]
+                if visible_settlements:
                     session["last_settled_target"] = {
                         "stream_id": row["stream_id"], "round_id": row["round_id"],
                         "round_index": row["round_index"], "multiplier": row["multiplier"],
                         "event_type": event.get("event_type"),
                         "durability": event.get("durability"),
                         "observed_at": row.get("observed_at"),
-                        "settled_at": at, "settlement_count": len(settled_items),
-                        "results": deepcopy(settled_items),
+                        "settled_at": at, "settlement_count": len(visible_settlements),
+                        "results": deepcopy(visible_settlements),
                     }
                     settlements_by_session[session["session_id"]] = settled_items
             settlement_processing_ms = (time.perf_counter_ns() - settlement_started_ns) / 1_000_000.0
@@ -2383,6 +4238,59 @@ class RulesEngine:
                 if not observed_stage and row["stream_sequence"] <= session["last_stream_sequence"]:
                     # A replay older than the persisted cursor is a no-op; no retrospective selections.
                     continue
+                expected_index = int(session["last_round_index"]) + 1
+                if source_gap_boundary and row["round_index"] >= expected_index:
+                    # A GAP_BEFORE round cannot settle a target from the prior
+                    # segment or produce a decision. It is still a real,
+                    # identified round and must seed the new segment so the
+                    # next verified event does not lose one round of context.
+                    self._resume_after_round_gap(session, row, at, expected_index,
+                                                 skip_boundary_target=True)
+                    boundary_context = deepcopy(row)
+                    boundary_context["continuity_boundary"] = True
+                    session["context"] = [boundary_context]
+                    session["observed_rounds"] = int(session.get("observed_rounds") or 0) + 1
+                    session.update({"last_stream_sequence": (row["stream_sequence"] if committed_stage
+                                                               else session["last_stream_sequence"]),
+                                    "last_round_index": row["round_index"],
+                                    "last_round_id": row["round_id"],
+                                    "last_activity_at": at})
+                    record = {"session_id": session["session_id"],
+                              "source_round": _reference(row), "target_round": None,
+                              "rule_evaluations": [],
+                              "decision": {"action": "WAIT",
+                                           "reason": "CONTINUITY_GAP_BOUNDARY",
+                                           "true_rule_ids": [], "selection_id": None},
+                              "evaluated_at": at,
+                              "persistence_status": "PENDING" if observed_stage else "COMMITTED",
+                              "target_identity_guard": "CONTINUITY_GAP_BOUNDARY"}
+                    if committed_stage:
+                        record["committed_stream_sequence"] = row["stream_sequence"]
+                        record["commit_evidence"] = {
+                            "event_type": event.get("event_type"),
+                            "durability": event.get("durability"),
+                            "continuity_status": event.get("continuity_status"),
+                            "delivery_mode": str(event.get("delivery_mode") or "LIVE").upper(),
+                            "stream_id": row["stream_id"],
+                            "stream_sequence": row["stream_sequence"],
+                        }
+                    shared_decision = {
+                        "decision_id": f"{session['session_id']}:{row['stream_id']}:{row['stream_sequence']}:shared",
+                        "session_id": session["session_id"],
+                        "source_round": _reference(row), "target_round": None,
+                        "action": "NOT_EVALUATED", "reason": "CONTINUITY_GAP_BOUNDARY",
+                        "true_rule_ids": [], "selection_id": None, "evaluated_at": at,
+                        "persistence_status": record["persistence_status"],
+                    }
+                    record["shared_decision"] = shared_decision
+                    session.setdefault("event_records", {})[record_key] = record
+                    session["evaluations"].append(deepcopy(record))
+                    session["evaluations"] = session["evaluations"][-500:]
+                    session.setdefault("decisions", []).append(deepcopy(shared_decision))
+                    session["decisions"] = session["decisions"][-500:]
+                    dirty_session_ids.add(str(session["session_id"]))
+                    results.append(record)
+                    continue
                 if gap_marker_active and committed_stage and can_recover_gap_marker:
                     # Older persisted sessions may already have a cursor beyond
                     # the collector's real round index. A newer committed
@@ -2446,7 +4354,13 @@ class RulesEngine:
                                     and session.get("stop_reason") == "MANUAL_PAUSE")
                     can_recover_gap = (session.get("status") in {"RUNNING", "SETTLING"}
                                        or legacy_gap_pause or manual_pause)
-                    if observed_stage or not can_recover_gap:
+                    source_metadata = event.get("source_metadata")
+                    fresh_watch_observation = (
+                        observed_stage and isinstance(source_metadata, Mapping)
+                        and source_metadata.get("source") == "ORBIT_DATA_WATCH_API"
+                        and str(event.get("delivery_mode") or "").upper() == "LIVE"
+                    )
+                    if (observed_stage and not fresh_watch_observation) or not can_recover_gap:
                         # A pending observation cannot move the durable cursor.
                         # Preserve the session and let the matching commit
                         # establish the fresh boundary before evaluation.
@@ -2513,9 +4427,14 @@ class RulesEngine:
                 observed_at = _parse_time(row.get("observed_at"))
                 started_at = _parse_time(session.get("started_at"))
                 auto_next_start_round = session.get("auto_next_start_round_id")
+                auto_next_first_contiguous_round = (
+                    session.get("auto_next_accept_first_round") is True
+                    and int(row.get("round_index") or 0)
+                    == int(session.get("last_round_index") or 0) + 1)
                 if (observed_stage and observed_at is not None and started_at is not None
                         and observed_at.tzinfo is not None and started_at.tzinfo is not None
                         and observed_at.astimezone(timezone.utc) <= started_at.astimezone(timezone.utc)
+                        and not auto_next_first_contiguous_round
                         and row.get("round_id") != auto_next_start_round):
                     # The pending-priority path can reach Rules Engine before
                     # PostgreSQL. Preserve the old session boundary semantics:
@@ -2540,6 +4459,7 @@ class RulesEngine:
                 if (committed_stage and observed_at is not None and started_at is not None
                         and observed_at.tzinfo is not None and started_at.tzinfo is not None
                         and observed_at.astimezone(timezone.utc) <= started_at.astimezone(timezone.utc)
+                        and not auto_next_first_contiguous_round
                         and row.get("round_id") != auto_next_start_round):
                     # A PostgreSQL commit can trail the API observation inbox.
                     # Advance continuity and keep the outcome as history, but
@@ -2569,11 +4489,25 @@ class RulesEngine:
                 history = deepcopy(session["context"]) + [deepcopy(row)]
                 session["observed_rounds"] += 1
                 session["context"] = history[-5:]
-                final_window_source = session["observed_rounds"] >= session["window_size"]
+                if session.get("automatic_rule_selection") is True:
+                    choice = self._automatic_rule_choice(session, row)
+                    session["active_rule_ids"] = choice["rule_ids"]
+                    session["automatic_rule_choice"] = choice
+                elif session.get("adaptive_rule_selection") is True:
+                    choice = self._adaptive_rule_choice(session, row, history, at)
+                    session["adaptive_rule_choice"] = choice
+                active_rule_ids = set(session["active_rule_ids"] if (
+                    session.get("automatic_rule_selection") or session.get("adaptive_rule_selection"))
+                    else session["rule_ids"])
+                final_window_source = (session.get("window_size") is not None
+                                       and session["observed_rounds"] >= session["window_size"])
                 active = (session["selection_status"] == "ACTIVE" and session["status"] == "RUNNING"
                           and not final_window_source and not target_already_completed)
                 evaluation_rows: list[dict[str, Any]] = []
                 proposals: list[dict[str, Any]] = []
+                automatic_baseline_session: dict[str, Any] | None = None
+                automatic_baseline_choice: dict[str, Any] | None = None
+                automatic_baseline_proposals: list[dict[str, Any]] = []
                 late_true_rule_ids: set[str] = set()
                 for rid in session["rule_ids"]:
                     state = session["engines"][rid]
@@ -2594,7 +4528,16 @@ class RulesEngine:
                         policy_evaluation_ms += proposal_elapsed_ms
                     else:
                         standard_rule_evaluation_ms += proposal_elapsed_ms
-                    proposal["enabled"] = True  # Session snapshot owns participation.
+                    # Automatic mode treats the mode's whole policy catalog as
+                    # candidates; the legacy enabled toggle applies only to
+                    # Manual participation.
+                    proposal["enabled"] = True
+                    if session.get("automatic_rule_selection") is True:
+                        proposal["selected_by_automatic_rule"] = rid in active_rule_ids
+                    if session.get("adaptive_rule_selection") is True:
+                        proposal["selected_by_adaptive_rule"] = rid in active_rule_ids
+                        proposal["adaptive_selection_version"] = session.get("adaptive_selection_version")
+                        proposal["behavior_context"] = self._adaptive_context_signature(history)
                     proposal["evaluation_id"] = hashlib.sha256("\0".join((
                         str(session["session_id"]), rid, str(row["stream_id"]),
                         str(row["round_index"]))).encode("utf-8")).hexdigest()
@@ -2620,8 +4563,17 @@ class RulesEngine:
                                 and proposal.get("status") != "TARGET_ALREADY_COMPLETED"):
                             # A skipped H closes only its owning policy cycle;
                             # it is verified source evidence, never a bet result.
-                            session["engines"][rid].update(
-                                deepcopy(proposal["state_snapshot"]["after"]))
+                            policy_state = session["engines"][rid]
+                            policy_state.update(deepcopy(proposal["state_snapshot"]["after"]))
+                            cycle = policy_state.get("cycle")
+                            if cycle and cycle.get("active"):
+                                cycle.update({"active": False, "status": "COMPLETED",
+                                              "ended_at": at, "end_round_index": row["round_index"],
+                                              "end_reason": "SPECIAL_SKIP_H_TERMINAL"})
+                                policy_state["cycle_mode"] = "IDLE"
+                            proposal.setdefault("state_snapshot", {})["after"] = deepcopy(policy_state)
+                            proposal.setdefault("proposal", {}).setdefault("privateState", {})["after"] = (
+                                deepcopy(policy_state))
                         elif (transition.get("type") == "SPECIAL_SKIP_LOSS_TERMINAL_ROUND"
                               and proposal.get("status") != "TARGET_ALREADY_COMPLETED"):
                             session["engines"][rid]["special_skip_terminal_round_index"] = None
@@ -2630,8 +4582,12 @@ class RulesEngine:
                             # and depend only on its verified source, not aggregation.
                             session["engines"][rid]["rule_state"] = proposal["state_snapshot"]["after"].get("rule_state")
                     evaluation_rows.append(proposal)
-                    if active:
+                    if active and rid in active_rule_ids:
                         proposals.append(proposal)
+                if active and session.get("adaptive_rule_selection") is True:
+                    (automatic_baseline_session, automatic_baseline_choice,
+                     automatic_baseline_proposals) = self._adaptive_automatic_baseline_proposals(
+                        session, row, history, at)
                 target_identity_guard = ("TARGET_ALREADY_COMPLETED" if target_already_completed
                                           else "NOT_APPLICABLE")
                 target_guard_unavailable = False
@@ -2643,7 +4599,9 @@ class RulesEngine:
                 pending_target_reader = getattr(self.observation_inbox,
                                                 "pending_round_for_index", None)
                 target_guard_started_ns = time.perf_counter_ns()
-                if active and any(proposal.get("eligible") is True for proposal in proposals):
+                if active and (any(proposal.get("eligible") is True for proposal in proposals)
+                               or any(proposal.get("eligible") is True
+                                      for proposal in automatic_baseline_proposals)):
                     if target_already_completed:
                         target_identity_guard = "TARGET_ALREADY_COMPLETED"
                     else:
@@ -2710,6 +4668,14 @@ class RulesEngine:
                             proposal.setdefault("proposal", {}).update({
                                 "eligible": None, "status": status, "reason": reason,
                             })
+                        for proposal in automatic_baseline_proposals:
+                            if proposal.get("eligible") is not True:
+                                continue
+                            proposal.update({"eligible": None, "result": None,
+                                             "status": status, "reason": reason})
+                            proposal.setdefault("proposal", {}).update({
+                                "eligible": None, "status": status, "reason": reason,
+                            })
                 if target_already_completed and late_true_rule_ids:
                     for proposal in evaluation_rows:
                         if (proposal.get("status") != "TARGET_ALREADY_COMPLETED"
@@ -2736,8 +4702,20 @@ class RulesEngine:
                             proposal.setdefault("proposal", {}).setdefault("relevantInputs", {})[
                                 "lateTargetResolution"] = deepcopy(resolution)
                         dirty_session_ids.add(str(session["session_id"]))
+                if (session.get("adaptive_rule_selection") is True
+                        and automatic_baseline_session is not None
+                        and automatic_baseline_choice is not None):
+                    self._record_adaptive_automatic_baseline(
+                        session, automatic_baseline_session, automatic_baseline_choice,
+                        automatic_baseline_proposals, row, at)
                 aggregation_started_ns = time.perf_counter_ns()
-                if active and session["mode"] in {"FIVE_RULE_TRACKER", "ALL_RULES_TOGETHER"}:
+                if active and session.get("automatic_rule_selection") is True and not active_rule_ids:
+                    combined = {"action": "NO_ACTION",
+                                "reason": session["automatic_rule_choice"]["reason"],
+                                "true_rule_ids": [], "selection_id": None}
+                elif active and session.get("adaptive_rule_selection") is True:
+                    combined = self._separate(session, row, proposals, at)
+                elif active and session["mode"] in {"FIVE_RULE_TRACKER", "ALL_RULES_TOGETHER"}:
                     combined = self._combine(session, row, proposals, at)
                 elif active and session["mode"] in {"START_CHECK", "LEGACY_SEPARATE_TRACKER"}:
                     combined = self._combine(session, row, proposals, at)
@@ -2753,7 +4731,29 @@ class RulesEngine:
                 if target_guard_unavailable:
                     combined = {"action": "WAIT", "reason": "TARGET_IDENTITY_CHECK_UNAVAILABLE",
                                 "true_rule_ids": [], "selection_id": None}
-                if session["observed_rounds"] >= session["window_size"]:
+                accepted_rule_ids = (set(combined.get("true_rule_ids") or [])
+                                     if combined.get("action") == "SELECT" else set())
+                for proposal in evaluation_rows:
+                    rule_id = proposal.get("rule_id")
+                    if rule_id not in accepted_rule_ids:
+                        continue
+                    accepted_state = deepcopy(session.get("engines", {}).get(rule_id) or {})
+                    proposal.setdefault("state_snapshot", {})["after"] = deepcopy(accepted_state)
+                    proposal.setdefault("proposal", {}).setdefault("privateState", {})["after"] = (
+                        deepcopy(accepted_state))
+                    inputs = proposal.setdefault("proposal", {}).setdefault("relevantInputs", {})
+                    cycle = accepted_state.get("cycle") or {}
+                    if inputs.get("ruleCycle") is not None:
+                        inputs["ruleCycle"].update({
+                            "cycle_id": cycle.get("cycle_id"),
+                            "active": bool(cycle.get("active")),
+                            "requested_targets": int(cycle.get("requested_count") or 0),
+                            "resolved_targets": int(cycle.get("resolved_count") or 0),
+                            "maximum_targets": cycle.get("maximum_targets"),
+                            "end_condition": cycle.get("end_condition"),
+                        })
+                if (session.get("window_size") is not None
+                        and session["observed_rounds"] >= session["window_size"]):
                     session["status"] = "COMPLETED"
                     session["ended_at"] = at
                     self._record_session_stop(session, "WINDOW_COMPLETED", at,
@@ -2762,8 +4762,7 @@ class RulesEngine:
                         self._stop_selecting(session, "WINDOW_COMPLETED", at, row,
                                              stop_source="WINDOW_COMPLETION")
                     if not session.get("auto_next_session_id") and not session.get("auto_next_armed"):
-                        session["auto_next_armed"] = bool(
-                            session["configuration_snapshot"].get("auto_next_check_enabled"))
+                        session["auto_next_armed"] = self._auto_next_window_trigger_enabled(session)
                         if session["auto_next_armed"]:
                             session.update({"auto_next_trigger": "WINDOW_COMPLETED",
                                            "auto_next_armed_at": at,
@@ -2775,12 +4774,23 @@ class RulesEngine:
                                 self._record_auto_next_boundary(session, row)
                 if row.get("round_id") == auto_next_start_round:
                     session["auto_next_start_round_id"] = None
+                if auto_next_first_contiguous_round:
+                    session["auto_next_start_round_id"] = None
+                    session["auto_next_accept_first_round"] = False
                 session.update({"last_stream_sequence": row["stream_sequence"] if not observed_stage else session["last_stream_sequence"],
                                 "last_round_index": row["round_index"], "last_round_id": row["round_id"]})
+                self._sync_automatic_candidate_lifecycle(session)
                 dirty_session_ids.add(str(session["session_id"]))
                 record = {"session_id": session["session_id"],
                           "source_round": _reference(row), "target_round": _expected(row),
                           "rule_evaluations": evaluation_rows, "decision": combined, "evaluated_at": at,
+                          "automatic_rule_choice": deepcopy(session.get("automatic_rule_choice"))
+                              if session.get("automatic_rule_selection") is True else None,
+                          "adaptive_rule_choice": deepcopy(session.get("adaptive_rule_choice"))
+                              if session.get("adaptive_rule_selection") is True else None,
+                          "adaptive_automatic_baseline_choice": deepcopy(
+                              session.get("adaptive_automatic_baseline_choice"))
+                              if session.get("adaptive_rule_selection") is True else None,
                           "persistence_status": "PENDING" if observed_stage else "COMMITTED",
                           "target_identity_guard": target_identity_guard,
                           "commit_evidence": {
@@ -2820,6 +4830,12 @@ class RulesEngine:
                 session["decisions"] = session["decisions"][-500:]
                 self.evaluation_count += len(evaluation_rows)
                 results.append(record)
+            if committed_stage:
+                # A full-window trigger has an exact committed boundary. Start
+                # its successor here so users do not have to manually start it
+                # while waiting for the next round event to arrive.
+                dirty_session_ids.update(self._spawn_auto_next_sessions(
+                    row, at, start_window_trigger_at_boundary=True))
             actions = [item.get("decision", {}).get("action") for item in results]
             if len(results) == 1:
                 decision = actions[0]
@@ -2833,7 +4849,7 @@ class RulesEngine:
             output = {"source_round": _reference(row), "target_round": _expected(row),
                       "decision": decision, "result": decision == "SELECT",
                       "true_rule_ids": selected_rule_ids,
-                      "sessions": results, "automatic_execution": "OFF", "can_bet": False,
+                      "sessions": results,
                       "evaluated_at": at,
                       "target_settlements": [item for rows in settlements_by_session.values()
                                              for item in rows],
@@ -2921,22 +4937,22 @@ class RulesEngine:
             return deepcopy(output)
 
     def has_round_event_consumers(self) -> bool:
-        """Return whether any persisted session can consume or settle a round.
+        """Return whether a persisted session can consume or settle a round.
 
-        The collector also forwards rounds while no SHADOW session is active.
-        Persisting a no-op engine snapshot for every such round made its
-        latency grow with the round-event backlog and delayed ordinary API
-        actions. This check avoids that write while retaining paused,
-        settling, and terminal sessions that still have pending targets.
+        The report-only committed-round observer is coordinated separately by
+        the collector worker, so this predicate still describes SHADOW-session
+        consumers and preserves the no-session fast path for observed events.
         """
         with self._lock:
-            return any(
+            shadow_consumers = any(
                 self._session_accepts_source_events(session)
                 or self._session_accepts_settlement_events(session)
                 for session in self.sessions.values()
             )
+            return shadow_consumers
 
-    def _spawn_auto_next_sessions(self, current: dict[str, Any], at: str) -> set[str]:
+    def _spawn_auto_next_sessions(self, current: dict[str, Any], at: str, *,
+                                  start_window_trigger_at_boundary: bool = False) -> set[str]:
         changed_session_ids: set[str] = set()
         for previous in list(self.sessions.values()):
             if not previous.get("auto_next_armed"):
@@ -2944,14 +4960,15 @@ class RulesEngine:
             trigger = previous.get("auto_next_trigger")
             completed_window = previous.get("status") == "COMPLETED" and (
                 trigger in {None, "WINDOW_COMPLETED"}
-                and previous.get("configuration_snapshot", {}).get("auto_next_check_enabled") is True)
+                and self._auto_next_window_trigger_enabled(previous))
             stopped_at_limit = (previous.get("status") in {"SETTLING", "COMPLETED"}
                 and trigger == "LIMIT_REACHED"
                 and previous.get("configuration_snapshot", {}).get("auto_next_on_limit_enabled") is True
                 and previous.get("selection_stop_source") in {
-                    "PROFIT_TARGET", "NET_OUTCOME_LIMIT", "MAX_SELECTIONS"}
+                    "PROFIT_TARGET", "NET_OUTCOME_LIMIT", "MAX_SELECTIONS", "AUTO_NEXT_RESULT_LIMIT"}
                 and previous.get("selection_stop_reason") in {
                     "PROFIT_TARGET_REACHED", "MAX_SELECTIONS_REACHED",
+                    "AUTO_NEXT_RESULT_LIMIT_REACHED",
                     *NET_OUTCOME_LIMIT_REASONS})
             if not (completed_window or stopped_at_limit):
                 continue
@@ -2969,12 +4986,17 @@ class RulesEngine:
                 continue
             # Capture the exact committed event that completed the old window.
             if current.get("round_id") == previous.get("auto_next_after_round_id"):
-                self._record_auto_next_boundary(previous, current)
-                if isinstance(previous.get("auto_next_boundary"), Mapping):
-                    changed_session_ids.add(str(previous["session_id"]))
-                continue
+                if not (start_window_trigger_at_boundary and completed_window):
+                    self._record_auto_next_boundary(previous, current)
+                    if isinstance(previous.get("auto_next_boundary"), Mapping):
+                        changed_session_ids.add(str(previous["session_id"]))
+                    continue
             boundary = previous.get("auto_next_boundary")
             context = previous.get("auto_next_context")
+            same_window_completion_boundary = (
+                start_window_trigger_at_boundary
+                and completed_window
+                and current.get("round_id") == previous.get("auto_next_after_round_id"))
             valid_boundary = (isinstance(boundary, Mapping)
                 and boundary.get("event_type") == "round.persisted"
                 and boundary.get("durability") == "COMMITTED"
@@ -3007,8 +5029,9 @@ class RulesEngine:
                 changed_session_ids.add(str(previous["session_id"]))
                 continue
             if (current["stream_id"] != boundary.get("stream_id")
-                    or current["round_index"] <= boundary.get("round_index", 0)
-                    or current["stream_sequence"] <= boundary.get("stream_sequence", 0)):
+                    or (not same_window_completion_boundary
+                        and (current["round_index"] <= boundary.get("round_index", 0)
+                             or current["stream_sequence"] <= boundary.get("stream_sequence", 0)))):
                 continue
             if (not isinstance(context, list) or not context
                     or context[-1].get("stream_id") != boundary.get("stream_id")
@@ -3027,6 +5050,17 @@ class RulesEngine:
                 "configuration_version": previous["configuration_version"],
                 "configuration_snapshot": deepcopy(previous["configuration_snapshot"]),
                 "rule_ids": rule_ids, "rule_versions": deepcopy(previous["rule_versions"]),
+                "rule_configuration_keys": deepcopy(previous.get("rule_configuration_keys") or {}),
+                "automatic_rule_selection": previous.get("automatic_rule_selection", False),
+                "adaptive_rule_selection": previous.get("adaptive_rule_selection", False),
+                "active_rule_ids": [], "automatic_rule_choice": None,
+                "adaptive_rule_choice": None, "adaptive_decisions": [],
+                "adaptive_selection_version": int(previous.get("adaptive_selection_version") or 0),
+                "adaptive_automatic_baseline_choice": None,
+                "adaptive_automatic_baseline_decisions": [],
+                "adaptive_automatic_baseline_selections": [],
+                "adaptive_automatic_baseline_engines": ({rid: _fresh_engine(rid) for rid in rule_ids}
+                    if previous.get("adaptive_rule_selection") is True else {}),
                 "manifest": deepcopy(previous["manifest"]),
                 "start_boundary": _reference(boundary) | {"streamSequence": boundary["stream_sequence"]},
                 "last_stream_id": boundary["stream_id"], "last_stream_sequence": boundary["stream_sequence"],
@@ -3035,17 +5069,16 @@ class RulesEngine:
                 "engines": {rid: _fresh_engine(rid) for rid in rule_ids}, "observed_rounds": 0,
                 "prestart_skipped_rounds": 0,
                 "selections": [], "rule_selections": {rid: [] for rid in rule_ids},
+                "adaptive_signal_selections": [],
                 "evaluations": [], "decisions": [], "total_wins": 0, "total_losses": 0,
+                "total_cancelled": 0,
                 "net_profit_rwf": 0, "selection_stop_reason": None, "stop_reason": None,
-                "reconciled_financials": {"realized_betting_pl": None, "currency": None,
-                                           "win_count": 0, "loss_count": 0,
-                                           "reconciled_bets": 0, "reconciled_execution_ids": []},
                 "auto_next_armed": False, "auto_next_trigger": None,
                 "auto_next_armed_at": None, "auto_next_block_reason": None,
                 "auto_next_boundary": None, "auto_next_context": [],
                 "auto_next_start_round_id": current["round_id"],
-                "automatic_execution": "OFF",
-            }
+                "auto_next_accept_first_round": same_window_completion_boundary,
+                }
             previous["auto_next_armed"] = False
             previous["auto_next_started_at"] = at
             previous["auto_next_session_id"] = session_id
@@ -3089,44 +5122,10 @@ class RulesEngine:
                      "settled_at": None, "settlement_evidence": None,
                      "stake_rwf": config.get("fixed_stake_rwf", 100),
                      "payout_multiplier": 2.0, "payout_rwf": None, "profit_loss_rwf": None}
-        target = selection["expected_target"]
-        panel = config.get("execution_panel", 0)
-        intent_id = hashlib.sha256(
-            f"{target['streamId']}\0{target['roundIndex']}\0{panel}".encode("utf-8")
-        ).hexdigest()
-        requested_stake = config.get("requested_stake")
-        if requested_stake is None:
-            requested_stake = config.get("fixed_stake_rwf", selection["stake_rwf"])
-        selection["execution_intent"] = {
-            "intent_id": intent_id,
-            "decision_id": selection_id,
-            "source_round_id": selection["source_round"]["roundId"],
-            "target_round_id": target.get("roundId"),
-            "target_stream_id": target["streamId"],
-            "target_round_index": target["roundIndex"],
-            "selected_rule_ids": list(selection["contributing_rule_ids"]),
-            "requested_stake": requested_stake,
-            "requested_stake_currency": config.get("stake_currency"),
-            "cashout_target": 2.0,
-            "created_at": at,
-            "expires_at": target.get("expiresAt"),
-            "session_id": session["session_id"],
-            "panel": panel,
-            "execution_status": "BLOCKED_READ_ONLY",
-            "blockers": [
-                "REAL_MONEY_EXECUTION_DISABLED",
-                "EXPLICIT_SESSION_AUTHORIZATION_REQUIRED",
-                "TARGET_ROUND_ID_UNVERIFIED",
-                "BETTING_DEADLINE_UNVERIFIED",
-                "BET_AMOUNT_CURRENCY_UNVERIFIED" if not config.get("stake_currency") else
-                    "STAKE_CURRENCY_NOT_RECONCILED",
-                "CASHOUT_PLATFORM_ACKNOWLEDGEMENT_UNVERIFIED",
-                "PLATFORM_ACCEPTANCE_AND_SETTLEMENT_UNVERIFIED",
-            ],
-        }
         session["selections"].append(selection)
         for proposal in true_rows:
             self._commit_contributor(session, proposal, selection)
+        self._trim_performance_observer_ledger(session)
         max_selections = config.get("max_selections")
         if (session.get("mode") == "ALL_RULES_TOGETHER"
                 and isinstance(max_selections, int) and not isinstance(max_selections, bool)
@@ -3145,6 +5144,14 @@ class RulesEngine:
         true_rows = [row for row in proposals if row.get("eligible") is True]
         selected: list[str] = []
         selection_ids: list[str] = []
+        config = session.get("configuration_snapshot") or {}
+        maximum = config.get("max_selections") if session.get("adaptive_rule_selection") is True else None
+        if (session.get("mode") == "ALL_RULES_TOGETHER"
+                and isinstance(maximum, int) and self._adaptive_session_result_counts(session)[3] >= maximum):
+            self._stop_selecting(session, "MAX_SELECTIONS_REACHED", at, source,
+                                 stop_source="MAX_SELECTIONS")
+            return {"action": "WAIT", "reason": "MAX_SELECTIONS_REACHED",
+                    "true_rule_ids": [], "selection_ids": []}
         expected_source, expected_target = _reference(source), _expected(source)
         if any(row.get("proposal", {}).get("sourceRoundRef") != expected_source
                or row.get("proposal", {}).get("expectedTargetRef") != expected_target for row in true_rows):
@@ -3156,14 +5163,41 @@ class RulesEngine:
                          "rule_id": rid, "rule_version": proposal["rule_version"],
                          "source_round": _reference(source), "expected_target": _expected(source),
                          "reason": proposal["reason"], "selected_at": at,
+                         "adaptive_selection_version": proposal.get("adaptive_selection_version"),
+                         "behavior_context": proposal.get("behavior_context"),
                          "status": "PENDING", "result": "PENDING", "actual_multiplier": None,
                          "actual_target": None, "resolved_at": None}
             session["rule_selections"][rid].append(selection)
             self._commit_contributor(session, proposal, selection)
             selected.append(rid)
             selection_ids.append(selection_id)
+        signal_selection_id = None
+        if selected:
+            # The signal contract stores one publication per session/target.
+            # Keep the independent rule ledgers above, and add a separate
+            # target-level envelope so the signal bridge can publish all TRUE
+            # Adaptive contributors as one signal without collapsing outcomes.
+            signal_selection_id = str(uuid5(NAMESPACE_URL,
+                f"adaptive-signal-envelope:{session['session_id']}:"
+                f"{source['stream_id']}:{source['round_id']}:"
+                f"{_expected(source).get('roundIndex')}:{','.join(selected)}"))
+            envelope = {"selection_id": signal_selection_id,
+                "decision_id": signal_selection_id, "session_id": session["session_id"],
+                "source_round": _reference(source), "expected_target": _expected(source),
+                "contributing_rule_ids": list(selected), "matched_rule_ids": list(selected),
+                "selected_at": at, "adaptive_selection_version": session.get("adaptive_selection_version"),
+                "status": "PENDING", "result": "PENDING", "signal_envelope": True}
+            session.setdefault("adaptive_signal_selections", []).append(envelope)
+            session["adaptive_signal_selections"] = session["adaptive_signal_selections"][-500:]
+        self._trim_performance_observer_ledger(session)
+        if (maximum is not None and selected
+                and self._adaptive_session_result_counts(session)[3] >= maximum):
+            self._stop_selecting(session, "MAX_SELECTIONS_REACHED", at, source,
+                                 stop_source="MAX_SELECTIONS")
+            self._arm_auto_next_after_limit(session, session.get("selection_stop_reason"), at, source)
         return {"action": "SELECT" if selected else ("WAIT" if session.get("rule_ids") else "NO_ACTION"),
                 "reason": "INDEPENDENT_TRACKER_SELECTIONS" if selected else "NO_TRUE_PROPOSALS",
+                "selection_id": signal_selection_id,
                 "true_rule_ids": selected, "selection_ids": selection_ids}
 
     def _start_check_summary(self, session: dict[str, Any]) -> dict[str, Any]:
@@ -3175,48 +5209,101 @@ class RulesEngine:
 
     def session_action(self, session_id: str, action: str, *, now: str | None = None) -> dict[str, Any]:
         at = _now(now)
-        if action not in {"pause", "resume", "stop", "reset", "emergency_stop"}:
+        if action not in {"pause", "resume", "stop", "reset"}:
             raise ValueError("INVALID_SESSION_ACTION")
         with self._lock:
             session = self.sessions.get(session_id)
             if not session:
                 raise KeyError("SESSION_NOT_FOUND")
+            already_applied = (
+                (action == "pause" and session.get("status") == "PAUSED"
+                 and session.get("stop_reason") == "MANUAL_PAUSE")
+                or (action == "resume" and session.get("status") == "RUNNING")
+                or (action == "stop" and session.get("status") == "MANUALLY_STOPPED"
+                    and session.get("stop_reason") == "MANUAL_STOP")
+                or (action == "reset" and session.get("status") == "RESET"
+                    and session.get("stop_reason") == "RESET")
+            )
+            if already_applied:
+                return self._session_summary(session)
+
+            # Auto-next creates a linked chain of sessions. A manual stop on
+            # its current member must also disarm ancestors and stop any
+            # already-created successor, otherwise the next round can start
+            # another session while the operator is repeatedly clicking Stop.
+            lineage = {str(session_id)}
+            changed = True
+            while changed:
+                changed = False
+                for candidate_id, candidate in self.sessions.items():
+                    parent_id = str(candidate.get("auto_next_session_id") or "")
+                    if (str(candidate_id) in lineage and parent_id
+                            and parent_id in self.sessions and parent_id not in lineage):
+                        lineage.add(parent_id)
+                        changed = True
+                    if (parent_id in lineage and str(candidate_id) not in lineage):
+                        lineage.add(str(candidate_id))
+                        changed = True
+
+            affected_ids: set[str] = set()
+            for lineage_id in lineage:
+                member = self.sessions.get(lineage_id)
+                if not member:
+                    continue
+                if member.get("auto_next_armed"):
+                    member.update({"auto_next_armed": False, "auto_next_trigger": None,
+                                   "auto_next_armed_at": None,
+                                   "auto_next_block_reason": "OPERATOR_SESSION_CONTROL"})
+                    affected_ids.add(lineage_id)
+                # Only terminal actions propagate through a successor chain;
+                # Pause preserves normal pending-result observation behavior.
+                if (action in {"stop", "reset"}
+                        and member.get("status") in {"RUNNING", "SETTLING", "PAUSED"}):
+                    propagated_action = action
+                    reason = "RESET" if propagated_action == "reset" else "MANUAL_STOP"
+                    prior_integrity_reason = (member.get("integrity_stop_reason")
+                        or member.get("selection_stop_reason") or member.get("stop_reason"))
+                    if prior_integrity_reason and prior_integrity_reason not in {"MANUAL_PAUSE", reason}:
+                        member["integrity_stop_reason"] = prior_integrity_reason
+                    member.update({"status": "RESET" if propagated_action == "reset"
+                                   else "MANUALLY_STOPPED", "ended_at": at,
+                                   "auto_next_armed": False, "auto_next_trigger": None,
+                                   "auto_next_armed_at": None})
+                    self._record_session_stop(member, reason, at,
+                        "MANUAL_RESET_CONTROL" if propagated_action == "reset" else
+                        "MANUAL_STOP_CONTROL", stop_selection=True)
+                    affected_ids.add(lineage_id)
+
             if action == "pause" and session["status"] == "RUNNING":
                 session.update({"status": "PAUSED", "paused_at": at})
                 self._record_session_stop(session, "MANUAL_PAUSE", at, "MANUAL_OPERATOR")
             elif action == "resume" and session["status"] == "PAUSED" and session.get("stop_reason") == "MANUAL_PAUSE":
                 session.update({"status": "RUNNING", "stop_reason": None, "resumed_at": at})
-            elif (action == "resume" and session["status"] == "PAUSED"
-                  and session.get("stop_reason") == "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION"):
-                has_open = getattr(self._persistence, "has_open_rule_session_executions", None)
-                if callable(has_open) and has_open(session_id):
-                    raise ValueError("UNRECONCILED_EXECUTION_REMAINS")
-                session.update({"status": "RUNNING", "stop_reason": None,
-                                "selection_status": "ACTIVE", "selection_stop_reason": None,
-                                "unresolved_execution_id": None,
-                                "unresolved_execution_reason": None,
-                                "resumed_at": at})
-            elif action in {"stop", "emergency_stop"}:
-                reason = "EMERGENCY_STOP" if action == "emergency_stop" else "MANUAL_STOP"
-                prior_reason = session.get("selection_stop_reason") or session.get("stop_reason")
-                if prior_reason and prior_reason not in {"MANUAL_PAUSE", "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION", reason}:
-                    session["integrity_stop_reason"] = prior_reason
-                session.update({"status": "MANUALLY_STOPPED", "ended_at": at,
-                                "auto_next_armed": False, "auto_next_trigger": None,
-                                "auto_next_armed_at": None})
-                self._record_session_stop(session, reason, at,
-                    "EMERGENCY_STOP_CONTROL" if action == "emergency_stop" else "MANUAL_STOP_CONTROL",
-                    stop_selection=True)
+            elif action == "stop":
+                if session_id not in affected_ids:
+                    reason = "MANUAL_STOP"
+                    prior_reason = session.get("selection_stop_reason") or session.get("stop_reason")
+                    if prior_reason and prior_reason not in {"MANUAL_PAUSE", reason}:
+                        session["integrity_stop_reason"] = prior_reason
+                    session.update({"status": "MANUALLY_STOPPED", "ended_at": at,
+                                    "auto_next_armed": False, "auto_next_trigger": None,
+                                    "auto_next_armed_at": None})
+                    self._record_session_stop(session, reason, at, "MANUAL_STOP_CONTROL",
+                                              stop_selection=True)
             elif action == "reset":
-                session.update({"status": "RESET", "ended_at": at,
-                                "auto_next_armed": False, "auto_next_trigger": None,
-                                "auto_next_armed_at": None})
-                self._record_session_stop(session, "RESET", at, "MANUAL_RESET_CONTROL",
-                                          stop_selection=True)
+                if session_id not in affected_ids:
+                    session.update({"status": "RESET", "ended_at": at,
+                                    "auto_next_armed": False, "auto_next_trigger": None,
+                                    "auto_next_armed_at": None})
+                    self._record_session_stop(session, "RESET", at, "MANUAL_RESET_CONTROL",
+                                              stop_selection=True)
             else:
                 raise ValueError("INVALID_SESSION_TRANSITION")
-            self._persist(session_ids={str(session_id)})
-            return deepcopy(session)
+            self._persist(session_ids=affected_ids or {str(session_id)})
+            # Controls only need the compact authoritative summary. Returning
+            # hundreds of evaluations and event records made a simple action
+            # response unnecessarily large and delayed the button feedback.
+            return self._session_summary(session)
 
     def close_for_reconfiguration(self, session_id: str, new_session_id: str,
                                   confirmation: str, *, now: str | None = None) -> dict[str, Any]:
@@ -3253,6 +5340,26 @@ class RulesEngine:
                 return None
             result = deepcopy(value)
             summary = self._session_summary(result)
+            behaviour_rows = [item for item in result.get("selections", [])
+                              if isinstance(item, dict)
+                              and item.get("source_id") == "BEHAVIOUR_DETECTION"]
+            behaviour_wins = sum(item.get("status") == "WIN" for item in behaviour_rows)
+            behaviour_losses = sum(item.get("status") == "LOSS" for item in behaviour_rows)
+            behaviour_pending = sum(item.get("status") == "PENDING" for item in behaviour_rows)
+            behaviour_net = round(sum(float(item.get("profit_loss_rwf") or 0)
+                                      for item in behaviour_rows), 2)
+            result["source_performance"] = {
+                "behaviour_detection": {"source_label": "Behaviour Detection / Rolling HIGH",
+                    "selections": len(behaviour_rows), "wins": behaviour_wins,
+                    "losses": behaviour_losses, "pending": behaviour_pending,
+                    "net_profit_rwf": behaviour_net},
+                "other_shadow": {"source_label": "Other SHADOW strategies",
+                    "selections": max(0, int(summary["selection_count"]) - len(behaviour_rows)),
+                    "wins": max(0, int(summary["results"]["WIN"]) - behaviour_wins),
+                    "losses": max(0, int(summary["results"]["LOSS"]) - behaviour_losses),
+                    "pending": max(0, int(summary["results"]["PENDING"]) - behaviour_pending),
+                    "net_profit_rwf": round(float(result.get("net_profit_rwf") or 0) - behaviour_net, 2)},
+            }
             result.update({"total_wins": summary["results"]["WIN"],
                            "total_losses": summary["results"]["LOSS"],
                            "status": summary["status"],
@@ -3267,7 +5374,202 @@ class RulesEngine:
                            "stop_history": deepcopy(summary["stop_history"])})
             return result
 
-    def signal_validation_session(self, session_id: str | None = None) -> dict[str, Any] | None:
+    def record_strategy_eligibility(self, session_id: str, eligibility: Mapping[str, Any],
+                                    source: Mapping[str, Any], *,
+                                    persist: bool = True,
+                                    now: str | None = None) -> dict[str, Any]:
+        """Record the adapter's current eligibility without creating a signal."""
+        at = _now(now)
+        with self._lock:
+            session = self.sessions.get(session_id)
+            if (session is None or session.get("status") != "RUNNING"
+                    or session.get("selection_status") != "ACTIVE"
+                    or (session.get("strategy_id") or
+                        ("BEHAVIOUR_ROLLING_HIGH" if session.get("behaviour_detection_enabled") else "RULES"))
+                        != "BEHAVIOUR_ROLLING_HIGH"):
+                raise ValueError("BEHAVIOUR_STRATEGY_NOT_ACTIVE")
+            result = {
+                "strategy_id": "BEHAVIOUR_ROLLING_HIGH",
+                "series_id": eligibility.get("series_id"),
+                "part": eligibility.get("part"), "batch_id": eligibility.get("batch_id"),
+                "current_dominance_state": str(eligibility.get("current_dominance_state") or "UNKNOWN"),
+                "eligible": eligibility.get("eligibility") == "ELIGIBLE",
+                "reason": str(eligibility.get("eligibility_reason") or "UNKNOWN"),
+                "source_round_identity": str(eligibility.get("decision_round_identity") or ""),
+                "source_round_id": str(source.get("round_id") or ""),
+                "policy_version": str(eligibility.get("policy_version") or ""),
+                "configuration_version": int(eligibility.get("configuration_version") or 0),
+                "data_freshness": deepcopy(eligibility.get("verified_data_freshness") or {}),
+                "updated_at": at,
+            }
+            session["last_behaviour_eligibility"] = result
+            # Eligibility is a live readout emitted once per round. Persisting a
+            # full Rules Engine session snapshot synchronously here delays the
+            # collector path, while Behaviour Detection already owns the durable
+            # analytical state and retries this idempotent status update.
+            if persist:
+                self._persist(session_ids={session_id})
+            return deepcopy(result)
+
+    def register_strategy_selection(self, session_id: str, signal: Mapping[str, Any],
+                                    source: Mapping[str, Any], *,
+                                    persist: bool = True,
+                                    now: str | None = None) -> dict[str, Any]:
+        """Register an adapter-approved selection in the selected SHADOW session.
+
+        The caller must validate the committed source and immediate future target
+        against the authoritative round repository before invoking this method.
+        The stable signal id makes retries idempotent across worker/backend restarts.
+        """
+        at = _now(now)
+        signal_id = str(signal.get("signal_id") or "")
+        target_index = int(signal.get("target_round_index") or 0)
+        stream_id = str(signal.get("target_stream_id") or "")
+        source_id = str(source.get("round_id") or "")
+        source_index = int(source.get("round_index") or 0)
+        if (not signal_id or not session_id or not stream_id or not source_id
+                or source_index < 1 or target_index != source_index + 1
+                or signal.get("direction") != "HIGH"):
+            raise ValueError("INVALID_BEHAVIOUR_SHADOW_SELECTION")
+        with self._lock:
+            session = self.sessions.get(session_id)
+            if (session is None or session.get("status") != "RUNNING"
+                    or session.get("selection_status") != "ACTIVE"):
+                raise ValueError("SHADOW_SESSION_NOT_ACTIVE")
+            configuration = session.get("configuration_snapshot") or {}
+            if (session.get("behaviour_detection_enabled",
+                            configuration.get("behaviour_detection_enabled", False)) is not True):
+                raise ValueError("BEHAVIOUR_SOURCE_DISABLED")
+            selected_strategy = session.get("strategy_id") or (
+                "BEHAVIOUR_ROLLING_HIGH" if session.get("behaviour_detection_enabled") else "RULES")
+            if selected_strategy != "BEHAVIOUR_ROLLING_HIGH":
+                raise ValueError("BEHAVIOUR_STRATEGY_NOT_SELECTED")
+            existing = next((row for row in session.get("selections", [])
+                             if str(row.get("selection_id") or "") == signal_id), None)
+            if existing is not None:
+                if (str(existing.get("source_id") or "") != "BEHAVIOUR_DETECTION"
+                        or str(existing.get("source_round_id") or "") != source_id
+                        or int((existing.get("expected_target") or {}).get("roundIndex") or 0)
+                            != target_index):
+                    raise ValueError("BEHAVIOUR_SIGNAL_IDENTITY_CONFLICT")
+                return deepcopy(existing)
+            for row in session.get("selections", []):
+                expected = row.get("expected_target") or {}
+                if (row.get("status") == "PENDING"
+                        and expected.get("streamId") == stream_id
+                        and int(expected.get("roundIndex") or 0) == target_index):
+                    raise ValueError("SHADOW_TARGET_CONFLICT")
+            selection = {
+                "selection_id": signal_id, "decision_id": signal_id,
+                "session_id": session_id, "source_id": "BEHAVIOUR_DETECTION",
+                "source_label": "Behaviour Detection / Rolling HIGH",
+                "strategy_id": str(signal.get("strategy_id") or "ROLLING_HIGH"),
+                "series_id": str(signal.get("series_id") or ""),
+                "part": str(signal.get("part") or ""),
+                "batch_id": str(signal.get("batch_id") or ""),
+                "eligibility_reason": str(signal.get("eligibility_reason") or ""),
+                "current_dominance_state": str(signal.get("current_dominance_state") or "UNKNOWN"),
+                "configuration_version": int(signal.get("configuration_version") or 0),
+                "direction": "HIGH", "trigger_horizon": int(signal.get("trigger_horizon") or 5),
+                "policy_version": str(signal.get("policy_version") or ""),
+                "trigger_round_identity": str(signal.get("trigger_round_identity") or ""),
+                "decision_round_identity": str(signal.get("decision_round_identity") or ""),
+                "source_round": {"streamId": stream_id, "roundId": source_id,
+                    "observationId": str(source.get("observation_id") or source_id),
+                    "roundIndex": source_index, "multiplier": source.get("multiplier"),
+                    "outcome": source.get("outcome")},
+                "source_round_id": source_id,
+                "expected_target": {"streamId": stream_id, "roundId": None,
+                    "observationId": None, "roundIndex": target_index},
+                "target_round_id": None, "contributing_rule_ids": [],
+                "matched_rule_ids": [], "selected_at": at,
+                "decision_timestamp": str(signal.get("decision_timestamp") or at),
+                "status": "PENDING", "result": "PENDING", "settlement_status": "PENDING",
+                "actual_multiplier": None, "actual_target": None, "resolved_at": None,
+                "settled_at": None, "settlement_evidence": None,
+                "stake_rwf": (session.get("configuration_snapshot") or {}).get("fixed_stake_rwf", 100),
+                "payout_multiplier": 2.0, "payout_rwf": None, "profit_loss_rwf": None,
+            }
+            session.setdefault("selections", []).append(selection)
+            session["last_behaviour_eligibility"] = {
+                "strategy_id": selected_strategy, "series_id": selection["series_id"],
+                "part": selection["part"], "batch_id": selection["batch_id"],
+                "current_dominance_state": selection["current_dominance_state"],
+                "eligible": True, "reason": selection["eligibility_reason"],
+                "source_round_identity": selection["decision_round_identity"],
+                "source_round_id": source_id, "policy_version": selection["policy_version"],
+                "configuration_version": selection["configuration_version"],
+                "data_freshness": deepcopy(signal.get("verified_data_freshness") or {}),
+                "updated_at": at,
+            }
+            session["last_behaviour_selection"] = deepcopy(selection)
+            if persist:
+                self._persist(session_ids={session_id})
+            return deepcopy(selection)
+
+    def cancel_strategy_selection(self, session_id: str, selection_id: str,
+                                  reason: str, *, now: str | None = None) -> None:
+        at = _now(now)
+        with self._lock:
+            session = self.sessions.get(session_id)
+            if session is None:
+                return
+            selection = next((row for row in session.get("selections", [])
+                              if row.get("selection_id") == selection_id
+                              and row.get("source_id") == "BEHAVIOUR_DETECTION"), None)
+            if selection is None or selection.get("status") != "PENDING":
+                return
+            selection.update({"status": "CANCELLED", "result": "CANCELLED",
+                              "settlement_status": "CANCELLED", "settlement_phase": "CANCELLED",
+                              "cancellation_reason": str(reason), "cancelled_at": at})
+            session["total_cancelled"] = int(session.get("total_cancelled") or 0) + 1
+            self._persist(session_ids={session_id})
+
+    def session_live_detail(self, session_id: str) -> dict[str, Any] | None:
+        """Return the live dashboard fields without copying archived round history."""
+        with self._lock:
+            value = self.sessions.get(str(session_id))
+            if not value:
+                return None
+            history_fields = {"evaluations", "decisions", "event_records",
+                              "selections", "rule_selections", "adaptive_decisions",
+                              "adaptive_signal_selections",
+                              "adaptive_automatic_baseline_decisions",
+                              "adaptive_automatic_baseline_selections"}
+            result = {key: child for key, child in value.items()
+                      if key not in history_fields}
+            result["evaluations"] = list(value.get("evaluations") or [])[-12:]
+            result["decisions"] = list(value.get("decisions") or [])[-12:]
+            # The live panel renders a compact recent selection list. Full
+            # finished-session history remains available from session().
+            result["selections"] = list(value.get("selections") or [])[-100:]
+            result["rule_selections"] = {
+                str(rule_id): list(rows or [])[-100:]
+                for rule_id, rows in (value.get("rule_selections") or {}).items()
+            }
+            result["event_records"] = {}
+            summary = self._session_status_summary(value)
+            result.update(summary)
+            result["stop_history"] = list(value.get("stop_history") or [])[-50:]
+            result = deepcopy(result)
+            result["total_wins"] = summary["results"]["WIN"]
+            result["total_losses"] = summary["results"]["LOSS"]
+            return result
+
+    def session_dashboard_context(self, session_id: str) -> dict[str, Any] | None:
+        """Return the latest decision and summary needed by the live dashboard."""
+        with self._lock:
+            value = self.sessions.get(str(session_id))
+            if not value:
+                return None
+            summary = self._session_status_summary(value)
+            evaluations = value.get("evaluations") or []
+            latest = deepcopy(evaluations[-1]) if evaluations else None
+            return {**summary, "evaluations": [latest] if latest is not None else [],
+                    "rule_ids": list(value.get("rule_ids") or [])}
+
+    def signal_validation_session(self, session_id: str | None = None, *,
+                                  allow_saved_selection: bool = False) -> dict[str, Any] | None:
         """Return only the active-session fields needed to validate a signal.
 
         The public status/detail methods build settlement summaries and deep
@@ -3276,16 +5578,32 @@ class RulesEngine:
         urgent decision path.
         """
         with self._lock:
-            active = self._selected_session()
-            if (active is None or self._effective_session_status(active) != "RUNNING"
-                    or active.get("selection_status") != "ACTIVE"):
+            # The trusted bridge supplies the session ID from the just-produced
+            # engine decision. Resolve that exact session directly instead of
+            # sorting all sessions and, more importantly, do not call session()
+            # which deep-copies the unbounded round/selection history.
+            active = (self.sessions.get(str(session_id))
+                      if allow_saved_selection and session_id is not None
+                      else self._selected_session())
+            if active is None:
+                return None
+            status = self._effective_session_status(active)
+            selection_status = active.get("selection_status")
+            is_running = status == "RUNNING" and selection_status == "ACTIVE"
+            is_saved_settling = (allow_saved_selection and status == "SETTLING"
+                                 and selection_status == "STOPPED")
+            if not is_running and not is_saved_settling:
                 return None
             active_id = str(active.get("session_id") or "")
             if session_id is not None and active_id != str(session_id):
                 return None
             return {"session_id": active_id, "mode": active.get("mode"),
-                    "status": "RUNNING", "selection_status": "ACTIVE",
-                    "rule_ids": list(active.get("rule_ids") or [])}
+                    "status": status, "selection_status": selection_status,
+                    "rule_ids": list(active.get("rule_ids") or []),
+                    "selection_stop_reason": active.get("selection_stop_reason"),
+                    "selection_stop_source": active.get("selection_stop_source"),
+                    "selection_stopped_at_round_id": active.get("selection_stopped_at_round_id"),
+                    "last_round_index": active.get("last_round_index")}
 
     def signal_selection_context(self, session_id: str, selection_id: str) -> dict[str, Any] | None:
         """Copy only the selected decision and identity fields for publication."""
@@ -3293,6 +5611,21 @@ class RulesEngine:
             session = self.sessions.get(str(session_id))
             if session is None:
                 return None
+            selection = next((row for row in session.get("adaptive_signal_selections", [])
+                              if isinstance(row, Mapping)
+                              and str(row.get("selection_id") or row.get("decision_id") or "")
+                                  == str(selection_id)), None)
+            if selection is not None:
+                return {"session_id": str(session.get("session_id") or ""),
+                        "mode": session.get("mode"),
+                        "status": self._effective_session_status(session),
+                        "selection_status": session.get("selection_status"),
+                        "selection_stop_reason": session.get("selection_stop_reason"),
+                        "selection_stop_source": session.get("selection_stop_source"),
+                        "selection_stopped_at_round_id": session.get("selection_stopped_at_round_id"),
+                        "last_round_index": session.get("last_round_index"),
+                        "rule_ids": list(session.get("rule_ids") or []),
+                        "selection": deepcopy(selection)}
             selection = next((row for row in session.get("selections", [])
                               if isinstance(row, Mapping)
                               and str(row.get("selection_id") or row.get("decision_id") or "")
@@ -3312,12 +5645,15 @@ class RulesEngine:
                     "mode": session.get("mode"),
                     "status": self._effective_session_status(session),
                     "selection_status": session.get("selection_status"),
+                    "selection_stop_reason": session.get("selection_stop_reason"),
+                    "selection_stop_source": session.get("selection_stop_source"),
+                    "selection_stopped_at_round_id": session.get("selection_stopped_at_round_id"),
                     "last_round_index": session.get("last_round_index"),
                     "rule_ids": list(session.get("rule_ids") or []),
                     "selection": deepcopy(selection)}
 
     def delete_session(self, session_id: str, *, now: str | None = None) -> dict[str, Any]:
-        """Delete a finished shadow session while retaining execution/audit records."""
+        """Delete a finished SHADOW session while retaining its system audit record."""
         at = _now(now)
         with self._lock:
             session = self.sessions.get(session_id)
@@ -3333,10 +5669,6 @@ class RulesEngine:
             selections = list(session.get("selections") or [])
             selections.extend(item for rows in (session.get("rule_selections") or {}).values()
                               for item in rows)
-            has_open = getattr(self._persistence, "has_open_rule_session_executions", None)
-            if callable(has_open) and has_open(session_id):
-                raise ValueError("SESSION_HAS_OPEN_EXECUTIONS")
-
             delete_persisted = getattr(self._persistence, "delete_rules_engine_session", None)
             if not callable(delete_persisted):
                 raise ValueError("SESSION_DELETE_PERSISTENCE_UNAVAILABLE")
@@ -3408,8 +5740,469 @@ class RulesEngine:
             }
 
     def sessions_status(self) -> list[dict[str, Any]]:
-        return [self._session_summary(item) for item in sorted(self.sessions.values(),
+        return [self._session_status_summary(item) for item in sorted(self.sessions.values(),
                 key=lambda row: row.get("started_at", ""), reverse=True)]
+
+    def _continuous_rule_performance(self, *, max_windows: int = 100) -> dict[str, Any]:
+        cap = min(max(int(max_windows), 3), 250)
+        with self._lock:
+            registry_rows = deepcopy(self.registry().get("rules") or [])
+            observers = {
+                rule_id: {
+                    "history": deepcopy(observer.get("history") or []),
+                    "last_event": deepcopy(observer.get("last_event")),
+                    "rounds_processed": int(observer.get("rounds_processed") or 0),
+                    "manual_reset_at": observer.get("manual_reset_at"),
+                    "manual_reset_round_index": observer.get("manual_reset_round_index"),
+                    "sessions": [deepcopy(session) for session in observer["engine"].sessions.values()],
+                }
+                for rule_id, observer in self._performance_observers.items()
+            }
+
+        metadata = {str(row.get("rule_id")): {
+            "rule_id": str(row.get("rule_id")), "name": row.get("name") or row.get("rule_id"),
+            "configured": row.get("configured") is True, "enabled": row.get("enabled") is True,
+        } for row in registry_rows if row.get("rule_id")}
+        rows = []
+        window_total = 0
+        last_events = []
+        processed_rounds = 0
+        manual_resets = []
+        for rule_id, info in metadata.items():
+            observer = observers.get(rule_id) or {}
+            windows = list(observer.get("history") or [])
+            windows.extend(self._performance_window(session, rule_id)
+                           for session in observer.get("sessions") or [])
+            windows.sort(key=lambda item: (item.get("started_at") or "", item.get("session_id") or ""))
+            windows = windows[-cap:]
+            window_total += len(windows)
+            processed_rounds = max(processed_rounds, int(observer.get("rounds_processed") or 0))
+            if observer.get("manual_reset_at"):
+                manual_resets.append({
+                    "at": observer.get("manual_reset_at"),
+                    "round_index": observer.get("manual_reset_round_index"),
+                })
+            last_event = observer.get("last_event")
+            if isinstance(last_event, Mapping):
+                last_events.append(last_event)
+
+            completed = [item for item in windows if item.get("completed_window") is True
+                         and int(item.get("settled") or 0) > 0]
+            recent_completed = completed[-3:]
+            recent_positive = sum(int(item.get("net") or 0) > 0 for item in recent_completed)
+            recent_sample = sum(int(item.get("settled") or 0) for item in recent_completed)
+            continuation_status = (
+                "INSUFFICIENT_WINDOWS" if len(recent_completed) < 3 or recent_sample < 5
+                else "REPEATEDLY_POSITIVE" if recent_positive >= 2
+                else "MIXED_OR_NEGATIVE")
+            total_wins = sum(int(item.get("wins") or 0) for item in windows)
+            total_losses = sum(int(item.get("losses") or 0) for item in windows)
+            direct_selections = sum(int(item.get("direct_selections") or 0) for item in windows)
+            latest = windows[-1] if windows else None
+            if (continuation_status == "REPEATEDLY_POSITIVE"
+                    and (latest is None or not latest.get("settled") or latest.get("net", 0) > 0)):
+                status = "REPEATEDLY_WINNING"
+            elif latest and latest.get("settled") and latest.get("net", 0) > 0:
+                status = "WINNING_LATEST_WINDOW"
+            elif latest and latest.get("settled") and latest.get("net", 0) < 0:
+                status = "LOSING_LATEST_WINDOW"
+            elif total_wins + total_losses:
+                status = "EVEN_OR_WAITING"
+            else:
+                status = "NO_SETTLED_RESULTS"
+            rows.append({**info, "status": status, "window_count": len(windows),
+                "settled_total": total_wins + total_losses, "wins": total_wins,
+                "losses": total_losses, "net": total_wins - total_losses,
+                "direct_selections": direct_selections, "shared_attributions": 0,
+                "win_rate": (total_wins / (total_wins + total_losses))
+                    if total_wins + total_losses else None,
+                "latest_window": latest, "recent_windows": windows[-5:],
+                "continuation": {"status": continuation_status,
+                    "completed_windows": len(recent_completed),
+                    "positive_windows": recent_positive, "settled_results": recent_sample,
+                    "window_rule": "positive means verified WIN count exceeds verified LOSS count"}})
+
+        rows.sort(key=lambda item: (
+            item["status"] == "REPEATEDLY_WINNING",
+            item["status"] == "WINNING_LATEST_WINDOW",
+            item["net"], item["win_rate"] if item["win_rate"] is not None else -1,
+        ), reverse=True)
+        latest_event = max(last_events, key=lambda item: str(item.get("observed_at")
+                            or item.get("api_received_at") or ""), default=None)
+        event_at = ((latest_event or {}).get("observed_at")
+                    or (latest_event or {}).get("api_received_at"))
+        parsed_at = _parse_time(event_at)
+        age_seconds = ((datetime.now(timezone.utc) - parsed_at.astimezone(timezone.utc)).total_seconds()
+                       if parsed_at is not None and parsed_at.tzinfo is not None else None)
+        collector_status = ("WAITING_FOR_COLLECTOR" if latest_event is None else
+                            "ACTIVITY_TIME_UNKNOWN" if age_seconds is None else
+                            "COLLECTING" if age_seconds <= 180 else "NO_RECENT_ROUND")
+        latest_manual_reset = max(manual_resets, key=lambda item: str(item.get("at") or ""),
+                                  default=None)
+        if self._performance_observer_error:
+            collector_status = "ERROR"
+        return {
+            "source": "winner_predict_committed_collector_observer",
+            "window_scope": ("rolling latest 100 verified committed collector rounds per continuity segment; "
+                             "segments reset after a verified continuity gap, 300 seconds without feed activity, "
+                             "or an operator reset"),
+            "windows_scanned": window_total, "rules": rows,
+            "observer": {"status": collector_status,
+                "rules_monitored": len(metadata), "rounds_processed": processed_rounds,
+                "last_round_id": (latest_event or {}).get("round_id"),
+                "last_round_index": (latest_event or {}).get("round_index"),
+                "last_committed_at": event_at, "age_seconds": age_seconds,
+                "window_size": RULE_PERFORMANCE_WINDOW_SIZE,
+                "last_manual_reset_at": (latest_manual_reset or {}).get("at"),
+                "last_manual_reset_round_index": (latest_manual_reset or {}).get("round_index"),
+                "idle_reset_after_seconds": RULE_PERFORMANCE_IDLE_RESET_SECONDS,
+                "error": self._performance_observer_error},
+            "interpretation": (
+                "All registered rules are observed independently from verified committed collector rounds, "
+                "including disabled and unconfigured rules. Rule Performance does not require a SHADOW session "
+                "and does not send signals or execute actions. Wins and losses are scored only when the "
+                "immediately following verified committed round is available; interrupted windows are excluded "
+                "from repeated-positive continuation counts. Historical performance does not guarantee future results."),
+        }
+
+    def rule_performance(self, *, max_windows: int = 100) -> dict[str, Any]:
+        """Summarize verified SHADOW results by rule and completed session window.
+
+        In shared-selection modes, one settled target may be attributed to each
+        rule that contributed to that selection. The response keeps that
+        attribution explicit so it is not mistaken for independent bets.
+        """
+        if self._performance_observer_enabled:
+            return self._continuous_rule_performance(max_windows=max_windows)
+        cap = min(max(int(max_windows), 3), 250)
+        with self._lock:
+            ordered = sorted(self.sessions.values(), key=lambda row: row.get("started_at", ""))[-cap:]
+            sessions = []
+            for row in ordered:
+                sessions.append({
+                    "session_id": row.get("session_id"), "mode": row.get("mode"),
+                    "status": self._effective_session_status(row),
+                    "started_at": row.get("started_at"), "ended_at": row.get("ended_at"),
+                    "observed_rounds": int(row.get("observed_rounds") or 0),
+                    "window_size": row.get("window_size"),
+                    "rule_ids": list(row.get("rule_ids") or []),
+                    "manifest": deepcopy(row.get("manifest") or {}),
+                    "evaluations": deepcopy(row.get("evaluations") or []),
+                    "selections": deepcopy(row.get("selections") or []),
+                    "rule_selections": deepcopy(row.get("rule_selections") or {}),
+                })
+            registry_rows = deepcopy(self.registry().get("rules") or [])
+
+        metadata = {str(row.get("rule_id")): {
+            "rule_id": str(row.get("rule_id")), "name": row.get("name") or row.get("rule_id"),
+            "configured": row.get("configured") is True, "enabled": row.get("enabled") is True,
+        } for row in registry_rows if row.get("rule_id")}
+        by_rule: dict[str, list[dict[str, Any]]] = {}
+
+        for session in sessions:
+            ids = {str(rule_id) for rule_id in session["rule_ids"] if rule_id}
+            manifest_rules = session["manifest"].get("rules") or []
+            if isinstance(manifest_rules, list):
+                for rule in manifest_rules:
+                    if isinstance(rule, Mapping) and rule.get("rule_id"):
+                        rule_id = str(rule["rule_id"])
+                        ids.add(rule_id)
+                        metadata.setdefault(rule_id, {"rule_id": rule_id,
+                            "name": rule.get("name") or rule_id, "configured": True, "enabled": True})
+            elif isinstance(manifest_rules, Mapping):
+                for rule_id, rule in manifest_rules.items():
+                    ids.add(str(rule_id))
+                    metadata.setdefault(str(rule_id), {"rule_id": str(rule_id),
+                        "name": (rule.get("name") if isinstance(rule, Mapping) else None) or str(rule_id),
+                        "configured": True, "enabled": True})
+
+            window_by_rule: dict[str, dict[str, Any]] = {}
+            def window_for(rule_id: str) -> dict[str, Any]:
+                if rule_id not in window_by_rule:
+                    info = metadata.get(rule_id) or {"rule_id": rule_id, "name": rule_id,
+                        "configured": True, "enabled": True}
+                    metadata.setdefault(rule_id, info)
+                    window_by_rule[rule_id] = {
+                        "rule_id": rule_id, "name": info["name"],
+                        "session_id": session["session_id"], "mode": session["mode"],
+                        "session_status": session["status"], "started_at": session["started_at"],
+                        "ended_at": session["ended_at"], "observed_rounds": session["observed_rounds"],
+                        "window_size": session["window_size"], "wins": 0, "losses": 0,
+                        "pending": 0, "eligible_checks": 0, "false_checks": 0,
+                        "direct_selections": 0, "shared_attributions": 0,
+                        "_selection_ids": set(),
+                    }
+                return window_by_rule[rule_id]
+
+            for rule_id in ids:
+                window_for(rule_id)
+
+            for evaluation in session["evaluations"]:
+                if not isinstance(evaluation, Mapping):
+                    continue
+                for check in evaluation.get("rule_evaluations") or []:
+                    if not isinstance(check, Mapping) or not check.get("rule_id"):
+                        continue
+                    rule_id = str(check["rule_id"])
+                    item = window_for(rule_id)
+                    eligible = check.get("eligible", check.get("result"))
+                    if eligible is True:
+                        item["eligible_checks"] += 1
+                    elif eligible is False:
+                        item["false_checks"] += 1
+
+            def record_selection(rule_id: str, selection: Mapping[str, Any], *, shared: bool) -> None:
+                item = window_for(rule_id)
+                selection_id = str(selection.get("selection_id") or selection.get("decision_id") or "")
+                if selection_id and selection_id in item["_selection_ids"]:
+                    return
+                if selection_id:
+                    item["_selection_ids"].add(selection_id)
+                status = str(selection.get("status") or selection.get("result") or "").upper()
+                if status == "WIN":
+                    item["wins"] += 1
+                elif status == "LOSS":
+                    item["losses"] += 1
+                elif status in {"PENDING", "UNKNOWN", ""}:
+                    item["pending"] += 1
+                if shared:
+                    item["shared_attributions"] += 1
+                else:
+                    item["direct_selections"] += 1
+
+            for rule_id, selections in (session["rule_selections"] or {}).items():
+                ids.add(str(rule_id))
+                for selection in selections or []:
+                    if isinstance(selection, Mapping):
+                        record_selection(str(rule_id), selection, shared=False)
+
+            for selection in session["selections"]:
+                if not isinstance(selection, Mapping):
+                    continue
+                contributors = selection.get("matched_rule_ids") or selection.get("contributing_rule_ids") or []
+                if not contributors:
+                    contributors = [row.get("rule_id") for row in selection.get("contributors") or []
+                                    if isinstance(row, Mapping) and row.get("rule_id")]
+                if not contributors and len(session["rule_ids"]) == 1:
+                    contributors = session["rule_ids"]
+                shared = len(set(str(value) for value in contributors if value)) > 1 or session["mode"] in {
+                    "FIVE_RULE_TRACKER", "ALL_RULES_TOGETHER"}
+                for rule_id in dict.fromkeys(str(value) for value in contributors if value):
+                    record_selection(rule_id, selection, shared=shared)
+
+            for item in window_by_rule.values():
+                item["settled"] = item["wins"] + item["losses"]
+                item["net"] = item["wins"] - item["losses"]
+                item["completed_window"] = (item["session_status"] == "COMPLETED"
+                    and item["window_size"] is not None
+                    and item["observed_rounds"] >= item["window_size"])
+                item.pop("_selection_ids", None)
+                by_rule.setdefault(item["rule_id"], []).append(item)
+
+        rows = []
+        for rule_id, info in metadata.items():
+            windows = sorted(by_rule.get(rule_id, []), key=lambda item: item.get("started_at") or "")
+            settled_windows = [item for item in windows if item["completed_window"] and item["settled"] > 0]
+            recent_completed = settled_windows[-3:]
+            recent_positive = sum(item["net"] > 0 for item in recent_completed)
+            recent_sample = sum(item["settled"] for item in recent_completed)
+            continuation_status = ("INSUFFICIENT_WINDOWS" if len(recent_completed) < 3 or recent_sample < 5
+                else "REPEATEDLY_POSITIVE" if recent_positive >= 2 else "MIXED_OR_NEGATIVE")
+            total_wins = sum(item["wins"] for item in windows)
+            total_losses = sum(item["losses"] for item in windows)
+            direct_selections = sum(item["direct_selections"] for item in windows)
+            shared_attributions = sum(item["shared_attributions"] for item in windows)
+            latest = windows[-1] if windows else None
+            if (continuation_status == "REPEATEDLY_POSITIVE"
+                    and (latest is None or latest["settled"] == 0 or latest["net"] > 0)):
+                status = "REPEATEDLY_WINNING"
+            elif latest and latest["settled"] and latest["net"] > 0:
+                status = "WINNING_LATEST_WINDOW"
+            elif latest and latest["settled"] and latest["net"] < 0:
+                status = "LOSING_LATEST_WINDOW"
+            elif total_wins + total_losses:
+                status = "EVEN_OR_WAITING"
+            else:
+                status = "NO_SETTLED_RESULTS"
+            rows.append({**info, "status": status,
+                "window_count": len(windows), "settled_total": total_wins + total_losses,
+                "wins": total_wins, "losses": total_losses, "net": total_wins - total_losses,
+                "direct_selections": direct_selections, "shared_attributions": shared_attributions,
+                "win_rate": (total_wins / (total_wins + total_losses)) if total_wins + total_losses else None,
+                "latest_window": latest,
+                "recent_windows": windows[-5:],
+                "continuation": {"status": continuation_status, "completed_windows": len(recent_completed),
+                    "positive_windows": recent_positive, "settled_results": recent_sample,
+                    "window_rule": "positive means verified WIN count exceeds verified LOSS count"}})
+        rows.sort(key=lambda item: (
+            item["status"] == "REPEATEDLY_WINNING",
+            item["status"] == "WINNING_LATEST_WINDOW",
+            item["net"], item["win_rate"] if item["win_rate"] is not None else -1,
+        ), reverse=True)
+        return {"source": "winner_predict_rules_engine_shadow", "window_scope": "one saved Rules Engine session",
+                "windows_scanned": len(sessions), "rules": rows,
+                "interpretation": "Only settled SHADOW outcomes are scored. Shared selections are attributed to each contributing rule and are not independent samples. Positive past windows do not guarantee future wins; this report does not change rule selection or execute actions."}
+
+    def restart_rule_performance(self, *, now: str | None = None) -> dict[str, Any]:
+        """Start a fresh rolling 100-round observer window at the latest verified round."""
+        if not self._performance_observer_enabled:
+            raise ValueError("RULE_PERFORMANCE_OBSERVER_UNAVAILABLE")
+        reset_at = _now(now)
+        with self._lock:
+            observers = {rule_id: self._performance_observer(rule_id)
+                         for rule_id in self._performance_rule_ids()}
+            boundary_by_rule = {
+                rule_id: observer.get("last_event") or {}
+                for rule_id, observer in observers.items()
+            }
+            identities = set()
+            for boundary in boundary_by_rule.values():
+                try:
+                    round_index = int(boundary.get("round_index") or 0)
+                    stream_sequence = int(boundary.get("stream_sequence") or 0)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("RULE_PERFORMANCE_OBSERVER_NOT_READY") from exc
+                if (not boundary.get("stream_id") or not boundary.get("round_id")
+                        or boundary.get("continuity_status") != "VERIFIED"
+                        or round_index < 1 or stream_sequence < 1):
+                    raise ValueError("RULE_PERFORMANCE_OBSERVER_NOT_READY")
+                identities.add((str(boundary["stream_id"]), str(boundary["round_id"]),
+                                round_index, stream_sequence))
+            if len(identities) != 1:
+                raise ValueError("RULE_PERFORMANCE_OBSERVERS_OUT_OF_SYNC")
+            boundary = deepcopy(next(iter(boundary_by_rule.values())))
+            boundary_index = int(boundary["round_index"])
+            reset_window_start = boundary_index + 1
+
+            for rule_id, observer in observers.items():
+                self._archive_performance_windows(
+                    observer, rule_id, interruption="MANUAL_RESET", force=True)
+                observer["engine"].sessions.clear()
+                observer["segment_start_round_index"] = reset_window_start
+                observer["manual_reset_at"] = reset_at
+                observer["manual_reset_round_index"] = boundary_index
+                self._start_performance_window(observer, rule_id, boundary)
+
+            active_session_ids: set[str] = set()
+            active_adaptive_sessions_updated = 0
+            active_automatic_sessions_updated = 0
+            for session in self.sessions.values():
+                if self._effective_session_status(session) not in {"RUNNING", "SETTLING"}:
+                    continue
+                if session.get("adaptive_rule_selection") is True:
+                    version = int(session.get("adaptive_selection_version") or 0) + 1
+                    reset_decision = {"rule_ids": [], "reason": "PERFORMANCE_WINDOW_RESET",
+                        "source_round_index": boundary_index, "evaluated_at": reset_at,
+                        "context": {"window_rounds": 50, "reset_window_start_round_index": reset_window_start},
+                        "selection_version": version,
+                        "decision_sequence": len(session.get("adaptive_decisions") or []) + 1,
+                        "added": [], "removed": [{"rule_id": rid,
+                            "reason": "PERFORMANCE_WINDOW_RESET"}
+                            for rid in session.get("active_rule_ids") or []],
+                        "candidates": [{"rule_id": rid, "selected": False,
+                            "validated": False, "evidence_status": "EXPLORATORY",
+                            "reason": "PERFORMANCE_WINDOW_RESET", "score": None}
+                            for rid in session.get("rule_ids") or []]}
+                    session["active_rule_ids"] = []
+                    session["adaptive_selection_version"] = version
+                    session["adaptive_rule_choice"] = reset_decision
+                    session.setdefault("adaptive_decisions", []).append(deepcopy(reset_decision))
+                    session["adaptive_performance_reset_round_index"] = boundary_index
+                    session["performance_window_reset_at"] = reset_at
+                    session["performance_window_reset_round_index"] = boundary_index
+                    active_session_ids.add(str(session["session_id"]))
+                    active_adaptive_sessions_updated += 1
+                    continue
+                if session.get("automatic_rule_selection") is not True:
+                    continue
+                previous_candidates = {
+                    str(item.get("rule_id")): item
+                    for item in (session.get("automatic_rule_choice") or {}).get("candidates", [])
+                    if isinstance(item, Mapping) and item.get("rule_id")
+                }
+                candidates = []
+                for rule_id in session.get("rule_ids") or []:
+                    prior = previous_candidates.get(str(rule_id)) or {}
+                    candidate = {key: deepcopy(prior[key]) for key in (
+                        "loss_limit_losses", "loss_limit", "loss_limit_blocked",
+                        "loss_limit_reached_round_index", "entry_signal_latched",
+                        "rule_state", "cycle_status", "cycle_active",
+                        "cycle_requested_targets", "cycle_resolved_targets",
+                        "cycle_loss_count", "cycle_maximum_targets",
+                        "cycle_end_condition", "cycle_end_reason") if key in prior}
+                    candidate.update({
+                        "rule_id": rule_id, "qualified": False,
+                        "reason": "PERFORMANCE_WINDOW_RESET",
+                        "settled": 0, "wins": 0, "losses": 0, "net_wins": 0,
+                        "window_rounds": 0, "window_size": RULE_PERFORMANCE_WINDOW_SIZE,
+                        "window_mode": "ROLLING",
+                        "window_start_round_index": reset_window_start,
+                        "window_end_round_index": boundary_index,
+                        "window_last_round_index": boundary_index,
+                        "recovered_rounds": 0,
+                        "performance_trend": "INSUFFICIENT",
+                        "performance_momentum_pp": None,
+                        "recent_outcome_wins": 0, "recent_outcome_losses": 0,
+                        "recent_outcome_count": 0, "previous_outcome_wins": 0,
+                        "previous_outcome_losses": 0, "previous_outcome_count": 0,
+                        "outcome_sample_count": 0,
+                        "signal_trend": "UNKNOWN", "signal_momentum_pp": None,
+                        "recent_signal_hits": 0, "recent_signal_checks": 0,
+                        "previous_signal_hits": 0, "previous_signal_checks": 0,
+                        "signal_sample_count": 0,
+                    })
+                    candidates.append(candidate)
+                session["active_rule_ids"] = []
+                session["automatic_rule_choice"] = {
+                    "rule_ids": [], "reason": "PERFORMANCE_WINDOW_RESET",
+                    "source_round_index": boundary_index,
+                    "reset_at": reset_at,
+                    "window_start_round_index": reset_window_start,
+                    "window_size": RULE_PERFORMANCE_WINDOW_SIZE,
+                    "candidates": candidates,
+                }
+                session["performance_window_reset_at"] = reset_at
+                session["performance_window_reset_round_index"] = boundary_index
+                active_session_ids.add(str(session["session_id"]))
+                active_automatic_sessions_updated += 1
+
+            self._persist(session_ids=active_session_ids or set())
+            return {
+                "ok": True,
+                "reset_at": reset_at,
+                "reset_at_round_index": boundary_index,
+                "window_start_round_index": reset_window_start,
+                "window_size": RULE_PERFORMANCE_WINDOW_SIZE,
+                "rules_reset": len(observers),
+                "active_automatic_sessions_updated": active_automatic_sessions_updated,
+                "active_adaptive_sessions_updated": active_adaptive_sessions_updated,
+                "history_preserved": True,
+                "rule_pause_state_reset": False,
+            }
+
+    @staticmethod
+    def _adaptive_session_result_counts(session: Mapping[str, Any]) -> tuple[int, int, int, int]:
+        targets: dict[tuple[str, int], str] = {}
+        for rows in (session.get("rule_selections") or {}).values():
+            for item in rows or []:
+                target = item.get("actual_target") or item.get("expected_target") or {}
+                stream = target.get("streamId", target.get("stream_id"))
+                try:
+                    target_index = int(target.get("roundIndex", target.get("round_index")) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not stream or target_index < 1:
+                    continue
+                status = str(item.get("status") or item.get("result") or "").upper()
+                key = (str(stream), target_index)
+                if status == "WIN":
+                    targets[key] = "WIN"
+                elif status == "LOSS" and targets.get(key) != "WIN":
+                    targets[key] = "LOSS"
+                else:
+                    targets.setdefault(key, "PENDING")
+        values = list(targets.values())
+        return values.count("WIN"), values.count("LOSS"), values.count("PENDING"), len(targets)
 
     @staticmethod
     def _settled_shared_result_counts(session: Mapping[str, Any]) -> tuple[int, int]:
@@ -3446,18 +6239,104 @@ class RulesEngine:
         return wins, losses
 
     @staticmethod
+    def _custom_window_limit_reached(wins: int, losses: int,
+                                     configuration: Mapping[str, Any]) -> str | None:
+        """Return which configured net outcome is currently at its threshold."""
+        net_outcome = wins - losses
+        win_limit = configuration.get("auto_next_win_count")
+        if (configuration.get("auto_next_limits_enabled") is True
+                and isinstance(win_limit, int) and not isinstance(win_limit, bool)
+                and net_outcome >= win_limit):
+            return "WIN"
+        loss_limit = configuration.get("auto_next_loss_count")
+        if (configuration.get("auto_next_limits_enabled") is True
+                and isinstance(loss_limit, int) and not isinstance(loss_limit, bool)
+                and -net_outcome >= loss_limit):
+            return "LOSS"
+        return None
+
+    @classmethod
+    def _reconcile_custom_window_result_limit_stop(cls, session: dict[str, Any],
+            wins: int, losses: int, at: str, source: Mapping[str, Any]) -> str | None:
+        """Keep a custom net stop aligned while already-pending results settle."""
+        config = session.get("configuration_snapshot") or {}
+        reached = cls._custom_window_limit_reached(wins, losses, config)
+        if (session.get("selection_stop_reason") != "AUTO_NEXT_RESULT_LIMIT_REACHED"
+                or session.get("selection_stop_source") != "AUTO_NEXT_RESULT_LIMIT"):
+            return reached
+        if reached is not None:
+            details = dict(session.get("selection_stop_details") or {})
+            details.update({"reached": reached, "settled_wins": wins,
+                "settled_losses": losses, "net_outcome": wins - losses,
+                "win_count_limit": config.get("auto_next_win_count"),
+                "loss_count_limit": config.get("auto_next_loss_count")})
+            session["selection_stop_details"] = details
+            return reached
+        if session.get("status") not in {"RUNNING", "SETTLING"}:
+            return reached
+
+        reason = session.get("selection_stop_reason")
+        stopped_at = session.get("selection_stopped_at")
+        if stopped_at and not any(
+            isinstance(event, Mapping)
+            and event.get("reason") == reason
+            and event.get("stopped_at") == stopped_at
+            and event.get("scope") in {"SELECTION", "SESSION_AND_SELECTION"}
+            for event in (session.get("stop_history") or [])
+        ):
+            cls._append_stop_event(session, reason, stopped_at, "AUTO_NEXT_RESULT_LIMIT",
+                cls._source_round(source), "SELECTION",
+                session.get("selection_stop_details"))
+        session.update({"selection_status": "ACTIVE", "selection_stop_reason": None,
+            "selection_stop_source": None, "selection_stopped_at": None,
+            "selection_stopped_at_round_id": None, "selection_stop_details": {}})
+        if session.get("status") == "SETTLING":
+            session["status"] = "RUNNING"
+        if (session.get("auto_next_trigger") == "LIMIT_REACHED"
+                and session.get("auto_next_armed")
+                and not session.get("auto_next_session_id")):
+            session.update({"auto_next_armed": False, "auto_next_trigger": None,
+                "auto_next_armed_at": None,
+                "auto_next_block_reason": "RESULT_LIMIT_NO_LONGER_ACTIVE"})
+        return reached
+
+    @staticmethod
     def _pending_shared_result_count(session: Mapping[str, Any]) -> int:
         pending = [row for row in session.get("selections", []) or []
                    if isinstance(row, Mapping) and row.get("status") == "PENDING"]
         identifiers = [str(row.get("selection_id")) for row in pending if row.get("selection_id")]
         return len(set(identifiers)) + sum(1 for row in pending if not row.get("selection_id"))
 
+    @staticmethod
+    def _pending_selection_count(session: Mapping[str, Any]) -> int:
+        rows = list(session.get("selections") or [])
+        rows.extend(selection for group in (session.get("rule_selections") or {}).values()
+                    for selection in group)
+        rows.extend(session.get("adaptive_automatic_baseline_selections") or [])
+        seen: set[str] = set()
+        pending = 0
+        for row in rows:
+            if not isinstance(row, Mapping) or row.get("status") != "PENDING":
+                continue
+            identifier = str(row.get("selection_id") or "")
+            marker = identifier or f"anonymous:{id(row)}"
+            if marker in seen:
+                continue
+            seen.add(marker)
+            pending += 1
+        return pending
+
     @classmethod
     def _normalize_legacy_limit_stop(cls, session: dict[str, Any]) -> None:
         """Separate current limit state from historical reasons in old snapshots."""
         config = session.get("configuration_snapshot") or {}
         wins, losses = cls._settled_shared_result_counts(session)
-        valid_reason = cls._net_outcome_stop_reason(wins, losses, config)
+        custom_limits_enabled = config.get("auto_next_limits_enabled") is True
+        # A per-window custom net-outcome rule supersedes the legacy net stop.
+        # Keep old stop events in history, but do not resume that stop after a
+        # restart when its configured threshold was never reached.
+        valid_reason = (None if custom_limits_enabled
+                        else cls._net_outcome_stop_reason(wins, losses, config))
         for reason_field, source_field, at_field, round_field, details_field, scope in (
             ("selection_stop_reason", "selection_stop_source", "selection_stopped_at",
              "selection_stopped_at_round_id", "selection_stop_details", "SELECTION"),
@@ -3511,6 +6390,37 @@ class RulesEngine:
                 session["selection_status"] = "ACTIVE"
                 if session.get("status") == "SETTLING":
                     session["status"] = "RUNNING"
+
+        if custom_limits_enabled:
+            # Old snapshots may already have armed an immediate successor for
+            # a legacy net limit or for the former custom-limit behavior. The
+            # new rule always waits for the observation window to finish.
+            if (session.get("auto_next_trigger") == "LIMIT_REACHED"
+                    and session.get("auto_next_session_id") is None):
+                session.update({"auto_next_armed": False, "auto_next_trigger": None,
+                    "auto_next_armed_at": None, "auto_next_after_round_id": None,
+                    "auto_next_boundary": None,
+                    "auto_next_block_reason": "CUSTOM_LIMIT_WAITS_FOR_WINDOW"})
+
+            reached = cls._reconcile_custom_window_result_limit_stop(
+                session, wins, losses, session.get("updated_at") or session.get("ended_at") or "", {})
+            win_limit = config.get("auto_next_win_count")
+            loss_limit = config.get("auto_next_loss_count")
+            net_outcome = wins - losses
+            if (session.get("selection_status") == "ACTIVE" and reached
+                    and session.get("status") in {"RUNNING", "SETTLING"}):
+                latest_round = next((row for row in reversed(session.get("context") or [])
+                                     if isinstance(row, Mapping)), None)
+                details = {"reached": reached, "settled_wins": wins,
+                    "settled_losses": losses, "win_count_limit": win_limit,
+                    "loss_count_limit": loss_limit, "net_outcome": net_outcome}
+                session.update({"selection_status": "STOPPED",
+                    "selection_stop_reason": "AUTO_NEXT_RESULT_LIMIT_REACHED",
+                    "selection_stop_source": "AUTO_NEXT_RESULT_LIMIT",
+                    "selection_stopped_at": (session.get("updated_at") or session.get("ended_at")),
+                    "selection_stopped_at_round_id": ((latest_round or {}).get("round_id")
+                        or (latest_round or {}).get("roundId")),
+                    "selection_stop_details": details, "status": "SETTLING"})
 
     @classmethod
     def _ensure_legacy_stop_provenance(cls, session: dict[str, Any]) -> None:
@@ -3633,16 +6543,163 @@ class RulesEngine:
         if running:
             return running
         return next((item for item in rows if item.get("status") == "PAUSED"
-                     and item.get("stop_reason") in {
-                         None, "MANUAL_PAUSE", "UNKNOWN_TRANSACTION_REQUIRES_RECONCILIATION"}), None)
+                     and item.get("stop_reason") in {None, "MANUAL_PAUSE"}), None)
+
+    @staticmethod
+    def _session_status_summary(session: Mapping[str, Any]) -> dict[str, Any]:
+        """Build the frequently-polled session view from bounded scalar state.
+
+        Full ledgers remain available from the sessions/detail endpoints. Status
+        polling must not count or deepcopy every historical selection because
+        an active session can retain a very large settlement ledger.
+        """
+        configuration = session.get("configuration_snapshot") or {}
+        status = RulesEngine._effective_session_status(session)
+        if session.get("adaptive_rule_selection") is True:
+            selection_count = len(session.get("adaptive_signal_selections") or [])
+        elif session.get("mode") == "FIVE_RULE_TRACKER" and not session.get("selections"):
+            selection_count = sum(len(rows or []) for rows in
+                                  (session.get("rule_selections") or {}).values())
+        else:
+            selection_count = len(session.get("selections") or [])
+        wins = max(0, int(session.get("total_wins") or 0))
+        losses = max(0, int(session.get("total_losses") or 0))
+        cancelled = max(0, int(session.get("total_cancelled") or 0))
+        pending = max(0, selection_count - wins - losses - cancelled)
+        evaluations = session.get("evaluations") or []
+        last_evaluation = evaluations[-1] if evaluations else {}
+        strategy_id = session.get("strategy_id") or (
+            "BEHAVIOUR_ROLLING_HIGH" if session.get("behaviour_detection_enabled") else
+            "ADAPTIVE" if session.get("adaptive_rule_selection") else
+            "AUTOMATIC" if session.get("automatic_rule_selection") else "RULES")
+        return {
+            "session_id": session.get("session_id"), "mode": session.get("mode"),
+            "status": status, "selection_status": session.get("selection_status"),
+            "strategy_id": strategy_id,
+            "behaviour_strategy": session.get("last_behaviour_eligibility"),
+            "last_behaviour_selection": session.get("last_behaviour_selection"),
+            "run_until_stopped": configuration.get("run_until_stopped") is True
+                or session.get("window_size") is None,
+            "started_at": session.get("started_at"), "ended_at": session.get("ended_at"),
+            "last_activity_at": session.get("ended_at") or last_evaluation.get("evaluated_at")
+                or session.get("started_at"),
+            "rule_ids": session.get("rule_ids") or [],
+            "automatic_rule_selection": session.get("automatic_rule_selection", False),
+            "adaptive_rule_selection": session.get("adaptive_rule_selection", False),
+            "active_rule_ids": session.get("active_rule_ids") or [],
+            "automatic_rule_choice": session.get("automatic_rule_choice"),
+            "adaptive_rule_choice": session.get("adaptive_rule_choice"),
+            "adaptive_automatic_baseline_choice": session.get("adaptive_automatic_baseline_choice"),
+            "adaptive_selection_version": session.get("adaptive_selection_version", 0),
+            "adaptive_decision_count": len(session.get("adaptive_decisions") or []),
+            "adaptive_portfolio_performance": session.get("adaptive_portfolio_performance"),
+            "adaptive_baseline_comparison": session.get("adaptive_baseline_comparison"),
+            "configuration_version": session.get("configuration_version"),
+            "observed_rounds": session.get("observed_rounds", 0),
+            "window_size": session.get("window_size"),
+            "latest_observed_round": session.get("last_received_round"),
+            "last_received_round": session.get("last_received_round"),
+            "last_settled_target": session.get("last_settled_target"),
+            "last_evaluation_at": last_evaluation.get("evaluated_at"),
+            "event_processing_latency_ms": session.get("last_event_processing_latency_ms"),
+            "settlement_processing_latency_ms": session.get("last_target_settlement_processing_latency_ms"),
+            "is_active": status in {"RUNNING", "SETTLING"},
+            "prestart_skipped_rounds": session.get("prestart_skipped_rounds", 0),
+            "selection_count": selection_count,
+            "results": {"WIN": wins, "LOSS": losses, "PENDING": pending},
+            "net_outcome": wins - losses,
+            "net_outcome_limit_version": configuration.get("net_outcome_limit_version"),
+            "win_limit_enabled": configuration.get("win_limit_enabled", False),
+            "win_limit_count": configuration.get("win_limit_count"),
+            "loss_limit_enabled": configuration.get("loss_limit_enabled", False),
+            "loss_limit_count": configuration.get("loss_limit_count"),
+            "profit_target_enabled": configuration.get("profit_target_enabled", False),
+            "profit_target_rwf": configuration.get("profit_target_rwf"),
+            "auto_next_check_enabled": configuration.get("auto_next_check_enabled"),
+            "auto_next_on_limit_enabled": configuration.get("auto_next_on_limit_enabled"),
+            "auto_next_limits_enabled": configuration.get("auto_next_limits_enabled", False),
+            "auto_next_win_count": configuration.get("auto_next_win_count"),
+            "auto_next_loss_count": configuration.get("auto_next_loss_count"),
+            "net_profit_rwf": session.get("net_profit_rwf", 0),
+            "auto_next_armed": session.get("auto_next_armed", False),
+            "auto_next_trigger": session.get("auto_next_trigger"),
+            "auto_next_armed_at": session.get("auto_next_armed_at"),
+            "auto_next_session_id": session.get("auto_next_session_id"),
+            "auto_next_block_reason": session.get("auto_next_block_reason"),
+            "stop_reason": session.get("selection_stop_reason") or session.get("stop_reason"),
+            "stop_reason_source": session.get("selection_stop_source") or session.get("stop_source"),
+            "stop_reason_at": session.get("selection_stopped_at") or session.get("stop_at"),
+            "stop_reason_round_id": session.get("selection_stopped_at_round_id") or session.get("stop_round_id"),
+            "stop_reason_details": session.get("selection_stop_details") or session.get("stop_details") or {},
+            "integrity_stop_reason": session.get("integrity_stop_reason"),
+            "requested_stake": configuration.get("requested_stake",
+                configuration.get("fixed_stake_rwf", configuration.get("stake_rwf"))),
+            "requested_stake_currency": configuration.get("stake_currency", "RWF"),
+            "max_selections": configuration.get("max_selections"),
+        }
+
+    def session_for_strategy(self, strategy_id: str) -> dict[str, Any] | None:
+        """Return the active session identity for one selected strategy."""
+        with self._lock:
+            session = self._selected_session()
+            selected_strategy = ((session or {}).get("strategy_id") or
+                ("BEHAVIOUR_ROLLING_HIGH" if (session or {}).get("behaviour_detection_enabled") else
+                 "ADAPTIVE" if (session or {}).get("adaptive_rule_selection") else
+                 "AUTOMATIC" if (session or {}).get("automatic_rule_selection") else "RULES"))
+            if (session is None or session.get("status") not in {"RUNNING", "SETTLING"}
+                    or session.get("selection_status") != "ACTIVE"
+                    or selected_strategy != strategy_id):
+                return None
+            # Avoid copying the potentially large selection and evaluation ledgers.
+            return {"session_id": str(session.get("session_id") or ""),
+                    "strategy_id": strategy_id,
+                    "status": session.get("status"),
+                    "selection_status": session.get("selection_status")}
 
     def stream_cursor(self, stream_id: str, latest_sequence: int) -> int:
-        cursors = [int(row.get("last_stream_sequence", latest_sequence))
-                   for row in self.sessions.values()
-                   if row.get("last_stream_id") == stream_id
-                   and (self._session_accepts_source_events(row)
-                        or self._has_pending_event_records(row))]
-        return min(cursors) if cursors else int(latest_sequence)
+        # Rewind for any durable consumer that still needs committed events:
+        # active SHADOW sessions, pending event records, and the independent
+        # performance observer. The observer must recover rounds even when no
+        # active SHADOW session is eligible to drive the historical replay.
+        with self._lock:
+            latest = max(0, int(latest_sequence))
+            has_successor = any(row.get("last_stream_id") == stream_id
+                                and self._effective_session_status(row) in {"RUNNING", "SETTLING"}
+                                for row in self.sessions.values())
+            cursors = [min(latest, max(0, int(row.get("last_stream_sequence", latest))))
+                       for row in self.sessions.values()
+                       if row.get("last_stream_id") == stream_id
+                       and (self._session_accepts_source_events(row)
+                            or self._has_pending_event_records(row))
+                       and not (has_successor and row.get("status") == "PAUSED"
+                                and row.get("stop_reason") == "ROUND_INDEX_GAP"
+                                and not self._has_pending_event_records(row))]
+
+            observer_checkpoints = [observer.get("last_event")
+                                    for observer in self._performance_observers.values()
+                                    if isinstance(observer, Mapping)
+                                    and isinstance(observer.get("last_event"), Mapping)]
+            observer_cursors = []
+            observer_stream_changed = False
+            for checkpoint in observer_checkpoints:
+                if str(checkpoint.get("stream_id") or "") != str(stream_id):
+                    observer_stream_changed = True
+                    continue
+                try:
+                    sequence = int(checkpoint.get("stream_sequence") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    sequence = 0
+                if sequence > 0:
+                    observer_cursors.append(min(latest, sequence))
+            if observer_cursors:
+                cursors.append(min(observer_cursors))
+            if observer_stream_changed:
+                # A lagging observer still attached to an earlier stream has
+                # no usable cursor for this one. Replay enough real committed
+                # events to seed context and fill the window without rescanning
+                # the replacement stream's full lifetime.
+                cursors.append(max(0, latest - RULE_PERFORMANCE_WINDOW_SIZE - 5))
+            return min(cursors) if cursors else latest
 
     @staticmethod
     def _session_summary(session: Mapping[str, Any]) -> dict[str, Any]:
@@ -3650,7 +6707,51 @@ class RulesEngine:
         # independent rules contributed. Keep the old per-rule ledger summary
         # readable for sessions persisted by the previous tracker version.
         rows = session.get("selections", [])
-        if session.get("mode") == "FIVE_RULE_TRACKER" and not rows:
+        adaptive_rule_performance: dict[str, Any] = {}
+        adaptive_portfolio_performance: dict[str, Any] | None = None
+        adaptive_net_profit: float | None = None
+        if session.get("adaptive_rule_selection") is True:
+            rule_groups = session.get("rule_selections") or {}
+            target_groups: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+            for rule_id in session.get("rule_ids") or []:
+                selections = list(rule_groups.get(rule_id) or [])
+                wins = sum(str(item.get("status") or item.get("result") or "").upper() == "WIN" for item in selections)
+                losses = sum(str(item.get("status") or item.get("result") or "").upper() == "LOSS" for item in selections)
+                pending = sum(str(item.get("status") or item.get("result") or "").upper()
+                              in {"PENDING", "UNKNOWN", ""} for item in selections)
+                last_target = None
+                for item in selections:
+                    target = item.get("actual_target") or item.get("expected_target") or {}
+                    stream = target.get("streamId", target.get("stream_id"))
+                    index = target.get("roundIndex", target.get("round_index"))
+                    if stream and isinstance(index, int) and not isinstance(index, bool):
+                        target_groups.setdefault((str(stream), index), []).append(item)
+                        last_target = max(index, last_target or 0)
+                adaptive_rule_performance[rule_id] = {
+                    "wins": wins, "losses": losses, "pending": pending,
+                    "net": wins - losses, "targets": len(selections),
+                    "target_progress": {"completed": wins + losses, "pending": pending,
+                                        "last_target_round_index": last_target},
+                }
+            grouped_statuses = []
+            for items in target_groups.values():
+                statuses = {str(item.get("status") or item.get("result") or "").upper()
+                            for item in items}
+                grouped_statuses.append("WIN" if "WIN" in statuses else
+                                        "LOSS" if "LOSS" in statuses else "PENDING")
+            adaptive_wins = grouped_statuses.count("WIN")
+            adaptive_losses = grouped_statuses.count("LOSS")
+            adaptive_pending = grouped_statuses.count("PENDING")
+            results = {"WIN": adaptive_wins, "LOSS": adaptive_losses, "PENDING": adaptive_pending}
+            rows = [item for selections in rule_groups.values() for item in selections]
+            selection_count = len(target_groups)
+            net_outcome = adaptive_wins - adaptive_losses
+            stake = float((session.get("configuration_snapshot") or {}).get("fixed_stake_rwf") or 100)
+            adaptive_net_profit = round((adaptive_wins - adaptive_losses) * stake, 2)
+            adaptive_portfolio_performance = {"wins": adaptive_wins, "losses": adaptive_losses,
+                "pending": adaptive_pending, "net": net_outcome, "unique_targets": len(target_groups),
+                "independent_rule_predictions": len(rows), "net_profit_rwf": adaptive_net_profit}
+        elif session.get("mode") == "FIVE_RULE_TRACKER" and not rows:
             legacy_rows = [item for values in session.get("rule_selections", {}).values() for item in values]
             if legacy_rows:
                 rows = legacy_rows
@@ -3665,8 +6766,9 @@ class RulesEngine:
         net_outcome = results["WIN"] - results["LOSS"]
         selection_ids = [str(row.get("selection_id")) for row in rows
                          if isinstance(row, Mapping) and row.get("selection_id")]
-        selection_count = len(set(selection_ids)) + sum(
-            1 for row in rows if isinstance(row, Mapping) and not row.get("selection_id"))
+        if session.get("adaptive_rule_selection") is not True:
+            selection_count = len(set(selection_ids)) + sum(
+                1 for row in rows if isinstance(row, Mapping) and not row.get("selection_id"))
         configuration = session.get("configuration_snapshot") or {}
         requested_stake = configuration.get("requested_stake")
         if requested_stake is None:
@@ -3695,10 +6797,30 @@ class RulesEngine:
                               if evaluations and isinstance(evaluations[-1], Mapping) else None)
         return {"session_id": session["session_id"], "mode": session["mode"],
                 "status": RulesEngine._effective_session_status(session),
+                "run_until_stopped": configuration.get("run_until_stopped") is True
+                    or session.get("window_size") is None,
                 "selection_status": session.get("selection_status"), "started_at": session.get("started_at"),
                 "ended_at": session.get("ended_at"),
                 "last_activity_at": session.get("ended_at") or last_evaluation_at or session.get("started_at"),
                 "rule_ids": list(session.get("rule_ids", [])),
+                "strategy_id": session.get("strategy_id") or (
+                    "BEHAVIOUR_ROLLING_HIGH" if session.get("behaviour_detection_enabled") else
+                    "ADAPTIVE" if session.get("adaptive_rule_selection") else
+                    "AUTOMATIC" if session.get("automatic_rule_selection") else "RULES"),
+                "behaviour_strategy": deepcopy(session.get("last_behaviour_eligibility")),
+                "last_behaviour_selection": deepcopy(session.get("last_behaviour_selection")),
+                "automatic_rule_selection": session.get("automatic_rule_selection", False),
+                "adaptive_rule_selection": session.get("adaptive_rule_selection", False),
+                "active_rule_ids": list(session.get("active_rule_ids") or []),
+                "automatic_rule_choice": deepcopy(session.get("automatic_rule_choice")),
+                "adaptive_rule_choice": deepcopy(session.get("adaptive_rule_choice")),
+                "adaptive_automatic_baseline_choice": deepcopy(
+                    session.get("adaptive_automatic_baseline_choice")),
+                "adaptive_selection_version": session.get("adaptive_selection_version", 0),
+                "adaptive_decision_count": len(session.get("adaptive_decisions") or []),
+                "adaptive_rule_performance": adaptive_rule_performance,
+                "adaptive_portfolio_performance": adaptive_portfolio_performance,
+                "adaptive_baseline_comparison": deepcopy(session.get("adaptive_baseline_comparison")),
                 "configuration_version": session.get("configuration_version"),
                 "observed_rounds": session.get("observed_rounds", 0), "window_size": session.get("window_size"),
                 "latest_observed_round": deepcopy(session.get("last_received_round")),
@@ -3716,9 +6838,15 @@ class RulesEngine:
                 "win_limit_count": configuration.get("win_limit_count"),
                 "loss_limit_enabled": configuration.get("loss_limit_enabled", False),
                 "loss_limit_count": configuration.get("loss_limit_count"),
+                "profit_target_enabled": configuration.get("profit_target_enabled", False),
+                "profit_target_rwf": configuration.get("profit_target_rwf"),
                 "auto_next_check_enabled": configuration.get("auto_next_check_enabled"),
                 "auto_next_on_limit_enabled": configuration.get("auto_next_on_limit_enabled"),
-                "net_profit_rwf": session.get("net_profit_rwf", 0),
+                "auto_next_limits_enabled": configuration.get("auto_next_limits_enabled", False),
+                "auto_next_win_count": configuration.get("auto_next_win_count"),
+                "auto_next_loss_count": configuration.get("auto_next_loss_count"),
+                "net_profit_rwf": (adaptive_net_profit if adaptive_net_profit is not None
+                                    else session.get("net_profit_rwf", 0)),
                 "auto_next_armed": session.get("auto_next_armed", False),
                 "auto_next_trigger": session.get("auto_next_trigger"),
                 "auto_next_armed_at": session.get("auto_next_armed_at"),
@@ -3733,65 +6861,9 @@ class RulesEngine:
                 "stop_history": deepcopy(session.get("stop_history") or []),
                 "integrity_stop_reason": session.get("integrity_stop_reason"),
                 "selection_results_kind": "SHADOW_ROUND_OUTCOMES",
-                "execution_panel": configuration.get("execution_panel"),
                 "requested_stake": requested_stake,
-                "requested_stake_currency": configuration.get("stake_currency"),
-                "reconciled_financials": deepcopy(session.get("reconciled_financials") or {
-                    "realized_betting_pl": None, "currency": None,
-                    "win_count": 0, "loss_count": 0, "reconciled_bets": 0,
-                }),
-                "automatic_execution": "OFF"}
-
-    def ui_setup_configuration(self) -> dict[str, Any]:
-        """Return the active session's UI stake and single selected panel.
-
-        This is configuration only. It is independent of whether any rule has
-        produced TRUE and it never authorizes a financial action.
-        """
-        with self._lock:
-            active = self._selected_session()
-            if not active:
-                return {"status": "BLOCKED", "reason": "NO_ACTIVE_RULES_SESSION",
-                        "session_id": None, "requested_stake": None,
-                        "requested_stake_currency": None, "execution_panel": None,
-                        "automatic_execution": "OFF"}
-            config = deepcopy(active.get("configuration_snapshot") or {})
-            requested_stake = config.get("requested_stake")
-            if requested_stake is None:
-                requested_stake = config.get("fixed_stake_rwf", config.get("stake_rwf"))
-            currency = config.get("stake_currency")
-            if currency is None and ("fixed_stake_rwf" in config or "stake_rwf" in config):
-                currency = "RWF"
-            panel = config.get("execution_panel")
-            if (isinstance(requested_stake, bool)
-                    or not isinstance(requested_stake, (int, float))
-                    or requested_stake <= 0):
-                return {"status": "BLOCKED", "reason": "SESSION_STAKE_NOT_CONFIGURED",
-                        "session_id": active.get("session_id"), "requested_stake": None,
-                        "requested_stake_currency": currency, "execution_panel": panel,
-                        "automatic_execution": "OFF"}
-            if not isinstance(currency, str) or not re.fullmatch(r"[A-Z]{3}", currency):
-                return {"status": "BLOCKED", "reason": "SESSION_STAKE_CURRENCY_UNVERIFIED",
-                        "session_id": active.get("session_id"), "requested_stake": requested_stake,
-                        "requested_stake_currency": None, "execution_panel": panel,
-                        "automatic_execution": "OFF"}
-            if panel is None:
-                return {"status": "BLOCKED", "reason": "SESSION_EXECUTION_PANEL_NOT_SELECTED",
-                        "session_id": active.get("session_id"), "requested_stake": requested_stake,
-                        "requested_stake_currency": currency, "execution_panel": None,
-                        "automatic_execution": "OFF"}
-            if isinstance(panel, bool) or panel not in (0, 1):
-                return {"status": "BLOCKED", "reason": "SESSION_EXECUTION_PANEL_INVALID",
-                        "session_id": active.get("session_id"), "requested_stake": requested_stake,
-                        "requested_stake_currency": currency, "execution_panel": None,
-                        "automatic_execution": "OFF"}
-            return {"status": "CONFIGURED", "reason": None,
-                    "session_id": active.get("session_id"),
-                    "session_status": active.get("status"),
-                    "requested_stake": requested_stake,
-                    "requested_stake_currency": currency,
-                    "execution_panel": panel,
-                    "automatic_execution": "OFF"}
+                "max_selections": configuration.get("max_selections"),
+                }
 
     def evaluate(self, evaluated_round: dict[str, Any] | None = None) -> dict[str, Any]:
         # Compatibility endpoint deliberately does not infer from a loose/latest row.
@@ -3802,7 +6874,7 @@ class RulesEngine:
         if evaluated_round is not None and active_sessions:
             result = {"result": False, "true_rule_ids": [], "rule_evaluations": [],
                       "decision": "BLOCKED", "reason": "COMMITTED_EVENT_REQUIRED",
-                      "source_round": deepcopy(evaluated_round), "automatic_execution": "OFF", "can_bet": False}
+                      "source_round": deepcopy(evaluated_round)}
         elif evaluated_round is not None:
             result = self.aggregate(())
             result["evaluated_round"] = deepcopy(evaluated_round)
@@ -3813,86 +6885,6 @@ class RulesEngine:
         self.last_evaluation, self.last_evaluation_at = result, at
         self._persist()
         return deepcopy(result)
-
-    def execution_authorized(self) -> bool:
-        session = self._selected_session()
-        if not session or session.get("status") != "RUNNING" or session.get("selection_status") != "ACTIVE":
-            return False
-        return any(
-            row.get("status") == "PENDING"
-            and row.get("selection_id")
-            and row.get("execution_intent", {}).get("decision_id") == row.get("selection_id")
-            and row.get("execution_intent", {}).get("target_stream_id")
-            and isinstance(row.get("execution_intent", {}).get("target_round_index"), int)
-            and row.get("execution_intent", {}).get("target_round_id")
-            and row.get("execution_intent", {}).get("provider_round_id")
-            and row.get("execution_intent", {}).get("target_identity_verified") is True
-            and row.get("execution_intent", {}).get("expires_at")
-            for row in session.get("selections", [])
-        )
-
-    def execution_selection(self, decision_id: str) -> dict[str, Any] | None:
-        """Return the active shared selection matching a submitted decision ID."""
-        session = self._selected_session()
-        if not session or session.get("status") != "RUNNING" or session.get("selection_status") != "ACTIVE":
-            return None
-        for selection in session.get("selections", []):
-            if (str(selection.get("selection_id")) == str(decision_id)
-                    and selection.get("status") == "PENDING"):
-                return deepcopy(selection)
-        return None
-
-    def bind_provider_target(self, decision_id: str,
-                             evidence: Mapping[str, Any]) -> dict[str, Any] | None:
-        """Bind one pending selection to fresh, provider-sourced target evidence.
-
-        The provider identity must map to the canonical target ID and immediate
-        successor index explicitly. No round ID is inferred from button state.
-        """
-        from app.betting.platform_state import classify_betting_window
-
-        if not isinstance(evidence, Mapping) or classify_betting_window(evidence) != "BETTING_OPEN":
-            return None
-        with self._lock:
-            session = self._selected_session()
-            if (not session or session.get("status") != "RUNNING"
-                    or session.get("selection_status") != "ACTIVE"):
-                return None
-            selection = next((item for item in session.get("selections", [])
-                              if str(item.get("selection_id")) == str(decision_id)
-                              and item.get("status") == "PENDING"), None)
-            if selection is None:
-                return None
-            source = selection.get("source_round") or {}
-            target = selection.get("expected_target") or {}
-            intent = selection.get("execution_intent") or {}
-            canonical_target = str(evidence.get("canonical_target_round_id") or "")
-            provider_target = str(evidence.get("provider_round_id") or "")
-            if (evidence.get("source_round_id") != source.get("roundId")
-                    or evidence.get("source_round_index") != source.get("roundIndex")
-                    or evidence.get("target_round_index") != target.get("roundIndex")
-                    or not canonical_target or not provider_target
-                    or target.get("roundId") not in (None, canonical_target)
-                    or intent.get("target_round_id") not in (None, canonical_target)):
-                return None
-            target["roundId"] = canonical_target
-            selection["expected_target"] = target
-            intent.update({
-                "target_round_id": canonical_target,
-                "provider_round_id": provider_target,
-                "target_identity_verified": True,
-                "target_identity_proof": deepcopy(evidence.get("target_identity_proof")),
-                "betting_deadline": evidence.get("betting_deadline"),
-                "expires_at": evidence.get("betting_deadline"),
-                "provider_phase_observed_at": evidence.get("observed_at"),
-                "execution_status": "TARGET_BOUND_BLOCKED",
-            })
-            intent["blockers"] = [reason for reason in intent.get("blockers", [])
-                                  if reason not in {"TARGET_ROUND_ID_UNVERIFIED",
-                                                    "BETTING_DEADLINE_UNVERIFIED"}]
-            selection["execution_intent"] = intent
-            self._persist(session_ids={str(session["session_id"])})
-            return deepcopy(selection)
 
     def needs_round_observation(self) -> bool:
         """Only session-owned state needs each collector event.
@@ -3911,38 +6903,75 @@ class RulesEngine:
                 for item in self.sessions.values()
             )
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, include_sessions: bool = True) -> dict[str, Any]:
         active = self._selected_session()
-        active_summary = self._session_summary(active) if active else None
-        sessions = self.sessions_status()
-        latest_summary = sessions[0] if sessions else None
+        active_summary = self._session_status_summary(active) if active else None
+        # The full sessions endpoint is intentionally separate from the
+        # frequently-polled status endpoint. Building every historical
+        # session summary walks every saved selection and can make a simple
+        # status poll take longer than the browser's request timeout as the
+        # session ledger grows.
+        if include_sessions:
+            sessions = self.sessions_status()
+            latest_summary = sessions[0] if sessions else None
+        else:
+            # The active session is normally also the newest session. Avoid
+            # walking any historical selection ledger on every status poll.
+            if active is not None:
+                latest_summary = active_summary
+            else:
+                latest_session = max(
+                    self.sessions.values(),
+                    key=lambda row: row.get("started_at", ""),
+                    default=None,
+                )
+                latest_summary = (self._session_status_summary(latest_session)
+                                  if latest_session else None)
+            sessions = None
         # Metrics remain tied to a concrete settlement scope after a session
         # stops or completes. Keep active_session separate for control/readiness.
         summary = active_summary or latest_summary
         configured = sum(1 for row in self.rule_configuration.values() if row.get("configured"))
         enabled = sum(1 for row in self.rule_configuration.values() if row.get("configured") and row.get("enabled"))
         if active:
-            configured = len(active.get("rule_ids", []))
-            enabled = len(active.get("rule_ids", []))
+            if active.get("automatic_rule_selection") is True:
+                configured = sum(self.rule_configuration.get(rid, {}).get("configured") is True
+                                 for rid in active.get("rule_ids", []))
+                enabled = sum(self.rule_configuration.get(rid, {}).get("configured") is True
+                              and self.rule_configuration.get(rid, {}).get("enabled") is True
+                              for rid in active.get("rule_ids", []))
+            else:
+                configured = len(active.get("rule_ids", []))
+                enabled = configured
         latest = (self.last_evaluation or {}).get("source_round",
                   (self.last_evaluation or {}).get("evaluated_round"))
-        with self._lock:
-            event_latency_metrics = {stage: self._latency_summary(values)
-                                     for stage, values in self._delivery_metrics.items()}
+        if self._lock.acquire(blocking=False):
+            try:
+                event_latency_metrics = {stage: self._latency_summary(values)
+                                         for stage, values in self._delivery_metrics.items()}
+                self._last_status_latency_metrics = event_latency_metrics
+            finally:
+                self._lock.release()
+        else:
+            # Status reads are a monitoring path. Never queue them behind a
+            # round evaluation; use the last safe latency sample while the
+            # single ordered evaluator owns the engine lock.
+            event_latency_metrics = self._last_status_latency_metrics
         return {"status": active.get("status") if active else ("READY" if configured else "NOT_CONFIGURED"),
                 "rules_configured": configured, "rules_enabled": enabled,
                 "configuration_version": self.configuration_version,
                 "presets": deepcopy(self.presets),
                 "last_rule_evaluation": self.last_evaluation_at or "NONE",
                 "last_evaluated_round": latest, "decision": (self.last_evaluation or {}).get("decision", "NO_ACTION"),
-                "automatic_execution": "OFF", "rule_evaluations": (self.last_evaluation or {}).get("rule_evaluations", []),
+                "rule_evaluations": (self.last_evaluation or {}).get("rule_evaluations", []),
                 "active_session": active_summary, "latest_session": latest_summary,
                 "reporting_session_id": summary.get("session_id") if summary else None,
                 "reporting_session_status": summary.get("status") if summary else None,
-                "sessions": sessions, "selection_count": summary.get("selection_count", 0) if summary else 0,
+                **({"sessions": sessions} if sessions is not None else {}),
+                "selection_count": summary.get("selection_count", 0) if summary else 0,
                 "total_wins": summary.get("results", {}).get("WIN", 0) if summary else 0,
                 "total_losses": summary.get("results", {}).get("LOSS", 0) if summary else 0,
                 "net_outcome": summary.get("net_outcome", 0) if summary else 0,
                 "pending": summary.get("results", {}).get("PENDING", 0) if summary else 0,
                 "event_latency_metrics": {"scope": "CURRENT_PROCESS", "stages_ms": event_latency_metrics},
-                "can_bet": False}
+                }

@@ -2,13 +2,17 @@
 // reads need no token; remote private routes fail closed when API_KEY is absent.
 
 const TOKEN_KEY = 'winner_predict_api_token';
+export const API_TOKEN_STORAGE_KEY = TOKEN_KEY;
 export const API_UNAUTHORIZED_EVENT = 'winner:api-unauthorized';
+export const API_CREDENTIAL_CHANGED_EVENT = 'winner:api-credential-changed';
 
 export function setApiToken(token) {
   const value = token?.trim();
+  const previous = localStorage.getItem(TOKEN_KEY) || '';
   if (value) localStorage.setItem(TOKEN_KEY, value);
   else localStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(TOKEN_KEY);
+  if (previous !== (value || '') && typeof window !== 'undefined') window.dispatchEvent(new Event(API_CREDENTIAL_CHANGED_EVENT));
 }
 
 // Compatibility for the legacy login screen: its password field is treated
@@ -20,8 +24,10 @@ export function login(_username, token) {
 }
 
 export function logout() {
+  const hadToken = Boolean(localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY));
   localStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(TOKEN_KEY);
+  if (hadToken && typeof window !== 'undefined') window.dispatchEvent(new Event(API_CREDENTIAL_CHANGED_EVENT));
 }
 
 export function getApiToken() {
@@ -29,7 +35,10 @@ export function getApiToken() {
   if (saved) return saved;
   // Carry a token from an already-open tab into persistent browser storage.
   const previous = sessionStorage.getItem(TOKEN_KEY);
-  if (previous) setApiToken(previous);
+  if (previous) {
+    localStorage.setItem(TOKEN_KEY, previous);
+    sessionStorage.removeItem(TOKEN_KEY);
+  }
   return previous || '';
 }
 

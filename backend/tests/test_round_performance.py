@@ -107,6 +107,14 @@ def test_collector_detection_clock_is_retained_only_for_loopback_requests():
     _remember_collector_detection_timestamps(app, [event], peer_is_loopback=True)
     assert app.state.collector_detection_timestamps == {"round-clock": event["observed_at"]}
 
+    orbit = {"round_id": "orbit-clock", "observed_at": "2026-11-02T23:40:00Z",
+             "source_metadata": {"source": "ORBIT_DATA_WATCH_API"}}
+    _remember_collector_detection_timestamps(app, [orbit], peer_is_loopback=True)
+    assert "orbit-clock" not in app.state.collector_detection_timestamps
+    orbit["source_metadata"]["collector_received_at"] = "2026-11-02T23:40:02Z"
+    _remember_collector_detection_timestamps(app, [orbit], peer_is_loopback=True)
+    assert app.state.collector_receipt_timestamps["orbit-clock"] == "2026-11-02T23:40:02Z"
+
 
 def test_performance_dashboard_uses_measured_correlated_backend_spans():
     hub = RoundDistributionHub()

@@ -1,0 +1,54 @@
+{
+  "policy_version": "adie-shadow-exploratory-v1",
+  "cohort": "prospective-2026-11-16",
+  "mode": "SHADOW_ONLY",
+  "horizons": [5, 10, 20, 30, 50],
+  "primary_horizons": [5, 10],
+  "start_offsets": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+  "context_windows": [5, 10, 20, 30, 50, 100, 200],
+  "dominance_definition": {
+    "window_rounds": 20,
+    "exclude_exact_from_share_denominator": true,
+    "high_dominance_min_high_share": 0.6,
+    "low_dominance_max_high_share": 0.4,
+    "otherwise": "BALANCED_TRANSITION"
+  },
+  "eligibility": {
+    "delivery_mode": "LIVE",
+    "continuity_status": "VERIFIED",
+    "max_observation_age_seconds": 15,
+    "future_timestamp_tolerance_seconds": 2,
+    "require_increasing_source_index": true,
+    "require_consecutive_source_index": true,
+    "require_increasing_observation_timestamp": true
+  },
+  "normal_selection": {
+    "enabled": false,
+    "reason": "Phase 2 found no predictive feature, interaction, or primary horizon/direction/offset comparison passing correction",
+    "resume_condition": "new policy version and separate untouched prospective evaluation cohort"
+  },
+  "activity_coverage": {
+    "watch_after_eligible_rounds": 80,
+    "force_after_eligible_rounds": 100,
+    "forced_horizon": 5,
+    "forced_offset": 0,
+    "forced_directions": "alternate_HIGH_LOW"
+  },
+  "settlement": {
+    "exact_threshold": 2.0,
+    "high_class": "multiplier > 2.0",
+    "low_class": "multiplier < 2.0",
+    "exact_class": "multiplier = 2.0",
+    "high_prediction_exact_is_win": true,
+    "low_prediction_exact_is_loss": true,
+    "win_net_units": 1,
+    "loss_net_units": -1,
+    "accounting_label": "SIMULATED_SHADOW_NOT_REALIZED_PROFIT"
+  },
+  "research_reference": {
+    "phase": "research_phase2_2026-11-16",
+    "maximum_neighbors": 25,
+    "minimum_historical_position_spacing": 60,
+    "normal_qualifies_from_retrospective_reference": false
+  }
+}

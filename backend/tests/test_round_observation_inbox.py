@@ -82,6 +82,37 @@ def test_inbox_restarts_with_pending_rows_and_keeps_pending_cursor_separate(tmp_
     assert restarted.snapshot()["backlog_size"] == 1
 
 
+def test_idle_inbox_connection_keeps_wal_and_pending_events_across_reopen(tmp_path):
+    path = tmp_path / "anchor.sqlite3"
+    inbox = RoundObservationInbox(path)
+    event, row = observation("anchor-round")
+    inbox.append([event], [row], received_at=datetime.now(timezone.utc).isoformat())
+    assert Path(f"{path}-wal").exists()
+    inbox.close()
+    restarted = RoundObservationInbox(path)
+    try:
+        assert [item["round_id"] for item in restarted.pending_page(after_sequence=0)["events"]] == ["anchor-round"]
+    finally:
+        restarted.close()
+
+
+def test_latest_verified_round_is_available_after_database_commit(tmp_path):
+    inbox = RoundObservationInbox(tmp_path / "latest-round.sqlite3")
+    event, row = observation("latest-verified-round", 2.8)
+    event.update({"continuity_status": "VERIFIED", "round_index": 41})
+    row.update({"continuity_verified": True, "round_index": 41})
+    inbox.append([event], [row], received_at=datetime.now(timezone.utc).isoformat())
+    assert inbox.latest_pending_verified_round()["round_id"] == "latest-verified-round"
+    persisted = {**event, "event_type": "round.persisted", "stage": "PERSISTED",
+                 "durability": "COMMITTED", "stored_at": datetime.now(timezone.utc).isoformat()}
+    inbox.mark_committed_many([("latest-verified-round", 91, persisted)])
+    assert inbox.latest_pending_verified_round() is None
+    latest = inbox.latest_verified_round_event()
+    assert latest["event_type"] == "round.persisted"
+    assert latest["durability"] == "COMMITTED"
+    assert latest["round_id"] == "latest-verified-round"
+
+
 def test_verified_observed_rule_work_replays_in_order_until_durably_processed(tmp_path):
     path = tmp_path / "rules-replay.sqlite3"
     inbox = RoundObservationInbox(path)
@@ -107,7 +138,35 @@ def test_verified_observed_rule_work_replays_in_order_until_durably_processed(tm
     assert [event["round_id"] for event in remaining["events"]] == ["verified-1", "verified-2"]
 
 
-def test_round_worker_marks_observed_event_only_after_success(tmp_path, monkeypatch):
+def test_gap_before_observation_is_replayed_for_session_boundary_sync(tmp_path):
+    inbox = RoundObservationInbox(tmp_path / "gap-boundary-replay.sqlite3")
+    event, row = observation("gap-boundary")
+    event["continuity_status"] = "GAP_BEFORE"
+    row.update({"continuity_verified": True, "gap_before": True})
+    inbox.append([event], [row], received_at=datetime.now(timezone.utc).isoformat())
+
+    restarted = RoundObservationInbox(tmp_path / "gap-boundary-replay.sqlite3")
+    assert restarted.pending_rule_events_page()["events"] == [event]
+
+
+def test_pending_duplicate_continuity_change_requeues_rule_state_sync(tmp_path):
+    inbox = RoundObservationInbox(tmp_path / "changed-continuity.sqlite3")
+    event, row = observation("changed-continuity")
+    event["continuity_status"] = "VERIFIED"
+    row["continuity_verified"] = True
+    received_at = datetime.now(timezone.utc).isoformat()
+    inbox.append([event], [row], received_at=received_at)
+    assert inbox.mark_rules_processed("changed-continuity") is True
+
+    boundary_event = {**event, "continuity_status": "GAP_BEFORE"}
+    boundary_row = {**row, "gap_before": True}
+    inbox.append([boundary_event], [boundary_row],
+                 received_at=datetime.now(timezone.utc).isoformat())
+
+    assert inbox.pending_rule_events_page()["events"] == [boundary_event]
+
+
+def test_round_worker_keeps_observed_event_pending_until_commit_checkpoint(tmp_path, monkeypatch):
     async def scenario():
         inbox = RoundObservationInbox(tmp_path / "worker-replay.sqlite3")
         event, row = observation("retry-me")
@@ -128,7 +187,7 @@ def test_round_worker_marks_observed_event_only_after_success(tmp_path, monkeypa
             if attempts == 1:
                 failed_once.set()
                 raise RuntimeError("simulated interrupted decision")
-            return True, {"session-1"}
+            return True, {"session-1"}, None
 
         class Engine:
             def persist_current_snapshot(self, *, session_ids=None):
@@ -149,17 +208,12 @@ def test_round_worker_marks_observed_event_only_after_success(tmp_path, monkeypa
                     inbox.pending_rule_events_page()["events"]] == ["retry-me"]
             await asyncio.wait_for(queue.join(), timeout=2)
             assert attempts == 2
-            persistence_queue = app.state.rules_state_persistence_queue
-            await asyncio.wait_for(persistence_queue.join(), timeout=2)
-            assert inbox.pending_rule_events_page()["events"] == []
+            assert [item["round_id"] for item in
+                    inbox.pending_rule_events_page()["events"]] == ["retry-me"]
         finally:
             worker.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await worker
-            persistence_worker = app.state.rules_state_persistence_task
-            persistence_worker.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await persistence_worker
 
     asyncio.run(scenario())
 
@@ -206,9 +260,12 @@ def test_commit_and_rules_acknowledgements_batch_atomically_and_recover_by_stage
                  "stream_sequence": int(first_event["round_index"])}
     inbox.mark_committed_many([("batch-ack-1", first_event["round_index"], committed)])
 
-    assert inbox.pending_rule_events_page()["events"] == [second_event]
-    assert inbox.pending_committed_rule_events_page()["events"] == [
-        {**committed, "delivery_mode": "RECOVERED"}]
+    pending = inbox.pending_rule_events_page()["events"]
+    assert [event["round_id"] for event in pending] == ["batch-ack-1", "batch-ack-2"]
+    assert all(event["continuity_status"] == "VERIFIED" for event in pending)
+    committed_pending = inbox.pending_committed_rule_events_page()["events"]
+    assert [event["round_id"] for event in committed_pending] == ["batch-ack-1"]
+    assert committed_pending[0]["delivery_mode"] == "RECOVERED"
     assert inbox.mark_rules_processed_many([
         ("observed", "batch-ack-2"), ("committed", "batch-ack-1")]) == 2
 
@@ -285,6 +342,10 @@ def test_rules_priority_decision_is_acknowledged_after_durable_inbox_and_fanout(
         async def inline_inbox(_app, function, *args, priority=False, **kwargs):
             return function(*args, **kwargs)
 
+        event_queue = asyncio.PriorityQueue(maxsize=512)
+        queued_ids = set()
+        monkeypatch.setattr(main_app, "_round_event_queue",
+                            lambda _app: (event_queue, queued_ids))
         monkeypatch.setattr(main_app.asyncio, "to_thread", inline_to_thread)
         monkeypatch.setattr(main_app, "run_round_observation_inbox", inline_inbox)
         def completed_decision_waiter(_app, stage, item):
@@ -298,6 +359,8 @@ def test_rules_priority_decision_is_acknowledged_after_durable_inbox_and_fanout(
             round_stream_id="stream-test",
             round_distribution=Hub(),
             rules_engine=RulesEngine(),
+            round_event_enqueue_sequence=0,
+            round_event_retry_ids=set(),
         ))
         request = SimpleNamespace(app=app, json=request_json)
         response = await collector_round_observed(request)
@@ -307,7 +370,71 @@ def test_rules_priority_decision_is_acknowledged_after_durable_inbox_and_fanout(
         assert response["rule_evaluation_stage"] == "DECISION_READY_BEFORE_COLLECTOR_ACK"
         assert response["rules_engine_evaluations"] == [
             {"round_id": "fast-observed", "status": "DECISION_READY"}]
-        assert app.state.round_event_queue.qsize() == 1
+        assert event_queue.qsize() == 1
+
+    asyncio.run(scenario())
+
+
+def test_gap_boundary_observation_is_queued_before_collector_ack(tmp_path, monkeypatch):
+    async def scenario():
+        accepted_events = []
+
+        class DurableInbox:
+            def append(self, events, _observations, *, received_at):
+                accepted_events.extend(events)
+                return {"events": events, "duplicates": 0, "backlog_size": len(events)}
+
+        class Hub:
+            def record_priority_latency(self, *_args):
+                return None
+
+            async def publish(self, _event):
+                return None
+
+        event, row = observation("orbit-gap-boundary", 1.81)
+        row.update({"continuity_verified": True, "gap_before": True,
+                    "delivery_mode": "RECOVERED",
+                    "identity_confidence": "OVERLAP_VERIFIED_ORDER_ONLY",
+                    "round_identity_type": "COLLECTOR_OBSERVATION_HASH",
+                    "round_index_source": "LOCAL_SEQUENCE"})
+
+        async def request_json():
+            return {"source": "WINNER_DIRECT_PAGE_HISTORY", "rounds": [row]}
+
+        async def inline_to_thread(function, /, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        async def inline_inbox(_app, function, *args, **kwargs):
+            kwargs.pop("priority", None)
+            return function(*args, **kwargs)
+
+        event_queue = asyncio.PriorityQueue(maxsize=512)
+        queued_ids = set()
+        monkeypatch.setattr(main_app, "_round_event_queue",
+                            lambda _app: (event_queue, queued_ids))
+        def completed_boundary_waiter(_app, stage, item):
+            assert stage == "observed"
+            assert item["continuity_status"] == "GAP_BEFORE"
+            future = asyncio.get_running_loop().create_future()
+            future.set_result({"decision_ready": True, "stage": stage})
+            return main_app._round_event_key(stage, item), future
+
+        monkeypatch.setattr(main_app.asyncio, "to_thread", inline_to_thread)
+        monkeypatch.setattr(main_app, "run_round_observation_inbox", inline_inbox)
+        monkeypatch.setattr(main_app, "_round_event_completion_future", completed_boundary_waiter)
+        app = SimpleNamespace(state=SimpleNamespace(
+            round_observation_inbox=DurableInbox(), round_stream_id="stream-test",
+            round_distribution=Hub(), rules_engine=SimpleNamespace(),
+            round_event_enqueue_sequence=0, round_event_retry_ids=set()))
+
+        response = await collector_round_observed(SimpleNamespace(app=app, json=request_json))
+
+        assert response["ok"] is True
+        assert accepted_events[0]["delivery_mode"] == "RECOVERED"
+        assert accepted_events[0]["continuity_status"] == "GAP_BEFORE"
+        assert response["rules_engine_evaluations"] == [
+            {"round_id": "orbit-gap-boundary", "status": "BOUNDARY_STATE_ADVANCED"}]
+        assert event_queue.qsize() == 1
 
     asyncio.run(scenario())
 
@@ -380,6 +507,9 @@ def test_verified_pending_round_is_queued_only_after_durable_inbox_append(tmp_pa
             round_stream_id="stream-test",
             round_distribution=Fanout(),
             rules_engine=SimpleNamespace(),
+            # Keep this test focused on the enqueue boundary; the real async
+            # worker would consume the queue while the assertions run.
+            round_event_processor_task=asyncio.get_running_loop().create_future(),
             shadow=SimpleNamespace(reconcile_round=lambda *_args: pytest.fail("SHADOW must not block priority rules")),
             history_collector=SimpleNamespace(rows=lambda: pytest.fail("history refresh must not block priority rules")),
         ))
@@ -802,6 +932,193 @@ def test_event_frame_ends_with_blank_line_and_pending_event_has_no_replay_cursor
     assert round_api.observed_round_event(unknown_observation, "stream-test")["identity_source"] == "UNKNOWN"
 
 
+def test_verified_round_envelope_exposes_shared_identity_and_sequence():
+    event, row = observation("canonical-round", 2.0)
+    row.update({"continuity_verified": True, "round_index": 41,
+                "round_identity_type": "COLLECTOR_OBSERVATION_HASH",
+                "round_index_source": "LOCAL_SEQUENCE",
+                "source_metadata": {"source": "ORBIT_DATA_WATCH_API"}})
+    event = round_api.observed_round_event(row, "stream-test")
+    assert event["round_uid"] == event["round_id"] == "canonical-round"
+    assert event["canonical_sequence"] == event["round_index"] == 41
+    assert event["provider_round_id"] is None
+    assert event["provider_sequence"] is None
+    assert event["source"] == "ORBIT_DATA_WATCH_API"
+    assert event["classification"] == "EXACT"
+    assert event["verification_status"] == "VERIFIED"
+    assert event["verified_at"]
+
+
+def test_behaviour_handoff_checkpoint_replays_and_deduplicates(tmp_path):
+    path = tmp_path / "behaviour-consumer.sqlite3"
+    inbox = RoundObservationInbox(path)
+    event, row = observation("behaviour-round", 2.4)
+    row.update({"continuity_verified": True, "round_index": 11,
+                "round_identity_type": "COLLECTOR_OBSERVATION_HASH",
+                "round_index_source": "LOCAL_SEQUENCE"})
+    event = round_api.observed_round_event(row, "stream-test")
+    received_at = datetime.now(timezone.utc).isoformat()
+    inbox.append([event], [row], received_at=received_at)
+    pending = inbox.pending_behaviour_events()[0]
+    assert pending[0] == "behaviour-round"
+    assert {key: value for key, value in pending[1].items()
+            if key not in {"journal_received_at", "latest_verified_round_index"}} == event
+    assert pending[1]["journal_received_at"] == received_at
+    assert pending[1]["latest_verified_round_index"] == 11
+    inbox.close()
+
+    recovered = RoundObservationInbox(path)
+    assert recovered.pending_behaviour_events()[0][0] == "behaviour-round"
+    assert recovered.mark_behaviour_processed("behaviour-round") is True
+    assert recovered.pending_behaviour_events() == []
+    recovered.append([event], [row], received_at=datetime.now(timezone.utc).isoformat())
+    assert recovered.pending_behaviour_events() == []
+    health = recovered.snapshot()
+    assert health["behaviour_pending"] == 0
+    assert health["behaviour_checkpoint"] > 0
+    assert health["checkpoint_namespace"] == "LOCAL_SQLITE_INBOX_SEQUENCE_NOT_CANONICAL_ROUND_INDEX"
+
+
+def test_behaviour_consumer_receives_gap_boundaries_without_live_signal_provenance(tmp_path):
+    inbox = RoundObservationInbox(tmp_path / "behaviour-gap-boundary.sqlite3")
+    event, row = observation("gap-boundary-round", 1.6)
+    row.update({"continuity_verified": True, "gap_before": True, "round_index": 12,
+                "round_identity_type": "COLLECTOR_OBSERVATION_HASH",
+                "round_index_source": "LOCAL_SEQUENCE", "delivery_mode": "RECOVERED"})
+    event = round_api.observed_round_event(row, "stream-gap")
+    event["continuity_status"] = "GAP_BEFORE"
+    event["delivery_mode"] = "RECOVERED"
+    inbox.append([event], [row], received_at=datetime.now(timezone.utc).isoformat())
+
+    pending = inbox.pending_behaviour_events()
+    assert len(pending) == 1
+    assert pending[0][1]["continuity_status"] == "GAP_BEFORE"
+    assert pending[0][1]["delivery_mode"] == "RECOVERED"
+    assert inbox.snapshot()["behaviour_pending"] == 1
+    inbox.close()
+
+
+def test_behaviour_provenance_blocks_signal_creation_while_verified_backlog_exists(monkeypatch):
+    monkeypatch.setattr(main_app, "_trusted_live_round_after_boundary",
+                        lambda _event, _boundary: True)
+    event = {"continuity_status": "VERIFIED", "delivery_mode": "LIVE",
+        "round_index": 11, "latest_verified_round_index": 12}
+    assert main_app._behaviour_event_provenance(event, "boundary") == (
+        "RECOVERY_REPLAY", "BACKLOG_AHEAD_OF_DECISION")
+    latest = {**event, "latest_verified_round_index": 11}
+    assert main_app._behaviour_event_provenance(latest, "boundary") == (
+        "LIVE_VERIFIED", None)
+
+
+def test_behaviour_inbox_orders_by_canonical_round_index_and_marks_backlog_replay(tmp_path):
+    inbox = RoundObservationInbox(tmp_path / "behaviour-canonical-order.sqlite3")
+    rows, events = [], []
+    for index in (12, 11):
+        event, row = observation(f"ordered-{index}", 2.1)
+        row.update({"continuity_verified": True, "round_index": index,
+                    "round_identity_type": "COLLECTOR_OBSERVATION_HASH",
+                    "round_index_source": "LOCAL_SEQUENCE"})
+        event = round_api.observed_round_event(row, "stream-order")
+        events.append(event)
+        rows.append(row)
+    inbox.append(events, rows, received_at=datetime.now(timezone.utc).isoformat())
+
+    first = inbox.pending_behaviour_events(stream_id="stream-order")[0]
+    assert first[1]["round_index"] == 11
+    assert first[1]["latest_verified_round_index"] == 12
+    assert inbox.mark_behaviour_processed(first[0]) is True
+    second = inbox.pending_behaviour_events(stream_id="stream-order")[0]
+    assert second[1]["round_index"] == 12
+
+    inbox.defer_behaviour_event(second[0], "test_backoff")
+    assert inbox.pending_behaviour_events(stream_id="stream-order", now=0) == []
+    inbox.close()
+
+
+def test_behaviour_reconcile_skips_only_rounds_covered_by_its_checkpoint(tmp_path):
+    inbox = RoundObservationInbox(tmp_path / "behaviour-reconcile.sqlite3")
+    rows, events = [], []
+    now = datetime.now(timezone.utc).isoformat()
+    for index in range(1, 4):
+        event, row = observation(f"reconcile-{index}", 1.5 + index)
+        row.update({"continuity_verified": True, "round_index": index,
+                    "round_identity_type": "COLLECTOR_OBSERVATION_HASH",
+                    "round_index_source": "LOCAL_SEQUENCE"})
+        row["source_metadata"] = {"source": "ORBIT_DATA_WATCH_API"}
+        rows.append(row)
+        events.append(round_api.observed_round_event(row, "stream-reconcile"))
+    inbox.append(events, rows, received_at=now)
+
+    assert inbox.reconcile_behaviour_checkpoint(stream_id="stream-reconcile",
+        round_id="reconcile-2", round_index=2) == 2
+    assert [event["round_uid"] for _, event in inbox.pending_behaviour_events()] == ["reconcile-3"]
+    inbox.close()
+
+
+def test_behaviour_round_consumer_runs_without_rules_or_postgres(monkeypatch):
+    async def scenario():
+        delivered = asyncio.Event()
+        received = []
+
+        class Inbox:
+            pending = [("obs-1", {"event_type": "round.observed", "round_id": "round-1",
+                "round_uid": "round-1", "durability": "PENDING", "continuity_status": "VERIFIED",
+                "delivery_mode": "LIVE"})]
+
+            def pending_behaviour_events(self, **_kwargs):
+                return list(self.pending)
+
+            def mark_behaviour_processed(self, observation_id):
+                self.pending = []
+                return observation_id == "obs-1"
+
+            def defer_behaviour_event(self, *_args):
+                raise AssertionError("unexpected retry")
+
+        async def forward(_app, event):
+            received.append(event["round_uid"])
+            delivered.set()
+            return True
+
+        monkeypatch.setattr(main_app, "_forward_live_round_to_behaviour", forward)
+        app = SimpleNamespace(state=SimpleNamespace(
+            round_observation_inbox=Inbox(), behaviour_round_wakeup=asyncio.Event(),
+            behaviour_round_last_delivered_id=None, behaviour_round_last_delivered_at=None,
+            behaviour_round_last_delivery_ms=None, behaviour_round_last_error=None))
+        task = asyncio.create_task(main_app._run_behaviour_round_consumer(app))
+        try:
+            await asyncio.wait_for(delivered.wait(), timeout=1)
+            for _ in range(20):
+                if app.state.behaviour_round_last_delivered_id:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert received == ["round-1"]
+        assert app.state.behaviour_round_last_delivered_id == "round-1"
+
+    asyncio.run(scenario())
+
+
+def test_behaviour_live_boundary_rejects_recently_forwarded_old_orbit_reading():
+    boundary = "2026-11-18T07:00:00+00:00"
+    base = {"event_type": "round.observed", "durability": "PENDING",
+        "continuity_status": "VERIFIED", "delivery_mode": "LIVE",
+        "journal_received_at": "2026-11-18T07:01:00+00:00",
+        "source_metadata": {"source": "ORBIT_DATA_WATCH_API",
+            "collector_received_at": "2026-11-18T06:59:00+00:00",
+            "reading_checked_at": "2026-11-18T06:58:00+00:00"}}
+    assert main_app._trusted_live_round_after_boundary(base, boundary) is False
+
+    fresh = {**base, "source_metadata": {**base["source_metadata"],
+        "collector_received_at": "2026-11-18T07:01:00+00:00",
+        "reading_checked_at": "2026-11-18T07:00:30+00:00"}}
+    assert main_app._trusted_live_round_after_boundary(fresh, boundary) is True
+    assert main_app._trusted_live_round_after_boundary(fresh, None) is False
+
+
 def test_external_round_api_rejects_unauthenticated_requests_without_leaking_token():
     async def scenario():
         app = SimpleNamespace(state=SimpleNamespace(settings=SimpleNamespace(round_stream_allowed_origins=[])))
@@ -887,3 +1204,56 @@ def test_collector_status_payload_returns_the_full_status_document(tmp_path, mon
     assert payload["collector"]["roundCollectionStatus"] == "HEALTHY_CAUGHT_UP"
     assert payload["collector"]["lastDetectedStatus"] == "VALIDATED"
     assert payload["collector"]["last_round_timing"]["round_history_api_visibility"] == "NOT_MEASURED"
+
+
+def test_orbit_watch_health_uses_api_and_source_status_without_legacy_browser_flags():
+    checked_at = datetime.now(timezone.utc).isoformat()
+    collector = {
+        "collectorRunning": True,
+        "dataSource": "ORBIT_DATA_WATCH_API",
+        "heartbeatAt": checked_at,
+        "lastSuccessfulCollection": None,
+        "authRequired": False,
+        "loggedIn": None,
+        "browserConnected": False,
+        "pageConnected": False,
+        "frameConnected": False,
+        "orbitApi": {
+            "status": "CONNECTED",
+            "streamStatus": "CONNECTED",
+            "sourceStatus": "HEALTHY",
+            "lastSourceCheckAt": checked_at,
+            "lastError": None,
+        },
+    }
+
+    assert round_api._collector_health_from_payload(collector) == "HEALTHY"
+    collector["orbitApi"]["streamStatus"] = "DISCONNECTED"
+    assert round_api._collector_health_from_payload(collector) == "STALE"
+
+
+def test_fast_signal_settlement_mirror_is_idempotent_and_restart_durable(tmp_path):
+    inbox_path = tmp_path / "settlement-mirror.sqlite"
+    inbox = RoundObservationInbox(inbox_path)
+    signal = {"signal_id": "behaviour-shadow-1", "session_id": "shadow-1",
+        "target_round_id": "shadow-index:stream-1:12", "mode": "SHADOW",
+        "source_id": "BEHAVIOUR_DETECTION", "distribution_status": "ACCEPTED"}
+    inserted, _stored = inbox.enqueue_fast_signal(signal)
+    assert inserted is True
+    settlement = {"status": "COMMITTED", "result": "WIN", "target_round_id": "round-12",
+        "target_round_index": 12, "target_stream_id": "stream-1"}
+    assert inbox.commit_fast_signal_settlement(signal["signal_id"], settlement) is True
+    assert inbox.commit_fast_signal_settlement(signal["signal_id"], settlement) is True
+    [updated] = inbox.pending_fast_signals()
+    assert updated["settlement_status"] == "COMMITTED"
+    assert updated["settlement"] == settlement
+    with pytest.raises(ObservationIdentityConflict):
+        inbox.commit_fast_signal_settlement(signal["signal_id"],
+            {**settlement, "result": "LOSS"})
+    inbox.close()
+
+    reopened = RoundObservationInbox(inbox_path)
+    [restored] = reopened.pending_fast_signals()
+    assert restored["signal_id"] == signal["signal_id"]
+    assert restored["settlement"]["result"] == "WIN"
+    reopened.close()

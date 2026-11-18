@@ -6,9 +6,32 @@ from copy import deepcopy
 from threading import Event, Thread
 import time
 
-from app.api.signals import BetSignalHub
+from app.api.signals import BetSignalHub, run_fast_signal_persistence
+from app.round_observation_inbox import RoundObservationInbox
+from types import SimpleNamespace
 from app.database.repository import Repository
 from app.rules_engine import RulesEngine, START_CHECK_POLICY_ID
+
+
+_RUN_LOCAL_FIELDS = {
+    # Independent engine instances mint distinct opaque IDs and wall-clock
+    # timestamps. They are intentionally not part of ordered decision
+    # semantics; replay identity is asserted in its dedicated tests below.
+    "pending_selection_id", "selection_id", "cycle_id", "started_at", "ended_at",
+    "selected_at", "loss_limit_reached_at",
+}
+
+
+def _normalize_run_local_fields(value):
+    if isinstance(value, dict):
+        return {
+            key: ("<run-local>" if key in _RUN_LOCAL_FIELDS and item is not None
+                  else _normalize_run_local_fields(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_run_local_fields(item) for item in value]
+    return value
 
 
 class InlineExecutor:
@@ -21,6 +44,50 @@ class InlineExecutor:
         except BaseException as exc:
             future.set_exception(exc)
         return future
+
+
+def test_fast_signal_fanout_precedes_postgres_and_pending_survives_restart(tmp_path):
+    path = tmp_path / "inbox.sqlite3"
+    inbox = RoundObservationInbox(path)
+    signal = {"signal_id": "signal-fast", "session_id": "s", "round_id": "r",
+              "target_round_id": "next", "action": "BET", "target_round_index": 2}
+    async def scenario():
+        hub = BetSignalHub()
+        subscriber = hub.subscribe()
+        accepted, saved = await hub.accept_fast(signal, inbox)
+        assert accepted and subscriber.get_nowait() == saved
+        assert len(inbox.pending_fast_signals()) == 1
+        inbox.close()
+        reopened = RoundObservationInbox(path)
+        class Repository:
+            database_url = "configured"
+            def accept_bet_signal(self, row):
+                self.saved = row
+                return True, row
+        repository = Repository()
+        app = SimpleNamespace(state=SimpleNamespace(round_observation_inbox=reopened,
+                              wp=SimpleNamespace(repository=repository)))
+        worker = asyncio.create_task(run_fast_signal_persistence(app))
+        for _ in range(100):
+            if not reopened.pending_fast_signals():
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+        assert repository.saved["signal_id"] == "signal-fast"
+        assert reopened.pending_fast_signals() == []
+        reopened.close()
+    original = asyncio.to_thread
+    async def inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+    asyncio.to_thread = inline
+    try:
+        asyncio.run(scenario())
+    finally:
+        asyncio.to_thread = original
 
 
 def test_live_round_context_is_newest_hundred_and_keeps_full_history(tmp_path):
@@ -106,10 +173,10 @@ def test_bounded_live_cache_preserves_enabled_start_check_ordered_decisions():
         options={"window_size": 1000, "profit_target_enabled": False})
 
     def rule_semantics(rows):
-        return [{key: row.get(key) for key in (
+        return _normalize_run_local_fields([{key: row.get(key) for key in (
             "rule_id", "rule_version", "source_round", "target_round", "result",
             "eligible", "status", "reason", "state_snapshot")}
-            for row in rows]
+            for row in rows])
 
     def decision_semantics(decision):
         target = decision.get("expected_target") or decision.get("target_round") or {}
@@ -144,7 +211,8 @@ def test_bounded_live_cache_preserves_enabled_start_check_ordered_decisions():
     bounded_state = bounded.session(bounded_session["session_id"])
     reference_state = reference.session(reference_session["session_id"])
     assert bounded_state["last_round_index"] == reference_state["last_round_index"] == 151
-    assert bounded_state["engines"] == reference_state["engines"]
+    assert _normalize_run_local_fields(bounded_state["engines"]) == _normalize_run_local_fields(
+        reference_state["engines"])
     assert [decision_semantics(row) for row in bounded_state["decisions"]] == [
         decision_semantics(row) for row in reference_state["decisions"]]
     assert len(bounded_state["event_records"]) == 100
@@ -182,13 +250,13 @@ def test_deferred_persistence_keeps_start_check_decisions_and_state_unchanged(tm
 
     def semantic(result):
         rows = result.get("sessions") or []
-        return [{
+        return _normalize_run_local_fields([{
             "decision": {key: (row.get("decision") or {}).get(key) for key in (
                 "action", "reason", "true_rule_ids")},
             "rule_evaluations": [{key: rule.get(key) for key in (
                 "rule_id", "status", "eligible", "reason", "state_snapshot", "target_round")}
                 for rule in row.get("rule_evaluations", [])],
-        } for row in rows]
+        } for row in rows])
 
     multipliers = [1.3, 2.6, 1.8, 3.1, 1.4, 1.1, 2.4, 3.0]
     for round_index, multiplier in enumerate(multipliers, start=2):
@@ -206,7 +274,8 @@ def test_deferred_persistence_keeps_start_check_decisions_and_state_unchanged(tm
 
     expected_session = engines[0].session(sessions[0]["session_id"])
     actual_session = engines[1].session(sessions[1]["session_id"])
-    assert actual_session["engines"] == expected_session["engines"]
+    assert _normalize_run_local_fields(actual_session["engines"]) == _normalize_run_local_fields(
+        expected_session["engines"])
     assert actual_session["observed_rounds"] == expected_session["observed_rounds"]
     selection_projection = lambda rows: [{key: row.get(key) for key in (
         "source_round", "expected_target", "actual_target", "status", "result",
@@ -216,7 +285,8 @@ def test_deferred_persistence_keeps_start_check_decisions_and_state_unchanged(tm
         expected_session["selections"])
     restored = RulesEngine(persistence=deferred)
     restored_session = restored.session(sessions[1]["session_id"])
-    assert restored_session["engines"] == expected_session["engines"]
+    assert _normalize_run_local_fields(restored_session["engines"]) == _normalize_run_local_fields(
+        expected_session["engines"])
     assert selection_projection(restored_session["selections"]) == selection_projection(
         expected_session["selections"])
     inline.close()
@@ -267,7 +337,12 @@ def test_priority_observation_delivery_matches_ordered_two_stage_rules_results()
     actual_session = next(iter(priority.sessions.values()))
     for key in ("engines", "observed_rounds", "status", "selection_status",
                 "last_round_index", "last_round_id", "last_stream_sequence"):
-        assert actual_session[key] == expected_session[key]
+        actual_value = actual_session[key]
+        expected_value = expected_session[key]
+        if key == "engines":
+            actual_value = _normalize_run_local_fields(actual_value)
+            expected_value = _normalize_run_local_fields(expected_value)
+        assert actual_value == expected_value
     def selection_projection(rows):
         return [{key: row.get(key) for key in (
             "source_round", "expected_target", "actual_target", "status", "result",

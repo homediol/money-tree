@@ -260,15 +260,6 @@ def test_scoped_round_api_uses_its_token_without_owner_key(monkeypatch):
     assert response.json()["clock_reference"] == "API_SYSTEM_UTC"
 
 
-def test_remote_private_api_fails_closed_when_owner_key_is_unconfigured(monkeypatch):
-    app, _repo = configure_main_app(monkeypatch, api_key=None, public_flags=True)
-
-    response = asyncio.run(get(app, "/api/live/status", base_url="https://api.example.test"))
-
-    assert response.status_code == 503
-    assert response.json()["error"] == "api_key_not_configured"
-
-
 def test_public_reads_require_https_remotely_and_reject_unlisted_origins(monkeypatch):
     app, _repo = configure_main_app(monkeypatch)
 
@@ -316,7 +307,6 @@ def test_openapi_marks_explicit_public_reads_as_anonymous(monkeypatch):
     assert schema["paths"]["/api/v1/signals/latest/action"]["get"]["security"] == []
     assert schema["paths"]["/api/v1/signals/latest/action"]["get"]["x-public-access"] is True
     assert schema["paths"]["/api/v1/signals/latest/action"]["get"]["x-api-key-required"] is False
-    assert schema["paths"]["/api/live/status"]["get"]["security"] == [{"BearerAuth": []}]
     assert schema["paths"]["/api/v1/rounds/stream"]["get"]["x-api-key-required"] is False
 
 
@@ -347,12 +337,22 @@ def test_bot_control_endpoints_remain_private(monkeypatch):
                                               "Content-Length": "65537"},
                                      content="{}")
 
+    async def retired_start():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=bot_api.app),
+                                     base_url="http://127.0.0.1") as client:
+            return await client.post("/bot/start",
+                                     headers={"Authorization": f"Bearer {OWNER_KEY}"},
+                                     json={"phone": "+250700000000", "password": "test-only"})
+
     anonymous = asyncio.run(call("/bot/status"))
     root = asyncio.run(call("/"))
     remote_http = asyncio.run(call("/bot/status", base_url="http://api.example.test"))
     oversized = asyncio.run(oversized_start())
+    retired = asyncio.run(retired_start())
 
     assert anonymous.status_code == 401
     assert root.status_code == 200
     assert remote_http.status_code == 426
     assert oversized.status_code == 413
+    assert retired.status_code == 410
+    assert retired.json()["detail"] == "round_history_uses_orbit_data_watch_api"

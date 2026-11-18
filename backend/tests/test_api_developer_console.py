@@ -129,7 +129,6 @@ def make_app():
     app.state.round_distribution = Limiter()
     app.state.ready = True
     app.state.rules_engine = SimpleNamespace(status=lambda: {"active_session": {"status": "STOPPED"}})
-    app.state.betting_mode = SimpleNamespace(mode="SHADOW_REALISTIC", transitioning=False)
     return app, repo
 
 

@@ -8,6 +8,8 @@ import DataFreshness from '../components/DataFreshness.jsx';
 import { api } from '../services/api.js';
 
 const mult = (value) => value == null || !Number.isFinite(Number(value)) ? '—' : `${Number(value).toFixed(2)}x`;
+const timeText = value => value && Number.isFinite(Date.parse(value))
+  ? new Date(value).toLocaleString() : '—';
 
 export default function LiveHistory() {
   const [snapshot, setSnapshot] = useState(null);
@@ -61,7 +63,7 @@ export default function LiveHistory() {
 
   return <div className="space-y-5">
     <PageHeader eyebrow="Live data" title="Round History" icon={Clock3}
-      description="Real Aviator outcomes stored by the history collector."
+      description="Real Aviator outcomes collected from the configured Orbit Data Watch and stored in the existing round history."
       action={<DataFreshness timestamp={status.last_update || system.dataset?.last_timestamp} records={status.count} />} />
     {error && <div role="status" className="rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">{error} Showing the last available history.</div>}
     <section className="grid gap-4 md:grid-cols-4">
@@ -70,6 +72,20 @@ export default function LiveHistory() {
       <Card><Metric label="Previous" value={mult(status.previous?.multiplier)} /></Card>
       <Card><Metric label="Round Count" value={status.count ?? 0} /></Card>
     </section>
+    <section className="grid gap-4 md:grid-cols-4">
+      <Card><Metric label="Collection Source" value={status.data_source === 'ORBIT_DATA_WATCH_API' ? 'Orbit Data Watch API' : status.data_source || 'Unknown'} /></Card>
+      <Card><Metric label="Orbit API" value={status.orbit_api?.status || 'NOT_CONFIGURED'} /></Card>
+      <Card><Metric label="Latest API Reading" value={timeText(status.orbit_api?.latestReadingAt)} /></Card>
+      <Card><Metric label="Last Successful Sync" value={timeText(status.last_successful_sync)} /></Card>
+    </section>
+    {status.orbit_api?.sourceStatus === 'UNAVAILABLE' && <div role="status" className="rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+      The Orbit API is connected, but the Data Watch reports that its source is unavailable. Check the watch in Orbit.
+    </div>}
+    {(status.orbit_api?.lastError || status.orbit_api?.lastValidationError || status.orbit_api?.truncatedReadings > 0) && <div role="status" className="rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+      Orbit collection reports {status.orbit_api.lastError || status.orbit_api.lastValidationError}.
+      {' '}Archived readings with validation errors: {status.orbit_api.invalidReadings ?? 0}; unverified continuity changes: {status.orbit_api.continuityGaps ?? 0}.
+      {' '}Readings with selector results beyond the API response cap: {status.orbit_api.truncatedReadings ?? 0}.
+    </div>}
     <section className="grid gap-4 md:grid-cols-4">
       <Card><Metric label="Minimum" value={mult(stats.min)} /></Card>
       <Card><Metric label="Maximum" value={mult(stats.max)} /></Card>
@@ -83,7 +99,7 @@ export default function LiveHistory() {
       {rounds.length === 0 ? <EmptyState title="No rounds recorded" description="The collector has not supplied round data yet." /> :
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-8">
           {rounds.slice(-40).reverse().map((round) => <div key={round.round_id || round.round_index}
-            className={`rounded border p-2 text-center ${round.multiplier >= 2 ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-zinc-800 bg-zinc-950'}`}>
+            className={`rounded border p-2 text-center ${round.multiplier > 2 ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-rose-500/30 bg-rose-500/10'}`}>
             <div className="text-sm font-semibold">{mult(round.multiplier)}</div><div className="text-xs text-zinc-500">#{round.round_index}</div>
           </div>)}
         </div>}

@@ -23,6 +23,10 @@ The Signal API in this codebase is an internal service backed by PostgreSQL; it 
 
 ### Current validation and live measurement status
 
+This section is a historical record of the pre-Orbit Playwright collector. The
+current Round History source is the Orbit Data Watch API; the old browser
+collector and its launch path have since been removed.
+
 - **Playwright-only conversion:** `BrowserManager` now imports `chromium` from the official `playwright` package. Removed `playwright-extra`, its Puppeteer stealth plugin, the MV3 source/bridge, extension pairing settings, and the unused Selenium diagnostic driver. The existing Node Playwright collector remains the round-history owner and retains its durable outbox and ordered delivery pipeline.
 - **Validation after conversion:** 52 focused BrowserManager/CDP/collector-delivery/PostgreSQL-store Node tests passed; the health regression file passed 13 tests. The full Node suite reported 141 passed and 3 failed. Those failures are in unchanged `LoginManager` test coverage: one page mock lacks Playwright's `.first()` locator method, and two login-route assertions disagree with the current session result. The run duration was 37.55 seconds. These tests did not involve the removed bridge.
 - **Observed-round crash recovery:** the inbox stores both observed and committed replay payloads. Events remain pending through signal acceptance and are acknowledged only after a PostgreSQL snapshot commit. The queue is bounded and observed events retain FIFO order. Snapshot commits run on a separate one-thread executor and inbox markers are updated in a batch transaction.

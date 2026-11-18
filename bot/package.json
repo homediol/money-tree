@@ -2,9 +2,9 @@
   "name": "winner-round-collector",
   "version": "2.0.0",
   "private": true,
-  "description": "Single-owner Aviator round history collector",
+  "description": "Single-owner Orbit Data Watch Aviator round history collector",
   "type": "module",
-  "main": "collector/index.js",
+  "main": "orbit-roundhistory-collector.js",
   "scripts": {
     "start": "node collector/lock-runner.js",
     "test": "node --test tests/*.test.js",

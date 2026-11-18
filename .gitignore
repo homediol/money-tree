@@ -135,3 +135,6 @@ dist/
 backend/artifacts/
 backend/*.log
 *.tmp
+
+# Local research datasets are kept out of source pushes.
+research_phase*/

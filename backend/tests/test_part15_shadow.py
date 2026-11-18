@@ -9,7 +9,7 @@ from app.shadow import ShadowManager
 
 
 class Health:
-    def can_bet_now(self, mode=None):
+    def can_shadow(self):
         return {"allowed": True, "reasons": []}
 
 
@@ -28,7 +28,7 @@ def test_shadow_start_is_blocked_when_health_is_unsafe(tmp_path):
     shadow = ShadowManager(repository=repo)
     try:
         asyncio.run(shadow.start(health=SimpleNamespace(
-            can_bet_now=lambda mode=None: {"allowed": False, "reasons": ["history stale"]})))
+            can_shadow=lambda: {"allowed": False, "reasons": ["history stale"]})))
     except ValueError as exc:
         assert "SHADOW START BLOCKED" in str(exc)
     else:
@@ -58,7 +58,6 @@ def test_shadow_uses_one_fixed_stake_and_cashout_and_rejects_duplicate(tmp_path)
         assert len(trades) == 1
         assert trades[0]["result"] == "LOSS"
         assert trades[0]["pnl"] == -125
-        assert repo.list_executions() == []
 
     asyncio.run(run())
 
@@ -101,8 +100,11 @@ def test_restart_recovers_pending_shadow_result_and_requires_exact_round(tmp_pat
         recovered = ShadowManager(repository=repo)
         assert recovered.mode == "PAUSED"
         assert recovered.status()["pending_rounds"] == ["round-9"]
-        assert recovered.status()["verified_real_balance"] is None
-        assert recovered.betting_status()["current_verified_real_balance"] is None
+        status = recovered.status()
+        assert status["production_isolated"] is True
+        # SHADOW has no live betting balance contract; this paper-only status
+        # deliberately does not expose a fabricated verified real balance.
+        assert "verified_real_balance" not in status
         trade = repo.list_shadow_trades(session_id="SH-restart")[0]
         assert trade["status"] == "UNKNOWN"
         try:

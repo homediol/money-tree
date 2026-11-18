@@ -22,7 +22,6 @@ api.interceptors.request.use((config) => {
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
-
 api.interceptors.response.use((response) => response, async (error) => {
   const config = error?.config;
   if (shouldRetryReadFailure(config, error)) {
@@ -41,45 +40,3 @@ api.interceptors.response.use((response) => response, async (error) => {
   reportBackendRequestFailure(error);
   return Promise.reject(error);
 });
-
-export async function getBettingStatus() {
-  return (await api.get('/api/betting/status')).data;
-}
-
-export async function checkBettingBrowser(includeSnapshot = false) {
-  return (await api.get('/api/betting/browser', {
-    params: includeSnapshot ? { include_snapshot: true } : {},
-  })).data;
-}
-
-export async function stopBettingSession() {
-  return (await api.post('/api/betting/stop')).data;
-}
-
-export async function emergencyStopBetting() {
-  return (await api.post('/api/betting/emergency-stop')).data;
-}
-
-export async function getBettingLedger(params = {}) {
-  return (await api.get('/api/betting/ledger', { params })).data;
-}
-
-export async function resetEmergencyStop() {
-  return (await api.post('/api/live/emergency-stop/reset')).data;
-}
-
-export async function getResultExecutions(limit = 50) {
-  return (await api.get('/api/results/executions', { params: { limit } })).data.executions || [];
-}
-
-export async function getExecutionDetail(id) {
-  return (await api.get(`/api/results/executions/${encodeURIComponent(id)}`)).data;
-}
-
-export async function getBalanceLedger(limit = 100) {
-  return (await api.get('/api/results/ledger', { params: { limit } })).data.entries || [];
-}
-
-export async function getSessionMetrics(limit = 10) {
-  return (await api.get('/api/results/session-metrics', { params: { limit } })).data.sessions || [];
-}

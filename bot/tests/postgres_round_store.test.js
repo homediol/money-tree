@@ -68,8 +68,23 @@ test('collector lease is held on one session and unlocked at store shutdown', as
   assert.equal(poolEnded, true);
 });
 
+test('broken PostgreSQL pool is discarded and scheduled for bounded reconnection', async () => {
+  const store = new PostgresRoundStore();
+  let ended = 0;
+  store.pool = { async end() { ended += 1; } };
+  const before = Date.now();
+  const snapshot = await store.markUnavailable(Object.assign(new Error('connection terminated'), { code: '08006' }));
+
+  assert.equal(ended, 1);
+  assert.equal(store.pool, null);
+  assert.equal(snapshot.status, 'UNAVAILABLE');
+  assert.match(snapshot.last_error, /connection terminated/);
+  assert.ok(store.storageRetryAt >= before + 1000);
+});
+
 test('saveRounds returns committed database identity and total row count for capture logging', async () => {
   const store = new PostgresRoundStore();
+  let wakeHint = null;
   const persisted = [{
     round_id: 'live-round-1', platform_round_id: null, platform_round_index: null,
     round_index: 11, local_round_index: 11, multiplier: 2.42,
@@ -81,6 +96,7 @@ test('saveRounds returns committed database identity and total row count for cap
   }];
   const client = {
     async query(sql, params = []) {
+      if (sql.includes('pg_notify')) { wakeHint = JSON.parse(params[0]); return { rowCount: 0, rows: [] }; }
       if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' || sql.includes('pg_advisory_xact_lock')) return { rowCount: 0, rows: [] };
       if (sql.includes('COALESCE(MAX(round_index)')) return { rows: [{ max_round_index: 10, total_history: 10, last_round_id: 'prior' }] };
       if (sql.includes('SELECT collector_state')) return { rows: [{ collector_state: 'COLLECTING',
@@ -121,6 +137,8 @@ test('saveRounds returns committed database identity and total row count for cap
 
   const result = await store.saveRounds([persisted[0]], 'collector');
   assert.equal(result.saved, 1);
+  assert.deepEqual(wakeHint, { event_version: 1, round_id: 'live-round-1',
+    round_index: 11, stored_at: '2026-10-04T10:00:00.050Z' });
   assert.equal(result.totalPersistedRows, 11);
   assert.deepEqual(result.insertedRounds[0], {
     db_id: 501,

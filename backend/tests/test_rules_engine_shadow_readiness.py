@@ -4,6 +4,9 @@ import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from app.api import rules_engine as api
 from app.rules_engine import RulesEngine
 
@@ -27,18 +30,17 @@ class _Repository:
 
     def __init__(self, boundary):
         self.boundary = boundary
+        self.snapshot_reads = 0
 
     def connect(self):
         return _Connection()
 
     def round_distribution_snapshot(self):
+        self.snapshot_reads += 1
         return {"latest": self.boundary}
 
     def round_distribution_events(self, *_args):
         return []
-
-    def latest_platform_balance_observation(self):
-        raise RuntimeError("optional balance observation is unavailable")
 
 
 def _boundary():
@@ -70,21 +72,7 @@ def _request(repository, engine, payload=None):
                 "aviator_page_count": 1, "aviator_target_id": "shared-page",
                 "aviator_page_state": "OPEN", "game_frame_count": 1,
                 "game_frame_state": "READY", "history_target_id": "shared-page",
-                "history_page_state": "OPEN", "betting_target_id": "shared-page",
-                "betting_page_state": "OPEN",
-            },
-            "betting_ui_configuration": {
-                "status": "READY", "updated_at": datetime.now(timezone.utc).isoformat(),
-            },
-            "cashout_initialization": {
-                "status": "READY", "updated_at": datetime.now(timezone.utc).isoformat(),
-                "panel_1_cashout": "READY", "panel_2_cashout": "READY",
-                "panels": [
-                    {"status": "READY", "auto_bet": "OFF", "auto_cashout": "ON",
-                     "multiplier": "2.00", "auto_tab_selected": True},
-                    {"status": "READY", "auto_bet": "OFF", "auto_cashout": "ON",
-                     "multiplier": "2.00", "auto_tab_selected": True},
-                ],
+                "history_page_state": "OPEN",
             },
         }
 
@@ -109,7 +97,6 @@ def test_shadow_readiness_uses_feed_and_postgres_without_live_platform_requireme
 
     assert readiness["ready"] is True
     assert readiness["mode"] == "SHADOW"
-    assert readiness["automatic_execution"] == "OFF"
     assert not any("BALANCE" in blocker or "CASHOUT" in blocker or "LIVE_AUTHORIZATION" in blocker
                    for blocker in readiness["blockers"])
 
@@ -132,8 +119,67 @@ def test_shadow_start_succeeds_when_optional_platform_balance_read_fails():
         asyncio.to_thread = original_to_thread
 
     assert session["status"] == "RUNNING"
-    assert session["automatic_execution"] == "OFF"
     assert engine.status()["active_session"]["session_id"] == session["session_id"]
+
+
+def test_shadow_starts_from_fresh_watch_observation_instead_of_old_database_boundary():
+    engine = RulesEngine()
+    engine.configure("RECENT_5_H_GE_4", enabled=True)
+    old = _boundary()
+    old["observed_at"] = "2020-01-01T00:00:00+00:00"
+    request = _request(_Repository(old), engine)
+    now = datetime.now(timezone.utc).isoformat()
+    event = dict(_boundary(), event_type="round.observed", durability="PENDING",
+                 stream_sequence=None, round_id="watch-round", round_index=11,
+                 observed_at=now, delivery_mode="LIVE",
+                 source_metadata={"source": "ORBIT_DATA_WATCH_API"})
+    request.app.state.latest_watch_observation = event
+    request.app.state.history_collector = SimpleNamespace(health_status=lambda **_: {
+        "data_source": "ORBIT_DATA_WATCH_API", "status": "COLLECTING",
+        "collector_process_status": "RUNNING", "heartbeat_state": "FRESH",
+        "orbit_api": {"status": "CONNECTED", "sourceStatus": "HEALTHY",
+                      "lastSuccessfulSync": now, "latestReadingAt": now}})
+    assert api._shadow_readiness(request)["ready"] is True
+    assert request.app.state.wp.repository.snapshot_reads == 0
+    original_to_thread = asyncio.to_thread
+    async def inline_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+    asyncio.to_thread = inline_to_thread
+    try:
+        session = asyncio.run(api.start_session(request))
+    finally:
+        asyncio.to_thread = original_to_thread
+    assert session["start_boundary"]["roundId"] == "watch-round"
+    assert session["context"] == []
+
+
+def test_status_route_uses_in_memory_watch_boundary_and_reports_server_timing():
+    engine = RulesEngine()
+    repository = _Repository(_boundary())
+    app = FastAPI()
+    app.include_router(api.router)
+    app.state.rules_engine = engine
+    app.state.wp = SimpleNamespace(repository=repository)
+    now = datetime.now(timezone.utc).isoformat()
+    app.state.latest_watch_observation = dict(
+        _boundary(), event_type="round.observed", durability="PENDING",
+        stream_sequence=None, delivery_mode="LIVE", source_metadata={"source": "ORBIT_DATA_WATCH_API"})
+    app.state.history_collector = SimpleNamespace(health_status=lambda **_: {
+        "data_source": "ORBIT_DATA_WATCH_API", "status": "COLLECTING",
+        "collector_process_status": "RUNNING", "heartbeat_state": "FRESH",
+        "last_observed_round": "round-watch", "last_observed_at": now,
+        "orbit_api": {"status": "CONNECTED", "sourceStatus": "HEALTHY",
+                      "lastSuccessfulSync": now, "latestReadingAt": now},
+    })
+    app.state.shadow_signal_bridge_status = {"state": "RUNNING"}
+
+    with TestClient(app) as client:
+        response = client.get("/api/rules-engine/status")
+
+    assert response.status_code == 200
+    assert "total;dur=" in response.headers["server-timing"]
+    assert response.json()["shadow_readiness"]["ready"] is True
+    assert repository.snapshot_reads == 0
 
 
 def test_shadow_start_route_replaces_explicit_integrity_stopped_session():
@@ -163,51 +209,7 @@ def test_shadow_start_route_replaces_explicit_integrity_stopped_session():
     assert new["status"] == "RUNNING"
     assert new["replaced_session_id"] == old["session_id"]
     assert engine.session(old["session_id"])["status"] == "MANUALLY_STOPPED"
-    assert new["automatic_execution"] == "OFF"
     assert engine.status()["active_session"]["session_id"] == new["session_id"]
-
-
-def test_fresh_verified_frame_is_not_downgraded_by_unknown_cached_state():
-    engine = RulesEngine()
-    engine.configure("RECENT_5_H_GE_4", enabled=True)
-    request = _request(_Repository(_boundary()), engine)
-    original = request.app.state.history_collector.health_status
-
-    def fresh_frame_with_unknown_aggregate(*, persist=False):
-        result = original(persist=persist)
-        result["status"] = "UNKNOWN"
-        return result
-
-    request.app.state.history_collector.health_status = fresh_frame_with_unknown_aggregate
-
-    readiness = api._shared_aviator_readiness(request)
-    shadow = api._shadow_readiness(request, engine)
-
-    assert readiness["aviator_page_ready"] == "READY"
-    assert readiness["game_iframe_ready"] == "READY"
-    assert readiness["history_observer_ready"] == "READY"
-    assert readiness["cashout_configured"] == "READY"
-    assert readiness["automatic_execution"] == "OFF"
-    assert readiness["platform_cashout_acknowledged"] is None
-    assert shadow["ready"] is True
-
-
-def test_stale_cashout_readback_remains_stale_even_with_fresh_frame():
-    engine = RulesEngine()
-    request = _request(_Repository(_boundary()), engine)
-    original = request.app.state.history_collector.health_status
-
-    def stale_cashout(*, persist=False):
-        result = original(persist=persist)
-        result["cashout_initialization"]["updated_at"] = "2020-01-01T00:00:00+00:00"
-        return result
-
-    request.app.state.history_collector.health_status = stale_cashout
-
-    readiness = api._shared_aviator_readiness(request)
-
-    assert readiness["game_iframe_ready"] == "READY"
-    assert readiness["cashout_configured"] == "STALE"
 
 
 def test_stopping_gap_paused_session_preserves_integrity_reason():
@@ -317,6 +319,9 @@ def test_gap_paused_old_session_does_not_pin_new_shadow_stream_cursor():
     assert engine.status()["active_session"]["session_id"] == current["session_id"]
     assert engine.status()["status"] == "RUNNING"
     assert engine.needs_round_observation() is True
+    prior.setdefault("event_records", {})["pending:stream-1:old"] = {"persistence_status": "PENDING"}
+    assert engine.stream_cursor(boundary["stream_id"], int(boundary["stream_sequence"]) + 5) \
+        == int(boundary["stream_sequence"]) - 10
 
 
 def test_persisted_target_identity_blocks_a_late_true_rule_selection():

@@ -6,11 +6,9 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 
 import { BrowserSupervisor } from '../collector/BrowserManager.js';
-import { Collector, _installObserver } from '../collector/Collector.js';
 import { FrameManager } from '../collector/FrameManager.js';
-import { SharedPageCoordinator } from '../collector/SharedPageCoordinator.js';
 import { isAviatorRoute, LoginManager } from '../collector/LoginManager.js';
-import { canContinueReadOnlyCollection, selectMissingLegacyRounds } from '../collector/index.js';
+import { canContinueReadOnlyCollection, selectMissingLegacyRounds } from '../collector/LegacyHistoryImport.js';
 import {
   appendRounds, inferNewMultipliers, normalizeMultiplier,
   readRoundHistory, stableRoundId, writeRoundHistory,
@@ -33,7 +31,6 @@ test('validates, orders, persists atomically and preserves normalized identity',
   assert.equal(fs.existsSync(file + '.tmp'), false);
   assert.deepEqual(readRoundHistory(file), rows);
 });
-
 test('parses snapshots, detects only new rounds and appends chronologically', () => {
   const overlap = [1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0];
   assert.deepEqual(inferNewMultipliers(overlap, [5, ...overlap]), [5]);
@@ -247,7 +244,6 @@ test('shared page recovery does not replace or close the active game tab', async
 
   assert.equal(await manager.recoverHistoryPage(), oldHistory);
   assert.equal(manager._context, context);
-  assert.equal(manager._bettingPage, oldHistory);
   assert.deepEqual(pages, [oldHistory]);
 });
 
@@ -458,37 +454,6 @@ test('frame manager uses direct CDP when Playwright omits the game OOPIF', async
   assert.equal(readyEvents[0].method, 'direct-cdp');
 });
 
-test('collector keeps reading the shared game iframe while betting UI lock is held', async () => {
-  const gameFrame = {
-    url: () => 'https://aviator-next.spribegaming.com/',
-    isDetached: () => false,
-    locator: () => ({ first: () => ({ waitFor: async () => {} }) }),
-  };
-  const mainFrame = { url: () => 'https://winner.rw/en/virtual/crash-games/aviator', isDetached: () => false };
-  const page = { frames: () => [mainFrame, gameFrame], mainFrame: () => mainFrame };
-  const pageManager = {
-    getAviatorPage: async () => page,
-    getAviatorFrame: async () => gameFrame,
-  };
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'winner-history-ui-lock-'));
-  const coordinator = new SharedPageCoordinator({ lockDirectory: path.join(tempDir, randomUUID()) });
-  let releaseUi;
-  let uiStarted;
-  const started = new Promise(resolve => { uiStarted = resolve; });
-  const uiOperation = coordinator.withBettingUiLock(() => new Promise(resolve => {
-    releaseUi = resolve;
-    uiStarted();
-  }));
-  await started;
-  const frameManager = new FrameManager({ pageManager });
-
-  const observedFrame = await frameManager.waitForFrame(page, { timeoutMs: 50 });
-  assert.equal(observedFrame, gameFrame);
-  releaseUi();
-  await uiOperation;
-  fs.rmSync(tempDir, { recursive: true, force: true });
-});
-
 test('frame manager does not return an outer Aviator iframe without payouts', async () => {
   let checks = 0;
   const outer = {
@@ -583,134 +548,4 @@ test('detached frame is not reused as a valid game frame', async () => {
 
   await assert.rejects(manager.waitForFrame(page, { timeoutMs: 10 }), error => error.code === 'GAME_FRAME_MISSING');
   assert.equal(manager.readiness().frameAttached, false);
-});
-
-test('collector uses Node-side mutation polling for a direct CDP frame', async () => {
-  let requestedIdle = null;
-  const frame = {
-    waitForCollectorMutation: async idleMs => {
-      requestedIdle = idleMs;
-      return { multipliers: [2.5, 1.1], sig: '2.50|1.10', ts: '2026-09-27T10:00:00Z' };
-    },
-  };
-  const result = await new Collector().waitForMutation(frame, 1234);
-  assert.equal(requestedIdle, 1234);
-  assert.deepEqual(result.multipliers, [2.5, 1.1]);
-  assert.equal(result.timestamp, '2026-09-27T10:00:00Z');
-});
-
-test('collector installs an observer from a ready frame', async () => {
-  const frame = { evaluate: async () => ({ ok: true, multipliers: [1.2, 2.5] }) };
-  const result = await new Collector().install(frame);
-  assert.deepEqual(result.multipliers, [1.2, 2.5]);
-  assert.equal(result.signature, '1.20|2.50');
-});
-
-test('payout observer filters unrelated mutations and reuses cached phase context', async () => {
-  const previous = {
-    window: globalThis.window,
-    document: globalThis.document,
-    MutationObserver: globalThis.MutationObserver,
-    setInterval: globalThis.setInterval,
-  };
-  const notifications = [];
-  const observerCallbacks = [];
-  let payoutListReads = 0;
-  let providerMarkerReads = 0;
-  const payout = {
-    nodeType: 1,
-    textContent: '1.50x',
-    closest: selector => selector === '.payouts-block .payout' ? payout
-      : selector === '.payouts-block' ? payoutBlock : null,
-    matches: selector => selector === '.payouts-block .payout',
-  };
-  const payoutBlock = {
-    parentElement: {},
-    contains: element => element === payout,
-  };
-  const button = {
-    disabled: false,
-    className: 'btn-success bet',
-    textContent: 'Bet',
-    offsetWidth: 1,
-    offsetHeight: 1,
-    classList: { contains: name => name === 'active' ? true : false },
-    getAttribute: () => null,
-  };
-  const input = { offsetWidth: 1, offsetHeight: 1 };
-  const betTab = {
-    textContent: 'Bet',
-    classList: { contains: name => name === 'active' },
-  };
-  const betBlock = {
-    querySelector: selector => selector === '.btn-success.bet' ? button
-      : selector.startsWith('input') ? input : null,
-    querySelectorAll: selector => selector === '.tab' ? [betTab] : [],
-    contains: () => false,
-  };
-  const unrelated = { nodeType: 1, closest: () => null, contains: () => false };
-  globalThis.window = {
-    getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
-    __collectorNotify: payload => notifications.push(JSON.parse(payload)),
-  };
-  globalThis.document = {
-    body: {},
-    querySelector: selector => selector === '.payouts-block .payout' ? payout
-      : selector === '.payouts-block' ? payoutBlock
-        : selector === '.bet-block' ? betBlock : null,
-    querySelectorAll: selector => {
-      if (selector === '.payouts-block .payout') { payoutListReads += 1; return [payout]; }
-      if (selector.startsWith('[data-aviator-phase]')) { providerMarkerReads += 1; return []; }
-      return [];
-    },
-  };
-  globalThis.MutationObserver = class {
-    constructor(callback) { observerCallbacks.push(callback); }
-    observe() {}
-    disconnect() {}
-  };
-  globalThis.setInterval = () => 1;
-  try {
-    const frame = {
-      collectorBindingName: '__collectorNotify',
-      maxQueuedEvents: 1,
-      evaluate: (pageFunction, args) => pageFunction(args),
-    };
-    const installed = await _installObserver(frame, '.payouts-block .payout');
-    assert.equal(installed.ok, true);
-    assert.equal(payoutListReads, 2);
-    assert.equal(providerMarkerReads, 1);
-
-    payout.textContent = '2.50x';
-    observerCallbacks[0]([
-      { type: 'childList', target: unrelated, addedNodes: [], removedNodes: [] },
-      { type: 'characterData', target: { nodeType: 3, parentElement: payout } },
-    ]);
-
-    assert.equal(payoutListReads, 2, 'a text update uses the cached payout node instead of rescanning');
-    assert.equal(providerMarkerReads, 1, 'payout extraction does not repeat the game-phase DOM scan');
-    assert.equal(notifications.filter(event => !event.phaseOnly).length, 1);
-    assert.equal(notifications.find(event => !event.phaseOnly).multipliers[0], 2.5);
-    assert.equal(notifications.find(event => !event.phaseOnly).gamePhase.phase, 'UNKNOWN');
-
-    // Exercise the bounded in-frame compatibility path after the pushed
-    // transport is disabled. Overflow becomes an explicit recovery signal.
-    globalThis.window.__aviatorCollector.notificationBindingName = null;
-    payout.textContent = '3.00x';
-    observerCallbacks[0]([{ type: 'characterData', target: { nodeType: 3, parentElement: payout } }]);
-    payout.textContent = '4.00x';
-    observerCallbacks[0]([{ type: 'characterData', target: { nodeType: 3, parentElement: payout } }]);
-    assert.equal(globalThis.window.__aviatorCollector.queue.length, 1);
-    assert.equal(globalThis.window.__aviatorCollector.queueOverflow, true);
-    const collector = new Collector();
-    assert.equal((await collector.waitForMutation(frame, 100)).multipliers[0], 3);
-    assert.deepEqual(await collector.waitForMutation(frame, 100), {
-      error: 'collector_page_event_queue_overflow',
-    });
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete globalThis[key];
-      else globalThis[key] = value;
-    }
-  }
 });

@@ -4,6 +4,7 @@ import Card from '../components/Card.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import { getApiToken, setApiToken } from '../auth.js';
 import { api } from '../services/api.js';
+import NotificationSettings from '../components/NotificationSettings.jsx';
 
 export default function SystemSettings() {
   const [token, setToken] = useState(getApiToken());
@@ -44,13 +45,13 @@ export default function SystemSettings() {
         </label>
         <button type="submit" className="rounded bg-emerald-500 px-4 py-2 font-medium text-zinc-950 hover:bg-emerald-400">Save for this browser</button>
       </form>
-      <p className="mt-3 text-sm text-zinc-500">Localhost dashboard access is created automatically with an HttpOnly session. Remote access requires the backend owner API key; sensitive LIVE authorization still uses that key.</p>
+      <p className="mt-3 text-sm text-zinc-500">Localhost dashboard access is created automatically with an HttpOnly session. Remote access requires the backend owner API key.</p>
     </Card>
+    <NotificationSettings />
     {error && <div role="status" className="rounded border border-amber-500/30 bg-amber-500/10 p-3 text-amber-200">{error}</div>}
     <section className="grid gap-4 sm:grid-cols-2">
       <Card title="Backend status"><div className="text-lg font-semibold">{health?.status || 'UNKNOWN'}</div><div className="mt-2 text-sm text-zinc-500">Database: {health?.database?.status || 'UNKNOWN'}</div></Card>
       <Card title="Round history"><div className="text-lg font-semibold">{system?.dataset?.valid_records ?? '—'} rounds</div><div className="mt-2 text-sm text-zinc-500">Source: {system?.dataset?.source || 'UNKNOWN'}</div><div className="mt-1 text-sm text-zinc-500">Latest round index: {system?.dataset?.last_round_index ?? 'UNKNOWN'}</div></Card>
     </section>
-    <Card title="Execution safety"><div className="text-sm text-zinc-300">Automatic real-money execution is OFF until a rule selection is bound to a verified upcoming target and platform acceptance and settlement evidence are verified. The independent emergency stop remains available on the Betting page.</div></Card>
   </div>;
 }

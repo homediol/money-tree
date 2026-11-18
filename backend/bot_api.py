@@ -1,12 +1,9 @@
 #!/home/diolo/winner predict/backend/.venv/bin/python3
 """
-FastAPI service for controlling the Playwright automation bot.
+FastAPI compatibility service for Orbit Round History status.
 
-Provides REST endpoints for:
-  - POST /bot/start   — launch the bot with phone + password
-  - POST /bot/stop    — gracefully stop the bot
-  - GET  /bot/status  — current bot status and health
-  - GET  /bot/logs    — recent bot output
+The former browser-based history runner is retired. Status and logs remain
+available for compatibility; start requests cannot launch Playwright.
 
 Runs as a separate service on port 5001.
 """
@@ -179,12 +176,8 @@ async def root():
 
 @app.post("/bot/start", response_model=Dict[str, Any])
 async def start_bot(req: StartRequest) -> Dict[str, Any]:
-    """Start the Playwright bot with the given credentials."""
-    logger.info("Start request for phone %s (headless=%s)", req.phone[-4:], req.headless)
-    result = bot_runner.start(req.phone, req.password, req.headless)
-    if not result.get("success"):
-        raise HTTPException(status_code=409, detail=result.get("error", "Failed to start bot"))
-    return result
+    """The retired browser collector cannot be started through this API."""
+    raise HTTPException(status_code=410, detail="round_history_uses_orbit_data_watch_api")
 
 
 @app.post("/bot/stop", response_model=StopResponse)
@@ -197,12 +190,8 @@ async def stop_bot() -> StopResponse:
 
 @app.post("/bot/manual-aviator", response_model=Dict[str, Any])
 async def manual_aviator() -> Dict[str, Any]:
-    """Tell the running bot the user has manually reached Aviator."""
-    logger.info("Manual Aviator confirmation received")
-    result = bot_runner.request_manual_start()
-    if not result.get("success"):
-        raise HTTPException(status_code=409, detail=result.get("error", "Bot is not ready"))
-    return result
+    """Manual browser collection has been retired."""
+    raise HTTPException(status_code=410, detail="round_history_uses_orbit_data_watch_api")
 
 
 @app.get("/bot/status", response_model=Dict[str, Any])

@@ -1,4 +1,4 @@
-/** Ordered, restart-safe observed -> PostgreSQL -> persisted round delivery. */
+/** Ordered delivery from a durable local ingress through observed and PG stages. */
 
 function retryDelay(attempt) {
   return Math.min(30_000, 250 * (2 ** Math.min(Math.max(0, attempt - 1), 7)));
@@ -27,12 +27,15 @@ export class RoundDeliveryPipeline {
     this.loopPromise = null;
     this.wakeResolve = null;
     this.lastFailure = null;
+    this.lastBackendSuccessAt = null;
     this.observationMonotonic = new Map();
     this.lastRoundTiming = null;
     this.historyApiVisibilitySamples = [];
     this.latencySamples = {
       page_mutation_to_multiplier_extraction_ms: [], page_extraction_ms: [], node_receive_to_validation_ms: [],
       validation_to_durable_append_ms: [], observation_to_durable_append_ms: [],
+      stream_event_to_durable_append_ms: [],
+      stream_event_to_decision_ready_ms: [],
       validation_to_api_dispatch_ms: [], api_request_to_rules_engine_receive_ms: [],
       rules_engine_evaluation_ms: [], rules_complete_to_other_consumer_enqueue_ms: [],
       collector_ack_wait_for_rules_decision_ms: [],
@@ -43,7 +46,11 @@ export class RoundDeliveryPipeline {
     };
   }
 
-  enqueue(rounds, { deliveryMode = 'LIVE', timing = null, timingsByRoundId = null } = {}) {
+  enqueue(rounds, { deliveryMode = 'LIVE', deliveryModes = null, timing = null, timingsByRoundId = null } = {}) {
+    if (deliveryModes !== null && (!Array.isArray(deliveryModes) || deliveryModes.length !== rounds.length
+        || deliveryModes.some(mode => mode !== 'LIVE' && mode !== 'RECOVERED'))) {
+      throw new TypeError('deliveryModes must provide one LIVE or RECOVERED value per round');
+    }
     const started = performance.now();
     for (const round of rounds) {
       const id = String(round.round_id);
@@ -53,7 +60,8 @@ export class RoundDeliveryPipeline {
         this.observationMonotonic.set(id, { enqueuedMonotonic: started, timing: roundTiming || null });
       }
     }
-    const records = rounds.map(round => ({ ...round, delivery_mode: deliveryMode }));
+    const records = rounds.map((round, index) => ({ ...round,
+      delivery_mode: deliveryModes ? deliveryModes[index] : deliveryMode }));
     let result;
     try { result = this.outbox.appendMany(records); }
     catch (error) {
@@ -69,12 +77,17 @@ export class RoundDeliveryPipeline {
       const observation = this.observationMonotonic.get(id);
       if (observation) observation.durableAppendMonotonic = appendCompletedMonotonic;
       const sourceTiming = observation?.timing;
+      if (Number.isFinite(sourceTiming?.streamReceivedMonotonicMs)) {
+        this._sample('stream_event_to_durable_append_ms',
+          appendCompletedMonotonic - sourceTiming.streamReceivedMonotonicMs);
+      }
       if (!sourceTiming) {
         this.lastRoundTiming = {
           round_id: id,
           timestamps: { mutation_observed_at: null, extraction_started_at: null,
             multiplier_extracted_at: null, node_received_at: null, normalized_at: null,
             validated_at: null, durable_append_at: durableAppendAt,
+            stream_event_received_at: null,
             database_write_started_at: null, database_commit_acknowledged_at: null,
             observed_api_receipt_at: null, persisted_event_acknowledged_at: null,
             round_history_api_visible_at: null },
@@ -102,6 +115,7 @@ export class RoundDeliveryPipeline {
           normalized_at: sourceTiming.normalizedAt || null,
           validated_at: sourceTiming.validationCompletedAt || null,
           durable_append_at: durableAppendAt,
+          stream_event_received_at: sourceTiming.streamReceivedAt || null,
           database_write_started_at: null,
           database_commit_acknowledged_at: null,
           observed_api_receipt_at: null,
@@ -182,18 +196,27 @@ export class RoundDeliveryPipeline {
     // it. Publish the oldest unacknowledged observed prefix before doing more
     // database or committed-event work.
     const unobserved = records.filter(row => !row.observed_handoff_at);
-    if (unobserved.length && this._dueAt(unobserved[0], 'observed') <= now) {
+    const live = unobserved.find(row => row.delivery_mode === 'LIVE'
+      && this._dueAt(row, 'observed') <= now
+      && Number.isFinite(Date.parse(row.observed_at || row.timestamp || ''))
+      && now - Date.parse(row.observed_at || row.timestamp) <= 15000
+      && Date.parse(row.observed_at || row.timestamp) <= now + 2000);
+    if (live) {
       // The API performs the Rules Engine priority evaluation before it
       // acknowledges this stage. Keep this latency-sensitive request to one
       // round; a large batch multiplied per-round evaluation time until the
       // collector's HTTP deadline expired and replayed the same prefix.
-      return { stage: 'observed', records: unobserved.slice(0, 1) };
+      return { stage: 'observed', records: [live] };
     }
 
     // Keep PostgreSQL writes in outbox order, but allow them to continue while
     // an earlier round waits for its committed-event HTTP acknowledgement.
-    const pendingPersistence = records.filter(row => row.persistence_status !== 'COMMITTED'
-      && row.observed_handoff_at);
+    const pendingPersistence = [];
+    for (const row of records) {
+      if (row.persistence_status === 'COMMITTED') continue;
+      if (!row.observed_handoff_at) break;
+      pendingPersistence.push(row);
+    }
     if (pendingPersistence.length && this._dueAt(pendingPersistence[0], 'persistence') <= now) {
       return { stage: 'persistence', records: pendingPersistence.slice(0, this.maxBatch) };
     }
@@ -204,6 +227,12 @@ export class RoundDeliveryPipeline {
       && !row.persisted_handoff_at);
     if (pendingHandoff.length && this._dueAt(pendingHandoff[0], 'persisted') <= now) {
       return { stage: 'persisted', records: pendingHandoff.slice(0, this.maxBatch) };
+    }
+
+    // Recovered backlog must not indefinitely starve its own acknowledged
+    // PostgreSQL writes or committed events when new readings keep arriving.
+    if (unobserved.length && this._dueAt(unobserved[0], 'observed') <= now) {
+      return { stage: 'observed', records: unobserved.slice(0, 1) };
     }
 
     const waits = [];
@@ -276,6 +305,19 @@ export class RoundDeliveryPipeline {
   async _process(stage, records) {
     if (stage === 'observed') {
       try {
+        // A queued live round can become historical while waiting for the
+        // backend. Never replay it as a live target after its freshness window.
+        const staleIds = records.filter(row => row.delivery_mode === 'LIVE'
+          && (!Number.isFinite(Date.parse(row.observed_at || row.timestamp || ''))
+            || Date.now() - Date.parse(row.observed_at || row.timestamp) > 15000
+            || Date.parse(row.observed_at || row.timestamp) > Date.now() + 2000))
+          .map(row => row.round_id);
+        if (staleIds.length) {
+          this.outbox.markRecovered(staleIds);
+          const stale = new Set(staleIds.map(String));
+          records = records.map(row => stale.has(String(row.round_id))
+            ? { ...row, delivery_mode: 'RECOVERED' } : row);
+        }
         const dispatchMonotonic = performance.now();
         const collectorTiming = records.map(record => {
           const observation = this.observationMonotonic.get(String(record.round_id));
@@ -298,6 +340,7 @@ export class RoundDeliveryPipeline {
         });
         const requestStartedMonotonic = performance.now();
         const receipt = await this.publishObserved(records, { collectorTiming });
+        this.lastBackendSuccessAt = new Date().toISOString();
         const requestFinishedMonotonic = performance.now();
         this._sample('collector_http_roundtrip_to_api_ack_ms',
           requestFinishedMonotonic - requestStartedMonotonic);
@@ -310,6 +353,12 @@ export class RoundDeliveryPipeline {
           if (observation) {
             this._sample('durable_append_to_api_receipt_ms',
               receiptMonotonic - (observation.durableAppendMonotonic ?? observation.enqueuedMonotonic));
+            const receivedAtMs = Date.parse(observation.timing?.streamReceivedAt || '');
+            const decisionReadyAtMs = Date.parse(apiReceiptAt);
+            if (Number.isFinite(receivedAtMs) && Number.isFinite(decisionReadyAtMs)
+                && decisionReadyAtMs >= receivedAtMs) {
+              this._sample('stream_event_to_decision_ready_ms', decisionReadyAtMs - receivedAtMs);
+            }
             if (this.lastRoundTiming?.round_id === String(record.round_id)) {
               this.lastRoundTiming.timestamps.observed_api_receipt_at = apiReceiptAt;
             }
@@ -338,6 +387,15 @@ export class RoundDeliveryPipeline {
 
     if (stage === 'persistence') {
       try {
+        // A failed PostgreSQL write closes the pool and records a retry
+        // deadline in PostgresRoundStore. Reinitialize it here once that
+        // deadline has elapsed; checking `pool` alone would otherwise make
+        // every persistence retry fail before the store can recover itself.
+        if (!this.roundStore.pool && !this.roundStore.usingFileFallback
+            && typeof this.roundStore.init === 'function'
+            && Date.now() >= (Number(this.roundStore.storageRetryAt) || 0)) {
+          await this.roundStore.init({ acquireCollectorLease: true });
+        }
         if (!this.roundStore.pool || this.roundStore.usingFileFallback) {
           throw Object.assign(new Error('PostgreSQL pool is not ready for round persistence'), {
             category: 'POSTGRES_NOT_READY',
@@ -412,6 +470,7 @@ export class RoundDeliveryPipeline {
           commit_acknowledged_at: record.commit_acknowledged_at || null,
         }));
         const receipt = await this.publishPersisted(events);
+        this.lastBackendSuccessAt = new Date().toISOString();
         if (this.lastRoundTiming && records.some(row => String(row.round_id) === this.lastRoundTiming.round_id)) {
           this.lastRoundTiming.timestamps.persisted_event_acknowledged_at = new Date().toISOString();
         }
@@ -509,6 +568,7 @@ export class RoundDeliveryPipeline {
       worker_running: this.running,
       worker_busy: this.busy,
       last_failure: this.lastFailure,
+      last_backend_success_at: this.lastBackendSuccessAt,
       last_round_timing: this.lastRoundTiming,
       round_history_api_visibility_samples: this.historyApiVisibilitySamples,
       measurement_availability: {

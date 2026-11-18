@@ -1,4 +1,4 @@
-"""Paper-trading session isolated from the real-money executor."""
+"""Paper-only session simulator isolated from platform actions."""
 from __future__ import annotations
 
 import asyncio
@@ -7,8 +7,8 @@ import math
 import uuid
 from datetime import datetime, timezone
 
-from app.betting.execution_defaults import DEFAULT_FIXED_STAKE, FIXED_CASHOUT
-from app.betting.schemas import DecisionIntent
+DEFAULT_FIXED_STAKE = 100
+FIXED_CASHOUT = 2.0
 
 
 def _now():
@@ -18,14 +18,12 @@ def _now():
 class ShadowManager:
     def __init__(self, *, repository, broadcaster=None):
         self.repository, self.broadcaster = repository, broadcaster
-        self.emergency_stop = None
         self.mode = "STOPPED"
         self.session = None
         self._pending = {}
         self._processed_rounds = set()
         self._lock = asyncio.Lock()
-        # Recover unresolved paper rounds as PAUSED/UNKNOWN. Recovery never
-        # resumes a session or authorizes a real execution automatically.
+        # Recover unresolved paper rounds as PAUSED/UNKNOWN.
         try:
             recent = repository.list_shadow_sessions(limit=1)
             recovered = recent[0] if recent else None
@@ -42,7 +40,7 @@ class ShadowManager:
                         self._pending.setdefault(str(trade["target_round_id"]), []).append(trade)
                 repository.save_shadow_session(recovered)
         except Exception:
-            # Startup remains safe and the mode manager will keep SHADOW off.
+            # Startup remains safe until the session history is readable.
             self.session = None
             self.mode = "STOPPED"
 
@@ -62,31 +60,7 @@ class ShadowManager:
                 "configuration": s.get("config"), "panel_summary": panels,
                 "latest_round_id": s.get("latest_round_id"),
                 "pending_rounds": list(self._pending),
-                "stop_reason": s.get("end_reason"),
-                "verified_real_balance": s.get("current_verified_real_balance"),
-                "real_balance_observed_at": s.get("real_balance_observed_at"),
-                "emergency_stop": bool(getattr(self.emergency_stop, "latched", False))}
-
-    def betting_status(self):
-        s = self.session or {}
-        return {"state": "SHADOW", "mode": "SHADOW", "automatic_enabled": self.mode == "SHADOW",
-                "current_balance": s.get("current_balance"),
-                "real_balance_at_start": s.get("starting_balance"),
-                "current_verified_real_balance": s.get("current_verified_real_balance"),
-                "starting_balance": s.get("starting_balance"), "goal_balance": s.get("goal_balance"),
-                "current_bet": next(iter(self._pending.values()), None),
-                "emergency_stop": bool(getattr(self.emergency_stop, "latched", False)),
-                "browser_status": "SHADOW", "last_ui_ready": True,
-                "latest_history_round_id": s.get("latest_round_id"),
-                "session_configuration": s.get("config")}
-
-    def record_real_balance(self, observation: dict):
-        if not self.session or not observation.get("verified"):
-            return False
-        self.session["current_verified_real_balance"] = float(observation["balance"])
-        self.session["real_balance_observed_at"] = observation.get("observed_at")
-        self.repository.save_shadow_session(self.session)
-        return True
+                "stop_reason": s.get("end_reason")}
 
     def drift(self):
         sample = int((self.session or {}).get("bets", 0))
@@ -103,7 +77,7 @@ class ShadowManager:
                 return self.status()
             if self._pending:
                 raise ValueError("SHADOW START BLOCKED: pending panel results require exact-round reconciliation")
-            gate = health.can_bet_now(mode="SIMULATION") if health else {"allowed": False, "reasons": ["health unavailable"]}
+            gate = health.can_shadow() if health else {"allowed": False, "reasons": ["health unavailable"]}
             if not gate.get("allowed"):
                 raise ValueError("SHADOW START BLOCKED: " + ", ".join(gate.get("reasons", [])))
             config = self._validate_configuration(configuration or {}, starting_balance, goal_balance)
@@ -126,7 +100,7 @@ class ShadowManager:
 
     @staticmethod
     def _validate_configuration(configuration, starting_balance, goal_balance):
-        """Keep the selected fixed stake and one selected execution panel."""
+        """Validate a fixed simulated stake and one selected paper panel."""
         if (isinstance(starting_balance, bool) or not isinstance(starting_balance, (int, float))
                 or not math.isfinite(float(starting_balance)) or starting_balance < 0):
             raise ValueError("starting balance must be a finite non-negative number")
@@ -186,7 +160,7 @@ class ShadowManager:
 
     async def resume(self, health=None):
         if self.mode == "PAUSED":
-            gate = health.can_bet_now(mode="SIMULATION") if health else {"allowed": False}
+            gate = health.can_shadow() if health else {"allowed": False}
             if not gate.get("allowed"): raise ValueError("SHADOW RESUME BLOCKED")
             self.mode = "SHADOW"; await self.emit("resumed", session=self.status())
         return self.status()
@@ -204,16 +178,14 @@ class ShadowManager:
             if pending:
                 await self._reconcile(pending, observed)
 
-    async def submit_decision(self, decision: dict, *, emergency_stop: bool = False):
+    async def submit_decision(self, decision: dict):
         async with self._lock:
-            return await self._submit_decision(decision, emergency_stop=emergency_stop)
+            return await self._submit_decision(decision)
 
-    async def _submit_decision(self, decision: dict, *, emergency_stop: bool = False):
+    async def _submit_decision(self, decision: dict):
         """Record one eligible, target-bound decision in the paper ledger."""
         if self.mode != "SHADOW" or not self.session:
             return {"accepted": False, "reason": "shadow_mode_not_active"}
-        if emergency_stop or bool(getattr(self.emergency_stop, "latched", False)):
-            return {"accepted": False, "reason": "emergency_stop"}
         if decision.get("status") != "READY_FOR_EXECUTION":
             return {"accepted": False, "reason": "decision_not_eligible"}
         decision_id = str(decision.get("decision_id") or "")
@@ -249,18 +221,11 @@ class ShadowManager:
             return {"accepted": False, "reason": "duplicate_shadow_decision"}
         if target_round_id in self._pending:
             return {"accepted": False, "reason": "shadow_round_already_pending"}
-        try:
-            intent = DecisionIntent(decision_id=decision_id, round_id=target_round_id,
-                                    execute=True, cashout=FIXED_CASHOUT,
-                                    bet_amount=int(amount), expires_at=expiry,
-                                    source="rules_engine")
-        except Exception as exc:
-            return {"accepted": False, "reason": f"invalid_decision:{exc}"}
         trade = {"execution_id": "P-" + uuid.uuid4().hex,
                  "session_id": self.session["session_id"], "decision_id": decision_id,
                  "target_round_id": target_round_id,
                  "panel": int(config.get("execution_panel", 0)) + 1,
-                 "profile": "FIXED", "bet_amount": intent.effective_amount(),
+                 "profile": "FIXED", "bet_amount": int(amount),
                  "cashout_target": FIXED_CASHOUT,
                  "balance_before": self.session["current_balance"],
                  "status": "PAPER_AUTHORIZED", "bet_accepted": True, "cashout_confirmed": False,
@@ -278,7 +243,7 @@ class ShadowManager:
         combined_pnl = 0.0
         for item in trades:
             target = float(item["cashout_target"])
-            win = multiplier >= target
+            win = multiplier > target
             stake = float(item["bet_amount"])
             pnl = stake * (target - 1) if win else -stake
             combined_pnl += pnl

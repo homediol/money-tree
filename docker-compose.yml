@@ -6,14 +6,14 @@ services:
     working_dir: /app/backend
     volumes:
       - .:/app
-    command: sh -c "pip install -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000"
+    command: sh -c "pip install -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000 --limit-concurrency ${WINNER_UVICORN_LIMIT_CONCURRENCY:-256} --timeout-keep-alive 5"
     init: true
     restart: unless-stopped
     stop_grace_period: 10s
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)); assert d['service']=='winner-predict-backend'"]
+      test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)); assert d['status']=='ONLINE'"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -31,6 +31,9 @@ services:
     init: true
     restart: unless-stopped
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5174"
     environment:
       - BACKEND_PROXY_TARGET=http://backend:8000
+      # The browser calls the independent Behaviour API directly in containerized
+      # frontend runs; this exposes no credentials to client code.
+      - VITE_BEHAVIOUR_API_BASE_URL=${VITE_BEHAVIOUR_API_BASE_URL:-http://localhost:8100}

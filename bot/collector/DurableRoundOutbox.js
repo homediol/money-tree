@@ -226,7 +226,21 @@ export class DurableRoundOutbox {
         // A process killed between mkdir and writing owner.json leaves an
         // empty lock. Give the creator time to finish before reclaiming it.
         if (lockStat && Date.now() - lockStat.mtimeMs > 1000) {
-          try { fs.rmdirSync(lockPath); } catch {}
+          try {
+            // A killed writer can leave a created but incomplete owner file.
+            // Only remove the same unchanged malformed file we inspected.
+            if (error instanceof SyntaxError) {
+              const ownerStat = fs.statSync(ownerPath);
+              if (Date.now() - ownerStat.mtimeMs <= 1000) return;
+              try { JSON.parse(fs.readFileSync(ownerPath, 'utf8')); return; }
+              catch (parseError) { if (!(parseError instanceof SyntaxError)) return; }
+              const current = fs.statSync(ownerPath);
+              if (current.ino !== ownerStat.ino || current.size !== ownerStat.size
+                  || current.mtimeMs !== ownerStat.mtimeMs) return;
+              fs.unlinkSync(ownerPath);
+            }
+            fs.rmdirSync(lockPath);
+          } catch {}
         }
       }
       return;

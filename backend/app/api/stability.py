@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from datetime import datetime, timezone
@@ -117,28 +118,15 @@ def _read_node_collector_snapshot() -> dict:
 async def capabilities(request: Request) -> dict:
     """Report runtime features that must be active before the dashboard is safe to operate."""
     orchestrator = getattr(request.app.state, "orchestrator", None)
-    tasks = getattr(orchestrator, "tasks", ()) if orchestrator else ()
-    balance_task = next((task for task in tasks if task.get_name() == "platform-balance"), None)
-    balance_monitor_running = bool(balance_task and not balance_task.done())
     history = getattr(request.app.state, "history_collector", None)
     rules_engine = getattr(request.app.state, "rules_engine", None)
-    reconciliation = getattr(request.app.state, "reconciliation", None)
-    repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
-    execution_reconciliation_recovery = bool(
-        rules_engine and callable(getattr(rules_engine, "recover_execution_reconciliation", None))
-        and repository and callable(getattr(repository, "list_reconciled_rule_executions", None))
-        and callable(getattr(repository, "has_open_rule_session_executions", None)))
-    receipt_to_rules = bool(reconciliation and rules_engine
-        and getattr(reconciliation, "rules_engine", None) is rules_engine
-        and callable(getattr(repository, "record_rule_execution_reconciliation", None)))
     return {
         "ok": True,
         "service": "winner-predict-backend",
         "capabilities": {
-            "read_only_platform_balance_monitor": balance_monitor_running,
             "history_collector_status": history is not None,
-            "rule_execution_reconciliation_recovery": execution_reconciliation_recovery,
-            "receipt_reconciliation_to_rule_session": receipt_to_rules,
+            "rules_engine": rules_engine is not None,
+            "orchestrator": orchestrator is not None,
         },
     }
 
@@ -147,21 +135,26 @@ async def capabilities(request: Request) -> dict:
 async def stability(request: Request) -> dict:
     """Return the persisted lifecycle and isolated worker health snapshot."""
     lifecycle = getattr(request.app.state, "lifecycle", None)
-    payload = lifecycle.status() if lifecycle else {
+    payload = await asyncio.to_thread(lifecycle.status) if lifecycle else {
         "status": "STARTING", "pid": None, "ppid": None,
     }
     history = getattr(request.app.state, "history_collector", None)
-    payload["collector"] = history.health_status() if history else {"status": "STARTING"}
-    payload["collector_current"] = _read_node_collector_snapshot()
+    payload["collector"] = (await asyncio.to_thread(history.health_status)
+                             if history else {"status": "STARTING"})
+    payload["collector_current"] = await asyncio.to_thread(_read_node_collector_snapshot)
     rules = getattr(request.app.state, "rules_engine", None)
-    payload["rules_engine"] = rules.status() if rules else {"status": "NOT_CONFIGURED"}
+    payload["rules_engine"] = (await asyncio.to_thread(rules.status)
+                               if rules else {"status": "NOT_CONFIGURED"})
     repository = getattr(getattr(request.app.state, "wp", None), "repository", None)
     if repository is None:
         payload["database"] = {"status": "STARTING"}
     else:
         try:
-            with repository.connect() as conn:
-                conn.execute("SELECT 1").fetchone()
+            def check_database():
+                with repository.connect() as conn:
+                    conn.execute("SELECT 1").fetchone()
+
+            await asyncio.to_thread(check_database)
             payload["database"] = {"status": "OK"}
         except Exception as exc:
             payload["database"] = {"status": "ERROR", "reason": str(exc)}

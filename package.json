@@ -7,7 +7,23 @@
     "backend":    "node scripts/start-all.js --backend-only",
     "collector":  "node bot/collector/lock-runner.js",
     "bot-api":    ".venv/bin/python backend/bot_api.py",
-    "frontend":   "npm run dev --prefix frontend"
+    "frontend":   "npm run dev --prefix frontend",
+    "behaviour:setup": "scripts/behaviour setup",
+    "behaviour:env": "scripts/behaviour env-check",
+    "behaviour:migrate": "scripts/behaviour migrate",
+    "behaviour:import-history": "scripts/behaviour import-history",
+    "behaviour:reconcile": "scripts/behaviour reconcile",
+    "behaviour:winner-sync-once": "scripts/behaviour winner-sync-once",
+    "behaviour:winner-sync": "scripts/behaviour winner-sync-run",
+    "behaviour:orbit-test": "scripts/behaviour orbit-test",
+    "behaviour:backfill-orbit": "scripts/behaviour backfill-orbit",
+    "behaviour:collector": "scripts/behaviour collector-run",
+    "behaviour:worker": "scripts/behaviour worker-run",
+    "behaviour:start": "node scripts/behaviour-runtime.js",
+    "behaviour:stop": "node scripts/behaviour-runtime.js --stop",
+    "behaviour:status": "node scripts/behaviour-runtime.js --status",
+    "behaviour:health": "scripts/behaviour health",
+    "behaviour:logs": "node scripts/behaviour-runtime.js --logs"
   },
   "dependencies": {
     "express": "^4.18.2"

@@ -176,6 +176,22 @@ test('event outbox reclaims a dead writer lock after a crash', () => {
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('event outbox reclaims an abandoned incomplete owner file', () => {
+  const { directory, filePath, outbox } = eventFixture();
+  try {
+    const lockPath = `${filePath}.lock`;
+    fs.mkdirSync(lockPath);
+    const ownerPath = path.join(lockPath, 'owner.json');
+    fs.writeFileSync(ownerPath, '');
+    const old = new Date(Date.now() - 5000);
+    fs.utimesSync(ownerPath, old, old);
+    fs.utimesSync(lockPath, old, old);
+    outbox.appendMany([{ round_id: 'after-incomplete-owner', round_index: 1, multiplier: 1.6 }]);
+    assert.deepEqual(outbox.readAll().map(record => record.round_id), ['after-incomplete-owner']);
+    assert.equal(fs.existsSync(lockPath), false);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('event journal serializes concurrent processes and preserves duplicate prevention through compaction', async () => {
   const { directory, filePath, outbox } = eventFixture();
   try {

@@ -34,6 +34,41 @@ function roundStore({ saveRounds, loadRoundsByIds }) {
   return { pool: {}, usingFileFallback: false, saveRounds, loadRoundsByIds };
 }
 
+test('acknowledged recovered rounds progress to storage despite a continuing backlog', () => {
+  const pipeline = new RoundDeliveryPipeline({ outbox: {}, roundStore: {} });
+  const recovered = { round_id: 'first', delivery_mode: 'RECOVERED', observed_handoff_at: '2026-01-01T00:00:00Z', persistence_status: 'PENDING' };
+  const next = { round_id: 'second', delivery_mode: 'RECOVERED', observed_handoff_at: null, persistence_status: 'PENDING' };
+  assert.equal(pipeline._nextWork([recovered, next]).stage, 'persistence');
+  assert.equal(pipeline._nextWork([{ ...recovered, persistence_status: 'COMMITTED' }, next]).stage, 'persisted');
+  assert.equal(pipeline._nextWork([recovered, { ...next, delivery_mode: 'LIVE', observed_at: new Date().toISOString() }]).stage, 'observed');
+});
+
+test('fresh live observations bypass recovered backlog while storage stays ordered', () => {
+  const pipeline = new RoundDeliveryPipeline({ outbox: {}, roundStore: {} });
+  const old = { ...round('old', 2, 1), delivery_mode: 'RECOVERED', persistence_status: 'PENDING' };
+  const live = { ...round('live', 3, 2), delivery_mode: 'LIVE', persistence_status: 'PENDING' };
+  const work = pipeline._nextWork([old, live]);
+  assert.equal(work.stage, 'observed');
+  assert.equal(work.records[0].round_id, 'live');
+  const next = pipeline._nextWork([old, { ...live, observed_handoff_at: new Date().toISOString() }]);
+  assert.equal(next.stage, 'observed');
+  assert.equal(next.records[0].round_id, 'old');
+});
+
+test('persists recovery and live modes per round while preserving source order', async t => {
+  const outbox = await fixture(t);
+  const pipeline = new RoundDeliveryPipeline({ outbox, roundStore: {} });
+  const rows = [round('older-orbit-round', 2.1, 41), round('current-orbit-round', 2.3, 42)];
+
+  pipeline.enqueue(rows, { deliveryModes: ['RECOVERED', 'LIVE'] });
+
+  assert.deepEqual(outbox.readAll().map(row => [row.round_id, row.delivery_mode]), [
+    ['older-orbit-round', 'RECOVERED'],
+    ['current-orbit-round', 'LIVE'],
+  ]);
+  assert.throws(() => pipeline.enqueue(rows, { deliveryModes: ['LIVE'] }), /deliveryModes/);
+});
+
 test('round.observed reaches the API before a delayed PostgreSQL write; equal multipliers remain separate', async t => {
   const outbox = await fixture(t);
   const observed = [];

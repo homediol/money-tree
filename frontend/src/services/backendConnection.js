@@ -124,14 +124,17 @@ export function checkBackend() {
   return inFlight;
 }
 
-export function reportBackendRequestFailure(error) {
-  if (error?.code === 'ERR_BACKEND_RECONNECTING') return;
+export function shouldProbeBackendAfterRequestFailure(error) {
+  if (error?.code === 'ERR_BACKEND_RECONNECTING') return false;
   const status = error?.response?.status;
-  const connectionFailure = !error?.response
+  return !error?.response
     || error?.code === 'ERR_NETWORK'
     || error?.code === 'ECONNABORTED'
-    || [502, 503, 504].includes(status);
-  if (connectionFailure) schedule(0);
+    || [502, 504].includes(status);
+}
+
+export function reportBackendRequestFailure(error) {
+  if (shouldProbeBackendAfterRequestFailure(error)) schedule(0);
 }
 
 export function backendRequestsAllowed() {

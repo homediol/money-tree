@@ -1,0 +1,20 @@
+{
+  "artifact": "adie_research_reference.csv.gz",
+  "artifact_sha256": "273ba360d98b82a27e101cbcbee26bf5350e34c3dbd3fb48fb436a3457af46e5",
+  "decision_rule": "no normal candidate qualifies in policy v1 because Phase 2 corrected tests validated no predictive edge",
+  "fingerprint": [
+    "prev_20_high_share_nonexact",
+    "prev_50_high_share_nonexact",
+    "prev_100_high_share_nonexact",
+    "current_streak_length/10",
+    "prev_50_hl_alternation_rate",
+    "prev_50_log_sd"
+  ],
+  "rows": 52993,
+  "selection": "nearest Euclidean fingerprint, at most 25 contexts spaced 60 historical positions; reference outcomes remain exploratory",
+  "source_phase": "research_phase2_2026-11-16",
+  "sources": {
+    "context_similarity_evaluation.csv.gz": "7683cb637888158810abadb327a7705facf87ff441523ff5ffefeb02801be1fb",
+    "round_level_features.csv.gz": "d629c2bb015ce621dc4596b9970fe6ca525c554e9b9670ebac0cb8404aa6289f"
+  }
+}

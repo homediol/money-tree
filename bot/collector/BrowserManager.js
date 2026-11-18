@@ -11,7 +11,6 @@ import { fileURLToPath } from 'url';
 import { chromium } from 'playwright';
 import { log } from './Logger.js';
 import { AVIATOR_URL, isAcknowledgedAuthRoute, isAviatorRoute, isExpiredAuthRoute, isLogoutPopupRoute } from './LoginManager.js';
-import { SharedPageCoordinator } from './SharedPageCoordinator.js';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const ROOT       = path.resolve(__dirname, '..', '..');
@@ -268,14 +267,10 @@ export class AviatorPageManager {
     this._lastDisconnect = null;
     this._lastRecovery = null;
     this._historyPage = null;
-    this._bettingPage = null;
     this._historyTargetId = null;
-    this._bettingTargetId = null;
     this._aviatorTargetId = null;
-    this._bettingUiCoordinator = new SharedPageCoordinator();
     this._pageResolutionPromise = null;
     this._launchPromise = null;
-    this._executionSafetyCheck = null;
     this._healthTimer = null;
     this._healthBusy = false;
     this._health = null;
@@ -357,7 +352,6 @@ export class AviatorPageManager {
   }
 
   setHealthSource(health) { this._health = health; }
-  setExecutionSafetyCheck(check) { this._executionSafetyCheck = typeof check === 'function' ? check : null; }
   isPageResponsive() { return this._pageProbeFailures < 3; }
 
   async withRecoveryLock(operation) {
@@ -592,7 +586,7 @@ export class AviatorPageManager {
     const outerGameFrames = allGameFrames.filter(frame => /aviaport\.spribegaming\.com/i.test(frame.url?.() || ''));
     const gameFrameCount = outerGameFrames.length || allGameFrames.filter(frame => /aviator-next/i.test(frame.url?.() || '')).length;
     const browserContexts = this._browser?.contexts?.();
-    const targetId = this._aviatorTargetId || this._historyTargetId || this._bettingTargetId;
+    const targetId = this._aviatorTargetId || this._historyTargetId;
     this._health?.setBrowserPages?.({
       browser_count: this.isAlive() ? 1 : 0,
       context_count: this._context && !this._contextClosed
@@ -603,11 +597,8 @@ export class AviatorPageManager {
       aviator_page_state: aviatorOpen ? 'OPEN' : 'CLOSED',
       game_frame_count: gameFrameCount,
       game_frame_state: gameFrameCount === 1 ? 'READY' : gameFrameCount > 1 ? 'MULTIPLE' : 'NOT_READY',
-      // Legacy aliases intentionally point to the same target during rollout.
       history_target_id: targetId,
-      betting_target_id: targetId,
       history_page_state: aviatorOpen ? 'OPEN' : 'CLOSED',
-      betting_page_state: aviatorOpen ? 'OPEN' : 'SHARED_PAGE_UNAVAILABLE',
       page_role: 'SHARED_AVIATOR',
     });
     let health = this._health?.snapshot?.() || {};
@@ -640,9 +631,6 @@ export class AviatorPageManager {
       aviator_page: { alive: aviatorOpen, role: 'SHARED_AVIATOR', url: this._safeUrl(aviatorPage?.url?.()),
         login_route_visible: aviatorLoginRoute, login_route_acknowledged: aviatorLoginRoute && !loginRoutePending },
       history_page: { alive: aviatorOpen, shared: true, url: this._safeUrl(aviatorPage?.url?.()) },
-      betting_page: { state: aviatorOpen ? (loginRoutePending ? 'AUTH_REQUIRED' : /^about:blank/i.test(aviatorUrl) ? 'NOT_READY' : 'SHARED_PAGE') : 'SHARED_PAGE_UNAVAILABLE',
-        shared: true, url: this._safeUrl(aviatorPage?.url?.()), login_route_visible: aviatorLoginRoute,
-        login_route_acknowledged: aviatorLoginRoute && !loginRoutePending },
       session: loginRouteVisible ? 'AUTH_REQUIRED' : health.loggedIn === true ? 'AUTHENTICATED'
         : health.authRequired ? 'AUTH_REQUIRED' : 'UNKNOWN',
       network: { ...(health.network || { status: 'UNKNOWN' }), freshness: networkFreshness },
@@ -875,7 +863,6 @@ export class AviatorPageManager {
         this._page = context.pages().find(page => !page.isClosed() && isAviatorPage(page)) || null;
         this._aviatorPage = this._page;
         this._historyPage = this._page;
-        this._bettingPage = this._page;
         this._ownsBrowser = false;
         this._event('browser_attached', { endpoint: this._safeUrl(endpoint) });
 
@@ -919,7 +906,6 @@ export class AviatorPageManager {
       null;
     this._aviatorPage = isAviatorPage(this._page) ? this._page : null;
     this._historyPage = this._aviatorPage;
-    this._bettingPage = this._aviatorPage;
     this._ownsBrowser = true;
     this._watchManagedPageLimit();
     this.restartCount += 1;
@@ -982,7 +968,6 @@ export class AviatorPageManager {
     this._aviatorPage = page;
     this._page = page;
     this._historyPage = page;
-    this._bettingPage = page;
     if (page && !page.__winnerAviatorFrameEvents) {
       try { page.__winnerAviatorFrameEvents = true; } catch { /* A frozen page wrapper is still usable. */ }
       const clearFrame = frame => {
@@ -1082,11 +1067,7 @@ export class AviatorPageManager {
         }
         page = healthy[0].page;
         for (const duplicate of inspected.filter(item => item.page !== page)) {
-          let safeToRetire = duplicate.pendingBetState === 'CLEAR';
-          if (!safeToRetire && duplicate.sessionEnded && this._executionSafetyCheck) {
-            try { safeToRetire = (await this._executionSafetyCheck())?.safe === true; }
-            catch { safeToRetire = false; }
-          }
+          const safeToRetire = duplicate.pendingBetState === 'CLEAR';
           if (!safeToRetire) throw new Error(duplicate.pendingBetState === 'PENDING'
             ? 'DUPLICATE_AVIATOR_TRANSACTION_PENDING' : 'DUPLICATE_AVIATOR_TRANSACTION_STATE_UNKNOWN');
           await duplicate.page.close();
@@ -1107,7 +1088,6 @@ export class AviatorPageManager {
       this._adoptAviatorPage(page);
       this._aviatorTargetId = await this._targetIdForPage(page);
       this._historyTargetId = this._aviatorTargetId;
-      this._bettingTargetId = this._aviatorTargetId;
       await this._restoreSessionStorage(page);
       if (this._ownsBrowser && /^about:blank/i.test(page.url())) {
         try {
@@ -1127,7 +1107,7 @@ export class AviatorPageManager {
     finally { this._pageResolutionPromise = null; }
   }
 
-  /** Shared page interface. History and betting callers resolve the same object. */
+  /** Resolve the shared Aviator page used by history observation. */
   async getAviatorFrame() {
     const page = await this.getAviatorPage();
     const allFrames = (page.frames?.() || []).filter(frame => /aviator-next|spribegaming|aviaport/i.test(frame.url?.() || ''));
@@ -1160,13 +1140,8 @@ export class AviatorPageManager {
       pending_bet_state: observed.pendingBetState, observed_at: new Date().toISOString() };
   }
 
-  withBettingUiLock(operation, options) {
-    return this._bettingUiCoordinator.withBettingUiLock(operation, options);
-  }
-
   async getPage() { return this.getAviatorPage(); }
   async getHistoryPage() { return this.getAviatorPage(); }
-  async getBettingPage() { return this.getAviatorPage(); }
 
   /** Keep the managed Aviator tab visible after login or recovery. */
   async focusGamePage(page) {
@@ -1242,10 +1217,8 @@ export class AviatorPageManager {
     this._aviatorPage = null;
     this._activeGameFrame = null;
     this._historyPage = null;
-    this._bettingPage = null;
     this._aviatorTargetId = null;
     this._historyTargetId = null;
-    this._bettingTargetId = null;
     this._sessionMonitorPagePromise = null;
     this._managedPageTrackingContext = null;
     this._monitorPageOpenInFlight = false;
@@ -1266,7 +1239,6 @@ export class AviatorPageManager {
     this.stopHeartbeat();
     this._ownsBrowser = false;
     this._releaseSingletonLock();
-    this._event('browser_preserved_for_execution_reconciliation');
     this._persistMetadata();
   }
 

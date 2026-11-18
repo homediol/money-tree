@@ -26,6 +26,13 @@ TARGET_ID = "round-target-101"
 RULE_IDS = ["RULE_1", "RULE_2", "RULE_3", "RULE_4"]
 
 
+def test_published_signal_without_target_index_keeps_action_and_null_index():
+    projected = signal_api._project_published_signal({
+        "action": "BET", "distribution_status": "ACCEPTED", "target_round_index": None,
+    })
+    assert projected.model_dump() == {"action": "OK", "index": None}
+
+
 class InlineExecutor:
     def submit(self, function, /, *args, **kwargs):
         future = Future()
@@ -51,11 +58,6 @@ class FakeEngine:
 
     def session(self, session_id):
         return dict(self._detail) if session_id == SESSION_ID else None
-
-
-class FakeMode:
-    mode = "SHADOW_REALISTIC"
-    transitioning = False
 
 
 class RateLimiter:
@@ -154,7 +156,6 @@ def make_app(tmp_path, *, engine=None, expired=False):
         cors_origins=["http://localhost:5173"], round_stream_allowed_origins=[])
     app.state.round_distribution = RateLimiter()
     app.state.rules_engine = engine or FakeEngine()
-    app.state.betting_mode = FakeMode()
     app.state.round_stream_id = "stream-1"
     current = _now()
     deadline = current - timedelta(seconds=1) if expired else current + timedelta(seconds=30)
@@ -391,16 +392,6 @@ def test_missing_or_unverified_target_is_never_invented(tmp_path):
         post_signal(app, signal_body())
     assert error.value.status_code == 409
     assert error.value.detail["error"] == "authoritative_target_identity_or_open_window_unavailable"
-    assert repo.list_bet_signals() == []
-
-
-def test_non_shadow_betting_mode_cannot_publish(tmp_path):
-    app, repo = make_app(tmp_path)
-    app.state.betting_mode.mode = "LIVE_REAL"
-    with pytest.raises(HTTPException) as error:
-        post_signal(app, signal_body())
-    assert error.value.status_code == 409
-    assert error.value.detail["error"] == "shadow_signal_mode_unavailable"
     assert repo.list_bet_signals() == []
 
 
@@ -830,6 +821,7 @@ def test_signal_router_registers_all_required_endpoints():
     routes = {route.path for route in signal_api.router.routes}
     assert routes == {
         "/api/v1/signals", "/api/v1/signals/latest", "/api/v1/signals/latest/action",
+        "/api/v1/internal/behaviour/strategy-eligibility",
         "/api/v1/signals/{signal_id}",
         "/api/v1/publisher/heartbeat", "/api/v1/rules/selected",
         "/api/v1/rules/matched", "/api/v1/ws/signals", "/api/v1/ws/ticket",

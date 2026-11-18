@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const lockPath = process.env.COLLECTOR_LOCK_PATH || path.join(ROOT, 'data', 'bot', 'collector.lock');
-const entrypoint = path.join(ROOT, 'bot', 'roundhistory-collector.js');
 
 function loadBackendEnv() {
   const envPath = path.join(ROOT, 'backend', '.env');
@@ -73,6 +72,8 @@ function fallbackLock() {
 }
 
 loadBackendEnv();
+// Round History has one supported source: the Orbit Data Watch API.
+const entrypoint = path.join(ROOT, 'bot', 'orbit-roundhistory-collector.js');
 fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
 let child;

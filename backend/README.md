@@ -1,9 +1,8 @@
 # Winner Predict backend
 
 The active backend is the FastAPI service in `main.py`. It serves PostgreSQL
-round history, account and betting safety APIs, reconciliation, operations,
-WebSocket updates, and the empty Rules Engine. It does not load prediction
-models or start training and statistical evaluation jobs.
+round history, SHADOW Rules Engine sessions, signal APIs, and WebSocket updates.
+It does not execute bets, load prediction models, or start training jobs.
 
 Configure `backend/.env` from `.env.example`, install `requirements.txt`, and
 run `python -m uvicorn main:app --host 0.0.0.0 --port 8000` from this directory.
@@ -16,8 +15,7 @@ to 120 requests per minute per source IP. Remote private APIs require the owner
 `API_KEY`, except explicitly scoped round/signal integration routes, which
 validate their consumer or publisher bearer token. A dashboard opened from an
 allowed localhost origin receives a short-lived HttpOnly browser session; the
-owner key itself is never returned to frontend code. Sensitive LIVE authorization
-still requires the owner bearer key. `PUBLIC_ACCESS` and
+owner key itself is never returned to frontend code. `PUBLIC_ACCESS` and
 `PUBLIC_READ_ONLY` are retained only for configuration compatibility and do not
 disable authentication. See [the public API guide](../docs/public-api.md) for
 URLs, response formats, pagination, CORS, and client examples.
